@@ -1,0 +1,60 @@
+# ============================================================
+# SECRETS — never commit
+# ============================================================
+.env
+**/.env
+*.pem
+*.key
+*credentials*
+
+# ============================================================
+# Mayo PATIENT DATA — never commit (PHI / IRB)
+# ============================================================
+facial_paralysis/data/livelinkface_data/
+
+# ============================================================
+# Large datasets, raw media, derived caches
+# ============================================================
+facial_paralysis/data/external/
+facial_paralysis/data/mediapipe_out/
+facial_paralysis/papers/
+**/*.mov
+**/*.mp4
+**/*.avi
+**/*.bin
+**/*.7z
+**/*.zip
+facial_paralysis/outputs/*_bundles/
+facial_paralysis/outputs/mayo_bundles/
+facial_paralysis/outputs/mayo_bundles_norm/
+facial_paralysis/outputs/expanded_bundles/
+facial_paralysis/outputs/mayo_blendshapes/
+facial_paralysis/outputs/mayo_segments/
+facial_paralysis/outputs/cfd_bundles/
+facial_paralysis/outputs/**/*.log
+facial_paralysis/outputs/fp_cache.pt
+# old demo media in viz (may contain non-schematic frames) — keep only the made figures
+facial_paralysis/outputs/viz/*demo*
+facial_paralysis/outputs/viz/*_v2.png
+
+# ============================================================
+# Baseline reproductions: heavy weights + nested git repos
+# ============================================================
+facial_paralysis/src/baselines/
+**/*.pth
+**/*.pack
+
+# Report backups (keep the main .docx)
+**/*.docx.bak*
+
+# ============================================================
+# misc
+# ============================================================
+**/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.ipynb_checkpoints/
+.claude/
+.venv/
+*.egg-info/

@@ -1,0 +1,334 @@
+{
+ "n_images": 20913,
+ "n_exact_dup_groups": 1763,
+ "cross_dataset_exact_groups": 188,
+ "within_dataset_cross_split_exact_groups": 47,
+ "near_dup_cross_pairs": 51903,
+ "examples_cross_dataset": [
+  [
+   "roboflow_fnp/train:images-2019-08-19T155336-875_jpg.rf.9c0f295575daeebb2d101357d29dced2.jpg",
+   "kaggle_facial_droop/all:images (45).jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T164201.616.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T155336.875.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T164156.608.jpg"
+  ],
+  [
+   "roboflow_fnp/train:d5_PNG.rf.9f6d105de57e415d0dad28ccfa735e0f.jpg",
+   "kaggle_facial_droop/all:d5.PNG"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-19T163003-227_jpg.rf.195b6c930e6993e5b895f7606d1234db.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T163003.227.jpg"
+  ],
+  [
+   "roboflow_fnp/train:766x415_Stroke_Symptoms_jpg.rf.e3655b8495b310a618c357982a117024.jpg",
+   "kaggle_facial_droop/all:766x415_Stroke_Symptoms.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-23T125532-484_jpg.rf.1bd248fa2819a384f414ce20158cb4a4.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T125532.484.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-23T114631-028_jpg.rf.67ae124e0665912bc3f1bdaff4825abc.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T114631.028.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-19T164153-649_jpg.rf.8e6db0e82bac500bf8a91e965ef4af73.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T125743.611.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T130833.016.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T164153.649.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-19T162815-003_jpg.rf.02a6170be8daeaecd8b69711e3f5fa61.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T162815.003.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-19T154708-708_jpg.rf.ebd7b6048bea3a2ca5d2e34d6e9ac00f.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T154708.708.jpg"
+  ],
+  [
+   "roboflow_fnp/train:b-37-215x300_jpg.rf.20322ce275dce064ac40ffe32d8bc84a.jpg",
+   "kaggle_facial_droop/all:b-37-215x300.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-19T164456-439_jpg.rf.323a7adc5dd0dae2e2600271b47ce2f5.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T164456.439.jpg"
+  ],
+  [
+   "roboflow_fnp/train:v2_PNG.rf.518e7f21cbcce64bb182948b5dad3ffc.jpg",
+   "kaggle_facial_droop/all:v2.PNG"
+  ],
+  [
+   "roboflow_fnp/train:images-7-_jpg.rf.f7612779d23773a533c6193aa2cebaf6.jpg",
+   "kaggle_facial_droop/all:images (7).jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T112417.712.jpg"
+  ],
+  [
+   "roboflow_fnp/train:After-Selective-Neurolysis-with-Asymmetric-Facelift-Dr-Azizzadeh-Beverly-Hills-Facial-Paralysis-Institute-1-215x300_jpg.rf.d8059976f8430147da86514d35c07e76.jpg",
+   "kaggle_facial_droop/all:After-Selective-Neurolysis-with-Asymmetric-Facelift-Dr-Azizzadeh-Beverly-Hills-Facial-Paralysis-Institute-1-215x300.jpg"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-23T125833-283_jpg.rf.25df977274c99343920875f65d68b7d2.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T125843.395.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-23T125833.283.jpg"
+  ]
+ ],
+ "examples_cross_split": [
+  [
+   "roboflow_anisa_paralysis/train:3221_bmp.rf.1597f23c9a79769dd4654b78e4b07fb2.jpg",
+   "roboflow_anisa_paralysis/train:2321_bmp.rf.1bd8bca5aa42ee21fa99ea987bf53f05.jpg",
+   "roboflow_anisa_paralysis/train:2021_bmp.rf.ed1ed7600665bd95417555e7e22201db.jpg",
+   "roboflow_anisa_paralysis/train:11111_bmp.rf.a7b645c6f5b4cf8032445d01cecf578e.jpg",
+   "roboflow_anisa_paralysis/train:2316_bmp.rf.c1f12e9662fa2cf85317a98d4119c228.jpg",
+   "roboflow_anisa_paralysis/train:3086_bmp.rf.ed2b63965e2e7bdbf49ecc056ea2ca12.jpg",
+   "roboflow_anisa_paralysis/valid:3631_bmp.rf.a4db4c6ee920d9050577dc60bb0dc6ab.jpg",
+   "roboflow_anisa_paralysis/test:11286_bmp.rf.3af93f834e546ce3ea1f2c5c9557b93c.jpg",
+   "roboflow_anisa_paralysis/test:3911_bmp.rf.79824b88348d477d6c582cc8aa8b220a.jpg",
+   "roboflow_anisa_paralysis/test:3786_bmp.rf.369c36e16c89279829093da209e09cc5.jpg",
+   "roboflow_anisa_paralysis/test:3981_bmp.rf.982f9751480f42ed52e74526453338bd.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:2621_bmp.rf.07017273eaa099739427580c1c25b264.jpg",
+   "roboflow_anisa_paralysis/train:2266_bmp.rf.c75fd84954109e1d443227cf28fc5923.jpg",
+   "roboflow_anisa_paralysis/train:2581_bmp.rf.2e7b0876b2aa52f0bcd92f3411e5ce5b.jpg",
+   "roboflow_anisa_paralysis/train:6126_bmp.rf.b50dc8dfc19412eefbc147f016bd8fc2.jpg",
+   "roboflow_anisa_paralysis/train:2176_bmp.rf.fd58e276da86a44b43bbe8ea9fd10940.jpg",
+   "roboflow_anisa_paralysis/train:3021_bmp.rf.c1a313b2f4843e0c973f64f4b2442b4e.jpg",
+   "roboflow_anisa_paralysis/train:6226_bmp.rf.65207b18e6818c461d16b3abb2c7b796.jpg",
+   "roboflow_anisa_paralysis/train:2591_bmp.rf.47d63ede1254b2f60d656e4525c70597.jpg",
+   "roboflow_anisa_paralysis/train:3011_bmp.rf.4de84b53fc4dadcab2c61c505766822d.jpg",
+   "roboflow_anisa_paralysis/train:3356_bmp.rf.d54dafe8bba0a25eb8d2dd33eaba0ba0.jpg",
+   "roboflow_anisa_paralysis/train:3351_bmp.rf.2cd675b1417ed28fe715c42fecad9a3a.jpg",
+   "roboflow_anisa_paralysis/train:5966_bmp.rf.286208ea515aff3f1f506ca60162b1f7.jpg",
+   "roboflow_anisa_paralysis/train:2596_bmp.rf.163cef8d0de05dc833a1c378a204d05e.jpg",
+   "roboflow_anisa_paralysis/train:6231_bmp.rf.3ba5e5fde63d480c5207053334d4b38f.jpg",
+   "roboflow_anisa_paralysis/train:3406_bmp.rf.a29e51f4cfbf41314b6da0cf22aaca57.jpg",
+   "roboflow_anisa_paralysis/train:6076_bmp.rf.7221bdd80c5819c0294f720ebb0af30c.jpg",
+   "roboflow_anisa_paralysis/train:2586_bmp.rf.e0d93d0de5e5f4ab2d7807f7a754389d.jpg",
+   "roboflow_anisa_paralysis/train:6246_bmp.rf.548f146d687a2814b96bd8c99e5aeca8.jpg",
+   "roboflow_anisa_paralysis/train:2516_bmp.rf.558536e343501e56be4900dce8dba46b.jpg",
+   "roboflow_anisa_paralysis/valid:3656_bmp.rf.0874e305cc37f6e08edf1fe772bfb2e0.jpg",
+   "roboflow_anisa_paralysis/valid:3571_bmp.rf.d6ead9fa397d2b59ee0089782a6b7fdd.jpg",
+   "roboflow_anisa_paralysis/valid:3661_bmp.rf.3098237d063d0785fe4f050d11f05cd1.jpg",
+   "roboflow_anisa_paralysis/valid:3701_bmp.rf.15da95fba35bcb33cb2a5bb01c4d048f.jpg",
+   "roboflow_anisa_paralysis/test:5971_bmp.rf.5192875424f14d44ce3a86d007ec007c.jpg",
+   "roboflow_anisa_paralysis/test:3321_bmp.rf.746112ba8f2e1e6e44b293a66b3f1f58.jpg",
+   "roboflow_anisa_paralysis/test:3906_bmp.rf.be54bc19641af749f3a465c1709ae57c.jpg",
+   "roboflow_anisa_paralysis/test:3921_bmp.rf.20133bcaa6a88e05ac357b52c3ecf9e8.jpg",
+   "roboflow_anisa_paralysis/test:6531_bmp.rf.cb74685a3b606b8086a6d2ae03bc2d51.jpg",
+   "roboflow_anisa_paralysis/test:3101_bmp.rf.3700466846fe5befb4b5a7e41ea6a50e.jpg",
+   "roboflow_anisa_paralysis/test:3361_bmp.rf.2e6aaefab51d0f4ebc0dea240d28ed6b.jpg",
+   "roboflow_anisa_paralysis/test:3881_bmp.rf.ece509c0e49eec235d7942a8f3ad352a.jpg",
+   "roboflow_anisa_paralysis/test:3696_bmp.rf.872e10d6964e0066b2ebe3422eccf6d9.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:11231_bmp.rf.e5399ae7a18cbb06d85750623a0c46cf.jpg",
+   "roboflow_anisa_paralysis/train:2491_bmp.rf.ed71b5e67b34f050b67cea7b1f3ae468.jpg",
+   "roboflow_anisa_paralysis/train:2391_bmp.rf.8d62a8a8721f06db7b007cfccd10c4e3.jpg",
+   "roboflow_anisa_paralysis/train:1741_bmp.rf.e0cfc0a94cc2e1225ff63bcf1d871a04.jpg",
+   "roboflow_anisa_paralysis/train:2401_bmp.rf.ab793be743817d162b26493eb82f7089.jpg",
+   "roboflow_anisa_paralysis/train:2496_bmp.rf.4c833b33aa8f547e5082883cc5a448d3.jpg",
+   "roboflow_anisa_paralysis/train:3136_bmp.rf.949881851ce5b6d5376d3c5e35f9c3cd.jpg",
+   "roboflow_anisa_paralysis/train:10591_bmp.rf.fa545eb9967e61f8f2c8ab7705370e0e.jpg",
+   "roboflow_anisa_paralysis/valid:3676_bmp.rf.01e0fa8e9546739b977547b472c51c14.jpg",
+   "roboflow_anisa_paralysis/valid:3686_bmp.rf.5970fcb9bbe4fd50a04b37f8fec24b2c.jpg",
+   "roboflow_anisa_paralysis/test:3841_bmp.rf.daca54cf980cd552ece96ef7d709fad8.jpg",
+   "roboflow_anisa_paralysis/test:3526_bmp.rf.39778466a2ab5761c3a1125d661a8366.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:3131_bmp.rf.6721b05df055659a6b121b9b2e93e0c8.jpg",
+   "roboflow_anisa_paralysis/train:1881_bmp.rf.866818542fd6207b8add56b548c63c14.jpg",
+   "roboflow_anisa_paralysis/train:3331_bmp.rf.98d3be67b21a735602aa22ad01d06c48.jpg",
+   "roboflow_anisa_paralysis/train:6221_bmp.rf.8cf4568eadbb61a2d18f9c0117a543ac.jpg",
+   "roboflow_anisa_paralysis/train:3111_bmp.rf.41e8ec80aeee8e0f3593db8af967d0b4.jpg",
+   "roboflow_anisa_paralysis/train:2951_bmp.rf.c9951ee0c2f161fc5ea4f2cd1224c329.jpg",
+   "roboflow_anisa_paralysis/train:3116_bmp.rf.e2baa197160f0d32f750d50fbece64a6.jpg",
+   "roboflow_anisa_paralysis/train:2461_bmp.rf.daf10f276ad82b53f8e898ce63077b32.jpg",
+   "roboflow_anisa_paralysis/train:3326_bmp.rf.30cf3026d8a2c1935ef42cd8c65af76b.jpg",
+   "roboflow_anisa_paralysis/valid:3311_bmp.rf.fbe136916752c01703d105f3d3d17c62.jpg",
+   "roboflow_anisa_paralysis/test:3341_bmp.rf.1dabff09c875db1f0454fc6bc950b451.jpg",
+   "roboflow_anisa_paralysis/test:3491_bmp.rf.6bce80cc373793ec98a1d57e41f53536.jpg",
+   "roboflow_anisa_paralysis/test:3791_bmp.rf.0c0b00caea229b722a923694b8adab62.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:6071_bmp.rf.54150530201dcfa87a0e1169b49cec96.jpg",
+   "roboflow_anisa_paralysis/train:3291_bmp.rf.f1f83a8f408bf0c8116f0d1eb98d83cc.jpg",
+   "roboflow_anisa_paralysis/valid:3596_bmp.rf.fe6a864143d60bda51e7c35a19a57c1e.jpg",
+   "roboflow_anisa_paralysis/test:3776_bmp.rf.1dc7c17513b24ba0782fcad233916c9e.jpg",
+   "roboflow_anisa_paralysis/test:3996_bmp.rf.c8b9c314af1cdfb8982fa07d889895d9.jpg",
+   "roboflow_anisa_paralysis/test:3541_bmp.rf.17f9dbd16cd22c0f65be0535f6438cb6.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:2611_bmp.rf.ad2453b5255bf444adc2d97a1780e7f1.jpg",
+   "roboflow_anisa_paralysis/train:3071_bmp.rf.0954bc792a713a5e8133c58d016507fa.jpg",
+   "roboflow_anisa_paralysis/train:2966_bmp.rf.737726e12f302ece5b84179f5ab38cad.jpg",
+   "roboflow_anisa_paralysis/train:6376_bmp.rf.0e40ae0577fd177683b02621536e7e3e.jpg",
+   "roboflow_anisa_paralysis/train:3416_bmp.rf.400162de28d7cea14f200dbde4d58b0e.jpg",
+   "roboflow_anisa_paralysis/test:3261_bmp.rf.5b321bd16f4d58c144bae3254761a497.jpg",
+   "roboflow_anisa_paralysis/test:3391_bmp.rf.1e4f535eef02ee4b44294c06ccda24dc.jpg",
+   "roboflow_anisa_paralysis/test:2096_bmp.rf.4318257c7535a59f88f85e78c72ea642.jpg",
+   "roboflow_anisa_paralysis/test:6636_bmp.rf.6bf7fadc48a8acace601b44e38d885bd.jpg",
+   "roboflow_anisa_paralysis/test:3931_bmp.rf.b7341d7044b7360074f46f153701ff1b.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:2831_bmp.rf.a880a6ce2c97fa2d752b2b5b56d40a00.jpg",
+   "roboflow_anisa_paralysis/test:4066_bmp.rf.090a0862e11f3fea067a7e2ac1fcd1fa.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:1886_bmp.rf.84d9c9857740c791e5af2ee64ee781ee.jpg",
+   "roboflow_anisa_paralysis/train:1986_bmp.rf.5c32bb730bd67652ab587a7040241f9a.jpg",
+   "roboflow_anisa_paralysis/train:5286_bmp.rf.f6003e7f15bda8a3ab7ab962f516aee4.jpg",
+   "roboflow_anisa_paralysis/train:2956_bmp.rf.72ea1ef197b4f3fbb385a76835fd5621.jpg",
+   "roboflow_anisa_paralysis/train:2271_bmp.rf.29377c1dbda920b54f4d777b30f47376.jpg",
+   "roboflow_anisa_paralysis/train:2116_bmp.rf.e0b808e9fa096f3d62e1ac53ccf96254.jpg",
+   "roboflow_anisa_paralysis/train:2606_bmp.rf.66bc2db10fa9161b38648c4cb88adb28.jpg",
+   "roboflow_anisa_paralysis/train:3436_bmp.rf.69d6891e70958983d08f55fa6c0cd940.jpg",
+   "roboflow_anisa_paralysis/train:2566_bmp.rf.0fe14c7998ed82574285a9bce27a5c40.jpg",
+   "roboflow_anisa_paralysis/train:2231_bmp.rf.e11fd3e0bd2dc09c0c6d991ebbb6a14c.jpg",
+   "roboflow_anisa_paralysis/valid:3476_bmp.rf.48faf57dbf76a27dc045a14ad86cf015.jpg",
+   "roboflow_anisa_paralysis/valid:3431_bmp.rf.570b07d2d037f853cdecfa2266784454.jpg",
+   "roboflow_anisa_paralysis/valid:3706_bmp.rf.4dd0e4923b6ba6181b0142466caee7d4.jpg",
+   "roboflow_anisa_paralysis/valid:3731_bmp.rf.324ee6af625eaf71fcab6654ffcaad87.jpg",
+   "roboflow_anisa_paralysis/valid:3726_bmp.rf.f4189096659ff964f0b01a5b77ba5da7.jpg",
+   "roboflow_anisa_paralysis/test:3736_bmp.rf.e91d3f763da98bfbf9631625b9cf2016.jpg",
+   "roboflow_anisa_paralysis/test:6286_bmp.rf.776f80a72bea4d782a4b7d68e13e40a3.jpg",
+   "roboflow_anisa_paralysis/test:3926_bmp.rf.0bb768dae126b245515c81d5e8a57b95.jpg",
+   "roboflow_anisa_paralysis/test:6216_bmp.rf.78c6f0d9e74d6ef0fa86f73e947c2851.jpg",
+   "roboflow_anisa_paralysis/test:3486_bmp.rf.abacc660e3583fa5f8dc2a03bd23b0e0.jpg",
+   "roboflow_anisa_paralysis/test:3671_bmp.rf.9735252e9cb887fd50da2c5349ead43f.jpg",
+   "roboflow_anisa_paralysis/test:3216_bmp.rf.e0d1e2cb2221b400c63c3e4534aa3118.jpg",
+   "roboflow_anisa_paralysis/test:3796_bmp.rf.b271f4f674671237f0d9388026cd9d3d.jpg",
+   "roboflow_anisa_paralysis/test:3946_bmp.rf.d16fb0a7f846482ea104505b921244de.jpg",
+   "roboflow_anisa_paralysis/test:6306_bmp.rf.69225b1d9b32889924c851964c4509ee.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:4531_bmp.rf.072dd9e6d3b1c0e1240829227f22cf49.jpg",
+   "roboflow_anisa_paralysis/train:2686_bmp.rf.4e487bc67ae1d11ec96c9ea91f5c73ca.jpg",
+   "roboflow_anisa_paralysis/test:4236_bmp.rf.b229dffe20d7b6e02a54f0cd4e417e27.jpg",
+   "roboflow_anisa_paralysis/test:4256_bmp.rf.85aa3d08516c06bfc48078247b79650a.jpg",
+   "roboflow_anisa_paralysis/test:4121_bmp.rf.3e152550fcc4950922bed9b4f1da9917.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:10576_bmp.rf.11c41950a09539f0b22e7836910e0320.jpg",
+   "roboflow_anisa_paralysis/train:2311_bmp.rf.ac99124a02f66e2752dd4af883e8426f.jpg",
+   "roboflow_anisa_paralysis/train:10616_bmp.rf.2c1ac9f81cce7e9390fe2a62de0a7471.jpg",
+   "roboflow_anisa_paralysis/train:2501_bmp.rf.e15dd7e2317035c337a78bdc9d025943.jpg",
+   "roboflow_anisa_paralysis/train:2406_bmp.rf.d2584abc5a554ad70e8efb88e716020c.jpg",
+   "roboflow_anisa_paralysis/test:10606_bmp.rf.edeb56d98b4801e12aed11812c7ece34.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:3126_bmp.rf.0463499d502c429f517771064797e55f.jpg",
+   "roboflow_anisa_paralysis/train:2601_bmp.rf.cdba5b469fcea54b67714571f3bc2cb9.jpg",
+   "roboflow_anisa_paralysis/train:2541_bmp.rf.0e024423b0d717f2b277547f0eb4bd16.jpg",
+   "roboflow_anisa_paralysis/train:10981_bmp.rf.fbdc46f499020b6bb3cea202c681dcf1.jpg",
+   "roboflow_anisa_paralysis/test:2986_bmp.rf.8745e91a071428a8641609b54e25ab1c.jpg",
+   "roboflow_anisa_paralysis/test:2121_bmp.rf.2d39068adc77fceb477649a3adbb93d9.jpg",
+   "roboflow_anisa_paralysis/test:3821_bmp.rf.75a73dafb1c850849f5963b728587919.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:2371_bmp.rf.a110f662c5e0a1ab9177eff800d3661f.jpg",
+   "roboflow_anisa_paralysis/train:2676_bmp.rf.04ae8336868e1b40654b3f9ba0bbda98.jpg",
+   "roboflow_anisa_paralysis/train:2376_bmp.rf.4be56b3955abeca88af60b139a8e7fd3.jpg",
+   "roboflow_anisa_paralysis/test:3241_bmp.rf.ae2eaf33aa67dbe771a5b70ad76db18e.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:1416_bmp.rf.68fc71c060ca8b350a6050da31861c1d.jpg",
+   "roboflow_anisa_paralysis/train:1421_bmp.rf.0e67fcee9113136f1f0e4a1ba1dc300b.jpg",
+   "roboflow_anisa_paralysis/valid:1356_bmp.rf.cf7b5d612f80eb9499f4e859a659db4b.jpg",
+   "roboflow_anisa_paralysis/valid:1371_bmp.rf.22908e3742c9c0ac286cbb2d35af9884.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:10311_bmp.rf.31f7ead7100b28193157911800540235.jpg",
+   "roboflow_anisa_paralysis/train:10336_bmp.rf.2fc96bade9644599c5eb870e4c542661.jpg",
+   "roboflow_anisa_paralysis/train:10421_bmp.rf.0b9401b4eb54d87746b60fd8d5b9d327.jpg",
+   "roboflow_anisa_paralysis/test:4526_bmp.rf.90cf3740c344044bb891efad0467c07d.jpg"
+  ],
+  [
+   "roboflow_anisa_paralysis/train:9711_bmp.rf.cf2234b6d9b7d8bbf4671aef7394cf70.jpg",
+   "roboflow_anisa_paralysis/valid:9716_bmp.rf.8e7369442537c9b401a6c46f1c1b7c29.jpg",
+   "roboflow_anisa_paralysis/test:9706_bmp.rf.60fc2b292e57515f71cf439f3192552b.jpg"
+  ]
+ ],
+ "examples_near": [
+  [
+   "roboflow_fnp/train:images-2019-08-19T165112-021_jpg.rf.df612e5586d02e8fbbe333b465d9f3ac.jpg",
+   "kaggle_facial_droop/all:images - 2019-08-19T165112.021.jpg",
+   "ham=5"
+  ],
+  [
+   "roboflow_fnp/train:images-2019-08-19T165112-021_jpg.rf.df612e5586d02e8fbbe333b465d9f3ac.jpg",
+   "kaggle_facial_droop/all:images (40).jpg",
+   "ham=5"
+  ],
+  [
+   "roboflow_fnp/train:a-24-267x300_jpg.rf.cab34bde51705661493bb45aca4858f8.jpg",
+   "roboflow_facial_paralysis/train:a-24-267x300_jpg.rf.b1675129c6a2208be4fa35b4ad5eff15.jpg",
+   "ham=4"
+  ],
+  [
+   "roboflow_fnp/train:a-24-267x300_jpg.rf.cab34bde51705661493bb45aca4858f8.jpg",
+   "kaggle_facial_droop/all:a-24-267x300.jpg",
+   "ham=1"
+  ],
+  [
+   "roboflow_fnp/train:s2_PNG.rf.79c1215b3fd16db5dad73f29d60433ee.jpg",
+   "kaggle_facial_droop/all:st1.PNG",
+   "ham=6"
+  ],
+  [
+   "roboflow_fnp/train:s2_PNG.rf.79c1215b3fd16db5dad73f29d60433ee.jpg",
+   "kaggle_facial_droop/all:s2.PNG",
+   "ham=2"
+  ],
+  [
+   "roboflow_fnp/train:Before-Synkinesis-Sugery-Selective-Neurolysis-Dr-Babak-Azizzadeh-215x300_jpg.rf.0a7e2b0b7ba76dce23374e22ed60cb63.jpg",
+   "roboflow_facial_paralysis/valid:Before-Synkinesis-Sugery-Selective-Neurolysis-Dr-Babak-Azizzadeh-215x300_jpg.rf.62a38e8f9ccbf10d775812cf4ad55772.jpg",
+   "ham=1"
+  ],
+  [
+   "roboflow_fnp/train:Before-Synkinesis-Sugery-Selective-Neurolysis-Dr-Babak-Azizzadeh-215x300_jpg.rf.0a7e2b0b7ba76dce23374e22ed60cb63.jpg",
+   "kaggle_facial_droop/all:Before-Synkinesis-Sugery-Selective-Neurolysis-Dr-Babak-Azizzadeh-215x300.jpg",
+   "ham=1"
+  ],
+  [
+   "roboflow_fnp/train:d5_PNG.rf.9f6d105de57e415d0dad28ccfa735e0f.jpg",
+   "roboflow_facial_paralysis/train:d5_PNG_jpg.rf.8cca264271e920e8259da8475ffc7229.jpg",
+   "ham=2"
+  ],
+  [
+   "roboflow_fnp/train:After-Selective-Neurolysis-with-Facial-Rejuvenation-Dr-Babak-Azizzadeh-Facial-Paralysis-Institute-215x300_jpg.rf.89bd3a6a8b1a2f67ac9523966d26f4e8.jpg",
+   "roboflow_facial_paralysis/train:After-Selective-Neurolysis-with-Facial-Rejuvenation-Dr-Babak-Azizzadeh-Facial-Paralysis-Institute-215x300_jpg.rf.d22095e4f88f1a8dca873e45cd56cfbb.jpg",
+   "ham=4"
+  ],
+  [
+   "roboflow_fnp/train:After-Selective-Neurolysis-with-Facial-Rejuvenation-Dr-Babak-Azizzadeh-Facial-Paralysis-Institute-215x300_jpg.rf.89bd3a6a8b1a2f67ac9523966d26f4e8.jpg",
+   "kaggle_facial_droop/all:After-Selective-Neurolysis-with-Facial-Rejuvenation-Dr-Babak-Azizzadeh-Facial-Paralysis-Institute-215x300.jpg",
+   "ham=1"
+  ],
+  [
+   "roboflow_fnp/train:b-38-215x300_jpg.rf.0c15cdf7274795659ac6fcee55c014d8.jpg",
+   "roboflow_facial_paralysis/train:b-38-215x300--1-_jpg.rf.973559c3bd4822c83942db286c95bd6e.jpg",
+   "ham=4"
+  ],
+  [
+   "roboflow_fnp/train:b-38-215x300_jpg.rf.0c15cdf7274795659ac6fcee55c014d8.jpg",
+   "kaggle_facial_droop/all:b-38-215x300 (1).jpg",
+   "ham=1"
+  ],
+  [
+   "roboflow_fnp/train:b-38-215x300_jpg.rf.0c15cdf7274795659ac6fcee55c014d8.jpg",
+   "kaggle_facial_droop/all:b-38-215x300.jpg",
+   "ham=1"
+  ],
+  [
+   "roboflow_fnp/train:fd5_PNG.rf.c208cec1e381cc30b9127400efb62ab4.jpg",
+   "kaggle_facial_droop/all:fd5.PNG",
+   "ham=1"
+  ]
+ ],
+ "cross_dataset_pair_counts": {
+  "kaggle_facial_droop <-> roboflow_fnp": 181,
+  "kaggle_facial_droop <-> roboflow_facial_paralysis": 15,
+  "roboflow_facial_paralysis <-> roboflow_fnp": 12
+ }
+}
