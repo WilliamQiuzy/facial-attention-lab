@@ -20,15 +20,20 @@ better in every cell. (YFP→FNP eyes stays weak: FNP eyes are intrinsically har
 Mayo clips scored by each model; Spearman(model severity, domain-invariant clinical
 asymmetry) across 13 patients:
 
-| | champion | baseline | old model (Run #14) |
-|---|---|---|---|
-| eyes | -0.06 | -0.14 | -0.01 |
-| mouth | -0.19 | +0.01 | -0.50 |
+| | champion | baseline | **geometry-only** | old model (Run #14) |
+|---|---|---|---|---|
+| eyes | -0.06 | -0.14 | **+0.48** (p=.10) | -0.01 |
+| mouth | -0.19 | +0.01 | 0.00 | -0.50 |
 
-**All ≈ 0.** A model trained on web stills — even the improved champion — does NOT
-transfer to the Mayo domain. Its 0.649 web QWK says nothing about Mayo. The gap is
-the **modality/domain** (web stills vs in-domain clinical video), which web-side model
-work cannot close.
+The appearance-driven models (champion, baseline) ≈ 0: even the improved champion does
+NOT transfer to Mayo — its 0.649 web QWK says nothing about Mayo. **But dropping MARLIN
+appearance entirely (geometry-only) flips the eyes head to +0.48**: it now tracks the
+clinical asymmetry on Mayo. So the modality gap is specifically the **appearance
+stream** (MARLIN, domain-confounded per Run #14); the geometric/asymmetry stream DOES
+transfer. Actionable: the **Mayo/deployment model should be geometry-only**, while the
+champion (with MARLIN) is best for the web benchmark. Caveats: n=13, p=0.10 marginal,
+and partial circularity (geometry features overlap the asymmetry target) — directional,
+needs HB labels to confirm. Mouth doesn't transfer even geometry-only (open problem).
 
 ## Conclusion
 - The champion is a real improvement: higher web QWK **and** better cross-dataset

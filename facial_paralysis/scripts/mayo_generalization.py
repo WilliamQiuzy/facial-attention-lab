@@ -103,7 +103,9 @@ def main():
 
     CHAMP = dict(R.DEFAULT); CHAMP.update(json.loads((ROOT / "autoresearch_fp/best_config.json").read_text()))
     BASE = dict(R.DEFAULT)                                  # v0: raw feat, GRU, full MARLIN (MARLIN-heavy)
-    configs = {"champion": CHAMP, "baseline_marlin_heavy": BASE}
+    GEO = dict(R.DEFAULT); GEO.update({"feat": "asym", "geo_encoder": "mlp", "loss": "corn",
+                                       "drop_marlin": True})  # geometry-only: no appearance
+    configs = {"champion": CHAMP, "baseline_marlin_heavy": BASE, "geometry_only": GEO}
 
     print("Generalization to Mayo (label-free): Spearman(model severity, clinical asymmetry)")
     print("higher/positive = better generalization;  Run #14 old model: eyes -0.01, mouth -0.50\n")

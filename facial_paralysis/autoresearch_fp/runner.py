@@ -227,6 +227,8 @@ class Net(nn.Module):
 
     def rep(self, marlin, mp_seq, mp_mask, task):
         mp_seq = engineer(mp_seq, self.cfg)
+        if self.cfg.get("drop_marlin"):
+            marlin = torch.zeros_like(marlin)            # geometry-only: ablate appearance (domain-confound)
         g = self.geos[task](mp_seq, mp_mask) if self.per_region_geo else self.geo(mp_seq, mp_mask)
         if self.pr_marlin:
             return self.trunks[task](torch.cat([self.mnorm[task](marlin), g], -1))
