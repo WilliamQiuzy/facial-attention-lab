@@ -1,0 +1,2 @@
+r4_prt_mp128_corn	0.5849	0.0021	0.469	0.701	37	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_proj": 128, "per_region_trunk": true}
+r4_prt_ln_corn	0.6252	0.0086	0.439	0.812	36	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_ln": true, "per_region_trunk": true}

@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r4_prt_mp128_corn", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_proj": 128, "per_region_trunk": true},
+  {"name": "r4_prt_ln_corn",    "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_ln": true, "per_region_trunk": true}
+]}

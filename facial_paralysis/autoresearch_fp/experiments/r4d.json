@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r4_ln_corn_reg", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_ln": true, "dropout": 0.2, "weight_decay": 5e-2},
+  {"name": "r4_mp192_corn",  "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_proj": 192}
+]}

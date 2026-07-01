@@ -38,7 +38,8 @@ ASYM_LO, ASYM_HI = 52, 72          # signed L/R asymmetry delta block within the
 
 DEFAULT = dict(
     feat="raw", geo_encoder="gru", fusion="concat", loss="coral", ls=0.0,
-    decode="threshold", marlin_proj=None, temporal_hidden=64, temporal_out=64,
+    decode="threshold", marlin_proj=None, marlin_ln=False, per_region_trunk=False,
+    temporal_hidden=64, temporal_out=64,
     trunk_hidden=96, trunk_layers=1, dropout=0.1, pool="attention",
     lr=5e-4, weight_decay=3e-2, batch_size=128, warmup=0,
     epochs=P.MAX_EPOCHS, eval_every=4,
@@ -172,24 +173,46 @@ class Net(nn.Module):
         else:
             self.geo = GeoGRU(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["pool"])
 
-        mdim = 768
-        self.marlin_proj = None
-        if cfg["marlin_proj"]:
-            self.marlin_proj = nn.Sequential(nn.Linear(768, cfg["marlin_proj"]), nn.LayerNorm(cfg["marlin_proj"]))
-            mdim = cfg["marlin_proj"]
-
         H = cfg["trunk_hidden"]
         self.fusion = cfg["fusion"]
-        if cfg["fusion"] == "gate":
-            self.mp = nn.Linear(mdim, H)
-            self.gp = nn.Linear(cfg["temporal_out"], H)
-            # per-task scalar gate on marlin vs geo
-            self.gate = nn.ModuleDict({t: nn.Linear(mdim + cfg["temporal_out"], 1) for t in P.TASKS})
-            self.post = mlp(H, H, H, max(cfg["trunk_layers"] - 1, 0), cfg["dropout"]) if cfg["trunk_layers"] > 1 else nn.Identity()
+        self.per_region_trunk = cfg.get("per_region_trunk", False)
+        self.pr_marlin = cfg.get("pr_marlin")            # {task: dim | "full"} per-region MARLIN width
+        self.marlin_proj = None
+        self.marlin_ln = None
+        if self.pr_marlin:
+            # each region routes MARLIN through its OWN bottleneck (eyes narrow, mouth wide)
+            self.mnorm = nn.ModuleDict()
+            self.trunks = nn.ModuleDict()
+            for t in P.TASKS:
+                dim = self.pr_marlin.get(t, 768)
+                if dim in (768, "full"):
+                    self.mnorm[t] = nn.LayerNorm(768)
+                    md = 768
+                else:
+                    self.mnorm[t] = nn.Sequential(nn.Linear(768, dim), nn.LayerNorm(dim))
+                    md = dim
+                self.trunks[t] = mlp(md + cfg["temporal_out"], H, H, cfg["trunk_layers"], cfg["dropout"])
             trunk_out = H
         else:
-            self.trunk = mlp(mdim + cfg["temporal_out"], H, H, cfg["trunk_layers"], cfg["dropout"])
-            trunk_out = H
+            mdim = 768
+            if cfg["marlin_proj"]:
+                self.marlin_proj = nn.Sequential(nn.Linear(768, cfg["marlin_proj"]), nn.LayerNorm(cfg["marlin_proj"]))
+                mdim = cfg["marlin_proj"]
+            elif cfg.get("marlin_ln"):
+                self.marlin_ln = nn.LayerNorm(768)       # normalize full MARLIN, no dim cut
+            if cfg["fusion"] == "gate":
+                self.mp = nn.Linear(mdim, H)
+                self.gp = nn.Linear(cfg["temporal_out"], H)
+                self.gate = nn.ModuleDict({t: nn.Linear(mdim + cfg["temporal_out"], 1) for t in P.TASKS})
+                self.post = mlp(H, H, H, max(cfg["trunk_layers"] - 1, 0), cfg["dropout"]) if cfg["trunk_layers"] > 1 else nn.Identity()
+                trunk_out = H
+            elif self.per_region_trunk:
+                self.trunks = nn.ModuleDict(
+                    {t: mlp(mdim + cfg["temporal_out"], H, H, cfg["trunk_layers"], cfg["dropout"]) for t in P.TASKS})
+                trunk_out = H
+            else:
+                self.trunk = mlp(mdim + cfg["temporal_out"], H, H, cfg["trunk_layers"], cfg["dropout"])
+                trunk_out = H
 
         self.sev = nn.ModuleDict({t: nn.Linear(trunk_out, 1, bias=False) for t in P.TASKS})
         self.thr = nn.ModuleDict({t: OrderedThresholds(P.N_CLASSES[t]) for t in P.TASKS})
@@ -197,12 +220,22 @@ class Net(nn.Module):
     def rep(self, marlin, mp_seq, mp_mask, task):
         mp_seq = engineer(mp_seq, self.cfg)
         g = self.geo(mp_seq, mp_mask)
-        m = self.marlin_proj(marlin) if self.marlin_proj is not None else marlin
+        if self.pr_marlin:
+            return self.trunks[task](torch.cat([self.mnorm[task](marlin), g], -1))
+        if self.marlin_proj is not None:
+            m = self.marlin_proj(marlin)
+        elif self.marlin_ln is not None:
+            m = self.marlin_ln(marlin)
+        else:
+            m = marlin
         if self.fusion == "gate":
             a = torch.sigmoid(self.gate[task](torch.cat([m, g], -1)))   # (B,1)
             h = a * torch.relu(self.mp(m)) + (1 - a) * torch.relu(self.gp(g))
             return self.post(h)
-        return self.trunk(torch.cat([m, g], -1))
+        cat = torch.cat([m, g], -1)
+        if self.per_region_trunk:
+            return self.trunks[task](cat)
+        return self.trunk(cat)
 
     def severity(self, marlin, mp_seq, mp_mask, task):
         return self.sev[task](self.rep(marlin, mp_seq, mp_mask, task)).squeeze(-1)

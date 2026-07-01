@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r5_pr128_768_t160", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "trunk_hidden": 160, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}},
+  {"name": "r5_pr128_768_coral", "feat": "asym", "geo_encoder": "mlp", "loss": "coral", "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
+]}

@@ -1,0 +1,3 @@
+r3_mproj64	0.5932	0.0103	0.456	0.731	31	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 64}
+r3_mproj96	0.5744	0.0184	0.467	0.682	32	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 96}
+r3_mproj192	0.5732	0.0214	0.464	0.682	40	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 192}
