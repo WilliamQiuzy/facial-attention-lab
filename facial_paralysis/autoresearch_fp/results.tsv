@@ -1,0 +1,2 @@
+iter	metric	metric_sd	eyes	mouth	status	description
+0	0.5301	0.0082	0.293	0.767	baseline	v0 dual-stream BiGRU-attention + CORAL, faithful v2 reimpl
