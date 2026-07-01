@@ -1,0 +1,2 @@
+r7_ls15	0.6494	0.0112	0.468	0.831	41	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.15, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
+r7_ls05	0.6457	0.0018	0.472	0.819	41	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
