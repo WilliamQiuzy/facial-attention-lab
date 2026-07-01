@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r6_decouple_128_ls", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}},
+  {"name": "r6_prt_ln_t128", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "trunk_hidden": 128}
+]}

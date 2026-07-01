@@ -1,1 +1,1 @@
-{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128}
+{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}

@@ -1,0 +1,2 @@
+r6_prt_geo_ln	0.6381	0.0094	0.453	0.824	37	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_geo": true, "per_region_trunk": true, "marlin_ln": true}
+r6_prt_ln_ls	0.6164	0.0013	0.440	0.792	36	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "ls": 0.1}

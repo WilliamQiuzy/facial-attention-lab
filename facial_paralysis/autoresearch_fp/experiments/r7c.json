@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r7_reg_ls",  "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 5e-2, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}},
+  {"name": "r7_t128_ls", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "trunk_hidden": 128, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
+]}

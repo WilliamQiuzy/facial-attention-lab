@@ -39,6 +39,7 @@ ASYM_LO, ASYM_HI = 52, 72          # signed L/R asymmetry delta block within the
 DEFAULT = dict(
     feat="raw", geo_encoder="gru", fusion="concat", loss="coral", ls=0.0,
     decode="threshold", marlin_proj=None, marlin_ln=False, per_region_trunk=False,
+    per_region_geo=False,
     temporal_hidden=64, temporal_out=64,
     trunk_hidden=96, trunk_layers=1, dropout=0.1, pool="attention",
     lr=5e-4, weight_decay=3e-2, batch_size=128, warmup=0,
@@ -168,10 +169,17 @@ class Net(nn.Module):
         super().__init__()
         self.cfg = cfg
         gfd = geo_feat_dim(cfg)
-        if cfg["geo_encoder"] == "mlp":
-            self.geo = GeoMLP(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["dropout"])
+
+        def _mk_geo():
+            if cfg["geo_encoder"] == "mlp":
+                return GeoMLP(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["dropout"])
+            return GeoGRU(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["pool"])
+
+        self.per_region_geo = cfg.get("per_region_geo", False)
+        if self.per_region_geo:
+            self.geos = nn.ModuleDict({t: _mk_geo() for t in P.TASKS})
         else:
-            self.geo = GeoGRU(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["pool"])
+            self.geo = _mk_geo()
 
         H = cfg["trunk_hidden"]
         self.fusion = cfg["fusion"]
@@ -219,7 +227,7 @@ class Net(nn.Module):
 
     def rep(self, marlin, mp_seq, mp_mask, task):
         mp_seq = engineer(mp_seq, self.cfg)
-        g = self.geo(mp_seq, mp_mask)
+        g = self.geos[task](mp_seq, mp_mask) if self.per_region_geo else self.geo(mp_seq, mp_mask)
         if self.pr_marlin:
             return self.trunks[task](torch.cat([self.mnorm[task](marlin), g], -1))
         if self.marlin_proj is not None:
