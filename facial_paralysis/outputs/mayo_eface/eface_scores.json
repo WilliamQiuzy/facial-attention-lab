@@ -1,0 +1,1057 @@
+{
+ "20260109_MySlate_6": {
+  "brow_asym": 0.41,
+  "eye_asym": 0.013,
+  "oral_asym": 0.086,
+  "synkinesis": {
+   "oral_ocular_synk": 0.188,
+   "ocular_oral_synk": 0.248
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.726,
+   "weak_eye_forced": 0.747,
+   "forced_recruitment": 0.021,
+   "ai_peak_vs_traj_gap": 0.012
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.41,
+    "ai_traj": 0.48,
+    "peakL": 0.648,
+    "peakR": 0.271,
+    "excursion": 0.459,
+    "weaker": "right",
+    "n_frames": 39
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.012,
+    "ai_traj": 0.015,
+    "peakL": 0.744,
+    "peakR": 0.726,
+    "excursion": 0.735,
+    "weaker": "right",
+    "n_frames": 48
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.014,
+    "ai_traj": 0.026,
+    "peakL": 0.769,
+    "peakR": 0.747,
+    "excursion": 0.758,
+    "weaker": "right",
+    "n_frames": 74
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.125,
+    "ai_traj": 0.186,
+    "peakL": 0.897,
+    "peakR": 0.698,
+    "excursion": 0.798,
+    "weaker": "right",
+    "n_frames": 32
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.091,
+    "ai_traj": 0.405,
+    "peakL": 0.015,
+    "peakR": 0.013,
+    "excursion": 0.014,
+    "weaker": "right",
+    "n_frames": 5
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.011,
+    "ai_traj": 0.136,
+    "peakL": 0.532,
+    "peakR": 0.521,
+    "excursion": 0.526,
+    "weaker": "right",
+    "n_frames": 36
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.119,
+    "ai_traj": 0.139,
+    "peakL": 0.827,
+    "peakR": 0.651,
+    "excursion": 0.739,
+    "weaker": "right",
+    "n_frames": 18
+   }
+  }
+ },
+ "20260203_FACES006": {
+  "brow_asym": 0.099,
+  "eye_asym": 0.075,
+  "oral_asym": 0.646,
+  "synkinesis": {
+   "oral_ocular_synk": -0.125
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.636,
+   "weak_eye_forced": 0.713,
+   "forced_recruitment": 0.077,
+   "ai_peak_vs_traj_gap": 0.069
+  },
+  "actions": {
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.103,
+    "ai_traj": 0.147,
+    "peakL": 0.782,
+    "peakR": 0.636,
+    "excursion": 0.709,
+    "weaker": "right",
+    "n_frames": 35
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.047,
+    "ai_traj": 0.116,
+    "peakL": 0.782,
+    "peakR": 0.713,
+    "excursion": 0.748,
+    "weaker": "right",
+    "n_frames": 27
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.646,
+    "ai_traj": 0.693,
+    "peakL": 0.066,
+    "peakR": 0.305,
+    "excursion": 0.185,
+    "weaker": "left",
+    "n_frames": 37
+   },
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.099,
+    "ai_traj": 0.21,
+    "peakL": 0.805,
+    "peakR": 0.66,
+    "excursion": 0.733,
+    "weaker": "right",
+    "n_frames": 18
+   }
+  }
+ },
+ "20260219_FACES014": {
+  "brow_asym": 0.098,
+  "eye_asym": 0.028,
+  "oral_asym": 0.218,
+  "synkinesis": {
+   "oral_ocular_synk": 0.139,
+   "ocular_oral_synk": 0.567
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.702,
+   "weak_eye_forced": 0.798,
+   "forced_recruitment": 0.096,
+   "ai_peak_vs_traj_gap": 0.033
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.098,
+    "ai_traj": 0.263,
+    "peakL": 0.868,
+    "peakR": 0.713,
+    "excursion": 0.791,
+    "weaker": "right",
+    "n_frames": 265
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.025,
+    "ai_traj": 0.068,
+    "peakL": 0.738,
+    "peakR": 0.702,
+    "excursion": 0.72,
+    "weaker": "right",
+    "n_frames": 29
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.03,
+    "ai_traj": 0.063,
+    "peakL": 0.847,
+    "peakR": 0.798,
+    "excursion": 0.823,
+    "weaker": "right",
+    "n_frames": 29
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.061,
+    "ai_traj": 0.118,
+    "peakL": 0.754,
+    "peakR": 0.667,
+    "excursion": 0.71,
+    "weaker": "right",
+    "n_frames": 20
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.573,
+    "ai_traj": 0.58,
+    "peakL": 0.195,
+    "peakR": 0.053,
+    "excursion": 0.124,
+    "weaker": "right",
+    "n_frames": 34
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.019,
+    "ai_traj": 0.029,
+    "peakL": 0.83,
+    "peakR": 0.799,
+    "excursion": 0.814,
+    "weaker": "right",
+    "n_frames": 23
+   }
+  }
+ },
+ "20260305_FACES018": {
+  "brow_asym": 0.011,
+  "eye_asym": 0.189,
+  "oral_asym": 0.067,
+  "synkinesis": {
+   "oral_ocular_synk": 0.009,
+   "ocular_oral_synk": 0.421
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.373,
+   "weak_eye_forced": 0.611,
+   "forced_recruitment": 0.238,
+   "ai_peak_vs_traj_gap": 0.015
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.011,
+    "ai_traj": 0.053,
+    "peakL": 0.972,
+    "peakR": 0.951,
+    "excursion": 0.961,
+    "weaker": "right",
+    "n_frames": 26
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.252,
+    "ai_traj": 0.349,
+    "peakL": 0.373,
+    "peakR": 0.624,
+    "excursion": 0.498,
+    "weaker": "left",
+    "n_frames": 28
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.126,
+    "ai_traj": 0.141,
+    "peakL": 0.611,
+    "peakR": 0.787,
+    "excursion": 0.699,
+    "weaker": "left",
+    "n_frames": 28
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.009,
+    "ai_traj": 0.207,
+    "peakL": 0.203,
+    "peakR": 0.199,
+    "excursion": 0.201,
+    "weaker": "right",
+    "n_frames": 30
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.014,
+    "ai_traj": 0.042,
+    "peakL": 0.733,
+    "peakR": 0.713,
+    "excursion": 0.723,
+    "weaker": "right",
+    "n_frames": 26
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.178,
+    "ai_traj": 0.177,
+    "peakL": 0.22,
+    "peakR": 0.315,
+    "excursion": 0.267,
+    "weaker": "left",
+    "n_frames": 9
+   }
+  }
+ },
+ "20260305_MySlate_14": {
+  "brow_asym": 0.011,
+  "eye_asym": 0.189,
+  "oral_asym": 0.067,
+  "synkinesis": {
+   "oral_ocular_synk": 0.009,
+   "ocular_oral_synk": 0.421
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.373,
+   "weak_eye_forced": 0.611,
+   "forced_recruitment": 0.238,
+   "ai_peak_vs_traj_gap": 0.015
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.011,
+    "ai_traj": 0.053,
+    "peakL": 0.972,
+    "peakR": 0.951,
+    "excursion": 0.961,
+    "weaker": "right",
+    "n_frames": 26
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.252,
+    "ai_traj": 0.349,
+    "peakL": 0.373,
+    "peakR": 0.624,
+    "excursion": 0.498,
+    "weaker": "left",
+    "n_frames": 28
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.126,
+    "ai_traj": 0.141,
+    "peakL": 0.611,
+    "peakR": 0.787,
+    "excursion": 0.699,
+    "weaker": "left",
+    "n_frames": 28
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.009,
+    "ai_traj": 0.207,
+    "peakL": 0.203,
+    "peakR": 0.199,
+    "excursion": 0.201,
+    "weaker": "right",
+    "n_frames": 30
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.014,
+    "ai_traj": 0.042,
+    "peakL": 0.733,
+    "peakR": 0.713,
+    "excursion": 0.723,
+    "weaker": "right",
+    "n_frames": 26
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.178,
+    "ai_traj": 0.177,
+    "peakL": 0.22,
+    "peakR": 0.315,
+    "excursion": 0.267,
+    "weaker": "left",
+    "n_frames": 9
+   }
+  }
+ },
+ "20260313_FACES004": {
+  "brow_asym": 0.212,
+  "eye_asym": 0.106,
+  "oral_asym": 0.317,
+  "synkinesis": {
+   "oral_ocular_synk": 0.244,
+   "ocular_oral_synk": 0.213
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.622,
+   "weak_eye_forced": 0.624,
+   "forced_recruitment": 0.002,
+   "ai_peak_vs_traj_gap": 0.058
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.212,
+    "ai_traj": 0.12,
+    "peakL": 0.45,
+    "peakR": 0.693,
+    "excursion": 0.571,
+    "weaker": "left",
+    "n_frames": 167
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.09,
+    "ai_traj": 0.088,
+    "peakL": 0.745,
+    "peakR": 0.622,
+    "excursion": 0.684,
+    "weaker": "right",
+    "n_frames": 36
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.123,
+    "ai_traj": 0.181,
+    "peakL": 0.624,
+    "peakR": 0.798,
+    "excursion": 0.711,
+    "weaker": "left",
+    "n_frames": 32
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.056,
+    "ai_traj": 0.079,
+    "peakL": 0.67,
+    "peakR": 0.75,
+    "excursion": 0.71,
+    "weaker": "left",
+    "n_frames": 20
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.808,
+    "ai_traj": 0.833,
+    "peakL": 0.056,
+    "peakR": 0.006,
+    "excursion": 0.031,
+    "weaker": "right",
+    "n_frames": 29
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.086,
+    "ai_traj": 0.107,
+    "peakL": 0.673,
+    "peakR": 0.799,
+    "excursion": 0.736,
+    "weaker": "left",
+    "n_frames": 5
+   }
+  }
+ },
+ "20260313_FACES019": {
+  "brow_asym": null,
+  "eye_asym": 0.157,
+  "oral_asym": 0.09,
+  "synkinesis": {
+   "oral_ocular_synk": 0.044
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.305,
+   "weak_eye_forced": 0.426,
+   "forced_recruitment": 0.121,
+   "ai_peak_vs_traj_gap": 0.0
+  },
+  "actions": {
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.113,
+    "ai_traj": 0.17,
+    "peakL": 0.305,
+    "peakR": 0.383,
+    "excursion": 0.344,
+    "weaker": "left",
+    "n_frames": 2
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.09,
+    "ai_traj": 0.277,
+    "peakL": 0.004,
+    "peakR": 0.005,
+    "excursion": 0.004,
+    "weaker": "left",
+    "n_frames": 3
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.2,
+    "ai_traj": 0.2,
+    "peakL": 0.426,
+    "peakR": 0.64,
+    "excursion": 0.533,
+    "weaker": "left",
+    "n_frames": 2
+   }
+  }
+ },
+ "20260313_FACES020": {
+  "brow_asym": 0.09,
+  "eye_asym": 0.147,
+  "oral_asym": 0.171,
+  "synkinesis": {
+   "oral_ocular_synk": -0.371
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.529,
+   "weak_eye_forced": 0.489,
+   "forced_recruitment": -0.04,
+   "ai_peak_vs_traj_gap": 0.034
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.09,
+    "ai_traj": 0.093,
+    "peakL": 0.898,
+    "peakR": 0.75,
+    "excursion": 0.824,
+    "weaker": "right",
+    "n_frames": 144
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.181,
+    "ai_traj": 0.197,
+    "peakL": 0.764,
+    "peakR": 0.529,
+    "excursion": 0.647,
+    "weaker": "right",
+    "n_frames": 40
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.114,
+    "ai_traj": 0.08,
+    "peakL": 0.615,
+    "peakR": 0.489,
+    "excursion": 0.552,
+    "weaker": "right",
+    "n_frames": 32
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.332,
+    "ai_traj": 0.455,
+    "peakL": 0.033,
+    "peakR": 0.016,
+    "excursion": 0.024,
+    "weaker": "right",
+    "n_frames": 2
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.01,
+    "ai_traj": 0.042,
+    "peakL": 0.529,
+    "peakR": 0.519,
+    "excursion": 0.524,
+    "weaker": "right",
+    "n_frames": 10
+   }
+  }
+ },
+ "20260313_FACES021": {
+  "brow_asym": 0.007,
+  "eye_asym": 0.087,
+  "oral_asym": 0.154,
+  "synkinesis": {
+   "oral_ocular_synk": 0.014,
+   "ocular_oral_synk": 0.427
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.756,
+   "weak_eye_forced": 0.394,
+   "forced_recruitment": -0.362,
+   "ai_peak_vs_traj_gap": 0.023
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.007,
+    "ai_traj": 0.202,
+    "peakL": 0.935,
+    "peakR": 0.922,
+    "excursion": 0.929,
+    "weaker": "right",
+    "n_frames": 12
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.01,
+    "ai_traj": 0.026,
+    "peakL": 0.772,
+    "peakR": 0.756,
+    "excursion": 0.764,
+    "weaker": "right",
+    "n_frames": 28
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.417,
+    "ai_traj": 0.416,
+    "peakL": 0.01,
+    "peakR": 0.025,
+    "excursion": 0.017,
+    "weaker": "left",
+    "n_frames": 33
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.016,
+    "ai_traj": 0.08,
+    "peakL": 0.828,
+    "peakR": 0.803,
+    "excursion": 0.816,
+    "weaker": "right",
+    "n_frames": 19
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.164,
+    "ai_traj": 0.187,
+    "peakL": 0.394,
+    "peakR": 0.549,
+    "excursion": 0.472,
+    "weaker": "left",
+    "n_frames": 2
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.092,
+    "ai_traj": 0.085,
+    "peakL": 0.861,
+    "peakR": 0.716,
+    "excursion": 0.788,
+    "weaker": "right",
+    "n_frames": 33
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.092,
+    "ai_traj": 0.083,
+    "peakL": 0.861,
+    "peakR": 0.716,
+    "excursion": 0.788,
+    "weaker": "right",
+    "n_frames": 47
+   }
+  }
+ },
+ "20260313_MySlate_23": {
+  "brow_asym": 0.075,
+  "eye_asym": 0.073,
+  "oral_asym": 0.226,
+  "synkinesis": {
+   "oral_ocular_synk": 1.054,
+   "ocular_oral_synk": 1.839
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.725,
+   "weak_eye_forced": 0.712,
+   "forced_recruitment": -0.013,
+   "ai_peak_vs_traj_gap": 0.031
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.075,
+    "ai_traj": 0.102,
+    "peakL": 0.514,
+    "peakR": 0.597,
+    "excursion": 0.556,
+    "weaker": "left",
+    "n_frames": 24
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.05,
+    "ai_traj": 0.076,
+    "peakL": 0.801,
+    "peakR": 0.725,
+    "excursion": 0.763,
+    "weaker": "right",
+    "n_frames": 32
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.095,
+    "ai_traj": 0.126,
+    "peakL": 0.712,
+    "peakR": 0.862,
+    "excursion": 0.787,
+    "weaker": "left",
+    "n_frames": 26
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.015,
+    "ai_traj": 0.027,
+    "peakL": 0.696,
+    "peakR": 0.718,
+    "excursion": 0.707,
+    "weaker": "left",
+    "n_frames": 24
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.069,
+    "ai_traj": 0.069,
+    "peakL": 0.639,
+    "peakR": 0.733,
+    "excursion": 0.686,
+    "weaker": "left",
+    "n_frames": 20
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.595,
+    "ai_traj": 0.535,
+    "peakL": 0.053,
+    "peakR": 0.013,
+    "excursion": 0.033,
+    "weaker": "right",
+    "n_frames": 27
+   }
+  }
+ },
+ "20260313_MySlate_25": {
+  "brow_asym": 0.024,
+  "eye_asym": 0.039,
+  "oral_asym": 0.315,
+  "synkinesis": {
+   "oral_ocular_synk": 0.347,
+   "ocular_oral_synk": 0.443
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.649,
+   "weak_eye_forced": 0.713,
+   "forced_recruitment": 0.064,
+   "ai_peak_vs_traj_gap": 0.048
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.024,
+    "ai_traj": 0.129,
+    "peakL": 0.671,
+    "peakR": 0.64,
+    "excursion": 0.655,
+    "weaker": "right",
+    "n_frames": 244
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.044,
+    "ai_traj": 0.083,
+    "peakL": 0.709,
+    "peakR": 0.649,
+    "excursion": 0.679,
+    "weaker": "right",
+    "n_frames": 8
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.034,
+    "ai_traj": 0.082,
+    "peakL": 0.764,
+    "peakR": 0.713,
+    "excursion": 0.739,
+    "weaker": "right",
+    "n_frames": 20
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.903,
+    "ai_traj": 0.895,
+    "peakL": 0.206,
+    "peakR": 0.01,
+    "excursion": 0.108,
+    "weaker": "right",
+    "n_frames": 28
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.189,
+    "ai_traj": 0.148,
+    "peakL": 0.623,
+    "peakR": 0.426,
+    "excursion": 0.524,
+    "weaker": "right",
+    "n_frames": 5
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.123,
+    "ai_traj": 0.134,
+    "peakL": 0.378,
+    "peakR": 0.295,
+    "excursion": 0.336,
+    "weaker": "right",
+    "n_frames": 17
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.045,
+    "ai_traj": 0.195,
+    "peakL": 0.7,
+    "peakR": 0.639,
+    "excursion": 0.67,
+    "weaker": "right",
+    "n_frames": 24
+   }
+  }
+ },
+ "20260402_FACES024": {
+  "brow_asym": 0.024,
+  "eye_asym": 0.032,
+  "oral_asym": 0.259,
+  "synkinesis": {
+   "oral_ocular_synk": 0.004,
+   "ocular_oral_synk": 0.611
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.701,
+   "weak_eye_forced": 0.423,
+   "forced_recruitment": -0.278,
+   "ai_peak_vs_traj_gap": 0.01
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.024,
+    "ai_traj": 0.101,
+    "peakL": 0.677,
+    "peakR": 0.645,
+    "excursion": 0.661,
+    "weaker": "right",
+    "n_frames": 21
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.03,
+    "ai_traj": 0.032,
+    "peakL": 0.745,
+    "peakR": 0.701,
+    "excursion": 0.723,
+    "weaker": "right",
+    "n_frames": 37
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.034,
+    "ai_traj": 0.044,
+    "peakL": 0.423,
+    "peakR": 0.454,
+    "excursion": 0.438,
+    "weaker": "left",
+    "n_frames": 37
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.935,
+    "ai_traj": 0.956,
+    "peakL": 0.002,
+    "peakR": 0.071,
+    "excursion": 0.036,
+    "weaker": "left",
+    "n_frames": 12
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.002,
+    "ai_traj": 0.116,
+    "peakL": 0.561,
+    "peakR": 0.563,
+    "excursion": 0.562,
+    "weaker": "left",
+    "n_frames": 5
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.007,
+    "ai_traj": 0.012,
+    "peakL": 0.747,
+    "peakR": 0.757,
+    "excursion": 0.752,
+    "weaker": "left",
+    "n_frames": 23
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.093,
+    "ai_traj": 0.2,
+    "peakL": 0.621,
+    "peakR": 0.748,
+    "excursion": 0.684,
+    "weaker": "left",
+    "n_frames": 5
+   }
+  }
+ },
+ "20260410_MySlate_28": {
+  "brow_asym": 0.032,
+  "eye_asym": 0.013,
+  "oral_asym": 0.286,
+  "synkinesis": {
+   "oral_ocular_synk": 0.017,
+   "ocular_oral_synk": 0.468
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.784,
+   "weak_eye_forced": 0.703,
+   "forced_recruitment": -0.081,
+   "ai_peak_vs_traj_gap": 0.019
+  },
+  "actions": {
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.001,
+    "ai_traj": 0.02,
+    "peakL": 0.785,
+    "peakR": 0.784,
+    "excursion": 0.784,
+    "weaker": "right",
+    "n_frames": 31
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.024,
+    "ai_traj": 0.043,
+    "peakL": 0.703,
+    "peakR": 0.738,
+    "excursion": 0.72,
+    "weaker": "left",
+    "n_frames": 30
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.574,
+    "ai_traj": 0.595,
+    "peakL": 0.053,
+    "peakR": 0.197,
+    "excursion": 0.125,
+    "weaker": "left",
+    "n_frames": 26
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.071,
+    "ai_traj": 0.069,
+    "peakL": 0.737,
+    "peakR": 0.85,
+    "excursion": 0.793,
+    "weaker": "left",
+    "n_frames": 24
+   },
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.032,
+    "ai_traj": 0.212,
+    "peakL": 0.771,
+    "peakR": 0.723,
+    "excursion": 0.747,
+    "weaker": "right",
+    "n_frames": 5
+   },
+   "LowerTeethShow": {
+    "region": "oral",
+    "ai_peak": 0.243,
+    "ai_traj": 0.171,
+    "peakL": 0.255,
+    "peakR": 0.418,
+    "excursion": 0.336,
+    "weaker": "left",
+    "n_frames": 3
+   },
+   "ReanimatedSmile": {
+    "region": "oral",
+    "ai_peak": 0.255,
+    "ai_traj": 0.262,
+    "peakL": 0.252,
+    "peakR": 0.425,
+    "excursion": 0.338,
+    "weaker": "left",
+    "n_frames": 3
+   }
+  }
+ },
+ "20260414_MySlate_29": {
+  "brow_asym": 0.541,
+  "eye_asym": 0.043,
+  "oral_asym": 0.363,
+  "synkinesis": {
+   "oral_ocular_synk": 0.024,
+   "ocular_oral_synk": 0.446
+  },
+  "eye_dynamics": {
+   "weak_eye_gentle": 0.769,
+   "weak_eye_forced": 0.724,
+   "forced_recruitment": -0.045,
+   "ai_peak_vs_traj_gap": 0.029
+  },
+  "actions": {
+   "EyebrowRise": {
+    "region": "brow",
+    "ai_peak": 0.541,
+    "ai_traj": 0.623,
+    "peakL": 0.202,
+    "peakR": 0.678,
+    "excursion": 0.44,
+    "weaker": "left",
+    "n_frames": 15
+   },
+   "GentleEyeClosure": {
+    "region": "eye",
+    "ai_peak": 0.019,
+    "ai_traj": 0.053,
+    "peakL": 0.769,
+    "peakR": 0.8,
+    "excursion": 0.784,
+    "weaker": "left",
+    "n_frames": 19
+   },
+   "TightEyeSqueeze": {
+    "region": "eye",
+    "ai_peak": 0.067,
+    "ai_traj": 0.038,
+    "peakL": 0.829,
+    "peakR": 0.724,
+    "excursion": 0.777,
+    "weaker": "right",
+    "n_frames": 20
+   },
+   "LipPucker": {
+    "region": "oral",
+    "ai_peak": 0.723,
+    "ai_traj": 0.742,
+    "peakL": 0.021,
+    "peakR": 0.003,
+    "excursion": 0.012,
+    "weaker": "right",
+    "n_frames": 21
+   },
+   "RelaxedSmile": {
+    "region": "oral",
+    "ai_peak": 0.004,
+    "ai_traj": 0.034,
+    "peakL": 0.396,
+    "peakR": 0.398,
+    "excursion": 0.397,
+    "weaker": "left",
+    "n_frames": 17
+   }
+  }
+ }
+}
