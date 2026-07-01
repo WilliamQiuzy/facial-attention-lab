@@ -1,0 +1,5 @@
+{"experiments": [
+  {"name": "r3_mproj64",  "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 64},
+  {"name": "r3_mproj96",  "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 96},
+  {"name": "r3_mproj192", "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 192}
+]}

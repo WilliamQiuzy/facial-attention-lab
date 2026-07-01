@@ -1,0 +1,2 @@
+r1_asym_mlp	0.5800	0.0141	0.352	0.808	32	{"feat": "asym", "geo_encoder": "mlp"}
+r1_asym_cw	0.5502	0.0179	0.316	0.784	484	{"feat": "asym", "loss": "coral_cw"}

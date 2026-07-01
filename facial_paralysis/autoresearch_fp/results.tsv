@@ -1,2 +1,18 @@
 iter	metric	metric_sd	eyes	mouth	status	description
 0	0.5301	0.0082	0.293	0.767	baseline	v0 dual-stream BiGRU-attention + CORAL, faithful v2 reimpl
+1	0.5491	0.0225	0.311	0.787	logged	r1_default
+2	0.5824	0.0177	0.372	0.793	logged	r1_asym
+3	0.5461	0.0078	0.311	0.781	logged	r1_mlp
+4	0.5221	0.0035	0.262	0.782	logged	r1_cw
+5	0.5800	0.0141	0.352	0.808	logged	r1_asym_mlp
+6	0.5502	0.0179	0.316	0.784	logged	r1_asym_cw
+7	0.5178	0.0122	0.285	0.751	logged	r1_mlp_cw
+8	0.5694	0.0049	0.380	0.759	logged	r1_asym_mlp_cw
+9	0.5697	0.0107	0.357	0.783	logged	r2_gate
+10	0.5968	0.0167	0.497	0.697	logged	r2_mproj128
+11	0.5897	0.0147	0.372	0.807	logged	r2_trunk2_160
+12	0.5898	0.0119	0.395	0.784	logged	r2_ls10
+13	0.5898	0.0159	0.360	0.819	logged	r2_corn
+14	0.5857	0.0064	0.381	0.790	logged	r2_eyesw
+15	0.5815	0.0091	0.348	0.815	logged	r2_reg
+16	0.5154	0.0045	0.304	0.727	logged	r2_expected

@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r1_asym_mlp", "feat": "asym", "geo_encoder": "mlp"},
+  {"name": "r1_asym_cw", "feat": "asym", "loss": "coral_cw"}
+]}

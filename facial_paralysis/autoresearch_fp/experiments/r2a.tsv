@@ -1,0 +1,2 @@
+r2_gate	0.5697	0.0107	0.357	0.783	52	{"feat": "asym", "geo_encoder": "mlp", "fusion": "gate"}
+r2_mproj128	0.5968	0.0167	0.497	0.697	53	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128}

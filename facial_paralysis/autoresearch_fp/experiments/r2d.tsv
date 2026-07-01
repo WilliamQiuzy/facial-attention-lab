@@ -1,0 +1,2 @@
+r2_reg	0.5815	0.0091	0.348	0.815	52	{"feat": "asym", "geo_encoder": "mlp", "dropout": 0.25, "weight_decay": 0.06}
+r2_expected	0.5154	0.0045	0.304	0.727	48	{"feat": "asym", "geo_encoder": "mlp", "decode": "expected"}

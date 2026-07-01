@@ -1,0 +1,4 @@
+{"experiments": [
+  {"name": "r2_corn", "feat": "asym", "geo_encoder": "mlp", "loss": "corn"},
+  {"name": "r2_eyesw", "feat": "asym", "geo_encoder": "mlp", "lw_eyes": 0.6}
+]}
