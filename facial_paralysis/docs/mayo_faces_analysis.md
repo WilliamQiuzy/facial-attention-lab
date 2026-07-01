@@ -51,6 +51,31 @@ plus two eye-squeeze L-vs-R trajectories).
   ratio) would sharpen closure-velocity asymmetry and give publication-grade dynamics.
 - n=13, all palsy, no in-domain healthy controls → pilot/method demonstration.
 
+## 60fps EAR re-extraction (RunPod RTX 3090) + unsupervised model
+Two follow-ups requested:
+
+**Unsupervised severity/phenotype model** (`scripts/mayo_unsup_severity.py`,
+`outputs/mayo_eface/phenotype_map.png`): label-free 2-axis map (severity ×
+synkinesis) from the dynamic measures cleanly separates the canonical phenotypes —
+**flaccid/severe** (FACES019/020/018), **synkinetic** (MySlate_23, synk index 2.9),
+and **mild** (rest). A defensible triage ranking with zero labels.
+
+**60fps EAR** (`scripts/ear_clips.py` on a fresh RTX 3090 — A100 was GPU-locked;
+`scripts/ear_analyze.py`, `outputs/mayo_ear/`): re-extracted the eye/smile action
+windows at native 60fps with the MediaPipe FaceLandmarker → per-eye **EAR (eye
+aspect ratio)** trajectories. Gives the direct geometric closure signal:
+- **Closure asymmetry at max squeeze** (residual L/R EAR) ranks the cohort; the
+  known duplicate scores identically (0.711 both) ✓.
+- It **diverges from the 6fps blendshape eye-asymmetry** (Spearman ρ=+0.42, n.s.):
+  MySlate_6, FACES004, FACES006, FACES018 show strong EAR closure asymmetry the
+  ARKit blendshapes call ~symmetric (0.01–0.19). Since the web-stills model runs on
+  those blendshapes, **the direct EAR sees incomplete-closure asymmetry the model's
+  features miss** — visible as a sustained L-vs-R gap over the 3-s hold
+  (`ear_dynamics.png`, FACES004: weak eye holds EAR ~0.10 vs ~0.03).
+- Caveat: the residual-EAR ratio is sensitive near full closure; it is an
+  unvalidated proxy — clinician lagophthalmos/HB labels are needed to adjudicate.
+Pod was terminated after the run (~20 min RTX 3090).
+
 ## So what this changes about the "0.65 is too low" concern
 The web-stills 0.65 (eyes 0.45) was a **data-modality ceiling**, proven twice by the
 model search. The FACES script + Mayo video is exactly the modality that breaks it:
