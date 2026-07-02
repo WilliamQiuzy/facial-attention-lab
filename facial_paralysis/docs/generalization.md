@@ -77,3 +77,22 @@ stream on real dynamics — but it needs the gated data.
    real Mayo palsy-detection metric.
 5. **HB labels** on the highest-disagreement takes (`outputs/mayo_active_learning.json`)
    → the one true unlock for a supervised, validated clinical severity model.
+
+## Binary detection on Mayo (the free label: all Mayo = palsy)
+`scripts/mayo_binary.py`. All 14 Mayo patients are binary-positive, so we can measure
+recall + saturation (no in-domain negatives exist).
+
+| model | Mayo P(palsy) | web ref healthy/palsy | verdict |
+|---|---|---|---|
+| champion (MARLIN) | mean 0.95, [0.94,0.95] | 0.07 / 0.94 | flags 13/13 but **SATURATED** |
+| geometry-only | mean 0.60, [0.32,0.94] | 0.13 / 0.89 | flags 9/13, not saturated |
+
+- The MARLIN detector discriminates **perfectly on web** (0.07 vs 0.94) but **saturates on
+  Mayo** (everyone ≈0.95) — the domain shift pushes all Mayo appearance to the palsy side.
+  "13/13 flagged" is trivial 100% recall; we cannot verify it wouldn't also flag a HEALTHY
+  Mayo face (none exist to test). The no-in-domain-negatives trap (Run #4).
+- Unlike severity, binary detection is grosser/appearance-linked, so **MARLIN detection may
+  actually transfer once in-domain healthy controls exist** — that's the unlock for binary
+  (in-domain NEGATIVES, not more patient labels).
+- MARLIN was never fine-tuned (always frozen); fine-tuning wouldn't rescue Mayo severity
+  either (no severity labels + appearance≠asymmetry), only in-domain labels/controls would.
