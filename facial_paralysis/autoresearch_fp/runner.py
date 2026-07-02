@@ -43,6 +43,7 @@ DEFAULT = dict(
     temporal_hidden=64, temporal_out=64,
     trunk_hidden=96, trunk_layers=1, dropout=0.1, pool="attention",
     lr=5e-4, weight_decay=3e-2, batch_size=128, warmup=0,
+    marlin_noise=0.0, geo_noise=0.0,
     epochs=P.MAX_EPOCHS, eval_every=4,
 )
 LW = {"binary": 0.5, "eyes": 0.3, "mouth": 0.3}
@@ -229,6 +230,10 @@ class Net(nn.Module):
         mp_seq = engineer(mp_seq, self.cfg)
         if self.cfg.get("drop_marlin"):
             marlin = torch.zeros_like(marlin)            # geometry-only: ablate appearance (domain-confound)
+        elif self.training and self.cfg.get("marlin_noise", 0.0) > 0:
+            marlin = marlin + torch.randn_like(marlin) * self.cfg["marlin_noise"]  # augmentation: fight appearance-overfit
+        if self.training and self.cfg.get("geo_noise", 0.0) > 0:
+            mp_seq = mp_seq + torch.randn_like(mp_seq) * self.cfg["geo_noise"]
         g = self.geos[task](mp_seq, mp_mask) if self.per_region_geo else self.geo(mp_seq, mp_mask)
         if self.pr_marlin:
             return self.trunks[task](torch.cat([self.mnorm[task](marlin), g], -1))

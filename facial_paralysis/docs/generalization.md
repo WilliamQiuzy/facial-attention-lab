@@ -44,6 +44,26 @@ needs HB labels to confirm. Mouth doesn't transfer even geometry-only (open prob
   forced recruitment — `docs/mayo_faces_analysis.md`), which is domain-invariant by
   construction, not the web-trained learned severity.
 
+## No-label interventions tried (2026-07-02)
+
+**#3 Feature-noise augmentation** (`scripts/aug_generalization.py`) — regularizer to
+fight appearance-overfit. Improves the WORST-case cross-dataset direction (YFP→FNP eyes
+0.205→0.297, +45%; mouth 0.53→0.55) but costs the best-case (FNP→YFP eyes 0.56→0.44).
+Net: a **robustness/peak tradeoff** — use noise if worst-case transfer matters, not a
+free win.
+
+**#1 CORAL domain adaptation** (`scripts/mayo_coral.py`) — align web↔Mayo feature
+covariance (Mayo unlabeled) to make the FULL (MARLIN) model transfer without dropping
+appearance. **NEGATIVE:** eyes stays ≈-0.05, mouth ≈-0.15 across λ∈{0,1,10}. Covariance
+alignment can't fix the head's reliance on appearance directions (and n=13 target is
+tiny). **Confirms: for Mayo you must drop MARLIN (geometry-only), not align it.**
+
+**#2 AU-dynamics pretraining pipeline** (`scripts/au_pretrain.py`) — BUILT + verified on
+synthetic AU (masked-recon MSE 0.27→0.09, 20 L/R pairs match the 72-d layout). Ready to
+pretrain the temporal encoder the moment DISFA/BP4D land (loaders in
+`au_intensity_adapter.py`). This is the main lever that trains the geometric/temporal
+stream on real dynamics — but it needs the gated data.
+
 ## What can still improve things WITHOUT HB labels (ranked)
 1. **Augmentation / regularization** (feature noise, mixup on cached features) → push
    cross-dataset web generalization further. Local, fast. *(I can run this.)*
