@@ -49,3 +49,14 @@ Turns "we need more data" into numbers:
 So the concrete asks are: ~35–50 patients to establish transfer, and ~40–60 HB labels for a
 usable severity-accuracy number. n=13 is far below both — the inconclusiveness is a sample-size
 problem, definitively not a modeling one.
+
+## Champion (0.668) error analysis + calibration (scripts/champion_analysis.py, calibrate.py)
+- **Mouth is reliable:** acc 0.76, Normal/Strong recall ~0.80, well-calibrated (ECE 0.09).
+  Rare Slight class (n=41) is the weak spot (recall 0.39).
+- **Eyes is the hard region:** acc 0.61, and BADLY calibrated (ECE 0.29 — under-confident;
+  a bin predicting P=0.67 has empirical 0.99). The majority Slight class (recall 0.56) is
+  confused with Normal/Strong — the static-still ambiguity again.
+- **Temperature scaling** (fit on disjoint cal split, tested on held-out): eyes T≈0.30 →
+  ECE 0.29→0.21; mouth T≈0.60 → 0.10→0.08. Both improve; mouth becomes good, **eyes stays
+  poorly calibrated (0.21) even after** — recalibration helps but eyes needs better
+  features/data, not just scaling. Apply these T's before any probabilistic use.
