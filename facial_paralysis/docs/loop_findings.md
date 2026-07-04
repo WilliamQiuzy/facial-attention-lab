@@ -82,3 +82,15 @@ So "drop MARLIN for Mayo" hurts eyes (which needs it on web) but not mouth (whic
 used it) — exactly matching the geometry-only results and the transfer pattern. The
 appearance-vs-asymmetry thesis is now confirmed from web QWK, cross-modality transfer,
 AND direct feature attribution.
+
+## Champion per-source breakdown (scripts/per_source.py)
+Region QWK by web source (ensemble 3-seed):
+
+| | FNP | YFP |
+|---|---|---|
+| eyes | 0.257 (n=91) | 0.521 (n=394) |
+| mouth | 0.721 (n=98) | 0.763 (n=394) |
+
+The weakest cell is **FNP eyes (0.26)** — web-scraped still eye crops with noisier labels;
+YFP (per-subject) is handled better everywhere, mouth is good on both. Matches the
+cross-dataset result (YFP→FNP eyes was the hardest transfer direction).
