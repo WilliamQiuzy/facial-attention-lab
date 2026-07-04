@@ -1,0 +1,36 @@
+{
+ "experiments": [
+  {
+   "name": "abl_trunk1",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.05,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 256,
+    "mouth": 768,
+    "binary": 256
+   },
+   "trunk_layers": 1
+  },
+  {
+   "name": "abl_gru",
+   "feat": "asym",
+   "geo_encoder": "gru",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.05,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 256,
+    "mouth": 768,
+    "binary": 256
+   },
+   "trunk_layers": 2
+  }
+ ]
+}

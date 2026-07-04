@@ -1,0 +1,2 @@
+abl_ls0	0.6544	0.0056	0.473	0.836	45	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.0, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}
+abl_eyes128	0.6453	0.0171	0.489	0.801	42	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "trunk_layers": 2}

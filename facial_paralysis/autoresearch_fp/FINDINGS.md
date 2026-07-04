@@ -87,3 +87,18 @@ overlap, so real not noise. The eyes head benefits from more MARLIN capacity + a
 trunk on web. Neighborhood (eyes 320/384/512, trunk 3, ls/batch variants) confirmed 256+deep
 is the local optimum. This is the new `best_config.json`. NB: it does not change any Mayo
 conclusion — web models still don't transfer (a better web model is still a web model).
+
+## Ablation table (champion 0.661 3-seed; remove one component)
+| removed | QWK | Δ | interpretation |
+|---|---|---|---|
+| — (champion) | 0.661 | — | |
+| per-region decoupling → shared geo | 0.603 | **-0.058** | the single most important design choice |
+| engineered asym features → raw | 0.619 | **-0.043** | nonlinear |L−R| invariants matter a lot |
+| MLP → GRU | 0.643 | -0.018 | temporal encoder is dead weight on stills |
+| eyes MARLIN 256 → 128 (v2 gain) | 0.645 | -0.016 | eyes head wants more MARLIN capacity |
+| deeper trunk → 1 layer | 0.647 | -0.014 | |
+| CORN → CORAL loss | 0.654 | -0.008 | |
+| label smoothing → 0 | 0.654 | -0.007 | |
+
+Confirms the design narrative: per-region decoupling + engineered asymmetry are the two
+substantive wins; everything else is small.
