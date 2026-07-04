@@ -96,3 +96,14 @@ recall + saturation (no in-domain negatives exist).
   (in-domain NEGATIVES, not more patient labels).
 - MARLIN was never fine-tuned (always frozen); fine-tuning wouldn't rescue Mayo severity
   either (no severity labels + appearance≠asymmetry), only in-domain labels/controls would.
+
+## Generalization-objective search (2026-07-04): web-gen and Mayo-transfer CONFLICT
+Re-ran autoresearch with cross-dataset web QWK as the objective (`autoresearch_fp/xsearch.py`).
+Nothing beats champion beyond noise (best x_reg 0.508 ≈ champion 0.508); crucially,
+**dropping MARLIN HURTS web cross-dataset generalization** (geometry-only 0.478 vs champion
+0.508) even though it HELPS Mayo cross-modality transfer. So MARLIN aids within-modality
+generalization but blocks cross-modality transfer — the two objectives have opposite optima,
+and the right model is modality-specific: champion (with MARLIN) for the web benchmark,
+geometry-only for Mayo deployment. Also: mouth transfers to Mayo (+0.26) only against the
+direct 60fps mouth-corner target, not the blendshape oral_asym (which disagrees, rho -0.21) —
+so earlier "mouth 0.00" was partly a noisy-target artifact.

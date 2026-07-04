@@ -1,0 +1,37 @@
+{
+ "experiments": [
+  {
+   "name": "x_geom_gn",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.05,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   },
+   "drop_marlin": true,
+   "geo_noise": 0.05
+  },
+  {
+   "name": "x_geom_wd",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.1,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   },
+   "drop_marlin": true
+  }
+ ]
+}

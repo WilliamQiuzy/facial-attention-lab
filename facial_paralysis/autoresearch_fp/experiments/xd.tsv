@@ -1,0 +1,2 @@
+x_geom_gn	0.4785	0.33/0.75/0.28/0.55	28	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true, "geo_noise": 0.05}
+x_geom_wd	0.4772	0.35/0.75/0.26/0.56	24	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.1, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true}

@@ -1,0 +1,35 @@
+{
+ "experiments": [
+  {
+   "name": "x_reg",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.35,
+   "weight_decay": 0.08,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   }
+  },
+  {
+   "name": "x_geom_reg",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.35,
+   "weight_decay": 0.08,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   },
+   "drop_marlin": true
+  }
+ ]
+}
