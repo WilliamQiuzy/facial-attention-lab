@@ -20,12 +20,13 @@ One authoritative narrative over the scattered docs (`model_design.md`,
 ## 1. Web model (the part that works, in-domain)
 - Dual-stream: frozen MARLIN video encoder (768-d appearance) ⊕ MediaPipe geometry
   (52 blendshapes + L/R asymmetry). Only small heads are trained (MARLIN always frozen).
-- **autoresearch-fp** (`autoresearch_fp/`, 61 model versions, faithful karpathy-style
-  loop with a fixed 3-seed QWK metric): champion **0.668** (v2: eyes-MARLIN 256 + deeper trunk; was 0.649) (eyes 0.47, mouth 0.83),
-  up from a 0.53 baseline. Key wins: engineered nonlinear asymmetry features, static MLP
-  over the dead GRU (metric data is single-frame), per-region MARLIN de-emphasis, CORN
-  ordinal loss. It also generalizes cross-dataset (FNP↔YFP) better than baseline.
-- Verdict: config/architecture space is exhausted; the web ceiling is data, not model.
+- **autoresearch-fp** (`autoresearch_fp/`, ~100 model versions, faithful karpathy-style
+  loop with a fixed 3-seed QWK metric): champion **0.668** (eyes 0.49, mouth 0.83), up
+  from a 0.53 baseline. Key wins: engineered nonlinear asymmetry features, static MLP over
+  the dead GRU (metric data is single-frame), per-region MARLIN treatment (eyes width 256,
+  mouth full 768) + deeper trunk, CORN ordinal loss. Generalizes cross-dataset (FNP↔YFP)
+  better than baseline.
+- Verdict: after ~100 configs the web plateau is ~0.67; the ceiling is data, not model.
 
 ## 2. The FACES protocol unlocked dynamic, label-free clinical measures
 - The 8-action battery (repose, brow, gentle+forced eye closure, smile, pucker,
