@@ -39,3 +39,13 @@ either (a) HB labels (even ~10-14) to anchor accuracy, or (b) more patients + in
 healthy controls to get the sample size where these CIs close. Every no-label modeling
 lever we tried (CORAL, augmentation, geometry-only, generalization-objective search) is
 either negative or unverifiable at this n. **Data is the only remaining lever, full stop.**
+
+## Power analysis — how much data closes the gap (`scripts/power_analysis.py`)
+Turns "we need more data" into numbers:
+- **Detect a real severity→clinical transfer (80% power):** rho=0.5 → 34 patients,
+  rho=0.4 → 52, rho=0.3 → 94. At n=13, power to detect even rho=0.5 is 37%.
+- **Trustworthy HB-accuracy (QWK ±0.10):** ~40–60 HB-labeled takes (n=14 gives ±0.24, too wide).
+
+So the concrete asks are: ~35–50 patients to establish transfer, and ~40–60 HB labels for a
+usable severity-accuracy number. n=13 is far below both — the inconclusiveness is a sample-size
+problem, definitively not a modeling one.
