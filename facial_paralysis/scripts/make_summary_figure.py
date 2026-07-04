@@ -17,7 +17,7 @@ labels = ["v0\nbaseline", "asym\n+mlp", "+MARLIN\nproj", "+CORN", "per-region\nt
 vals = [0.530, 0.580, 0.597, 0.610, 0.625, 0.648]
 ax[0, 0].plot(range(len(vals)), vals, "-o", color="#1f77b4", lw=2, ms=8)
 ax[0, 0].set_xticks(range(len(vals))); ax[0, 0].set_xticklabels(labels, fontsize=8)
-ax[0, 0].set_ylabel("web region QWK"); ax[0, 0].set_title("1. autoresearch found the web ceiling (61 models)")
+ax[0, 0].set_ylabel("web region QWK"); ax[0, 0].set_title("1. autoresearch found the web ceiling (~100 models)")
 ax[0, 0].axhline(0.649, ls=":", color="gray"); ax[0, 0].set_ylim(0.50, 0.68); ax[0, 0].grid(alpha=0.3)
 ax[0, 0].annotate("plateau: ceiling is DATA,\nnot architecture", (4, 0.60), fontsize=9, color="#333")
 
