@@ -1,0 +1,35 @@
+{
+ "experiments": [
+  {
+   "name": "z_deep3_champ",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.05,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   },
+   "trunk_layers": 3
+  },
+  {
+   "name": "z_eyes192",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.05,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 192,
+    "mouth": 768,
+    "binary": 256
+   }
+  }
+ ]
+}

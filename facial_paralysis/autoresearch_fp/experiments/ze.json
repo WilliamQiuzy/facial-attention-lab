@@ -1,0 +1,36 @@
+{
+ "experiments": [
+  {
+   "name": "z_gn0.03",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.05,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   },
+   "geo_noise": 0.03
+  },
+  {
+   "name": "z_lr3e4_wd06",
+   "feat": "asym",
+   "geo_encoder": "mlp",
+   "loss": "corn",
+   "ls": 0.1,
+   "dropout": 0.2,
+   "weight_decay": 0.06,
+   "per_region_geo": true,
+   "pr_marlin": {
+    "eyes": 128,
+    "mouth": 768,
+    "binary": 256
+   },
+   "lr": 0.0003
+  }
+ ]
+}
