@@ -60,3 +60,25 @@ problem, definitively not a modeling one.
   ECE 0.29→0.21; mouth T≈0.60 → 0.10→0.08. Both improve; mouth becomes good, **eyes stays
   poorly calibrated (0.21) even after** — recalibration helps but eyes needs better
   features/data, not just scaling. Apply these T's before any probabilistic use.
+
+## Feature importance — the mechanism, at the feature level (scripts/feature_importance.py)
+Permutation importance (region-QWK drop when an input group is scrambled):
+
+| group | eyes | mouth |
+|---|---|---|
+| MARLIN appearance (768) | +0.134 | **-0.052** |
+| raw blendshapes [:52] | +0.156 | +0.217 |
+| L/R asymmetry deltas [52:72] | +0.096 | **+0.552** |
+
+This mechanistically explains the whole generalization story at the feature level:
+- **Mouth severity is driven almost entirely by the geometric L/R asymmetry deltas
+  (0.552 drop); MARLIN is useless-to-harmful (-0.052).** → mouth is strong (0.83),
+  MARLIN-independent, and rides a domain-INVARIANT signal.
+- **Eyes genuinely relies on MARLIN appearance (0.134 drop).** → eyes is weak
+  geometry-only and does NOT transfer, because it leans on the domain-CONFOUNDED
+  appearance stream.
+
+So "drop MARLIN for Mayo" hurts eyes (which needs it on web) but not mouth (which never
+used it) — exactly matching the geometry-only results and the transfer pattern. The
+appearance-vs-asymmetry thesis is now confirmed from web QWK, cross-modality transfer,
+AND direct feature attribution.
