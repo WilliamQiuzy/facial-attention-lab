@@ -48,6 +48,10 @@ One authoritative narrative over the scattered docs (`model_design.md`,
 - MARLIN helps within-modality (web) generalization but blocks cross-modality (Mayo)
   transfer — opposite optima; the deployment model is geometry-only (`deploy_config.json`,
   web QWK 0.577; mouth 0.86 strong, eyes 0.29 weak without MARLIN/dynamics).
+- **Mechanism (permutation importance):** mouth severity is driven almost entirely by the
+  geometric L/R asymmetry deltas (QWK drop 0.55) and MARLIN is useless-to-harmful for it
+  (-0.05); eyes genuinely relies on MARLIN (0.13). This is *why* mouth transfers/is
+  MARLIN-free and eyes doesn't — confirmed from web QWK, transfer, AND feature attribution.
 - Even the label-free measures have limited per-patient reliability (side-consistency
   0.77; blendshape-vs-EAR weaker-eye agreement 8/14) — robust only for clear/extreme cases.
 
