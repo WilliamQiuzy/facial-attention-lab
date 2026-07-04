@@ -1,0 +1,2 @@
+w_ls15	0.6522	0.0096	0.476	0.829	46	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.15, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}
+w_ls05	0.6547	0.0057	0.475	0.834	47	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.05, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}

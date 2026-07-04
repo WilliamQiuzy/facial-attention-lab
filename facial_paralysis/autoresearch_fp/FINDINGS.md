@@ -78,3 +78,12 @@ KMP_DUPLICATE_LIB_OK=TRUE python3 autoresearch_fp/runner.py autoresearch_fp/best
 # full logbook: autoresearch_fp/results.tsv (61 rows, ranked)
 # add an idea: drop a JSON config in experiments/, run search.py
 ```
+
+## Update (2026-07-04 loop): v2 champion 0.668 (+0.02, verified)
+A broad final sweep (12 novel configs beyond the original 61) + neighborhood search found
+a genuine improvement over the 0.649 champion: **`pr_marlin eyes:256` (was 128) +
+`trunk_layers:2`** → **0.668 ± 0.009** (5-seed), vs old 0.648 ± 0.002 — seed ranges barely
+overlap, so real not noise. The eyes head benefits from more MARLIN capacity + a deeper
+trunk on web. Neighborhood (eyes 320/384/512, trunk 3, ls/batch variants) confirmed 256+deep
+is the local optimum. This is the new `best_config.json`. NB: it does not change any Mayo
+conclusion — web models still don't transfer (a better web model is still a web model).
