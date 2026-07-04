@@ -21,7 +21,7 @@ One authoritative narrative over the scattered docs (`model_design.md`,
 - Dual-stream: frozen MARLIN video encoder (768-d appearance) ⊕ MediaPipe geometry
   (52 blendshapes + L/R asymmetry). Only small heads are trained (MARLIN always frozen).
 - **autoresearch-fp** (`autoresearch_fp/`, 61 model versions, faithful karpathy-style
-  loop with a fixed 3-seed QWK metric): champion **0.649** (eyes 0.47, mouth 0.83),
+  loop with a fixed 3-seed QWK metric): champion **0.668** (v2: eyes-MARLIN 256 + deeper trunk; was 0.649) (eyes 0.47, mouth 0.83),
   up from a 0.53 baseline. Key wins: engineered nonlinear asymmetry features, static MLP
   over the dead GRU (metric data is single-frame), per-region MARLIN de-emphasis, CORN
   ordinal loss. It also generalizes cross-dataset (FNP↔YFP) better than baseline.
