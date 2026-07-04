@@ -1,0 +1,2 @@
+g_deploy	0.5598	0.0153	0.293	0.826	41	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true}
+g_gru	0.5420	0.0096	0.243	0.841	298	{"feat": "asym", "geo_encoder": "gru", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true}

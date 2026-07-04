@@ -1,0 +1,2 @@
+g_deep_t160	0.5685	0.0086	0.296	0.841	49	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true, "trunk_layers": 2, "trunk_hidden": 160}
+g_deep_wd03	0.5697	0.0087	0.282	0.858	42	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.05, "dropout": 0.2, "weight_decay": 0.03, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true, "trunk_layers": 2}

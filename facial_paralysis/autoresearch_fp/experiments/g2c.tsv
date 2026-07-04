@@ -1,0 +1,2 @@
+g_deep_gn	0.5773	0.0041	0.302	0.852	72	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true, "trunk_layers": 2, "geo_noise": 0.05}
+g_deep_coral_t160	0.5712	0.0081	0.304	0.839	34	{"feat": "asym", "geo_encoder": "mlp", "loss": "coral", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "drop_marlin": true, "trunk_layers": 2, "trunk_hidden": 160}
