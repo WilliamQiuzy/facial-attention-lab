@@ -107,3 +107,21 @@ and the right model is modality-specific: champion (with MARLIN) for the web ben
 geometry-only for Mayo deployment. Also: mouth transfers to Mayo (+0.26) only against the
 direct 60fps mouth-corner target, not the blendshape oral_asym (which disagrees, rho -0.21) —
 so earlier "mouth 0.00" was partly a noisy-target artifact.
+
+## CORRECTION (2026-07-04, bootstrap rigor): learned transfer is NOT established
+`scripts/mayo_transfer_robust.py`. Re-tested transfer against INDEPENDENT direct-geometric
+targets (EAR closure from landmarks for eyes, 60fps corner for mouth) with bootstrap 95% CIs:
+
+| model | eyes rho [95% CI] | mouth rho [95% CI] | combined |
+|---|---|---|---|
+| champion (MARLIN) | -0.42 [-0.85,+0.23] | +0.03 [-0.70,+0.89] | -0.23 [-0.64,+0.30] |
+| geometry-only | +0.05 [-0.55,+0.63] | +0.26 [-0.56,+0.90] | +0.13 [-0.36,+0.56] |
+
+The earlier geometry-only eyes **+0.48 was against the blendshape `eye_asym`, which overlaps
+the model's own blendshape inputs (partial circularity)**. Against the INDEPENDENT EAR target
+it collapses to +0.05, and every CI crosses zero. Honest conclusion: **at n=13 we cannot
+establish that the learned severity model transfers to Mayo.** The trustworthy Mayo tool is
+therefore the DIRECT label-free measurements (EAR closure / asymmetry / synkinesis /
+recruitment) — which are measurements, not model predictions — not the learned severity.
+The `learned_severity_geom` column in the scorecard is exploratory only. This also means we
+need HB labels not just for supervised accuracy but even to VALIDATE any transfer claim.
