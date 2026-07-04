@@ -20,6 +20,8 @@ ear = json.loads((ROOT / "outputs/mayo_ear/ear_dynamics.json").read_text())
 print("1) CROSS-ACTION SIDE-CONSISTENCY (is the weaker side stable within a patient?)")
 consist = []
 for take, r in ef.items():
+    if take.endswith("MySlate_14"):        # FACES018 duplicate (same recording) — count once
+        continue
     pid = take.split("_", 1)[1]
     sides = [a["weaker"] for a in r["actions"].values() if a.get("weaker")]
     if len(sides) < 2:
@@ -35,6 +37,8 @@ print("2) CROSS-MEASURE AGREEMENT on the eye (independent methods):")
 # blendshape eye weaker (from TightEyeSqueeze action) vs EAR-closure weaker
 agree = tot = 0
 for take, r in ef.items():
+    if take.endswith("MySlate_14"):        # duplicate — count once
+        continue
     pid = take.split("_", 1)[1]
     bs_eye = r["actions"].get("TightEyeSqueeze", {}).get("weaker")
     ear_eye = ear.get(pid, {}).get("TightEyeSqueeze", {}).get("weaker")

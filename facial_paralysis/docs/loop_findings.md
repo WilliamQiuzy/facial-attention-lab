@@ -16,9 +16,9 @@ transfer nor, at the per-patient level, the label-free measurements themselves.
    geometry-only mouth is +0.26 — but also with a CI crossing zero. (`mouth_corner.py`,
    `mouth_transfer.py`)
 3. **The label-free measurements have limited per-patient reliability.**
-   (`reliability.py`) Cross-action side-consistency mean 0.77 (only 5/14 patients fully
+   (`reliability.py`) Cross-action side-consistency mean 0.79 (only 5/13 patients fully
    consistent on which side is weaker); blendshape-vs-EAR agreement on the weaker eye is
-   8/14 (57%). Extreme cases (MySlate_6, synkinetic MySlate_23) are robust; borderline
+   7/13 (54%, ~chance). Extreme cases (MySlate_6, synkinetic MySlate_23) are robust; borderline
    cases are noisy / method-dependent. Part of the blendshape-vs-EAR disagreement is real
    (muscle *activation* vs geometric *closure* are different constructs), but it means a
    single "weaker side / severity" summary per patient is not yet reliable.
