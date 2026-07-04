@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "outputs" / "summary_figure.png"
-fig, ax = plt.subplots(2, 2, figsize=(14, 9))
+fig, axes = plt.subplots(2, 3, figsize=(20, 9))
+ax = axes  # 2x3 grid
 
 # Panel 1: autoresearch trajectory (web region-QWK)
 labels = ["v0\nbaseline", "asym\n+mlp", "+MARLIN\nproj", "+CORN", "per-region\ntrunks", "decoupled\n(champion)"]
@@ -51,8 +52,41 @@ ax[1, 1].set_xlabel("true transfer strength (rho)"); ax[1, 1].set_ylabel("patien
 ax[1, 1].set_title("4. to prove transfer: ~35-50 patients (or ~40-60 HB labels)")
 ax[1, 1].set_ylim(0, 110); ax[1, 1].grid(alpha=0.3)
 
+# Panel 5: feature-importance mechanism
+grp = ["MARLIN\n(appearance)", "blendshapes", "asym\ndeltas"]
+eyes_imp = [0.134, 0.156, 0.096]; mouth_imp = [-0.052, 0.217, 0.552]
+xx = np.arange(3); w = 0.38
+ax[0, 2].bar(xx - w / 2, eyes_imp, w, label="eyes", color="#1f77b4")
+ax[0, 2].bar(xx + w / 2, mouth_imp, w, label="mouth", color="#d62728")
+ax[0, 2].axhline(0, color="k", lw=0.8); ax[0, 2].set_xticks(xx); ax[0, 2].set_xticklabels(grp, fontsize=8)
+ax[0, 2].set_ylabel("QWK drop when scrambled (importance)")
+ax[0, 2].set_title("5. mechanism: mouth rides ASYMMETRY,\nMARLIN useless-harmful for it; eyes needs MARLIN")
+ax[0, 2].legend(fontsize=9); ax[0, 2].grid(alpha=0.3)
+
+# Panel 6: bottom line text
+ax[1, 2].axis("off")
+ax[1, 2].text(0.0, 1.0, "Bottom line", fontsize=13, fontweight="bold", va="top")
+lines = [
+    "• Web model optimized to 0.668 QWK (~100 configs, ablated,",
+    "  feature-attributed). Ceiling is DATA, not model.",
+    "• Web→Mayo transfer is NOT establishable at n=13 (CIs cross 0).",
+    "• MARLIN appearance = domain-confound; geometric L/R asymmetry",
+    "  is the domain-invariant signal (drives mouth entirely).",
+    "• Deployable now: label-free scorecard (asymmetry / EAR-lagophthalmos",
+    "  / synkinesis) for triage of CLEAR cases — not a validated grade.",
+    "",
+    "Data asks (quantified):",
+    "  1. in-domain healthy controls  → trustworthy detector",
+    "  2. ~40–60 HB labels            → usable accuracy CI",
+    "  3. ~35–50 patients             → power to prove transfer",
+    "  4. DISFA/BP4D (AU dynamics)    → temporal-stream pretraining",
+]
+for i, ln in enumerate(lines):
+    ax[1, 2].text(0.0, 0.90 - i * 0.075, ln, fontsize=9, va="top",
+                  family="monospace" if ln.startswith("  ") else None)
+
 fig.suptitle("Facial-palsy on Mayo: strong web model, real dynamic measures, but transfer is data-limited (n=13)",
-             fontsize=13, fontweight="bold")
+             fontsize=14, fontweight="bold")
 fig.tight_layout(rect=[0, 0, 1, 0.97])
 fig.savefig(OUT, dpi=130)
 print("wrote", OUT)
