@@ -15,7 +15,8 @@ framing as `docs/training_runs.md`).
 |---|---|---|---|---|
 | **v0 baseline** (BiGRU-attention ⊕ MARLIN, CORAL) | 0.530 | 0.293 | 0.767 | faithful v2 reimpl |
 | GRU-baseline analog (raw feat, all data) | 0.549 | 0.311 | 0.787 | closest to Run #17 v2 recipe, in-harness |
-| **champion** (`best_config.json`) | **0.649** | **0.472** | **0.826** | sd 0.003 |
+| **champion v1** (region-decoupled) | 0.649 | 0.472 | 0.826 | the core redesign |
+| **champion v2** (`best_config.json`) | **0.668** | **0.489** | **0.833** | +eyes-MARLIN 256 + deeper trunk (5-seed ±0.009); see Update below |
 
 **Within this fixed harness the search improved the model +0.119 over v0 (+22%),
 and +0.100 over the GRU-baseline analog (+18%).** The gain is concentrated where
