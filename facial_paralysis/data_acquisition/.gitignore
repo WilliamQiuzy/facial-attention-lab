@@ -1,0 +1,8 @@
+# raw scraped patient media (privacy/consent) + large weights — do NOT commit
+youtube/clips/
+youtube/faces/
+CFCPalsy/pretrained_models/
+CFCPalsy/
+*.mp4
+*.ckpt
+*.part
