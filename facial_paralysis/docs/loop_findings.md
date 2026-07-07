@@ -147,3 +147,18 @@ duplicate take; gentle-vs-forced eye provocations consistent (std 0.066); time-l
 measure agrees with the crude eface synk (rho +0.67) but adds specificity.
 → outputs/mayo_eface/synkinesis.json. This is a candidate standalone paper (objective
 synkinesis quantification), label-free by construction.
+
+## Direction #4: DEPTH decompression BLOCKER SOLVED (scripts/depth_decode.py)
+The Oodle-Kraken depth (`depth_data.bin`), previously documented as needing the proprietary
+Oodle SDK, is now **decompressable with the open-source ooz** (pre-built `ooz/liboodle.dylib`,
+called via ctypes from **arm64** /usr/bin/python3 — anaconda python is x86_64 and can't load it).
+- Container cracked: record 0x02 = file header (intrinsics JSON, PixelSize 0.001, iPhone15,4),
+  records 0x05 = per-frame depth; each = [0x05][15-char ts][16-B sub-header: compressed size at
+  [12:16]][Kraken block]. ~1000 frames/take, decompress to exactly **460800 B = 640×360×2**
+  (true size confirmed: Kraken returns 460800, fails on larger buffers).
+- STATUS: decompression solved + all frames decode. REMAINING: the 460800 bytes are byte0-
+  dominant and spatially incoherent → a pre-compression filter/format (not plain fp16/uint16/
+  planar/row-delta — all tested). Next: invert with the LiveLinkFace/Apple AVDepthData encoding
+  (disparity? Paeth-like predictor?) — a format-reference task, not a compute one.
+- PAYOFF once finished: appearance/camera-INVARIANT 3D facial asymmetry, which sidesteps the
+  entire MARLIN domain-confound (domain-AUC 1.0) — the highest-upside direction.
