@@ -110,3 +110,26 @@ are comparatively invariant (0.79). Actionable: a Mayo-deployment model should r
 asymmetry deltas, not raw appearance OR raw blendshape values. Augmentation could only help by
 pulling the 1.0/0.97 gaps down — a tall order for MARLIN, and it cannot create the missing eye
 closure-dynamics.
+
+## MARLIN problem #2: DANN (domain-adversarial) — FAILS (scripts/dann.py)
+| model | rep domain-AUC | transfer eyes | transfer mouth |
+|---|---|---|---|
+| baseline (no DANN) | 0.997 | -0.27 | -0.66 |
+| DANN lambda=1.0 | 0.997 | -0.01 | -0.38 |
+
+DANN cannot make the representation domain-invariant (AUC unchanged at 0.997) — the frozen-
+MARLIN input is perfectly domain-separable and the Mayo target is n=13, so adversarial
+alignment has nothing to grip. Transfer nudges toward zero but never positive. **Third
+representation-space domain-adaptation approach to fail (after CORAL and feature-noise), which
+is itself the answer:** you cannot fix the MARLIN confound in feature space at this scale.
+
+### Verdict on "how to solve the MARLIN problem"
+1. **Feature-space domain adaptation (CORAL, DANN, augmentation-of-appearance) will NOT work** —
+   the diagnostic explains why (MARLIN AUC 1.0, irreducible at n=13). Stop spending effort here.
+2. **Pragmatic solution (now):** lean on the L/R asymmetry only (AUC 0.79) — drop MARLIN AND
+   raw blendshape values. This is the geometry/asym deploy model; eyes stay weak by construction.
+3. **Real solution (needs data):** replace MARLIN's eye crutch with eye-closure DYNAMICS (60fps
+   EAR), which is domain-invariant and captures what appearance was faking on stills — requires
+   in-domain video (have) + HB labels (don't). Pipeline built.
+4. **Augmentation-to-look-like-Mayo** could only pull the appearance gap down (and DANN shows even
+   aggressive alignment can't budge it much) and cannot create the missing dynamics — partial at best.
