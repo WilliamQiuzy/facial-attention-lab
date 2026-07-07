@@ -94,3 +94,19 @@ Region QWK by web source (ensemble 3-seed):
 The weakest cell is **FNP eyes (0.26)** — web-scraped still eye crops with noisier labels;
 YFP (per-subject) is handled better everywhere, mouth is good on both. Matches the
 cross-dataset result (YFP→FNP eyes was the hardest transfer direction).
+
+## MARLIN problem: domain-gap diagnostic (scripts/domain_gap.py)
+Domain separability web-vs-Mayo (classifier AUC; 1.0 = totally different domains, 0.5 = same):
+
+| feature group | domain-AUC |
+|---|---|
+| MARLIN appearance (768) | **1.000** (maximal confound) |
+| geometry all (72, blendshapes+deltas) | 0.970 |
+| L/R asymmetry deltas (20) | **0.793** (most invariant) |
+
+Hard (distribution-distance) evidence that MARLIN is maximally domain-confounded. Refinement:
+even raw blendshape VALUES shift across domains (0.97); only the relative L-R asymmetry deltas
+are comparatively invariant (0.79). Actionable: a Mayo-deployment model should rely on the
+asymmetry deltas, not raw appearance OR raw blendshape values. Augmentation could only help by
+pulling the 1.0/0.97 gaps down — a tall order for MARLIN, and it cannot create the missing eye
+closure-dynamics.
