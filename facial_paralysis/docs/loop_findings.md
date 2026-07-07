@@ -156,7 +156,11 @@ called via ctypes from **arm64** /usr/bin/python3 — anaconda python is x86_64 
   records 0x05 = per-frame depth; each = [0x05][15-char ts][16-B sub-header: compressed size at
   [12:16]][Kraken block]. ~1000 frames/take, decompress to exactly **460800 B = 640×360×2**
   (true size confirmed: Kraken returns 460800, fails on larger buffers).
-- STATUS: decompression solved + all frames decode. REMAINING: the 460800 bytes are byte0-
+- **PIXEL FORMAT SOLVED**: Kraken -> 16-bit horizontal Sub de-filter (per-row cumsum mod 65536)
+  -> little-endian fp16 (meters). Verified by frame-to-frame temporal corr **0.93** and a clean
+  face surface (~46k face px, face ~0.19m / background ~1.6m). Image is Orientation-4 (rotate to
+  upright). Minor residual horizontal streaks (delta-chain resets at invalid runs) — cosmetic.
+- (old note) earlier REMAINING: the 460800 bytes are byte0-
   dominant and spatially incoherent → a pre-compression filter/format (not plain fp16/uint16/
   planar/row-delta — all tested). Next: invert with the LiveLinkFace/Apple AVDepthData encoding
   (disparity? Paeth-like predictor?) — a format-reference task, not a compute one.

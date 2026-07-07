@@ -23,11 +23,19 @@ KRAKEN_OFF = 16             # Kraken block starts 16 bytes into the 0x05 payload
 
 
 def decode_block(src: bytes):
+    """Kraken-decompress -> 16-bit horizontal Sub de-filter -> little-endian fp16 (meters).
+    The app applies a per-row 16-bit Sub predictor before Kraken (verified: this decode
+    gives frame-to-frame temporal corr 0.93 and a smooth face surface; raw fp16 gives noise).
+    """
     dst = ctypes.create_string_buffer(OUT_LEN)
     n = LIB.kraken_decompress(src, len(src), dst, OUT_LEN)
     if n != OUT_LEN:
         return None
-    return np.frombuffer(dst.raw, np.float16).astype(np.float32).reshape(H, W)
+    u = np.frombuffer(dst.raw, '<u2').reshape(H, W)                       # filtered uint16
+    rec = (np.cumsum(u.astype(np.uint32), axis=1) % 65536).astype(np.uint16)  # inverse Sub (per row)
+    d = np.frombuffer(rec.tobytes(), '<f2').astype(np.float32).reshape(H, W)
+    d[(d < 0.05) | (d > 3.0)] = 0.0                                       # invalid -> 0
+    return d
 
 
 def depth_records(path: Path):
