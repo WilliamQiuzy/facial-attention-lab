@@ -184,3 +184,32 @@ called via ctypes from **arm64** /usr/bin/python3 — anaconda python is x86_64 
   on the nose bridge, and measure per-region (mouth-corner / eye) 3D asymmetry during each action.
   That is the clinically-valid, appearance-invariant 3D signal. The decoder + pipeline are ready
   to consume landmarks the moment they exist.
+
+## Direction #4 COMPLETED: landmark-anchored 3D asymmetry pipeline (pod)
+Built and ran the full landmark-anchored pipeline. Three sub-problems SOLVED:
+- **Depth↔RGB registration (exact).** `frame_log.csv` gives every video/depth frame a ns
+  timestamp on one shared clock; depth records embed a matching timecode key. Depth is 30fps,
+  video 60fps, ~148 depth frames dropped → must match by timecode, not ordinal. Result: each
+  resting depth frame matches its RGB frame to **0.0 ms**. Spatially, upright RGB 1280×720 =
+  exactly 2× upright depth 640×360; rotation is `rot90(native, k=1)`, **confirmed by landmark
+  overlay** (mesh lands exactly on the depth face). `scripts/depth_rgb_prep.py`.
+- **MediaPipe landmarks (pod).** RTX 3090 pod, 478 landmarks/take on the matched resting RGB
+  frames (14 takes). `outputs/depth3d/landmarks.json` (gitignored — biometric).
+- **Pose-corrected per-region 3D asymmetry** (`scripts/asym3d_landmark.py`): sample metric
+  depth Z at each landmark (nose-anchored ±7cm face-band gate + adaptive window + temporal
+  median over ±7 frames to beat the ~10mm/px streak noise & IR holes), remove rigid head pose
+  (LS plane Z~au+bv+c), then per anatomically-symmetric pair asymmetry = |r_L−r_R|. No camera
+  intrinsics needed. `outputs/depth3d/asym3d_landmark.json`, figure `asym3d_summary.png`.
+
+**Results (n=9 usable of 14; 5 dropped: face too far/small or depth too holey):**
+- DETERMINISTIC: duplicate take FACES018≡MySlate_14 → identical (9.42 mm). Magnitudes now
+  physically sane (6–25 mm; the landmark-free version gave impossible 500 mm).
+- **But still no significant clinical correlation at this n:** 3D-overall vs 2D-blendshape
+  asymmetry Spearman +0.21 (p=0.64, n=7); per-region mouth/eye ~0; brow +0.49 (p=0.27, best).
+- **Honest read:** (1) same **n-wall** as everything else — 7–9 patients can't power a
+  correlation; (2) 3D-depth asymmetry measures the **Z/protrusion axis**, orthogonal by
+  construction to 2D blendshapes' XY-motion axis, so low correlation is expected, not proof of
+  noise — it may be a *complementary* signal, but confirming that needs a 3D ground truth or
+  more patients. The decode + registration + pipeline are the durable deliverables; clinical
+  validation is gated on n, exactly like the transfer result. Depth decode reconfirmed correct
+  (subH horizontal-Sub is smoothest at 9.58 mm/px vs 22 vertical / 61 2D).

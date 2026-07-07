@@ -1,0 +1,114 @@
+{
+ "20260109_MySlate_6": {
+  "rec": 90,
+  "key": 264359440,
+  "vframe": 189,
+  "dt_ms": 0.0,
+  "time_s": 3.15,
+  "near_area": 18618
+ },
+ "20260203_FACES006": {
+  "rec": 70,
+  "key": 64643558,
+  "vframe": 146,
+  "dt_ms": 0.0,
+  "time_s": 2.4333,
+  "near_area": 25095
+ },
+ "20260219_FACES014": {
+  "rec": 160,
+  "key": 141816059,
+  "vframe": 338,
+  "dt_ms": 0.0,
+  "time_s": 5.6333,
+  "near_area": 44578
+ },
+ "20260305_FACES018": {
+  "rec": 190,
+  "key": 80241070,
+  "vframe": 393,
+  "dt_ms": 0.0,
+  "time_s": 6.55,
+  "near_area": 28899
+ },
+ "20260305_MySlate_14": {
+  "rec": 190,
+  "key": 80241070,
+  "vframe": 393,
+  "dt_ms": 0.0,
+  "time_s": 6.55,
+  "near_area": 28899
+ },
+ "20260313_FACES004": {
+  "rec": 50,
+  "key": 2330300180,
+  "vframe": 107,
+  "dt_ms": 0.0,
+  "time_s": 1.7833,
+  "near_area": 22649
+ },
+ "20260313_FACES020": {
+  "rec": 130,
+  "key": 2150708791,
+  "vframe": 270,
+  "dt_ms": 0.0,
+  "time_s": 4.5,
+  "near_area": 19756
+ },
+ "20260313_FACES021": {
+  "rec": 110,
+  "key": 2392055019,
+  "vframe": 232,
+  "dt_ms": 0.0,
+  "time_s": 3.8667,
+  "near_area": 35056
+ },
+ "20260313_MySlate_22": {
+  "rec": 30,
+  "key": 2533548883,
+  "vframe": 66,
+  "dt_ms": 0.0,
+  "time_s": 1.1,
+  "near_area": 23412
+ },
+ "20260313_MySlate_23": {
+  "rec": 140,
+  "key": 2535240936,
+  "vframe": 286,
+  "dt_ms": 0.0,
+  "time_s": 4.7667,
+  "near_area": 24137
+ },
+ "20260313_MySlate_25": {
+  "rec": 80,
+  "key": 3054943972,
+  "vframe": 166,
+  "dt_ms": -0.0,
+  "time_s": 2.7667,
+  "near_area": 35694
+ },
+ "20260402_FACES024": {
+  "rec": 100,
+  "key": 2013224292,
+  "vframe": 205,
+  "dt_ms": 0.0,
+  "time_s": 3.4167,
+  "near_area": 26612
+ },
+ "20260410_MySlate_28": {
+  "rec": 110,
+  "key": 3283829288,
+  "vframe": 238,
+  "dt_ms": 0.0,
+  "time_s": 3.9667,
+  "near_area": 18122
+ },
+ "20260414_MySlate_29": {
+  "rec": 100,
+  "key": 5051037855,
+  "vframe": 209,
+  "dt_ms": -0.0,
+  "time_s": 3.4833,
+  "near_area": 6268
+ }
+}

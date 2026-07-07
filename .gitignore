@@ -11,6 +11,11 @@
 # Mayo PATIENT DATA — never commit (PHI / IRB)
 # ============================================================
 facial_paralysis/data/livelinkface_data/
+# Direction #4 depth3d: patient biometrics (RGB faces, depth maps, landmark coords).
+# Keep only derived asymmetry numbers + de-identified figure.
+facial_paralysis/outputs/depth3d/*_rgb.jpg
+facial_paralysis/outputs/depth3d/*_depth.npy
+facial_paralysis/outputs/depth3d/landmarks.json
 
 # ============================================================
 # Large datasets, raw media, derived caches
