@@ -166,3 +166,21 @@ called via ctypes from **arm64** /usr/bin/python3 — anaconda python is x86_64 
   (disparity? Paeth-like predictor?) — a format-reference task, not a compute one.
 - PAYOFF once finished: appearance/camera-INVARIANT 3D facial asymmetry, which sidesteps the
   entire MARLIN domain-confound (domain-AUC 1.0) — the highest-upside direction.
+
+## Direction #4 status: depth SOLVED; clinical 3D asymmetry needs landmarks (pod)
+- **Decoding: fully SOLVED + committed** (Kraken + 16-bit horizontal Sub + le-fp16; temporal
+  corr 0.93; recognizable face depth). The weeks-long "needs proprietary Oodle SDK" blocker is
+  broken with open-source ooz. All 18 depth takes decode.
+- **3D asymmetry pipeline built** (`scripts/mayo_depth3d.py`): decode → de-streak → head
+  extraction → global reflective-symmetry (min mirror residual = irreducible asymmetry).
+  It is DETERMINISTIC (duplicate take FACES018≡MySlate_14 → identical 0.0078) and differentiates
+  patients 5× (5.6–28mm). `outputs/depth/asym3d.json`.
+- **BUT it is not clinically meaningful yet:** 3D residual vs 2D clinical asymmetry rho=+0.08
+  (n.s.), vs EAR closure -0.36 (n.s.). The landmark-free residual on the head+neck+shoulder blob
+  captures head POSE/shape, not palsy facial asymmetry — this noisy compressed depth can't be
+  cleanly registered without facial landmarks.
+- **Completion route (scoped):** run MediaPipe on the RGB (pod) → face landmarks → map to depth
+  (RGB 1280×720 is exactly 2× the 640×360 depth) → isolate the FACE, anchor the midsagittal plane
+  on the nose bridge, and measure per-region (mouth-corner / eye) 3D asymmetry during each action.
+  That is the clinically-valid, appearance-invariant 3D signal. The decoder + pipeline are ready
+  to consume landmarks the moment they exist.
