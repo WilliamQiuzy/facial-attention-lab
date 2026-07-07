@@ -1,0 +1,399 @@
+{
+ "MySlate_6": {
+  "ocular_oral_synk": 0.0726,
+  "oral_ocular_synk": 0.1192,
+  "eye_provoke_consistency": 0.0726,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.1452,
+    "brow": 0.0
+   },
+   "RelaxedSmile": {
+    "eye": 0.0481,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.2967,
+    "brow": 0.0
+   },
+   "LowerTeethShow": {
+    "eye": 0.0076,
+    "brow": 0.2515
+   },
+   "ReanimatedSmile": {
+    "eye": 0.1244,
+    "brow": 0.0
+   }
+  }
+ },
+ "FACES006": {
+  "ocular_oral_synk": 0.0,
+  "oral_ocular_synk": 0.0,
+  "eye_provoke_consistency": 0.0,
+  "matrix": {
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0138
+   },
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   }
+  }
+ },
+ "FACES014": {
+  "ocular_oral_synk": 0.0377,
+  "oral_ocular_synk": 0.5593,
+  "eye_provoke_consistency": 0.0377,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0753,
+    "brow": 0.0
+   },
+   "RelaxedSmile": {
+    "eye": 0.5183,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.6376,
+    "brow": 0.0073
+   },
+   "ReanimatedSmile": {
+    "eye": 0.5219,
+    "brow": 0.0
+   }
+  }
+ },
+ "FACES018": {
+  "ocular_oral_synk": 0.0,
+  "oral_ocular_synk": 0.2193,
+  "eye_provoke_consistency": 0.0,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0068
+   },
+   "RelaxedSmile": {
+    "eye": 0.3533,
+    "brow": 0.0
+   },
+   "LowerTeethShow": {
+    "eye": 0.3047,
+    "brow": 0.0
+   }
+  }
+ },
+ "MySlate_14": {
+  "ocular_oral_synk": 0.0,
+  "oral_ocular_synk": 0.2193,
+  "eye_provoke_consistency": 0.0,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0068
+   },
+   "RelaxedSmile": {
+    "eye": 0.3533,
+    "brow": 0.0
+   },
+   "LowerTeethShow": {
+    "eye": 0.3047,
+    "brow": 0.0
+   }
+  }
+ },
+ "FACES004": {
+  "ocular_oral_synk": 0.0505,
+  "oral_ocular_synk": 0.1006,
+  "eye_provoke_consistency": 0.0505,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.1009,
+    "brow": 0.0028
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "RelaxedSmile": {
+    "eye": 0.1536,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.1481,
+    "brow": 0.0
+   },
+   "ReanimatedSmile": {
+    "eye": 0.0,
+    "brow": 0.0
+   }
+  }
+ },
+ "FACES019": {
+  "ocular_oral_synk": null,
+  "oral_ocular_synk": null,
+  "eye_provoke_consistency": null,
+  "matrix": {}
+ },
+ "FACES020": {
+  "ocular_oral_synk": 0.002,
+  "oral_ocular_synk": 0.0194,
+  "eye_provoke_consistency": 0.002,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.004,
+    "brow": 0.0
+   },
+   "LowerTeethShow": {
+    "eye": 0.0194,
+    "brow": 0.0
+   }
+  }
+ },
+ "FACES021": {
+  "ocular_oral_synk": 0.5201,
+  "oral_ocular_synk": 0.0517,
+  "eye_provoke_consistency": null,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.5201,
+    "brow": 0.0117
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0233
+   },
+   "LowerTeethShow": {
+    "eye": 0.0075,
+    "brow": 0.1007
+   },
+   "RelaxedSmile": {
+    "eye": 0.1025,
+    "brow": 0.0
+   },
+   "ReanimatedSmile": {
+    "eye": 0.0968,
+    "brow": 0.0
+   }
+  }
+ },
+ "MySlate_23": {
+  "ocular_oral_synk": 0.506,
+  "oral_ocular_synk": 0.6384,
+  "eye_provoke_consistency": 0.4749,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0309
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0311,
+    "brow": 0.2306
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.981,
+    "brow": 0.028
+   },
+   "RelaxedSmile": {
+    "eye": 1.7341,
+    "brow": 0.0065
+   },
+   "ReanimatedSmile": {
+    "eye": 0.181,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0115
+   }
+  }
+ },
+ "MySlate_25": {
+  "ocular_oral_synk": 0.1119,
+  "oral_ocular_synk": 0.102,
+  "eye_provoke_consistency": 0.0874,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0199,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0244,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.1993,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.1044
+   },
+   "RelaxedSmile": {
+    "eye": 0.0,
+    "brow": 0.0
+   },
+   "LowerTeethShow": {
+    "eye": 0.1668,
+    "brow": 0.0
+   },
+   "ReanimatedSmile": {
+    "eye": 0.2412,
+    "brow": 0.0
+   }
+  }
+ },
+ "FACES024": {
+  "ocular_oral_synk": 0.002,
+  "oral_ocular_synk": 0.0678,
+  "eye_provoke_consistency": 0.0,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.002,
+    "brow": 0.0
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.002,
+    "brow": 0.0
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0003
+   },
+   "LowerTeethShow": {
+    "eye": 0.0,
+    "brow": 0.0
+   },
+   "RelaxedSmile": {
+    "eye": 0.1484,
+    "brow": 0.0
+   },
+   "ReanimatedSmile": {
+    "eye": 0.1228,
+    "brow": 0.0
+   }
+  }
+ },
+ "MySlate_28": {
+  "ocular_oral_synk": 0.004,
+  "oral_ocular_synk": 0.0031,
+  "eye_provoke_consistency": 0.004,
+  "matrix": {
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0835
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0079,
+    "brow": 0.0203
+   },
+   "LipPucker": {
+    "eye": 0.0,
+    "brow": 0.0338
+   },
+   "RelaxedSmile": {
+    "eye": 0.0061,
+    "brow": 0.0
+   },
+   "EyebrowRise": {
+    "eye": 0.5235,
+    "oral": 0.1392
+   }
+  }
+ },
+ "MySlate_29": {
+  "ocular_oral_synk": 0.0018,
+  "oral_ocular_synk": 0.0067,
+  "eye_provoke_consistency": 0.0018,
+  "matrix": {
+   "EyebrowRise": {
+    "eye": 0.0,
+    "oral": 0.0
+   },
+   "GentleEyeClosure": {
+    "oral": 0.0,
+    "brow": 0.0202
+   },
+   "TightEyeSqueeze": {
+    "oral": 0.0036,
+    "brow": 0.0315
+   },
+   "LipPucker": {
+    "eye": 0.0134,
+    "brow": 0.0
+   },
+   "RelaxedSmile": {
+    "eye": 0.0,
+    "brow": 0.0
+   }
+  }
+ }
+}

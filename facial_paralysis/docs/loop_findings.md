@@ -133,3 +133,17 @@ is itself the answer:** you cannot fix the MARLIN confound in feature space at t
    in-domain video (have) + HB labels (don't). Pipeline built.
 4. **Augmentation-to-look-like-Mayo** could only pull the appearance gap down (and DANN shows even
    aggressive alignment can't budge it much) and cannot create the missing dynamics — partial at best.
+
+## Direction #1: rigorous label-free synkinesis quantification (scripts/mayo_synkinesis.py)
+Synkinesis = involuntary co-contraction; a core FP problem, hard to grade, and needs NO
+severity label (it is a physical co-activation measurement). We require the involuntary
+movement to be TIME-LOCKED to the voluntary action (Pearson corr of the two per-frame
+traces), distinguishing true synkinesis from coincidental activation.
+
+Results (13 pts): **6/13 have detectable ocular→oral synkinesis**; patients separate by
+pattern — FACES021 strong ocular→oral (0.52), MySlate_23 strong BOTH ways (reanimation
+patient), FACES014/FACES018 oral→ocular. Validation: determinism IDENTICAL on the
+duplicate take; gentle-vs-forced eye provocations consistent (std 0.066); time-locked
+measure agrees with the crude eface synk (rho +0.67) but adds specificity.
+→ outputs/mayo_eface/synkinesis.json. This is a candidate standalone paper (objective
+synkinesis quantification), label-free by construction.
