@@ -1,0 +1,66 @@
+{
+ "split_half": {
+  "eye_asym": {
+   "n": 23,
+   "icc": 0.97,
+   "pearson": 0.97,
+   "spearman_brown": 0.98,
+   "sem": 0.012,
+   "mdc95": 0.034,
+   "mean_AI": 0.065
+  },
+  "smile_asym": {
+   "n": 17,
+   "icc": 0.74,
+   "pearson": 0.75,
+   "spearman_brown": 0.86,
+   "sem": 0.03,
+   "mdc95": 0.082,
+   "mean_AI": 0.08
+  },
+  "brow_asym": {
+   "n": 12,
+   "icc": 0.91,
+   "pearson": 0.91,
+   "spearman_brown": 0.95,
+   "sem": 0.054,
+   "mdc95": 0.15,
+   "mean_AI": 0.173
+  }
+ },
+ "cross_provocation": {
+  "eye: GentleEyeClosure vs TightEyeSqueeze": {
+   "n": 11,
+   "icc": 0.58,
+   "pearson": 0.67,
+   "spearman_brown": 0.8,
+   "sem": 0.044,
+   "mdc95": 0.122,
+   "mean_AI": 0.066
+  },
+  "smile: RelaxedSmile vs ReanimatedSmile": {
+   "n": 7,
+   "icc": 0.4,
+   "pearson": 0.42,
+   "spearman_brown": 0.59,
+   "sem": 0.041,
+   "mdc95": 0.114,
+   "mean_AI": 0.088
+  },
+  "EAR closure_asym: gentle vs forced (60fps, independent)": {
+   "n": 14,
+   "icc": 0.54,
+   "pearson": 0.66,
+   "spearman_brown": 0.79,
+   "sem": 0.161,
+   "mdc95": 0.447,
+   "mean_AI": 0.374
+  }
+ },
+ "depth_3d": {
+  "cv_median_pct": 32.0,
+  "icc": 0.095,
+  "pooled_split_half_r": 0.625,
+  "pooled_full_reliability": 0.769
+ }
+}

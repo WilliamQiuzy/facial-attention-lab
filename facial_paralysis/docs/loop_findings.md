@@ -242,3 +242,21 @@ measures a *structural* axis (Z/protrusion) that is genuinely different from 2D 
 Deciding whether that is a **complementary clinical signal** vs **non-clinical face shape** is
 exactly what requires a 3D ground truth, HB/eFACE labels, or more patients. That is the hard wall;
 everything upstream of it is now done.
+
+## Direction #5 DONE: measurement reliability of the label-free measures (no labels/patients)
+A measure must be reliable before it can be valid. Established reliability with two label-free
+sources (no test-retest recording exists): split-half within an action hold (pure measurement
+error) + cross-provocation agreement (robustness lower bound). `scripts/reliability_suite.py`,
+`outputs/mayo_eface/reliability.json`, figure `reliability_suite.png`.
+
+- **2D blendshape L/R asymmetry is highly reliable AS A MEASUREMENT** (split-half ICC / SB-full):
+  eye 0.97/0.98, brow 0.91/0.95, smile 0.74/0.86 — all GOOD. Concrete **MDC95** (smallest
+  trustworthy change, asymmetry-index units): eye **0.034**, smile **0.082**, brow **0.150**.
+- **Cross-provocation agreement is only moderate** (eye gentle-vs-forced ICC 0.58; EAR 0.54;
+  smile relaxed-vs-reanimated 0.40) — but this is REAL physiology (forced recruits differently,
+  reanimated ≠ relaxed), not measurement noise. Practical rule: **fix the provocation for
+  longitudinal tracking** (always gentle-to-gentle), don't mix probes.
+- **3D depth asymmetry (#4): per-frame ICC 0.10, reliable only after pooling (0.77).**
+
+Takeaway: our 2D dynamic-asymmetry measures are trustworthy enough for clinical/home use; the
+MDC95 values are the change thresholds feeding #6. 3D needs frame-pooling to be usable.
