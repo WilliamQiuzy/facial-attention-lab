@@ -260,3 +260,16 @@ error) + cross-provocation agreement (robustness lower bound). `scripts/reliabil
 
 Takeaway: our 2D dynamic-asymmetry measures are trustworthy enough for clinical/home use; the
 MDC95 values are the change thresholds feeding #6. 3D needs frame-pooling to be usable.
+
+## Direction #6 DONE: home iPhone self-monitoring tool (spec + prototype)
+Payoff of #5: because the label-free asymmetry measures are reliable with known MDC95, a patient
+can self-record the FACES protocol at home and we can flag REAL change (|Δ| > MDC95) with no
+clinician and no labels. `scripts/home_monitor.py`, `docs/HOME_MONITORING.md`,
+`outputs/mayo_eface/home_monitor.png` + `home_scores.json` (12 patients).
+- Per-session report card: per-region L/R asymmetry with the ±MDC/2 noise band.
+- Change detection: a 50% recovery in eye-closure asymmetry is detectable unless the baseline is
+  already near-symmetric (Δ < MDC95=0.034); averaging k sessions sharpens MDC ~1/√k.
+- Fixed-probe rule (from #5): always compare gentle-to-gentle, never mix provocations.
+- Honest boundary: it is a CHANGE/TREND tool, not a severity grader (HB/eFACE mapping needs labels);
+  3D depth stays a research channel (per-frame unreliable). Real longitudinal validation needs
+  follow-up recordings (not labels) — the one remaining step.
