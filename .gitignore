@@ -16,6 +16,7 @@ facial_paralysis/data/livelinkface_data/
 facial_paralysis/outputs/depth3d/*_rgb.jpg
 facial_paralysis/outputs/depth3d/*_depth.npy
 facial_paralysis/outputs/depth3d/landmarks.json
+facial_paralysis/outputs/depth3d/harvest/
 
 # ============================================================
 # Large datasets, raw media, derived caches

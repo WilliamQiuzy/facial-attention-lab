@@ -213,3 +213,32 @@ Built and ran the full landmark-anchored pipeline. Three sub-problems SOLVED:
   more patients. The decode + registration + pipeline are the durable deliverables; clinical
   validation is gated on n, exactly like the transfer result. Depth decode reconfirmed correct
   (subH horizontal-Sub is smoothest at 9.58 mm/px vs 22 vertical / 61 2D).
+
+## Direction #4 — what more is possible with NO new patients / NO labels (4 tracks)
+Question: can #4 advance without the two things we can't get? Ran 4 label-free, no-new-patient
+tracks (`asym3d_simulate.py`, `harvest_frames.py`→pod mediapipe→`asym3d_analyze.py`/`asym3d_final.py`;
+`outputs/depth3d/asym3d_tracks.json`, figure `asym3d_tracks_summary.png`). Harvested 164 frames
+(85 rest + 79 action peaks, matched to depth) across 15 takes; 102 usable.
+
+- **Track 4 (simulation / measurement error):** symmetrize a real face depth (known asym=0),
+  inject a known Δ on one side, recover it. **Noise floor ≈ 2.8 mm**; recovery **near-unbiased
+  (slope ~0.95, linear)** where landmark coverage is dense, but insensitive on holey takes
+  (FACES014's mouth). So sub-3mm asymmetry is indistinguishable from noise.
+- **Track 3 (reliability):** per-frame resting 3D asymmetry is **NOT reliable — ICC 0.10, CV 32%**.
+  This is the ROOT CAUSE of the null 2D correlations (the ~3mm floor is a big fraction of the
+  6–25mm signal). **Constructive fix that works:** pooling frames at the landmark level (median Z
+  per landmark across frames) lifts reliability to **0.77** (split-half r=0.62, Spearman-Brown) —
+  matches the k≈27-frame prediction. So the measure CAN be made reliable without patients/labels.
+- **Track 1 (dynamic 'asymmetry on demand'):** is region asym larger at the targeting action than
+  at rest? mouth 9.7→15.3 (p=0.30, hints), eye/brow flat/down — **no significant effect** at n=7.
+- **Track 2 (depth-unique):** nasolabial-fold relief asymmetry (5.5–48 mm across 9) and a
+  lagophthalmos eye-asym-at-closure proxy are computable (2D can't), but inherit the reliability
+  limits and show no significant closure-vs-rest effect (p=0.81).
+
+**Bottom line (the honest ceiling without n/labels):** we CAN characterize the measurement
+(floor ~3mm) and make it RELIABLE (0.77 via pooling) — a real methods result. But even the
+reliable pooled 3D asymmetry stays **orthogonal to 2D** (Spearman +0.03, p=0.96) — it reliably
+measures a *structural* axis (Z/protrusion) that is genuinely different from 2D motion asymmetry.
+Deciding whether that is a **complementary clinical signal** vs **non-clinical face shape** is
+exactly what requires a 3D ground truth, HB/eFACE labels, or more patients. That is the hard wall;
+everything upstream of it is now done.
