@@ -64,3 +64,7 @@ facial_paralysis/src/baselines/
 .claude/
 .venv/
 *.egg-info/
+
+# Local depth/RGB previews for viewing (patient faces) - never commit
+facial_paralysis/assets/
+facial_paralysis/outputs/depth3d/mesh/
