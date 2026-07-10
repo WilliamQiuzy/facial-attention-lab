@@ -52,28 +52,49 @@ LW = {"binary": 0.5, "eyes": 0.3, "mouth": 0.3}
 # ---------------------------------------------------------------------------
 # Feature engineering on the geometric stream
 # ---------------------------------------------------------------------------
+# MediaPipe blendshape L/R pairs (idx0 = _neutral) grouped by clinical region.
+EYE_PAIRS = [(9, 10), (19, 20), (21, 22)]                    # eyeBlink, eyeSquint, eyeWide
+BROW_PAIRS = [(1, 2), (4, 5)]                                # browDown, browOuterUp
+CHEEK_PAIRS = [(7, 8)]                                       # cheekSquint
+MOUTH_PAIRS = [(44, 45), (30, 31), (28, 29), (34, 35), (48, 49), (46, 47)]  # smile,frown,dimple,lowerDown,upperUp,stretch
+REGION_PAIRS = [EYE_PAIRS, MOUTH_PAIRS, BROW_PAIRS, CHEEK_PAIRS]
+
+
+def _pair_feats(bs: torch.Tensor, pairs) -> torch.Tensor:
+    """Per-pair |L-R| and scale-invariant asymmetry ratio |L-R|/(L+R), + region sum/max."""
+    feats, absd = [], []
+    for l, r in pairs:
+        L, R = bs[..., l:l + 1], bs[..., r:r + 1]
+        ad = (L - R).abs()
+        feats += [ad, ad / (L + R + 1e-3)]                   # magnitude + clinical asymmetry index
+        absd.append(ad)
+    A = torch.cat(absd, -1)
+    feats += [A.sum(-1, keepdim=True), A.amax(-1, keepdim=True)]
+    return torch.cat(feats, -1)                              # 2*len(pairs)+2
+
+
 def engineer(mp_seq: torch.Tensor, cfg: dict) -> torch.Tensor:
     """Append nonlinear asymmetry invariants a linear layer can't derive.
-    mp_seq (B,T,72) -> (B,T,72+K). No-op when feat != 'asym'."""
-    if cfg["feat"] != "asym":
+    feat='asym': global aggregates. feat='regasym': + per-region (eye/mouth/brow/cheek)
+    per-pair |L-R| and scale-invariant asymmetry ratios, so the eye head gets an explicit
+    eye-closure asymmetry signal (the piece that lost MARLIN)."""
+    if cfg["feat"] not in ("asym", "regasym"):
         return mp_seq
     d = mp_seq[..., ASYM_LO:ASYM_HI]                          # (B,T,20) signed deltas
     ad = d.abs()
-    extra = torch.cat(
-        [
-            ad,                                              # |L-R| magnitude (side-invariant)
-            ad.mean(-1, keepdim=True),                       # mean asymmetry
-            ad.amax(-1, keepdim=True),                       # worst single asymmetry
-            ad.sum(-1, keepdim=True),                        # total asymmetry load
-            (d ** 2).mean(-1, keepdim=True),                 # asymmetry energy
-        ],
-        dim=-1,
-    )
-    return torch.cat([mp_seq, extra], dim=-1)
+    parts = [mp_seq, ad, ad.mean(-1, keepdim=True), ad.amax(-1, keepdim=True),
+             ad.sum(-1, keepdim=True), (d ** 2).mean(-1, keepdim=True)]
+    if cfg["feat"] == "regasym":
+        bs = mp_seq[..., :52]
+        parts += [_pair_feats(bs, pairs) for pairs in REGION_PAIRS]
+    return torch.cat(parts, dim=-1)
 
 
 def geo_feat_dim(cfg: dict) -> int:
-    return P.MP_FEAT_DIM + (24 if cfg["feat"] == "asym" else 0)  # 20 |d| + 4 aggregates
+    d = P.MP_FEAT_DIM + (24 if cfg["feat"] in ("asym", "regasym") else 0)  # 20 |d| + 4 aggregates
+    if cfg["feat"] == "regasym":
+        d += sum(2 * len(p) + 2 for p in REGION_PAIRS)       # per-region pair feats
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -144,11 +165,16 @@ class GeoGRU(nn.Module):
 
 
 class GeoMLP(nn.Module):
-    """Static geometric encoder: masked-mean over frames -> MLP. Apt for T=1 data."""
-    def __init__(self, fdim, hidden, out, dropout):
+    """Static geometric encoder: masked-mean over frames -> MLP. Apt for T=1 data.
+    geo_layers controls depth of the hidden stack (1 = original)."""
+    def __init__(self, fdim, hidden, out, dropout, layers=1):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(fdim, hidden), nn.ReLU(), nn.Dropout(dropout),
-                                 nn.Linear(hidden, out))
+        mods, d = [], fdim
+        for _ in range(max(layers, 1)):
+            mods += [nn.Linear(d, hidden), nn.ReLU(), nn.Dropout(dropout)]
+            d = hidden
+        mods += [nn.Linear(d, out)]
+        self.net = nn.Sequential(*mods)
 
     def forward(self, seq, mask):
         m = mask.unsqueeze(-1).float()
@@ -173,7 +199,8 @@ class Net(nn.Module):
 
         def _mk_geo():
             if cfg["geo_encoder"] == "mlp":
-                return GeoMLP(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["dropout"])
+                return GeoMLP(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["dropout"],
+                              layers=cfg.get("geo_layers", 1))
             return GeoGRU(gfd, cfg["temporal_hidden"], cfg["temporal_out"], cfg["pool"])
 
         self.per_region_geo = cfg.get("per_region_geo", False)

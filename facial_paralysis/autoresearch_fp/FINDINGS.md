@@ -103,3 +103,27 @@ conclusion — web models still don't transfer (a better web model is still a we
 
 Confirms the design narrative: per-region decoupling + engineered asymmetry are the two
 substantive wins; everything else is small.
+
+## Update (jul9): landmark/geometry-only pushed to champion parity (drop MARLIN)
+
+Committing to the transferable landmark features (relative L/R asymmetry; MARLIN is the
+domain confound and does not transfer), we re-ran the search with MARLIN ABLATED
+(`drop_marlin:true`) to maximize the geometry-only model. 25 configs across 4 batches.
+
+**Result: geometry-only mean QWK 0.575 → 0.668 (5-seed 0.6683 ±0.007), matching the
+with-MARLIN champion (0.668) using ONLY transferable features.** The whole gain is in the
+region that lost MARLIN: **eyes 0.288 → 0.446 (+55%)**; mouth held at ~0.89.
+
+Two levers did it:
+1. **Region-specific asymmetry features** (`feat:regasym`, new in `engineer()`): per-region
+   (eye/mouth/brow/cheek) per-pair |L−R| and scale-invariant asymmetry ratios |L−R|/(L+R)
+   from the 52 blendshapes, so the eye head gets an explicit eye-closure-asymmetry signal
+   instead of only global aggregates. +0.02.
+2. **Capacity + regularization**: the geometry encoder was starved. Scaling it
+   (`temporal_hidden:768, temporal_out:512`) with `dropout:0.3, weight_decay:0.1` took eyes
+   0.31 → 0.45. Sweet spot at 768; 1024+ overfits; geo-encoder depth (`geo_layers:2`) ties,
+   no gain. +0.07.
+
+Winner = `deploy_config.json` (`deploy_landmark_v2`). This is the DEPLOYABLE model: no
+appearance stream, so nothing to domain-confound — it is the transferable, clinically-aligned
+predictor. Full grid in `geo_landmark_search.tsv`.
