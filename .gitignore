@@ -68,3 +68,8 @@ facial_paralysis/src/baselines/
 # Local depth/RGB previews for viewing (patient faces) - never commit
 facial_paralysis/assets/
 facial_paralysis/outputs/depth3d/mesh/
+
+# web landmark coords + rebuilt cache (derived, large)
+facial_paralysis/outputs/web_landmarks.json
+facial_paralysis/outputs/web_key2dir.json
+facial_paralysis/autoresearch_fp/fp_ar_cache_clinical.pt

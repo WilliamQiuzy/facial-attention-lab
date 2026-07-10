@@ -34,11 +34,15 @@ import numpy as np
 import torch
 from sklearn.metrics import cohen_kappa_score
 
+import os
 ROOT = Path(__file__).resolve().parent          # autoresearch_fp/
 FP = ROOT.parent                                 # facial_paralysis/
 OUT = FP / "outputs"
 MANIFEST = OUT / "train_manifest_v4.json"
-CACHE = ROOT / "fp_ar_cache.pt"
+# FP_CLINICAL=1 (default) uses the cache with raw-landmark clinical features appended
+# (72 blendshapes + 23 clinical = 95); FP_CLINICAL=0 = original 72-d blendshapes only.
+_CLINICAL = os.environ.get("FP_CLINICAL", "1") == "1"
+CACHE = ROOT / ("fp_ar_cache_clinical.pt" if _CLINICAL else "fp_ar_cache.pt")
 
 # ---------------------------------------------------------------------------
 # FIXED CONSTANTS — the rules of the game. The agent must not change these.
@@ -48,7 +52,7 @@ SOURCES = ("palsy", "fnp", "yfp")   # metric sources + a global-severity anchor.
                                     # excluded: not present locally and net-neutral
                                     # (Run #16). Everything here is present locally.
 TASKS = ("binary", "eyes", "mouth")
-MP_FEAT_DIM = 72
+MP_FEAT_DIM = 95 if _CLINICAL else 72          # 72 blendshapes (+23 raw-landmark clinical)
 N_CLASSES = {"binary": 2, "eyes": 3, "mouth": 3}
 SEEDS = (0, 1, 2)                   # metric = mean over these seeds.
 MAX_EPOCHS = 80                     # fixed training budget (comparable across runs).

@@ -127,3 +127,31 @@ Two levers did it:
 Winner = `deploy_config.json` (`deploy_landmark_v2`). This is the DEPLOYABLE model: no
 appearance stream, so nothing to domain-confound — it is the transferable, clinically-aligned
 predictor. Full grid in `geo_landmark_search.tsv`.
+
+## Update (jul10): raw-landmark clinical features — grounded hypothesis, honest null on web
+
+Literature (Emotrics/Auto-eFACE, Mass Eye & Ear; and a 198-pt symmetry-scoring study) shows the
+SOTA uses RAW-LANDMARK CLINICAL MEASUREMENTS, not ARKit blendshapes. Hypothesis: our eyes ceiling
+(~0.45) is because blendshape `eyeBlink` is ~0 on static open-eye web stills, while the clinical
+eye metric — palpebral fissure HEIGHT — is a static landmark distance that IS measurable. So we
+built the clinical-feature path end to end:
+- re-ran MediaPipe on 1453 web region images (FNP+YFP) → raw 468 landmarks (pod, terminated);
+- computed 23 clinical features (`scripts/clinical_landmark_features.py`): palpebral fissure
+  height/width, eye area, brow height, mouth-corner height, commissure excursion, mouth width —
+  pose-normalized (level eyes, scale by interocular distance), per-side + L/R asymmetry;
+- rebuilt the cache (72 blendshapes + 23 clinical = 95-d; `rebuild_cache_clinical.py`), harness
+  toggle `FP_CLINICAL` (prepare_fp).
+
+**Result — honest null on the web metric.** A/B on the champion config (5-seed): blendshapes-only
+0.6683±0.007 vs +clinical 0.6767±0.013 = **+0.008, within one std**. Eye-focused re-optimization
+(7 configs, `clinical_search.tsv`) stays flat (best 3-seed 0.6758 vs 0.6740 without). The **eyes
+ceiling (~0.45) did NOT break.** The fissure-height hypothesis was reasonable but the blendshapes
+(eyeSquint/eyeWide) apparently already carry the static eye info, and/or the web static-still eye
+SEVERITY LABELS are themselves too noisy to grade past ~0.45 from any geometry.
+
+**Takeaway.** Eyes-on-web-stills is a DATA/LABEL ceiling, not a feature ceiling — same lesson as
+the rest of the project. Keep the simpler blendshape-only winner (`deploy_config.json`, 0.668) as
+the deployable web model. BUT the clinical extractor is a real, interpretable, transferable asset:
+it is exactly what eFACE measures, and it should pay off on the Mayo FACES data — where the
+eye-closure ACTION makes fissure DYNAMICS informative and labels are clinician-grade — not on
+static web stills. That is the right place to use it next.
