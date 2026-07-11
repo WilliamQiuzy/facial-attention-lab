@@ -25,6 +25,10 @@ for d in (CLIPS, FACES):
 QUERIES = [
     "facial palsy exercises", "Bell's palsy face movement", "facial paralysis patient smile",
     "facial nerve palsy eye closure", "facial synkinesis", "House Brackmann grading",
+    "Bell's palsy recovery week", "facial paralysis rehabilitation", "facial nerve palsy patient",
+    "facial reanimation surgery before after", "synkinesis facial exercises", "facial droop patient",
+    "facial palsy physical therapy face", "Ramsay Hunt syndrome face", "facial paralysis smile exercise",
+    "acoustic neuroma facial weakness", "facial palsy eFACE assessment", "facial nerve recovery exercises",
 ]
 N_PER_QUERY = int(sys.argv[1]) if len(sys.argv) > 1 else 2
 SECONDS = int(sys.argv[2]) if len(sys.argv) > 2 else 45
@@ -77,8 +81,9 @@ def extract_faces(mov, vid, every=15):
 
 
 def main():
-    manifest = []
-    seen = set()
+    mpath = OUT / "manifest.json"
+    manifest = json.loads(mpath.read_text()) if mpath.exists() else []   # resume: keep prior
+    seen = {m["id"] for m in manifest}
     for q in QUERIES:
         try:
             hits = search_ids(q, N_PER_QUERY)
@@ -90,7 +95,7 @@ def main():
             seen.add(vid)
             mov = CLIPS / f"{vid}.mp4"
             try:
-                if not download(vid, mov):
+                if not mov.exists() and not download(vid, mov):
                     print(f"  dl fail {vid}", flush=True); continue
                 nf = extract_faces(mov, vid)
                 manifest.append({"id": vid, "query": q, "title": title, "duration": dur,

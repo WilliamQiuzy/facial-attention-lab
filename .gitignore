@@ -73,3 +73,9 @@ facial_paralysis/outputs/depth3d/mesh/
 facial_paralysis/outputs/web_landmarks.json
 facial_paralysis/outputs/web_key2dir.json
 facial_paralysis/autoresearch_fp/fp_ar_cache_clinical.pt
+
+# SSL self-supervised: patient-derived trajectories + pretrained encoder
+facial_paralysis/outputs/ssl_traj/
+facial_paralysis/outputs/ssl_encoder.pt
+facial_paralysis/data_acquisition/youtube/clips/
+facial_paralysis/data_acquisition/youtube/faces/
