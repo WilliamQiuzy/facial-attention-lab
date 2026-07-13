@@ -109,11 +109,23 @@ def build_index() -> list[dict]:
 
 def encode(index, enc, mp_ext, normalizer, reextract=False) -> list[dict]:
     """Encode each indexed frame; returns index entries that have a usable bundle."""
+    from src.preprocessing.action_bundle import (
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+    )
+
     ok, n_noface = [], 0
     for it in index:
         sid = f"{it['subject']}/{it['frame']}"
         out = CACHE / sid / f"{ACTION}.npz"
-        if not (out.exists() and not reextract):
+        if out.exists() and not reextract:
+            _assert_existing_cache_schema(
+                out,
+                mp_ext.feature_schema,
+                expected_side_convention=mp_ext.side_convention,
+                expected_capture_mirrored="unknown",
+            )
+        else:
             img = cv2.imread(it["img_path"])
             if img is None:
                 continue
@@ -123,8 +135,9 @@ def encode(index, enc, mp_ext, normalizer, reextract=False) -> list[dict]:
                 n_noface += 1
                 continue
             out.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(out, marlin=marlin[None, :], mp_seq=seq, mp_mask=mask,
-                     mp_feat_dim=mp_ext.feat_dim)
+            np.savez(out, **_bundle_npz_payload({
+                "marlin": marlin[None, :], "mp_seq": seq, "mp_mask": mask,
+            }, mp_ext))
         it["sid"] = sid
         ok.append(it)
     print(f"  encoded {len(ok)} frames ({n_noface} dropped: no face)")
@@ -132,13 +145,15 @@ def encode(index, enc, mp_ext, normalizer, reextract=False) -> list[dict]:
 
 
 def make_records(entries):
-    from src.datasets.patient_multistream import ActionBundle, MultiStreamRecord
+    from scripts._bundle_io import load_action_bundle
+    from src.datasets.patient_multistream import MultiStreamRecord
     recs, groups = [], []
     for it in entries:
-        d = np.load(CACHE / it["sid"] / f"{ACTION}.npz")
-        bundle = ActionBundle(marlin=d["marlin"].astype(np.float32),
-                              mp_seq=d["mp_seq"].astype(np.float32),
-                              mp_mask=d["mp_mask"].astype(bool))
+        bundle = load_action_bundle(
+            CACHE / it["sid"] / f"{ACTION}.npz",
+            allow_legacy_schema=True,
+            expected_feat_dim=MP_FEAT_DIM,
+        )
         for task in ("eyes", "mouth"):
             if it[task] is not None:
                 recs.append(MultiStreamRecord(
@@ -179,7 +194,8 @@ def main():
 
     print(f"Encoding through frozen MARLIN (+ quality normalizer) on {device}...")
     enc = MarlinVideoEncoder.from_default_weights().to(device).eval()
-    mp_ext = MediaPipeFeatureExtractor()
+    # YFP frame capture orientation is not documented.
+    mp_ext = MediaPipeFeatureExtractor(capture_mirrored=None)
     normalizer = QualityNormalizer(QualityConfig(mode="normalize", work_size=112))
     entries = encode(index, enc, mp_ext, normalizer)
 

@@ -37,7 +37,12 @@ def extract_bundles(reextract: bool = False) -> Path:
     """Extract MARLIN + MediaPipe bundles for all PalsyNet videos. Returns the
     labels.csv path. Caches to CACHE/<subject>/clip.npz."""
     from src.models.backbones.marlin_video import MarlinVideoEncoder
-    from src.preprocessing.action_bundle import MediaPipeFeatureExtractor, extract_action_bundle
+    from src.preprocessing.action_bundle import (
+        MediaPipeFeatureExtractor,
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+        extract_action_bundle,
+    )
 
     CACHE.mkdir(parents=True, exist_ok=True)
     labels_path = CACHE / "labels.csv"
@@ -50,17 +55,21 @@ def extract_bundles(reextract: bool = False) -> Path:
             out = CACHE / sid / f"{ACTION}.npz"
             if reextract or not out.exists():
                 need.append((sid, vp))
+            else:
+                _assert_existing_cache_schema(
+                    out, "mediapipe_bs_lr_v1",
+                    expected_capture_mirrored="unknown",
+                )
 
     if need:
         enc = MarlinVideoEncoder.from_default_weights().eval()
-        mp_ext = MediaPipeFeatureExtractor()
+        mp_ext = MediaPipeFeatureExtractor(capture_mirrored=None)
         for i, (sid, vp) in enumerate(need, 1):
             b = extract_action_bundle(vp, enc, mp_ext, n_marlin_windows=N_MARLIN_WINDOWS)
             if b is None:
                 print(f"  [skip] {sid}: unusable"); continue
             d = CACHE / sid; d.mkdir(parents=True, exist_ok=True)
-            np.savez(d / f"{ACTION}.npz", marlin=b["marlin"], mp_seq=b["mp_seq"],
-                     mp_mask=b["mp_mask"], mp_feat_dim=mp_ext.feat_dim)
+            np.savez(d / f"{ACTION}.npz", **_bundle_npz_payload(b, mp_ext))
             print(f"  [{i}/{len(need)}] {sid}: marlin{b['marlin'].shape} mp{b['mp_seq'].shape}")
     else:
         print("  all bundles cached")
@@ -85,7 +94,8 @@ def run_cv(n_splits: int = 5, seed: int = 0) -> dict:
 
     labels_path = CACHE / "labels.csv"
     ds = MultiStreamPatientDataset.from_disk(
-        CACHE, labels_path, actions=[ACTION], mp_feat_dim=MP_FEAT_DIM)
+        CACHE, labels_path, actions=[ACTION], mp_feat_dim=MP_FEAT_DIM,
+        mp_feature_schema="mediapipe_bs_lr_v1")
     y = np.array([r.label for r in ds.records])
     print(f"\ndataset: {len(ds)} subjects, {int((y==1).sum())} palsy / {int((y==0).sum())} healthy")
 

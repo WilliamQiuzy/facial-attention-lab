@@ -77,5 +77,9 @@ facial_paralysis/autoresearch_fp/fp_ar_cache_clinical.pt
 # SSL self-supervised: patient-derived trajectories + pretrained encoder
 facial_paralysis/outputs/ssl_traj/
 facial_paralysis/outputs/ssl_encoder.pt
+# Mayo-derived landmark biometrics and identifiable audit provenance. Keep
+# local-only under the IRB/PHI boundary; commit only de-identified aggregates.
+facial_paralysis/outputs/landmark_fusion/mayo_clinical23_trajectories/
+facial_paralysis/outputs/landmark_fusion/mayo_clinical23_audit.json
 facial_paralysis/data_acquisition/youtube/clips/
 facial_paralysis/data_acquisition/youtube/faces/

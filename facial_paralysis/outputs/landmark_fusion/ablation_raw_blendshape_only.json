@@ -1,0 +1,82 @@
+{
+  "arm": "blendshape_only",
+  "cache_feature_schema": "legacy_clinical23_v1_hash_pinned",
+  "cache_schema_limit": "historical_pt_has_no_ordered_name_metadata",
+  "experiment_scope": "static_web_metric_not_mayo_dynamic_validation",
+  "selection_protocol": "best_epoch_selected_and_scored_on_same_internal_validation",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "cache": "/Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/autoresearch_fp/fp_ar_cache_clinical.pt",
+  "cache_sha256": "fbacd1b15234168ab2afa34ec7a4c40bc26c5a2bf33b279a48d6a892841b4b5c",
+  "expected_cache_sha256": "fbacd1b15234168ab2afa34ec7a4c40bc26c5a2bf33b279a48d6a892841b4b5c",
+  "observed_dims": [
+    95
+  ],
+  "record_count": 2856,
+  "config": {
+    "feat": "raw",
+    "geo_encoder": "mlp",
+    "fusion": "concat",
+    "loss": "corn",
+    "ls": 0.1,
+    "decode": "threshold",
+    "marlin_proj": null,
+    "marlin_ln": false,
+    "per_region_trunk": false,
+    "per_region_geo": true,
+    "temporal_hidden": 768,
+    "temporal_out": 512,
+    "trunk_hidden": 96,
+    "trunk_layers": 3,
+    "dropout": 0.3,
+    "pool": "attention",
+    "lr": 0.0005,
+    "weight_decay": 0.1,
+    "batch_size": 128,
+    "warmup": 0,
+    "marlin_noise": 0.0,
+    "geo_noise": 0.0,
+    "landmark_ablation": "blendshape_only",
+    "epochs": 80,
+    "eval_every": 4,
+    "name": "landmark_ablation_blendshape_only",
+    "pr_marlin": {
+      "eyes": 128,
+      "mouth": 768,
+      "binary": 256
+    },
+    "drop_marlin": true
+  },
+  "per_seed_metrics": [
+    {
+      "seed": 0,
+      "eyes": 0.2533824162164746,
+      "mouth": 0.8127600929578987,
+      "metric": 0.5330712545871867
+    },
+    {
+      "seed": 1,
+      "eyes": 0.24985420522832735,
+      "mouth": 0.8357788488497844,
+      "metric": 0.5428165270390559
+    },
+    {
+      "seed": 2,
+      "eyes": 0.24690598816204168,
+      "mouth": 0.8557640775231439,
+      "metric": 0.5513350328425928
+    }
+  ],
+  "metrics": {
+    "metric": 0.5424076048229451,
+    "metric_sd": 0.007461760832171019,
+    "eyes": 0.25004753653561457,
+    "mouth": 0.8347676731102757,
+    "n_seeds": 3,
+    "name": "landmark_ablation_blendshape_only",
+    "train_seconds": 107.5
+  }
+}

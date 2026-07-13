@@ -30,6 +30,7 @@ from src.models.facial_palsy_model import FacialPalsyConfig, FacialPalsyModel  #
 from src.models.multitask import TaskSpec  # noqa: E402
 from src.models.ordinal import cum_probs, predict_grade  # noqa: E402
 from src.training.train_multitask import MTTrainConfig, train_multitask  # noqa: E402
+from scripts._bundle_io import load_action_bundle  # noqa: E402
 
 OUT = ROOT / "outputs"
 MANIFEST = OUT / "train_manifest_v4.json"
@@ -44,10 +45,11 @@ def load_records():
         npz = OUT / e["npz"]
         if not npz.exists():
             miss += 1; continue
-        d = np.load(npz)
-        b = ActionBundle(marlin=d["marlin"].astype(np.float32),
-                         mp_seq=d["mp_seq"].astype(np.float32),
-                         mp_mask=d["mp_mask"].astype(bool))
+        b = load_action_bundle(
+            npz,
+            allow_legacy_schema=True,
+            expected_feat_dim=MP_FEAT_DIM,
+        )
         rec = MultiStreamRecord(patient_id=e["pid"], label=int(e["label"]), task=e["task"], actions=[b])
         (val if e["split"] == "val" else train).append(rec)
     print(f"train={len(train)} val={len(val)} (missing bundles={miss})", flush=True)

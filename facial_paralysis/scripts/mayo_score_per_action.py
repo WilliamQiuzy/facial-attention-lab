@@ -26,6 +26,7 @@ from src.datasets.patient_multistream import (  # noqa: E402
 from src.models.facial_palsy_model import FacialPalsyConfig, FacialPalsyModel  # noqa: E402
 from src.models.multitask import TaskSpec  # noqa: E402
 from src.models.ordinal import cum_probs, expected_grade  # noqa: E402
+from scripts._bundle_io import load_action_bundle  # noqa: E402
 
 BUNDLES = ROOT / "outputs" / "mayo_action_bundles"
 ACTION_ORDER = ["EyebrowRise", "GentleEyeClosure", "TightEyeSqueeze",
@@ -54,10 +55,11 @@ def main():
         for action in ACTION_ORDER:
             p = take_dir / f"{action}.npz"
             if p.exists():
-                d = np.load(p)
-                bundles.append(ActionBundle(marlin=d["marlin"].astype(np.float32),
-                                            mp_seq=d["mp_seq"].astype(np.float32),
-                                            mp_mask=d["mp_mask"].astype(bool)))
+                bundles.append(load_action_bundle(
+                    p,
+                    allow_legacy_schema=True,
+                    expected_feat_dim=mp_feat_dim,
+                ))
                 present.append(action)
             else:
                 bundles.append(ActionBundle())

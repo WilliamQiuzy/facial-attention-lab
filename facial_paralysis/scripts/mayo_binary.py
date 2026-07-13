@@ -15,6 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/../autoresearc
 import prepare_fp as P, runner as R
 from mayo_generalization import train_model
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from scripts._bundle_io import load_bundle_arrays
 DEVICE = "cpu"
 
 
@@ -24,9 +26,13 @@ def load_all_mayo():
         pid = os.path.basename(d.rstrip("/")).split("_", 1)[-1]
         recs = []
         for npz in glob.glob(os.path.join(d, "*.npz")):
-            z = np.load(npz)
-            recs.append({"marlin": z["marlin"].astype(np.float32).mean(0), "mp_seq": z["mp_seq"].astype(np.float32),
-                         "mp_mask": z["mp_mask"].astype(bool), "label": 1, "task": "binary"})
+            z = load_bundle_arrays(
+                npz,
+                allow_legacy_schema=True,
+                expected_feat_dim=P.MP_FEAT_DIM,
+            )
+            recs.append({"marlin": z.marlin.mean(0), "mp_seq": z.mp_seq,
+                         "mp_mask": z.mp_mask, "label": 1, "task": "binary"})
         if recs:
             out[pid] = recs
     return out

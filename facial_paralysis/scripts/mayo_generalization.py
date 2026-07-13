@@ -21,6 +21,8 @@ import prepare_fp as P
 import runner as R
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from scripts._bundle_io import load_bundle_arrays
 EYE_ACTS = ("GentleEyeClosure", "TightEyeSqueeze")
 MOUTH_ACTS = ("RelaxedSmile", "LipPucker", "LowerTeethShow", "ReanimatedSmile")
 DEVICE = "cpu"
@@ -69,10 +71,14 @@ def load_mayo():
             a = os.path.basename(npz)[:-4]
             task = "eyes" if a in EYE_ACTS else ("mouth" if a in MOUTH_ACTS else None)
             if not task: continue
-            z = np.load(npz)
-            rec[task].append({"marlin": z["marlin"].astype(np.float32).mean(0),
-                              "mp_seq": z["mp_seq"].astype(np.float32),
-                              "mp_mask": z["mp_mask"].astype(bool),
+            z = load_bundle_arrays(
+                npz,
+                allow_legacy_schema=True,
+                expected_feat_dim=P.MP_FEAT_DIM,
+            )
+            rec[task].append({"marlin": z.marlin.mean(0),
+                              "mp_seq": z.mp_seq,
+                              "mp_mask": z.mp_mask,
                               "label": 0, "task": task})   # dummy label (severity scoring ignores it)
         out[pid] = rec
     return out

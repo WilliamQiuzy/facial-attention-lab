@@ -50,11 +50,12 @@ FNP_TO_3 = {0: 0, 1: 1, 2: 1, 3: 2}
 
 
 def _bundle(npz_path: Path):
-    from facial_paralysis.src.datasets.patient_multistream import ActionBundle
-    d = np.load(npz_path)
-    return ActionBundle(marlin=d["marlin"].astype(np.float32),
-                        mp_seq=d["mp_seq"].astype(np.float32),
-                        mp_mask=d["mp_mask"].astype(bool))
+    from facial_paralysis.scripts._bundle_io import load_action_bundle
+    return load_action_bundle(
+        npz_path,
+        allow_legacy_schema=True,
+        expected_feat_dim=MP_FEAT_DIM,
+    )
 
 
 # ----------------------------------------------------------------------

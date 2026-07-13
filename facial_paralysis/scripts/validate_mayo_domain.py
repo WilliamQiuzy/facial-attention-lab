@@ -45,13 +45,22 @@ MP_FEAT_DIM = 72
 
 def encode_mayo(enc, mp_ext, n_clips=4, max_mp=60, reextract=False) -> list[str]:
     """One bundle per take (.mov). Un-normalized to match PalsyNet bundles."""
-    from facial_paralysis.src.preprocessing.action_bundle import _read_frames
+    from facial_paralysis.src.preprocessing.action_bundle import (
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+        _read_frames,
+    )
     MAYO_CACHE.mkdir(parents=True, exist_ok=True)
     ok = []
     for vp in sorted(MAYO.glob("*/*.mov")):
         take = vp.parent.name
         out = MAYO_CACHE / take / f"{ACTION}.npz"
         if out.exists() and not reextract:
+            _assert_existing_cache_schema(
+                out, mp_ext.feature_schema,
+                expected_side_convention=mp_ext.side_convention,
+                expected_capture_mirrored="unknown",
+            )
             ok.append(take); continue
         marlin = enc.encode_video_path(vp, n_clips=n_clips)
         frames = _read_frames(vp, max_frames=max_mp)
@@ -59,7 +68,9 @@ def encode_mayo(enc, mp_ext, n_clips=4, max_mp=60, reextract=False) -> list[str]
         if marlin is None or seq is None or not mask.any():
             print(f"  [skip] {take}: unusable"); continue
         out.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out, marlin=marlin, mp_seq=seq, mp_mask=mask, mp_feat_dim=mp_ext.feat_dim)
+        np.savez(out, **_bundle_npz_payload({
+            "marlin": marlin, "mp_seq": seq, "mp_mask": mask,
+        }, mp_ext))
         ok.append(take)
         print(f"  {take}: marlin{marlin.shape} mp_seq{seq.shape}")
     return ok
@@ -75,15 +86,35 @@ def make_binary_model(seed=0):
 
 
 def load_mayo_records(takes: list[str]):
-    from facial_paralysis.src.datasets.patient_multistream import ActionBundle, MultiStreamRecord
+    from facial_paralysis.src.datasets.patient_multistream import (
+        ActionBundle, MultiStreamRecord,
+    )
+    from facial_paralysis.src.preprocessing.action_bundle import (
+        _assert_existing_cache_schema,
+    )
     recs = []
     for take in takes:
-        d = np.load(MAYO_CACHE / take / f"{ACTION}.npz")
+        path = MAYO_CACHE / take / f"{ACTION}.npz"
+        _assert_existing_cache_schema(
+            path, "mediapipe_bs_lr_v1", expected_capture_mirrored="unknown"
+        )
+        with np.load(path, allow_pickle=False) as d:
+            marlin = d["marlin"].astype(np.float32)
+            mp_seq = d["mp_seq"].astype(np.float32)
+            mp_mask = d["mp_mask"]
+            schema = str(d["mp_feature_schema"].item())
+            names = tuple(str(x) for x in d["mp_feature_names"])
+            side = str(d["mp_side_convention"].item())
+            mirror = str(d["mp_capture_mirrored"].item())
         recs.append(MultiStreamRecord(
             patient_id=take, label=0, task="binary",
-            actions=[ActionBundle(marlin=d["marlin"].astype(np.float32),
-                                  mp_seq=d["mp_seq"].astype(np.float32),
-                                  mp_mask=d["mp_mask"].astype(bool))]))
+            actions=[ActionBundle(marlin=marlin,
+                                  mp_seq=mp_seq,
+                                  mp_mask=mp_mask,
+                                  mp_feature_schema=schema,
+                                  mp_feature_names=names,
+                                  mp_side_convention=side,
+                                  mp_capture_mirrored=mirror)]))
     return recs
 
 
@@ -114,12 +145,13 @@ def main():
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Encoding Mayo takes end-to-end on {device} (un-normalized)...")
     enc = MarlinVideoEncoder.from_default_weights().to(device).eval()
-    mp_ext = MediaPipeFeatureExtractor()
+    mp_ext = MediaPipeFeatureExtractor(capture_mirrored=None)
     takes = encode_mayo(enc, mp_ext)
 
     print(f"\nTraining binary palsy model on ALL PalsyNet...")
     pals = MultiStreamPatientDataset.from_disk(
-        PALSY_CACHE, PALSY_CACHE / "labels.csv", actions=[ACTION], mp_feat_dim=MP_FEAT_DIM)
+        PALSY_CACHE, PALSY_CACHE / "labels.csv", actions=[ACTION],
+        mp_feat_dim=MP_FEAT_DIM, mp_feature_schema="mediapipe_bs_lr_v1")
     model = make_binary_model()
     train_multitask(model, pals, None, MTTrainConfig(
         epochs=50, batch_size=8, lr=5e-4, weight_decay=3e-2, device="cpu",

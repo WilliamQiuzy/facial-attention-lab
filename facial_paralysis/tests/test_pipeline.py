@@ -59,6 +59,32 @@ def test_temporal_padding_invariance(c: Check):
     c.true(torch.allclose(base, padded, atol=1e-5), "padding does not change output")
 
 
+def test_temporal_interior_gap_is_stably_compacted(c: Check):
+    """A missed detector frame must not hide later valid motion from the GRU."""
+    torch.manual_seed(7)
+    enc = TemporalLandmarkEncoder(F, out_dim=32, dropout=0.0).eval()
+    compact = torch.randn(1, 2, F)
+    compact_mask = torch.ones(1, 2, dtype=torch.bool)
+    gapped = torch.empty(1, 3, F)
+    gapped[:, 0] = compact[:, 0]
+    gapped[:, 1] = torch.nan
+    gapped[:, 2] = compact[:, 1]
+    gap_mask = torch.tensor([[True, False, True]])
+    expected = enc(compact, compact_mask)
+    actual = enc(gapped, gap_mask)
+    c.true(torch.isfinite(actual).all(), "masked NaN gap cannot poison the GRU")
+    c.true(torch.allclose(expected, actual, atol=1e-6),
+           "valid frames retain order and all reach the packed GRU")
+
+
+def test_temporal_rejects_nonfinite_valid_frame(c: Check):
+    enc = TemporalLandmarkEncoder(F, out_dim=16).eval()
+    x = torch.zeros(1, 2, F)
+    x[0, 1, 0] = torch.nan
+    c.raises(lambda: enc(x, torch.ones(1, 2, dtype=torch.bool)),
+             ValueError, "NaN on a valid frame fails closed")
+
+
 def test_temporal_single_frame(c: Check):
     """Image case: T=1 is valid."""
     enc = TemporalLandmarkEncoder(F, out_dim=16).eval()

@@ -1,0 +1,64 @@
+{
+  "experiment": "fixed_width_legacy_clinical23_static_web_ablation",
+  "seeds": [0, 1, 2],
+  "input_dim_all_arms": 95,
+  "cache_sha256": "fbacd1b15234168ab2afa34ec7a4c40bc26c5a2bf33b279a48d6a892841b4b5c",
+  "scope": "static_web_metric_not_mayo_dynamic_validation",
+  "selection_protocol": "best_epoch_selected_and_scored_on_same_internal_validation",
+  "primary_feature_engineering": "regasym_blendshape_specific_expansion",
+  "arms": {
+    "blendshape_only": {
+      "metric": 0.6516553462,
+      "metric_sd": 0.0060477294,
+      "eyes_qwk": 0.4013454512,
+      "mouth_qwk": 0.9019652412
+    },
+    "landmark_only": {
+      "metric": 0.1953916305,
+      "metric_sd": 0.0091496028,
+      "eyes_qwk": 0.0216176176,
+      "mouth_qwk": 0.3691656434
+    },
+    "fusion": {
+      "metric": 0.6684514275,
+      "metric_sd": 0.0151380950,
+      "eyes_qwk": 0.4401760231,
+      "mouth_qwk": 0.8967268320
+    }
+  },
+  "fusion_minus_blendshape_only": {
+    "metric": 0.0167960813,
+    "eyes_qwk": 0.0388305719,
+    "mouth_qwk": -0.0052384092
+  },
+  "raw_feature_sensitivity": {
+    "feature_engineering": "raw",
+    "blendshape_only": {
+      "metric": 0.5424076048,
+      "metric_sd": 0.0074617608,
+      "eyes_qwk": 0.2500475365,
+      "mouth_qwk": 0.8347676731
+    },
+    "landmark_only": {
+      "metric": 0.1967679069,
+      "metric_sd": 0.0067734817,
+      "eyes_qwk": 0.0191314109,
+      "mouth_qwk": 0.3744044029
+    },
+    "fusion": {
+      "metric": 0.5672820537,
+      "metric_sd": 0.0185265978,
+      "eyes_qwk": 0.2996700202,
+      "mouth_qwk": 0.8348940872
+    },
+    "paired_fusion_minus_blendshape_only": {
+      "metric_by_seed": [0.0442131149, 0.0404361950, -0.0100259634],
+      "metric_mean": 0.0248744488,
+      "metric_95pct_t_interval_n3": [-0.0503541403, 0.1001030380],
+      "eyes_by_seed": [0.0568424151, 0.0848664701, 0.0071585657],
+      "eyes_mean": 0.0496224836,
+      "mouth_mean": 0.0001264140
+    }
+  },
+  "interpretation": "both the regasym recipe and the modality-symmetric raw sensitivity show a complementary landmark eye signal; n=3 uncertainty includes zero and the validation metric is selection-biased, so no promotion without an outer patient-held-out test and Mayo labels/controls"
+}

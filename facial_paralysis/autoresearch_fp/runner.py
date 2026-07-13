@@ -44,6 +44,7 @@ DEFAULT = dict(
     trunk_hidden=96, trunk_layers=1, dropout=0.1, pool="attention",
     lr=5e-4, weight_decay=3e-2, batch_size=128, warmup=0,
     marlin_noise=0.0, geo_noise=0.0,
+    landmark_ablation="auto",  # auto | blendshape_only | landmark_only | fusion
     epochs=P.MAX_EPOCHS, eval_every=4,
 )
 LW = {"binary": 0.5, "eyes": 0.3, "mouth": 0.3}
@@ -58,6 +59,29 @@ BROW_PAIRS = [(1, 2), (4, 5)]                                # browDown, browOut
 CHEEK_PAIRS = [(7, 8)]                                       # cheekSquint
 MOUTH_PAIRS = [(44, 45), (30, 31), (28, 29), (34, 35), (48, 49), (46, 47)]  # smile,frown,dimple,lowerDown,upperUp,stretch
 REGION_PAIRS = [EYE_PAIRS, MOUTH_PAIRS, BROW_PAIRS, CHEEK_PAIRS]
+
+
+def apply_landmark_ablation(mp_seq: torch.Tensor, arm: str) -> torch.Tensor:
+    """Mask 72/23 blocks while keeping the exact same 95-d model capacity.
+
+    This makes blendshape-only, landmark-only, and fusion comparisons fairer
+    than training models with different input widths and parameter counts.
+    """
+    if arm not in ("blendshape_only", "landmark_only", "fusion"):
+        raise ValueError(f"unknown landmark_ablation arm: {arm!r}")
+    if mp_seq.shape[-1] != 95:
+        raise ValueError(
+            f"landmark ablations require the 95-d base72+clinical23 cache, "
+            f"got {mp_seq.shape[-1]}"
+        )
+    if arm == "fusion":
+        return mp_seq
+    output = mp_seq.clone()
+    if arm == "blendshape_only":
+        output[..., 72:95] = 0
+    else:
+        output[..., :72] = 0
+    return output
 
 
 def _pair_feats(bs: torch.Tensor, pairs) -> torch.Tensor:
@@ -78,6 +102,9 @@ def engineer(mp_seq: torch.Tensor, cfg: dict) -> torch.Tensor:
     feat='asym': global aggregates. feat='regasym': + per-region (eye/mouth/brow/cheek)
     per-pair |L-R| and scale-invariant asymmetry ratios, so the eye head gets an explicit
     eye-closure asymmetry signal (the piece that lost MARLIN)."""
+    ablation = cfg.get("landmark_ablation", "auto")
+    if ablation != "auto":
+        mp_seq = apply_landmark_ablation(mp_seq, ablation)
     if cfg["feat"] not in ("asym", "regasym"):
         return mp_seq
     d = mp_seq[..., ASYM_LO:ASYM_HI]                          # (B,T,20) signed deltas

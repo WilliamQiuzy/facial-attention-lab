@@ -43,12 +43,24 @@ SEED = 0
 
 def encode(index, enc, mp_ext, normalizer):
     """Encode orig + horizontally-flipped bundle for each indexed frame."""
+    from src.preprocessing.action_bundle import (
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+    )
+
     ok, n_bad = [], 0
     for it in index:
         for tag, flip in (("", False), ("_flip", True)):
             sid = f"{it['subject']}/{it['frame']}{tag}"
             out = CACHE / sid / f"{ACTION}.npz"
-            if not out.exists():
+            if out.exists():
+                _assert_existing_cache_schema(
+                    out,
+                    mp_ext.feature_schema,
+                    expected_side_convention=mp_ext.side_convention,
+                    expected_capture_mirrored="unknown",
+                )
+            else:
                 img = cv2.imread(it["img_path"])
                 if img is None:
                     n_bad += 1; break
@@ -59,24 +71,28 @@ def encode(index, enc, mp_ext, normalizer):
                 if marlin is None or not mask.any():
                     n_bad += 1; continue
                 out.parent.mkdir(parents=True, exist_ok=True)
-                np.savez(out, marlin=marlin[None, :], mp_seq=seq, mp_mask=mask)
+                np.savez(out, **_bundle_npz_payload({
+                    "marlin": marlin[None, :], "mp_seq": seq, "mp_mask": mask,
+                }, mp_ext))
         it["ok"] = (CACHE / f"{it['subject']}/{it['frame']}" / f"{ACTION}.npz").exists()
     print(f"  encoded orig+flip ({n_bad} frame-encodes dropped)")
     return [it for it in index if it.get("ok")]
 
 
 def make_records(entries):
-    from src.datasets.patient_multistream import ActionBundle, MultiStreamRecord
+    from scripts._bundle_io import load_action_bundle
+    from src.datasets.patient_multistream import MultiStreamRecord
     recs, groups, isflip = [], [], []
     for it in entries:
         for tag, flip in (("", 0), ("_flip", 1)):
             p = CACHE / f"{it['subject']}/{it['frame']}{tag}" / f"{ACTION}.npz"
             if not p.exists():
                 continue
-            d = np.load(p)
-            b = ActionBundle(marlin=d["marlin"].astype(np.float32),
-                             mp_seq=d["mp_seq"].astype(np.float32),
-                             mp_mask=d["mp_mask"].astype(bool))
+            b = load_action_bundle(
+                p,
+                allow_legacy_schema=True,
+                expected_feat_dim=MP_FEAT_DIM,
+            )
             for task in ("eyes", "mouth"):
                 if it[task] is not None:
                     recs.append(MultiStreamRecord(
@@ -112,7 +128,10 @@ def main():
     print(f"  {len(index)} frames over {len(set(it['subject'] for it in index))} subjects")
     print(f"Encoding orig+flip with EAR/geometry features on {device}...")
     enc = MarlinVideoEncoder.from_default_weights().to(device).eval()
-    mp_ext = MediaPipeFeatureExtractor(with_geometry=True)
+    # A horizontal augmentation flips the source image, but the original
+    # capture orientation is unknown, so both variants remain unknown rather
+    # than claiming a patient-side mapping.
+    mp_ext = MediaPipeFeatureExtractor(with_geometry=True, capture_mirrored=None)
     normalizer = QualityNormalizer(QualityConfig(mode="normalize", work_size=112))
     entries = encode(index, enc, mp_ext, normalizer)
 

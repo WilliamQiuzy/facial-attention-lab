@@ -138,7 +138,7 @@ built the clinical-feature path end to end:
 - re-ran MediaPipe on 1453 web region images (FNP+YFP) → raw 468 landmarks (pod, terminated);
 - computed 23 clinical features (`scripts/clinical_landmark_features.py`): palpebral fissure
   height/width, eye area, brow height, mouth-corner height, commissure excursion, mouth width —
-  pose-normalized (level eyes, scale by interocular distance), per-side + L/R asymmetry;
+  2D similarity-normalized (translation, scale, roll; not yaw/pitch), per-side + L/R asymmetry;
 - rebuilt the cache (72 blendshapes + 23 clinical = 95-d; `rebuild_cache_clinical.py`), harness
   toggle `FP_CLINICAL` (prepare_fp).
 
@@ -155,3 +155,50 @@ the deployable web model. BUT the clinical extractor is a real, interpretable, t
 it is exactly what eFACE measures, and it should pay off on the Mayo FACES data — where the
 eye-closure ACTION makes fissure DYNAMICS informative and labels are clinician-grade — not on
 static web stills. That is the right place to use it next.
+
+## Update (jul13): fixed-width landmark fusion ablation + Mayo trajectory readiness
+
+The earlier 72-vs-95 comparison changed the first-layer width. We therefore ran a cleaner
+three-arm ablation in which every arm uses the same 95-d input architecture, data, seeds, and
+training budget; base feature blocks are zero-masked:
+
+| arm | mean QWK | SD | eyes QWK | mouth QWK |
+|---|---:|---:|---:|---:|
+| blendshape-only (`[72:95]=0`) | 0.6517 | 0.0060 | 0.4013 | 0.9020 |
+| landmark-only (`[0:72]=0`) | 0.1954 | 0.0092 | 0.0216 | 0.3692 |
+| fusion (72 + 23) | **0.6685** | 0.0151 | **0.4402** | 0.8967 |
+
+Fusion is +0.0168 over the fixed-width blendshape control, driven by eyes (+0.0388), while
+mouth is -0.0052. The legacy static clinical23 block performs poorly alone under this fixed MLP
+recipe. Because `feat=regasym` subsequently adds blendshape-specific engineered columns, this
+landmark-only arm is not a modality-symmetric capacity comparison. This supports
+**complementarity**, not replacement:
+keep blendshapes and add a structured landmark branch. With only three seeds and no stored
+per-seed paired confidence interval—and with fusion SD 2.5× the control—call this promising
+static-web evidence, not a confirmed
+generalization or clinical gain. These runs used the July 10 frozen `legacy_clinical23_v1`
+signed-gap cache; they do not validate the nonnegative-distance `clinical23_v2` production
+transform or Mayo dynamics. Artifacts are under
+`outputs/landmark_fusion/ablation_{blendshape_only,landmark_only,fusion}.json`.
+The same internal validation set selected the best epoch and supplied the reported score, so the
+results are selection-biased and require a nested/outer holdout before promotion.
+
+A `feat=raw` sensitivity run removed the blendshape-specific engineered expansion. Under the
+same 95-column mask, cache, split, and seeds, blendshape-only scored 0.5424 (eyes 0.2500,
+mouth 0.8348), landmark-only scored 0.1968 (eyes 0.0191, mouth 0.3744), and fusion
+scored 0.5673 (eyes 0.2997, mouth 0.8349). The paired fusion-control delta was
++0.0249 overall and +0.0496 for eyes; eyes improved in all three seeds, while the combined
+metric improved in two. The n=3 paired 95% t interval for total delta was [-0.0504, 0.1001],
+so this corroborates the landmark eye signal but does not establish significance. Per-seed
+metrics are persisted in `ablation_raw_{blendshape_only,fusion}.json`.
+
+Separately, a streaming audit of the Mayo raw MediaPipe exports processed 87,732 stored frame
+groups across 15 exports and found every stored group complete and finite at 478 points. The
+source videos contain 87,988 frames, leaving 256 explicit missing detections (99.71% aggregate
+coverage; 97.33% minimum per take), now represented by masked NaN timeline rows. It also
+confirmed one exact duplicate pair and one 68-frame short take; identifiers remain local-only.
+The schema-versioned `.npz` sequences are mask-ready input for later label-free dynamics work;
+whole-video summaries use an explicitly provisional early-frame reference and are QC only.
+Rest→peak→recovery features still require cue/action segmentation and contiguous valid intervals.
+This is **not** an accuracy result: Mayo still has no healthy controls or independent patient-level
+HB/region labels.

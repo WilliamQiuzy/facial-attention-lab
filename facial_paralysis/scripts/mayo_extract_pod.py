@@ -12,7 +12,7 @@ SEEK only the sampled frames (cap.set POS_FRAMES) — ~20x faster — and reuse 
 single MediaPipe landmarker. ~2 min/take.
 
 Whole-take bundle -> outputs/mayo_bundles_norm/<take>/clip.npz
-  marlin (W,768) + mp_seq (T,72) + mp_mask (T,) + mp_feat_dim
+  marlin (W,768) + schema-versioned MediaPipe stream (T,72)
 
 Run on pod:  .venv/bin/python scripts/mayo_extract_pod.py
 """
@@ -31,7 +31,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.models.backbones.marlin_video import MarlinVideoEncoder, _face_crop_tools  # noqa: E402
-from src.preprocessing.action_bundle import MediaPipeFeatureExtractor  # noqa: E402
+from src.preprocessing.action_bundle import (  # noqa: E402
+    MediaPipeFeatureExtractor,
+    _assert_existing_cache_schema,
+    _bundle_npz_payload,
+)
 from src.preprocessing.image_quality import QualityConfig, QualityNormalizer  # noqa: E402
 
 LLF = ROOT / "data" / "livelinkface_data"
@@ -62,7 +66,9 @@ def main():
     enc = MarlinVideoEncoder.from_default_weights().to(dev).eval()
     Landmarker, _ = _face_crop_tools()
     crop_landmarker = Landmarker()                       # one MARLIN-crop landmarker, reused
-    mp_ext = MediaPipeFeatureExtractor(with_geometry=False)   # 72-d, matches v1
+    # Source capture orientation is not documented, so provenance must remain
+    # unknown rather than guessing a patient-side convention.
+    mp_ext = MediaPipeFeatureExtractor(with_geometry=False, capture_mirrored=None)
     normalizer = QualityNormalizer(QualityConfig(mode="normalize", work_size=WORK_SIZE))
 
     movs = sorted(LLF.glob("*/*.mov"))
@@ -73,6 +79,12 @@ def main():
         take = vp.parent.name
         out = OUT / take / "clip.npz"
         if out.exists():
+            _assert_existing_cache_schema(
+                out,
+                mp_ext.feature_schema,
+                expected_side_convention=mp_ext.side_convention,
+                expected_capture_mirrored="unknown",
+            )
             done += 1; continue
         t0 = time.time()
         try:
@@ -107,7 +119,9 @@ def main():
             print(f"  [skip] {take}: unusable (marlin={len(marlin_vecs)})", flush=True); skipped += 1; continue
         marlin = np.stack(marlin_vecs)
         out.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out, marlin=marlin, mp_seq=seq, mp_mask=mask, mp_feat_dim=mp_ext.feat_dim)
+        np.savez(out, **_bundle_npz_payload({
+            "marlin": marlin, "mp_seq": seq, "mp_mask": mask,
+        }, mp_ext))
         done += 1
         print(f"  {take}: marlin{marlin.shape} mp_seq{seq.shape} ({time.time()-t0:.1f}s)", flush=True)
     print(f"\nDONE: {done} bundles, {skipped} skipped. feat_dim={mp_ext.feat_dim} -> {OUT}", flush=True)

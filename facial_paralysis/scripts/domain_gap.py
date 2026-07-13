@@ -14,6 +14,8 @@ from sklearn.model_selection import cross_val_score
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/../autoresearch_fp")
 import prepare_fp as P
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from scripts._bundle_io import load_bundle_arrays
 
 
 def web_feats(n=300, seed=0):
@@ -30,8 +32,12 @@ def web_feats(n=300, seed=0):
 def mayo_feats():
     M, G, A = [], [], []
     for npz in glob.glob(str(ROOT / "outputs/mayo_action_bundles/*/*.npz")):
-        z = np.load(npz)
-        M.append(z["marlin"].astype(np.float32).mean(0)); mp = z["mp_seq"].astype(np.float32).mean(0)
+        z = load_bundle_arrays(
+            npz,
+            allow_legacy_schema=True,
+            expected_feat_dim=P.MP_FEAT_DIM,
+        )
+        M.append(z.marlin.mean(0)); mp = z.mp_seq[z.mp_mask].mean(0)
         G.append(mp); A.append(mp[52:72])
     return np.array(M), np.array(G), np.array(A)
 

@@ -40,6 +40,7 @@ from src.datasets.patient_multistream import (  # noqa: E402
 from src.models.facial_palsy_model import FacialPalsyConfig, FacialPalsyModel  # noqa: E402
 from src.models.multitask import TaskSpec  # noqa: E402
 from src.models.ordinal import cum_probs, expected_grade, predict_grade  # noqa: E402
+from scripts._bundle_io import load_action_bundle  # noqa: E402
 
 CKPT = ROOT / "outputs" / "checkpoints" / "warmstart_v1.pt"
 # Bundle dir is overridable: `python run10_mayo_severity.py mayo_bundles_norm`
@@ -59,15 +60,16 @@ def load_v1():
     return model, sd
 
 
-def load_mayo_records():
+def load_mayo_records(mp_feat_dim: int):
     recs = []
     for npz in sorted(MAYO_CACHE.glob("2026*/clip.npz")):
-        d = np.load(npz)
         recs.append(MultiStreamRecord(
             patient_id=npz.parent.name, label=0, task="binary",
-            actions=[ActionBundle(marlin=d["marlin"].astype(np.float32),
-                                  mp_seq=d["mp_seq"].astype(np.float32),
-                                  mp_mask=d["mp_mask"].astype(bool))]))
+            actions=[load_action_bundle(
+                npz,
+                allow_legacy_schema=True,
+                expected_feat_dim=mp_feat_dim,
+            )]))
     return recs
 
 
@@ -81,7 +83,7 @@ def spread(x):
 def main():
     model, sd = load_v1()
     mp_feat_dim = sd["model_cfg"]["mp_feat_dim"]
-    recs = load_mayo_records()
+    recs = load_mayo_records(mp_feat_dim)
     ds = MultiStreamPatientDataset(recs, actions=[ACTION], mp_feat_dim=mp_feat_dim)
     b = next(iter(torch.utils.data.DataLoader(ds, batch_size=len(ds), collate_fn=collate_multistream)))
 

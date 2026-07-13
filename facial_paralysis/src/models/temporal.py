@@ -70,7 +70,7 @@ class TemporalLandmarkEncoder(nn.Module):
     def _masked_mean(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """x (B, T, C), mask (B, T) bool -> (B, C). All-padding rows -> zeros."""
         m = mask.to(x.dtype).unsqueeze(-1)                 # (B, T, 1)
-        s = (x * m).sum(dim=1)                             # (B, C)
+        s = x.masked_fill(~mask.unsqueeze(-1), 0.0).sum(dim=1)  # (B, C)
         denom = m.sum(dim=1).clamp_min(1.0)                # (B, 1)
         return s / denom
 
@@ -115,17 +115,35 @@ class TemporalLandmarkEncoder(nn.Module):
         elif mask.dtype != torch.bool:
             raise TypeError(f"mask must be bool, got {mask.dtype}")
 
-        # Use packing so the (bidirectional) GRU genuinely ignores padded frames.
-        # Zeroing the input is NOT enough: the backward pass would otherwise carry
-        # padding into valid timesteps' hidden states.
-        x = x * mask.to(x.dtype).unsqueeze(-1)
+        if T < 1:
+            raise ValueError("temporal input must contain at least one frame slot")
+        valid_values = x.masked_select(mask.unsqueeze(-1).expand_as(x))
+        if not torch.isfinite(valid_values).all():
+            raise ValueError("valid temporal frames must contain only finite values")
+
+        # pack_padded_sequence only understands a valid prefix. Detector masks
+        # can contain interior gaps, so first stable-compact every row's valid
+        # frames while preserving their original order. Masked NaN values are
+        # removed before scatter; multiplying NaN by zero would remain NaN.
+        x = x.masked_fill(~mask.unsqueeze(-1), 0.0)
         lengths = mask.sum(dim=1)                           # (B,)
+        compact_positions = (mask.to(torch.long).cumsum(dim=1) - 1).clamp_min(0)
+        compact = torch.zeros_like(x).scatter_add(
+            1,
+            compact_positions.unsqueeze(-1).expand(-1, -1, self.feat_dim),
+            x,
+        )
+        compact_mask = (
+            torch.arange(T, device=x.device).unsqueeze(0) < lengths.unsqueeze(1)
+        )
         empty = lengths == 0
         lengths_clamped = lengths.clamp(min=1).to("cpu")    # pack requires len >= 1, on CPU
-        packed = pack_padded_sequence(x, lengths_clamped, batch_first=True, enforce_sorted=False)
+        packed = pack_padded_sequence(
+            compact, lengths_clamped, batch_first=True, enforce_sorted=False
+        )
         out_packed, _ = self.gru(packed)
         out, _ = pad_packed_sequence(out_packed, batch_first=True, total_length=T)  # (B, T, gru_out)
-        pooled = self._pool_time(out, mask)                 # (B, gru_out); empty rows -> 0
+        pooled = self._pool_time(out, compact_mask)         # (B, gru_out); empty rows -> 0
         result = self.proj(pooled)                          # (B, out_dim)
         # Absent actions (no real frames) contribute nothing downstream; force a
         # clean zero so they are unaffected by the proj bias/LayerNorm.

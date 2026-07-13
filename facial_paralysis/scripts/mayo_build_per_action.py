@@ -8,7 +8,7 @@ the first time. Frames are seeked from a /dev/shm copy of the mov; MARLIN uses t
 mediapipe face crop + v1's quality normalizer.
 
 Output: outputs/mayo_action_bundles/<take>/<ActionName>.npz
-  marlin (W,768) + mp_seq (T,72) + mp_mask (T,)
+  marlin (W,768) + schema-versioned MediaPipe stream (T,72)
 
 Run on pod:  .venv/bin/python scripts/mayo_build_per_action.py
 """
@@ -29,7 +29,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.models.backbones.marlin_video import MarlinVideoEncoder, _face_crop_tools  # noqa: E402
-from src.preprocessing.action_bundle import MediaPipeFeatureExtractor  # noqa: E402
+from src.preprocessing.action_bundle import (  # noqa: E402
+    MediaPipeFeatureExtractor,
+    _bundle_npz_payload,
+)
 from src.preprocessing.image_quality import QualityConfig, QualityNormalizer  # noqa: E402
 
 LLF = ROOT / "data" / "livelinkface_data"
@@ -61,7 +64,8 @@ def main():
     enc = MarlinVideoEncoder.from_default_weights().to(dev).eval()
     Landmarker, _ = _face_crop_tools()
     crop_lm = Landmarker()
-    mp_ext = MediaPipeFeatureExtractor(with_geometry=False)
+    # The Mayo transfer does not currently establish capture mirroring.
+    mp_ext = MediaPipeFeatureExtractor(with_geometry=False, capture_mirrored=None)
     norm = QualityNormalizer(QualityConfig(mode="normalize", work_size=WORK_SIZE))
     segs = json.loads(SEG.read_text())
     OUTB.mkdir(parents=True, exist_ok=True)
@@ -100,9 +104,9 @@ def main():
                 continue
             d = OUTB / take
             d.mkdir(parents=True, exist_ok=True)
-            np.savez(d / f"{action}.npz", marlin=v[None, :].astype(np.float32),
-                     mp_seq=seq.astype(np.float32), mp_mask=mask.astype(bool),
-                     mp_feat_dim=mp_ext.feat_dim)
+            np.savez(d / f"{action}.npz", **_bundle_npz_payload({
+                "marlin": v[None, :], "mp_seq": seq, "mp_mask": mask,
+            }, mp_ext))
             made.append(action)
         print(f"{take}: {len(made)} action bundles {made} ({time.time()-t0:.1f}s)", flush=True)
     print(f"\nDONE -> {OUTB}", flush=True)

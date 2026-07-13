@@ -48,7 +48,11 @@ def extract_roboflow_bundles(reextract: bool = False) -> list[str]:
     MARLIN, length-1 MediaPipe sequence). Returns list of subject ids with a
     detected face."""
     from src.models.backbones.marlin_video import MarlinVideoEncoder
-    from src.preprocessing.action_bundle import MediaPipeFeatureExtractor
+    from src.preprocessing.action_bundle import (
+        MediaPipeFeatureExtractor,
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+    )
 
     ROBO_CACHE.mkdir(parents=True, exist_ok=True)
     imgs = []
@@ -60,6 +64,10 @@ def extract_roboflow_bundles(reextract: bool = False) -> list[str]:
         sid = vp.stem[:60]
         out = ROBO_CACHE / sid / f"{ACTION}.npz"
         if out.exists() and not reextract:
+            _assert_existing_cache_schema(
+                out, "mediapipe_bs_lr_v1",
+                expected_capture_mirrored="unknown",
+            )
             ok_ids.append(sid); continue
         if enc is None:
             enc = MarlinVideoEncoder.from_default_weights().eval()
@@ -72,8 +80,9 @@ def extract_roboflow_bundles(reextract: bool = False) -> list[str]:
         if marlin is None or not mask.any():
             n_noface += 1; continue
         d = ROBO_CACHE / sid; d.mkdir(parents=True, exist_ok=True)
-        np.savez(d / f"{ACTION}.npz", marlin=marlin[None, :], mp_seq=seq, mp_mask=mask,
-                 mp_feat_dim=mp_ext.feat_dim)
+        np.savez(d / f"{ACTION}.npz", **_bundle_npz_payload({
+            "marlin": marlin[None, :], "mp_seq": seq, "mp_mask": mask,
+        }, mp_ext))
         ok_ids.append(sid)
     print(f"  roboflow: {len(ok_ids)} images with face, {n_noface} dropped (no face)")
     return ok_ids
@@ -81,14 +90,31 @@ def extract_roboflow_bundles(reextract: bool = False) -> list[str]:
 
 def _load_roboflow_records(ok_ids: list[str]):
     from src.datasets.patient_multistream import ActionBundle, MultiStreamRecord
+    from src.preprocessing.action_bundle import _assert_existing_cache_schema
+
     recs = []
     for sid in ok_ids:
-        d = np.load(ROBO_CACHE / sid / f"{ACTION}.npz")
+        path = ROBO_CACHE / sid / f"{ACTION}.npz"
+        _assert_existing_cache_schema(
+            path, "mediapipe_bs_lr_v1", expected_capture_mirrored="unknown"
+        )
+        with np.load(path, allow_pickle=False) as d:
+            marlin = d["marlin"].astype(np.float32)
+            mp_seq = d["mp_seq"].astype(np.float32)
+            mp_mask = d["mp_mask"]
+            schema = str(d["mp_feature_schema"].item())
+            names = tuple(str(x) for x in d["mp_feature_names"])
+            side = str(d["mp_side_convention"].item())
+            mirror = str(d["mp_capture_mirrored"].item())
         recs.append(MultiStreamRecord(
             patient_id=f"robo_{sid}", label=1, task="binary",
-            actions=[ActionBundle(marlin=d["marlin"].astype(np.float32),
-                                  mp_seq=d["mp_seq"].astype(np.float32),
-                                  mp_mask=d["mp_mask"].astype(bool))]))
+            actions=[ActionBundle(marlin=marlin,
+                                  mp_seq=mp_seq,
+                                  mp_mask=mp_mask,
+                                  mp_feature_schema=schema,
+                                  mp_feature_names=names,
+                                  mp_side_convention=side,
+                                  mp_capture_mirrored=mirror)]))
     return recs
 
 
@@ -111,7 +137,8 @@ def _cfg(epochs=60, **kw):
 def _palsynet_dataset():
     from src.datasets.patient_multistream import MultiStreamPatientDataset
     return MultiStreamPatientDataset.from_disk(
-        PALSY_CACHE, PALSY_CACHE / "labels.csv", actions=[ACTION], mp_feat_dim=MP_FEAT_DIM)
+        PALSY_CACHE, PALSY_CACHE / "labels.csv", actions=[ACTION],
+        mp_feat_dim=MP_FEAT_DIM, mp_feature_schema="mediapipe_bs_lr_v1")
 
 
 def _palsy_prob(model, records):

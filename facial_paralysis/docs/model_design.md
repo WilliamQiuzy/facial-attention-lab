@@ -97,7 +97,7 @@ Both carry time; they are complementary, not redundant.
 | Stream | Source | Temporal? | Why it matters for FP |
 |---|---|---|---|
 | **Appearance + motion** | **MARLIN** (frozen, video-native MAE), 16-frame clip → 768-d | ✓ inside MARLIN (tubelet attention) | Holistic facial motion, texture, coarse asymmetry — learned from 700k face videos |
-| **Geometry + dynamics** | **MediaPipe**: 52 blendshapes + left/right landmark-asymmetry features, per-frame sequence → trainable temporal encoder | ✓ inside the GRU | Explicit, interpretable left-vs-right asymmetry trajectory: synkinesis, asymmetric onset/peak, incomplete eye closure. Cheap and highly FP-specific |
+| **Geometry + dynamics** | **MediaPipe**: 52 blendshapes + bilateral landmark-asymmetry features, per-frame sequence → trainable temporal encoder | ✓ inside the GRU | Explicit topology-side asymmetry trajectories: synkinesis, asymmetric onset/peak, incomplete eye closure. Patient-side interpretation requires frozen capture orientation. Cheap and highly FP-specific |
 
 Per action: `embed = concat(MARLIN_vec[768], dynamics_vec[H_t])`. The
 `SeverityTrunk` (§5) is indifferent to the provenance; only `embed_dim` changes.
@@ -134,7 +134,7 @@ Per frame, MediaPipe gives 478 landmarks + 52 blendshape coefficients. We derive
 a compact **per-frame feature vector** and keep the **sequence** over the clip:
 
 - 52 blendshape coefficients (raw activation of each facial action).
-- Left/right **asymmetry features**: signed differences of mirror-paired
+- Bilateral **asymmetry features**: signed differences of mirror-paired
   blendshapes and of key landmark distances (eye-closure gap, mouth-corner pull,
   brow height) between the two hemifaces.
 
@@ -240,7 +240,10 @@ For each action slot the model builds one `embed` of width `D`:
    pooled, not modeled, since MARLIN already handled intra-window time.)
 2. **Geometric-temporal:** the MediaPipe per-frame feature sequence `(T × F)` →
    `TemporalLandmarkEncoder` (1-layer GRU / temporal transformer, **trainable**) →
-   `dynamics_vec (H_t)`. A padding mask handles variable `T`.
+   `dynamics_vec (H_t)`. A boolean validity mask handles variable `T` and
+   detector misses. Valid frames are stable-compacted in their original order
+   before packed-GRU execution, so an interior gap cannot discard later motion;
+   non-finite valid values fail closed and masked values are zeroed safely.
 3. `embed = concat(marlin_vec, dynamics_vec)`, width `D = 768 + H_t`.
 
 This is the *only* structural addition versus the already-built model: a small
@@ -325,7 +328,8 @@ dataset sizes. See `multitask_loss` in `src/models/multitask.py`.
 | `src/models/temporal.py` | `TemporalLandmarkEncoder` (packed bidirectional GRU over MediaPipe `T×F` → `dynamics_vec`). §5.0. | ✓ built + tested |
 | `src/models/facial_palsy_model.py` | `FacialPalsyModel`: assembles MARLIN-window-pool ⊕ temporal → `SeverityTrunk` → multi-task heads. §5. | ✓ built + tested |
 | `src/datasets/patient_multistream.py` | `MultiStreamPatientDataset` (+ `from_disk`, `collate_multistream`) over the bundle `.npz`. | ✓ built + tested |
-| `src/preprocessing/action_bundle.py` | Per-action clip → MARLIN windows + MediaPipe feature sequence → bundle `.npz`. `MediaPipeFeatureExtractor` (blendshapes + L/R asymmetry). | ✓ built + real-data verified |
+| `src/preprocessing/action_bundle.py` | Per-action clip → MARLIN windows + schema-versioned MediaPipe sequence. Supports blendshape-only, legacy5, and blendshape + clinical23 landmark modes. | ✓ built + tested |
+| `src/preprocessing/clinical_landmarks.py` | 23 bilateral eye/brow/mouth measurements after 2D translation/scale/roll normalization. | ✓ built + invariant-tested |
 | `src/training/train_multitask.py` | Multi-task trainer for `FacialPalsyModel` (per-sample task routing, HB-kappa monitor, early stop). §6–7. | ✓ built + e2e verified |
 | `src/models/backbones/oo_mlp_mixer.py` | Frozen Oo MLP-Mixer (per-frame). Appearance-only ablation. | ✓ exists |
 | `src/training/train_hb.py` | Legacy single-task trainer + k-fold + metrics (works with `HBHead`). | ✓ legacy |
@@ -333,16 +337,30 @@ dataset sizes. See `multitask_loss` in `src/models/multitask.py`.
 | `src/evaluation/hb_metrics.py` | Quadratic-weighted kappa, MAE-in-grades, confusion. Primary metric = kappa. | ✓ exists |
 
 **`.npz` schema.** Per `<cache>/<patient_id>/<action>.npz`:
-`marlin` `(W, 768)` float32 · `mp_seq` `(T, F)` float32 (52 blendshapes + 20 L/R
-asymmetry deltas → **F = 72** for the MediaPipe FaceLandmarker) · `mp_mask` `(T,)`
-bool · `mp_feat_dim` scalar. `from_disk` falls back to a legacy `embeddings` key
-(appearance-only) when the new keys are absent. Set `FacialPalsyConfig.mp_feat_dim`
-to the stored `mp_feat_dim`.
+`marlin` `(W, 768)` float32 · `mp_seq` `(T, F)` float32 · `mp_mask` `(T,)`
+bool · `mp_feat_dim` scalar · `mp_feature_schema` string · `mp_feature_names`
+string array · `mp_side_convention` string · `mp_capture_mirrored` string.
+The default schema is blendshape + mirrored deltas (normally
+**F = 72**); `clinical23` appends 23 raw-landmark measurements (normally
+**F = 95**) under `mediapipe_bs_lr_v1+clinical23_v2`. The frozen July-10
+`legacy_clinical23_v1` function remains only for exact static-cache
+reproduction. Landmark columns use topology-anchor side names until capture
+mirroring is known. A schema ID is bound to its exact ordered names. Mixed
+schemaful/metadata-free MediaPipe caches fail closed; a wholly metadata-free
+legacy set requires explicit opt-in. Opposite known capture-mirror conventions
+cannot be mixed until their signed columns are canonicalized. MARLIN-only
+bundles remain compatible and idempotently reusable. All first-party bundle
+writers use the same payload helper; existing files are schema-checked before a
+script may skip/reuse them, so historical dimension-only caches require an
+explicit audited legacy load or regeneration rather than silent reuse.
+Set `FacialPalsyConfig.mp_feat_dim` to the stored value.
 
-**Status: the full pipeline is implemented and tested end-to-end** (47 assert-based
-tests across `tests/test_{ordinal,multitask,pipeline,pipeline_e2e}.py`, all green;
-real-data extract→dataset→model round-trip verified). Remaining before real
-training: clinical HB labels + per-action segmentation (external dependency).
+**Status: the full pipeline is implemented and tested end-to-end.** The current
+repository-wide script-style suite passes 133/133 tests, including exact schema
+binding, V1 reproducibility, V2 landmark invariants, interior-gap masking,
+transactional Mayo audit output, and the existing planted-signal training tests.
+Remaining before a valid Mayo HB training claim: clinical HB labels + per-action
+segmentation (external dependencies).
 
 ## 9. Validation strategy
 

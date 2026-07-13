@@ -41,6 +41,7 @@ from src.models.facial_palsy_model import FacialPalsyConfig, FacialPalsyModel  #
 from src.models.multitask import TaskSpec  # noqa: E402
 from src.models.ordinal import predict_grade  # noqa: E402
 from src.training.train_multitask import MTTrainConfig, train_multitask  # noqa: E402
+from scripts._bundle_io import load_action_bundle  # noqa: E402
 
 CACHE = ROOT / "outputs" / "yfp_clip_bundles"
 XML_DIR = ROOT / "data" / "external" / "YFP" / "Image_large_XML"
@@ -86,11 +87,10 @@ def build_records_from_cache():
         lab = parse_xml(xml)
         if lab["eyes"] is None and lab["mouth"] is None:
             continue
-        d = np.load(npz)
-        bundle = ActionBundle(
-            marlin=d["marlin"].astype(np.float32),
-            mp_seq=d["mp_seq"].astype(np.float32),
-            mp_mask=d["mp_mask"].astype(bool),
+        bundle = load_action_bundle(
+            npz,
+            allow_legacy_schema=True,
+            expected_feat_dim=MP_FEAT_DIM,
         )
         n_clips += 1
         base = f"yfp_{subject}_{anchor}"

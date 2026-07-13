@@ -73,12 +73,23 @@ def parse_split_labels(split: str) -> dict[str, dict]:
 # ----------------------------------------------------------------------
 def encode_split(split: str, enc, mp_ext, normalizer, reextract: bool = False) -> dict[str, str]:
     """Returns {file_name: cache_subdir} for images with a detected face."""
+    from src.preprocessing.action_bundle import (
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+    )
+
     out_ids: dict[str, str] = {}
     n_noface = 0
     for vp in sorted((FNP / split).glob("*.jpg")):
         sid = f"{split}/{vp.stem[:60]}"
         out = CACHE / sid / f"{ACTION}.npz"
         if out.exists() and not reextract:
+            _assert_existing_cache_schema(
+                out,
+                mp_ext.feature_schema,
+                expected_side_convention=mp_ext.side_convention,
+                expected_capture_mirrored="unknown",
+            )
             out_ids[vp.name] = sid
             continue
         img = cv2.imread(str(vp))
@@ -90,8 +101,9 @@ def encode_split(split: str, enc, mp_ext, normalizer, reextract: bool = False) -
             n_noface += 1
             continue
         out.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out, marlin=marlin[None, :], mp_seq=seq, mp_mask=mask,
-                 mp_feat_dim=mp_ext.feat_dim)
+        np.savez(out, **_bundle_npz_payload({
+            "marlin": marlin[None, :], "mp_seq": seq, "mp_mask": mask,
+        }, mp_ext))
         out_ids[vp.name] = sid
     print(f"  [{split}] {len(out_ids)} images with face, {n_noface} dropped (no face)")
     return out_ids
@@ -101,16 +113,18 @@ def encode_split(split: str, enc, mp_ext, normalizer, reextract: bool = False) -
 # 3. Build records (one per (image, region task))
 # ----------------------------------------------------------------------
 def build_records(split: str, labels: dict, ok_ids: dict[str, str]):
-    from src.datasets.patient_multistream import ActionBundle, MultiStreamRecord
+    from scripts._bundle_io import load_action_bundle
+    from src.datasets.patient_multistream import MultiStreamRecord
     recs = []
     for fn, sid in ok_ids.items():
         lab = labels.get(fn)
         if lab is None:
             continue
-        d = np.load(CACHE / sid / f"{ACTION}.npz")
-        bundle = ActionBundle(marlin=d["marlin"].astype(np.float32),
-                              mp_seq=d["mp_seq"].astype(np.float32),
-                              mp_mask=d["mp_mask"].astype(bool))
+        bundle = load_action_bundle(
+            CACHE / sid / f"{ACTION}.npz",
+            allow_legacy_schema=True,
+            expected_feat_dim=MP_FEAT_DIM,
+        )
         for task in ("eyes", "mouth"):
             if lab[task] is not None:
                 recs.append(MultiStreamRecord(
@@ -165,7 +179,8 @@ def main():
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Encoding FNP through frozen MARLIN (+ quality normalizer) on {device}...")
     enc = MarlinVideoEncoder.from_default_weights().to(device).eval()
-    mp_ext = MediaPipeFeatureExtractor()
+    # Public image capture orientation is not documented.
+    mp_ext = MediaPipeFeatureExtractor(capture_mirrored=None)
     normalizer = QualityNormalizer(QualityConfig(mode="normalize", work_size=112))
 
     labels = {sp: parse_split_labels(sp) for sp in SPLITS}

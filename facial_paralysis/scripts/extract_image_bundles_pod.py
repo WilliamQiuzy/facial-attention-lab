@@ -2,8 +2,8 @@
 
 Reads outputs/expanded_plan.json (from build_expanded_plan.py) and, for each image,
 produces the same degenerate-clip bundle as the FNP/YFP image sets (Runs #3/#5):
-MARLIN on the face-cropped image (tiled to 16) + a length-1 MediaPipe feature seq,
-with v1's quality normalizer (normalize, work_size 112), mp_feat_dim=72.
+MARLIN on the face-cropped image (tiled to 16) + a schema-versioned, length-1
+MediaPipe feature sequence, with v1's quality normalizer (normalize, work_size 112).
 
 Output: outputs/expanded_bundles/<id>.npz  (marlin (1,768), mp_seq (1,72), mp_mask (1,))
 
@@ -24,7 +24,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.models.backbones.marlin_video import MarlinVideoEncoder, _face_crop_tools  # noqa: E402
-from src.preprocessing.action_bundle import MediaPipeFeatureExtractor  # noqa: E402
+from src.preprocessing.action_bundle import (  # noqa: E402
+    MediaPipeFeatureExtractor,
+    _assert_existing_cache_schema,
+    _bundle_npz_payload,
+)
 from src.preprocessing.image_quality import QualityConfig, QualityNormalizer  # noqa: E402
 
 PLAN = ROOT / "outputs" / "expanded_plan.json"
@@ -38,7 +42,8 @@ def main():
     enc = MarlinVideoEncoder.from_default_weights().to(dev).eval()
     Landmarker, _ = _face_crop_tools()
     crop_lm = Landmarker()
-    mp_ext = MediaPipeFeatureExtractor(with_geometry=False)
+    # The expanded public sources do not document capture mirroring.
+    mp_ext = MediaPipeFeatureExtractor(with_geometry=False, capture_mirrored=None)
     norm = QualityNormalizer(QualityConfig(mode="normalize", work_size=WORK_SIZE))
 
     plan = json.loads(PLAN.read_text())
@@ -48,6 +53,12 @@ def main():
     for k, e in enumerate(plan):
         out = OUTB / f"{e['id']}.npz"
         if out.exists():
+            _assert_existing_cache_schema(
+                out,
+                mp_ext.feature_schema,
+                expected_side_convention=mp_ext.side_convention,
+                expected_capture_mirrored="unknown",
+            )
             done += 1; continue
         # plan src_path is absolute (from the build host); remap to THIS root
         sp = e["src_path"]
@@ -59,9 +70,16 @@ def main():
         seq, mask = mp_ext.extract_sequence([img])
         if v is None or seq is None or not mask.any():
             skip += 1; continue
-        np.savez(out, marlin=v[None, :].astype(np.float32),
-                 mp_seq=seq.astype(np.float32), mp_mask=mask.astype(bool),
-                 mp_feat_dim=mp_ext.feat_dim, task=e["task"], label=e["label"], dataset=e["dataset"])
+        payload = _bundle_npz_payload({
+            "marlin": v[None, :], "mp_seq": seq, "mp_mask": mask,
+        }, mp_ext)
+        # Plan labels are sample metadata, separate from the stream schema.
+        payload.update({
+            "task": np.asarray(e["task"]),
+            "label": np.asarray(e["label"]),
+            "dataset": np.asarray(e["dataset"]),
+        })
+        np.savez(out, **payload)
         done += 1
         if (k + 1) % 200 == 0:
             print(f"  {k+1}/{len(plan)} done={done} skip={skip} ({time.time()-t0:.0f}s)", flush=True)

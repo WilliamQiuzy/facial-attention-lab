@@ -37,6 +37,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from scripts._bundle_io import load_bundle_arrays  # noqa: E402
+
 CFD_DIR = Path("/Users/qiu.ziyue/Library/CloudStorage/OneDrive-MayoClinic/ziyue/"
                "facial_defect/data/external_datasets/CFD/cfd/CFD Version 3.0/Images")
 PALSY_VIDEOS = ROOT / "data" / "external" / "palsynet" / "data"
@@ -56,7 +58,12 @@ def extract_all(reextract: bool = False):
     """Extract PalsyNet (videos) + CFD-neutral (images) bundles with the SAME
     quality normalizer. Returns (palsy_records, cfd_records, feat_dim)."""
     from src.models.backbones.marlin_video import MarlinVideoEncoder
-    from src.preprocessing.action_bundle import MediaPipeFeatureExtractor, extract_action_bundle
+    from src.preprocessing.action_bundle import (
+        MediaPipeFeatureExtractor,
+        _assert_existing_cache_schema,
+        _bundle_npz_payload,
+        extract_action_bundle,
+    )
 
     norm = _normalizer()
     enc = mp_ext = None
@@ -65,7 +72,8 @@ def extract_all(reextract: bool = False):
         nonlocal enc, mp_ext
         if enc is None:
             enc = MarlinVideoEncoder.from_default_weights().eval()
-            mp_ext = MediaPipeFeatureExtractor()
+            # Neither source documents whether its capture is mirrored.
+            mp_ext = MediaPipeFeatureExtractor(capture_mirrored=None)
 
     # --- PalsyNet videos (re-extract with normalizer) ---
     palsy_rows = []
@@ -75,6 +83,11 @@ def extract_all(reextract: bool = False):
             out = PALSY_NORM_CACHE / sid / f"{ACTION}.npz"
             palsy_rows.append((sid, label))
             if out.exists() and not reextract:
+                _assert_existing_cache_schema(
+                    out,
+                    "mediapipe_bs_lr_v1",
+                    expected_capture_mirrored="unknown",
+                )
                 continue
             _ensure()
             b = extract_action_bundle(vp, enc, mp_ext, n_marlin_windows=N_MARLIN_WINDOWS,
@@ -82,8 +95,7 @@ def extract_all(reextract: bool = False):
             if b is None:
                 print(f"  [skip] palsy {sid}"); continue
             out.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(out, marlin=b["marlin"], mp_seq=b["mp_seq"], mp_mask=b["mp_mask"],
-                     mp_feat_dim=mp_ext.feat_dim)
+            np.savez(out, **_bundle_npz_payload(b, mp_ext))
 
     # --- CFD neutral images ---
     cfd_imgs = sorted(CFD_DIR.rglob("*-N.jpg"))
@@ -94,6 +106,11 @@ def extract_all(reextract: bool = False):
         out = CFD_CACHE / sid / f"{ACTION}.npz"
         cfd_ids.append(sid)
         if out.exists() and not reextract:
+            _assert_existing_cache_schema(
+                out,
+                "mediapipe_bs_lr_v1",
+                expected_capture_mirrored="unknown",
+            )
             continue
         _ensure()
         img = cv2.imread(str(vp))
@@ -104,14 +121,19 @@ def extract_all(reextract: bool = False):
         if marlin is None or not mask.any():
             continue
         out.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out, marlin=marlin[None, :], mp_seq=seq, mp_mask=mask, mp_feat_dim=mp_ext.feat_dim)
+        np.savez(out, **_bundle_npz_payload({
+            "marlin": marlin[None, :], "mp_seq": seq, "mp_mask": mask,
+        }, mp_ext))
 
     feat_dim = None
     # read one bundle to learn feat_dim
     for sid, _ in palsy_rows:
         p = PALSY_NORM_CACHE / sid / f"{ACTION}.npz"
         if p.exists():
-            feat_dim = int(np.load(p)["mp_feat_dim"]); break
+            feat_dim = load_bundle_arrays(
+                p, allow_legacy_schema=True
+            ).mp_seq.shape[1]
+            break
     return palsy_rows, cfd_ids, feat_dim
 
 
@@ -122,13 +144,13 @@ def _load_vecs(cache, ids_labels):
         p = cache / sid / f"{ACTION}.npz"
         if not p.exists():
             continue
-        d = np.load(p)
-        m = d["marlin"]
+        d = load_bundle_arrays(p, allow_legacy_schema=True)
+        m = d.marlin
         if m.size == 0:
             continue
-        mp = d["mp_seq"]; mask = d["mp_mask"]
+        mp = d.mp_seq; mask = d.mp_mask
         # asymmetry features = last (F-52) dims; mean over valid frames
-        valid = mp[mask.astype(bool)] if mask.any() else mp
+        valid = mp[mask] if mask.any() else mp
         asym_dims = valid[:, 52:] if valid.shape[1] > 52 else valid
         marlin.append(m.mean(0)); asym.append(asym_dims.mean(0))
         labels.append(label); domains.append(domain); kept.append(sid)
