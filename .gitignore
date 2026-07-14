@@ -81,5 +81,14 @@ facial_paralysis/outputs/ssl_encoder.pt
 # local-only under the IRB/PHI boundary; commit only de-identified aggregates.
 facial_paralysis/outputs/landmark_fusion/mayo_clinical23_trajectories/
 facial_paralysis/outputs/landmark_fusion/mayo_clinical23_audit.json
+# Local face sheets, salts, and manual identity-review state.
+facial_paralysis/outputs/palsynet_identity_audit/
+facial_paralysis/outputs/.palsynet_identity_audit.staging-*/
+facial_paralysis/outputs/.palsynet_identity_audit.backup-*/
+# Large SSL caches/checkpoints and the Mayo development-exposure ledger.
+# Small deidentified benchmark JSON (for example locked_outer_results.json)
+# remains trackable outside these exact paths.
+facial_paralysis/outputs/dynamic_landmark/pretraining/
+facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json
 facial_paralysis/data_acquisition/youtube/clips/
 facial_paralysis/data_acquisition/youtube/faces/
