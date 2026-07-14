@@ -69,7 +69,7 @@ Commands:
 - [ ] Do not call `action_bundle._read_frames(max_frames=...)`, which reads entire long videos and produces isolated samples. Use `CAP_PROP_FRAME_COUNT`, seek to each locked start, sequentially decode 32 frames, and verify the reported source frame index after every read.
 - [ ] Run one `MediaPipeFeatureExtractor(model_path=..., landmark_features="clinical23", capture_mirrored=None)` instance so the 72- and 23-dimensional blocks come from identical frames.
 - [ ] Persist one transactional cache per recording, each with a unique de-identified `recording_id` and an identity-audit-derived `group_id`. The manifest contains source hashes, FPS/timestamps, frame indices, producer/schema versions, coverage, and within-window variation. Keep raw public videos unchanged.
-- [ ] Store nuisance-only audit fields separately: duration, dimensions, file size/bitrate proxy, detection rate, luminance, face-scale proxy, roll proxy, and camera-motion proxy. Never feed label-derived values into this probe.
+- [ ] Store nuisance-only audit fields separately: duration, dimensions, file size/bitrate proxy, detection rate, luminance, face-scale proxy, roll proxy, and sampled frame-difference proxy. Never feed label-derived values into this probe.
 - [ ] Verify at least 47/49 usable videos, each retained video at least 90% valid, and at least 95% of retained videos with non-zero landmark variation. Stop before training if gates fail.
 
 Command:
@@ -79,6 +79,7 @@ Command:
   facial_paralysis/scripts/build_palsynet_v2_windows.py \
   --data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/palsynet/data \
   --model-path /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out/_models/face_landmarker.task \
+  --identity-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/palsynet_identity_audit/identity_manifest.json \
   --output-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/palsynet/derived/clinical23_v2_windows
 ```
 

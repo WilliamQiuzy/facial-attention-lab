@@ -237,5 +237,70 @@ def test_every_frame_revalidates_blendshape_column_order(c: Check):
         "category reordering cannot silently corrupt feature columns")
 
 
+def test_nuisance_audit_reuses_detection_and_never_changes_feature_columns(c: Check):
+    """Face scale/roll must come from the same detection, outside model input."""
+    ext = _registered_extractor("clinical23")
+    categories = [
+        SimpleNamespace(category_name=name, score=float(index) / 100.0)
+        for index, name in enumerate(MP_FEATURE_NAMES_BY_SCHEMA["mediapipe_bs_lr_v1"][:52])
+    ]
+    landmarks = _landmark_objects()
+    calls = {"detect": 0}
+
+    class FakeLandmarker:
+        def detect(self, _image):
+            calls["detect"] += 1
+            return SimpleNamespace(
+                face_blendshapes=[categories],
+                face_landmarks=[landmarks],
+            )
+
+    ext._mp = SimpleNamespace(
+        Image=lambda **kwargs: kwargs,
+        ImageFormat=SimpleNamespace(SRGB="srgb"),
+    )
+    ext._landmarker = FakeLandmarker()
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    expected = ext._assemble_features(
+        np.asarray([item.score for item in categories], dtype=np.float32),
+        landmarks,
+        image_width=640,
+        image_height=480,
+    )
+
+    features, nuisance = ext.extract_frame_with_nuisance(frame)
+
+    c.eq(calls["detect"], 1, "nuisance extraction cannot trigger a second detection")
+    c.eq(features.shape, (95,), "nuisance values are not appended to model input")
+    c.true(bool(np.array_equal(features, expected)),
+           "same-detection audit leaves the exact feature vector unchanged")
+    c.eq(set(nuisance), {"face_scale", "eye_line_roll_degrees"},
+         "only the frozen nuisance geometry fields are exposed")
+    c.true(all(np.isfinite(value) for value in nuisance.values()),
+           "nuisance values are finite")
+
+
+def test_public_nuisance_api_keeps_private_alias_and_close_is_idempotent(c: Check):
+    ext = object.__new__(MediaPipeFeatureExtractor)
+    calls = {"detect": 0, "close": 0}
+    ext._closed = False
+    ext._landmarker = SimpleNamespace(
+        close=lambda: calls.__setitem__("close", calls["close"] + 1)
+    )
+    ext.extract_frame_with_nuisance = lambda _frame: (
+        np.zeros(95, dtype=np.float32),
+        {"face_scale": 0.2, "eye_line_roll_degrees": 0.0},
+    )
+    feature, nuisance = ext._frame_features_with_nuisance(
+        np.zeros((8, 8, 3), dtype=np.uint8)
+    )
+    c.eq(feature.shape, (95,), "legacy private caller delegates to public API")
+    c.eq(set(nuisance), {"face_scale", "eye_line_roll_degrees"},
+         "private alias preserves the public result")
+    ext.close()
+    ext.close()
+    c.eq(calls["close"], 1, "actual FaceLandmarker is closed exactly once")
+
+
 if __name__ == "__main__":
     run_all("test_action_bundle_landmarks", dict(globals()))

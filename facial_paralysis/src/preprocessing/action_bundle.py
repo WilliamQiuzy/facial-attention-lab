@@ -102,6 +102,7 @@ class MediaPipeFeatureExtractor:
                 num_faces=1,
             )
         )
+        self._closed = False
         self._bs_names: list[str] | None = None
         self._pairs: list[tuple[int, int]] | None = None  # (left_idx, right_idx)
 
@@ -233,26 +234,90 @@ class MediaPipeFeatureExtractor:
                     landmarks, image_width=image_width, image_height=image_height))
         return np.concatenate(parts).astype(np.float32, copy=False)
 
-    def _frame_features(self, bgr: np.ndarray) -> np.ndarray | None:
+    @staticmethod
+    def _nuisance_geometry(
+        landmarks,
+        image_width: int,
+        image_height: int,
+    ) -> dict[str, float]:
+        """Return same-detection acquisition proxies outside the model input.
+
+        Face scale is the outer-eye distance in pixels divided by the frame
+        diagonal.  Roll is the pixel-space angle of that same eye line.  These
+        two values are audit metadata only and are never appended to the
+        registered feature vector.
+        """
+        if image_width <= 0 or image_height <= 0 or len(landmarks) <= 263:
+            raise ValueError("valid frame dimensions and outer-eye landmarks are required")
+        right = np.asarray(
+            [float(landmarks[33].x) * image_width,
+             float(landmarks[33].y) * image_height],
+            dtype=np.float64,
+        )
+        left = np.asarray(
+            [float(landmarks[263].x) * image_width,
+             float(landmarks[263].y) * image_height],
+            dtype=np.float64,
+        )
+        delta = left - right
+        frame_diagonal = float(np.hypot(image_width, image_height))
+        face_scale = float(np.linalg.norm(delta) / frame_diagonal)
+        roll = float(np.degrees(np.arctan2(delta[1], delta[0])))
+        if not np.isfinite((face_scale, roll)).all() or face_scale <= 0:
+            raise ValueError("same-detection nuisance geometry must be finite and positive")
+        return {
+            "face_scale": face_scale,
+            "eye_line_roll_degrees": roll,
+        }
+
+    def extract_frame_with_nuisance(
+        self,
+        bgr: np.ndarray,
+    ) -> tuple[np.ndarray | None, dict[str, float] | None]:
+        """Extract model features and nuisance audit values with one detection."""
         img = self._mp.Image(
             image_format=self._mp.ImageFormat.SRGB,
             data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
         )
         res = self._landmarker.detect(img)
         if not res.face_blendshapes:
-            return None
+            return None, None
         cats = res.face_blendshapes[0]
         self._ensure_layout([c.category_name for c in cats])
         scores = np.array([c.score for c in cats], dtype=np.float32)
         landmarks = res.face_landmarks[0] if res.face_landmarks else None
         if self.landmark_features != "none" and landmarks is None:
-            return None
+            return None, None
         try:
-            return self._assemble_features(
+            features = self._assemble_features(
                 scores, landmarks, image_width=bgr.shape[1], image_height=bgr.shape[0])
+            nuisance = (
+                None if landmarks is None else self._nuisance_geometry(
+                    landmarks, image_width=bgr.shape[1], image_height=bgr.shape[0]
+                )
+            )
+            return features, nuisance
         except ValueError:
             # A malformed landmark frame is a detector miss, not a neutral face.
-            return None
+            return None, None
+
+    def _frame_features_with_nuisance(
+        self,
+        bgr: np.ndarray,
+    ) -> tuple[np.ndarray | None, dict[str, float] | None]:
+        """Backward-compatible alias for :meth:`extract_frame_with_nuisance`."""
+        return self.extract_frame_with_nuisance(bgr)
+
+    def _frame_features(self, bgr: np.ndarray) -> np.ndarray | None:
+        features, _nuisance = self.extract_frame_with_nuisance(bgr)
+        return features
+
+    def close(self) -> None:
+        """Release the underlying FaceLandmarker exactly once."""
+        if getattr(self, "_closed", False):
+            return
+        self._landmarker.close()
+        self._closed = True
 
     def extract_sequence(self, frames_bgr: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
         """Returns (seq (T, F) float32, mask (T,) bool). Frames with no detected

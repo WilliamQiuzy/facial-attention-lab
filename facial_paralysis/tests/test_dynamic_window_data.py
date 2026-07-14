@@ -300,6 +300,27 @@ def test_cache_rejects_nonfinite_valid_values_nonzero_padding_and_low_coverage(c
             "coverage below 90 percent is rejected")
 
 
+def test_cache_coverage_boundary_is_exactly_ninety_percent(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        fail_mask = np.zeros(SHAPE[:2], dtype=bool)
+        fail_mask.reshape(-1)[:115] = True
+        pass_mask = np.zeros(SHAPE[:2], dtype=bool)
+        pass_mask.reshape(-1)[:116] = True
+        c.raises(
+            lambda: load_dynamic_landmark_recording(
+                _save(root, "coverage_115.npz", valid_mask=fail_mask)
+            ),
+            ValueError,
+            "115 of 128 frames is below the 90 percent gate",
+        )
+        record = load_dynamic_landmark_recording(
+            _save(root, "coverage_116.npz", valid_mask=pass_mask)
+        )
+        c.eq(int(record.valid_mask.sum()), 116,
+             "116 of 128 frames clears the exact coverage gate")
+
+
 def test_collection_requires_unique_recordings_but_allows_shared_groups(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
