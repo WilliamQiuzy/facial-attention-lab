@@ -2,8 +2,9 @@
 
 The script uses provenance-verified frozen MARLIN bundles only to rank possible
 cross-recording identity matches.  Face contact sheets and the audit salt stay
-under an ignored output directory.  The JSON manifest contains opaque IDs and
-aggregate digests, never source paths, filenames, or per-record cache mappings.
+under an ignored output directory.  The JSON manifest contains opaque IDs plus
+per-record source digests needed for deidentified cache joins, never source
+paths, filenames, or per-record cache paths.
 """
 from __future__ import annotations
 
@@ -660,6 +661,7 @@ def build_manifest(
                 "recording_id": record.recording_id,
                 "group_id": groups[record.recording_id],
                 "label": record.label,
+                "source_sha256": record.source_sha256,
                 "identity_status": review_status,
                 "claim_unit": claim_unit,
             }

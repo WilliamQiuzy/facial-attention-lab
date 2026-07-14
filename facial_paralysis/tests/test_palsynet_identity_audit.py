@@ -626,9 +626,18 @@ def test_manifest_is_deidentified_and_defaults_to_unreviewed_video_holdout(c: Ch
     c.true("/private/" not in encoded and "source_path" not in encoded,
            "raw paths and path fields never enter the manifest")
     c.true(all(set(row) == {
-        "recording_id", "group_id", "label", "identity_status", "claim_unit"
+        "recording_id", "group_id", "label", "source_sha256",
+        "identity_status", "claim_unit"
     } for row in manifest["recordings"]),
-           "per-record source and bundle provenance stays out of persisted audit")
+           "per-record source hash supports deidentified cache joins")
+    c.eq(
+        {row["source_sha256"] for row in manifest["recordings"]},
+        {"1" * 64, "2" * 64},
+        "source hashes join raw videos to opaque recording and group ids",
+    )
+    c.true(all("bundle_sha256" not in row and "bundle_key" not in row
+               for row in manifest["recordings"]),
+           "cache-specific bundle provenance remains aggregate-only")
     c.eq(manifest["counts"], {"affected": 1, "unaffected": 1, "total": 2,
                               "ranked_pairs": 1},
          "aggregate counts are explicit")
