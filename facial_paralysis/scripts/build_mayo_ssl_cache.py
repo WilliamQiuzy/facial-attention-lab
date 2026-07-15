@@ -1,0 +1,3665 @@
+"""Build a transactional, deidentified Mayo development-only SSL cache.
+
+The source collection remains read-only.  MediaPipe recordings are stored as
+compact source-rate clinical23_v2 trajectories plus exact-source 30-Hz views; the
+ARKit-only 52-blendshape trajectories remain a separate modality.  Generated
+metadata uses opaque HMAC identifiers and never serializes a session name or
+filesystem location.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import binascii
+import csv
+import fcntl
+import hashlib
+import hmac
+import importlib.metadata
+import io
+import json
+import math
+import os
+import platform
+import re
+import secrets
+import shutil
+import stat
+import sys
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from fractions import Fraction
+from pathlib import Path, PurePosixPath
+from typing import Callable, Mapping, Sequence
+
+import cv2
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PINNED_MEDIAPIPE_PYTHON = Path(
+    "/Users/williamqiu/.cache/facial-paralysis/mediapipe-py310/bin/python"
+)
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.datasets.dynamic_landmark import (  # noqa: E402
+    DYNAMIC_FEATURE_NAMES,
+    DYNAMIC_FEATURE_SCHEMA,
+)
+from src.preprocessing.action_bundle import MediaPipeFeatureExtractor  # noqa: E402
+from src.preprocessing.clinical_landmarks import (  # noqa: E402
+    CLINICAL_SIDE_CONVENTION,
+)
+
+
+VIDEO_EXTENSIONS = frozenset({".mov", ".mp4", ".m4v"})
+ARKIT_TIMECODE_FPS = 60.0
+TARGET_SSL_FPS = 30.0
+SHORT_QC_MAX_SECONDS = 2.0
+MEDIAPIPE_CACHE_SCHEMA = "mayo_mediapipe_clinical23_ssl_v2"
+ARKIT_CACHE_SCHEMA = "mayo_arkit_blendshapes_ssl_v1"
+COLLECTION_SCHEMA = "mayo_development_ssl_collection_v1"
+EXPOSURE_SCHEMA = "mayo_development_exposure_v1"
+TRANSFORM_NORMALIZATION = "clinical23_v2_roll_level_midline_center_interocular_scale"
+VIDEO_PRODUCER_PROTOCOL = "mediapipe_face_landmarker_running_mode_video_v1"
+VIDEO_ADAPTER_VERSION = "mayo_clinical23_same_detection_adapter_v1"
+COLLECTION_DATASET = "Mayo_development_only_unlabeled"
+EXPOSURE_DATASET = "Mayo_current_cohort"
+UNKNOWN_IDENTITY = "unknown_patient_identity"
+RECORDING_HELD_OUT = "recording_held_out"
+EXPOSURE_POLICY = (
+    "permanently development-only after method development or SSL exposure; "
+    "future independent HB evidence requires new people"
+)
+EXISTING_EXPORT_FILES = (
+    "done.json",
+    "landmarks.csv",
+    "blendshapes_wide.csv",
+    "transform_matrices.npy",
+)
+OPENCV_DISTRIBUTIONS = (
+    "opencv-python",
+    "opencv-contrib-python",
+    "opencv-python-headless",
+    "opencv-contrib-python-headless",
+)
+
+FROZEN_INVENTORY: dict[str, int] = {
+    "total_sessions": 65,
+    "video_bearing_sessions": 50,
+    "without_video_sessions": 15,
+    "exact_duplicate_copies_excluded": 1,
+    "short_qc_clips_excluded": 1,
+    "long_unique_videos": 48,
+    "existing_complete_v2_exports": 13,
+    "remaining_long_videos": 35,
+    "remaining_long_video_frames": 221_121,
+    "arkit_only_sessions": 7,
+    "arkit_trajectories": 8,
+    "arkit_rows": 58_054,
+    "arkit_timecode_gaps": 24,
+    "metadata_only_sessions": 8,
+}
+
+ARKIT_BLENDSHAPE_NAMES: tuple[str, ...] = (
+    "EyeBlinkLeft", "EyeLookDownLeft", "EyeLookInLeft", "EyeLookOutLeft",
+    "EyeLookUpLeft", "EyeSquintLeft", "EyeWideLeft", "EyeBlinkRight",
+    "EyeLookDownRight", "EyeLookInRight", "EyeLookOutRight", "EyeLookUpRight",
+    "EyeSquintRight", "EyeWideRight", "JawForward", "JawRight", "JawLeft",
+    "JawOpen", "MouthClose", "MouthFunnel", "MouthPucker", "MouthRight",
+    "MouthLeft", "MouthSmileLeft", "MouthSmileRight", "MouthFrownLeft",
+    "MouthFrownRight", "MouthDimpleLeft", "MouthDimpleRight", "MouthStretchLeft",
+    "MouthStretchRight", "MouthRollLower", "MouthRollUpper", "MouthShrugLower",
+    "MouthShrugUpper", "MouthPressLeft", "MouthPressRight", "MouthLowerDownLeft",
+    "MouthLowerDownRight", "MouthUpperUpLeft", "MouthUpperUpRight", "BrowDownLeft",
+    "BrowDownRight", "BrowInnerUp", "BrowOuterUpLeft", "BrowOuterUpRight",
+    "CheekPuff", "CheekSquintLeft", "CheekSquintRight", "NoseSneerLeft",
+    "NoseSneerRight", "TongueOut",
+)
+ARKIT_ROTATION_NAMES: tuple[str, ...] = (
+    "HeadYaw", "HeadPitch", "HeadRoll", "LeftEyeYaw", "LeftEyePitch",
+    "LeftEyeRoll", "RightEyeYaw", "RightEyePitch", "RightEyeRoll",
+)
+
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RECORDING_ID = re.compile(r"^rec_[0-9a-f]{64}$")
+_GROUP_ID = re.compile(r"^grp_[0-9a-f]{64}$")
+_FINGERPRINT = re.compile(r"^fp_[0-9a-f]{64}$")
+_INSTANCE_ID = re.compile(r"^inst_[0-9a-f]{64}$")
+_INTEGRITY_ID = re.compile(r"^(?:src|cache|agg)_[0-9a-f]{64}$")
+_RAW_MAYO_NAME = re.compile(r"(?:faces|myslate)[_ ]*\d+", re.IGNORECASE)
+_ARKIT_TIMECODE = re.compile(
+    r"^(?P<hour>(?:[01]\d|2[0-3])):(?P<minute>[0-5]\d):"
+    r"(?P<second>[0-5]\d):(?P<frame>[0-5]\d)\.(?P<subframe>\d{3})$"
+)
+_HELD_OUTPUT_LOCKS: set[Path] = set()
+
+_MEDIAPIPE_CACHE_FIELDS = frozenset({
+    "features_source_rate", "valid_mask_source_rate", "timestamps_source_rate",
+    "source_frame_indices_source_rate", "facial_transforms_source_rate",
+    "facial_transform_mask_source_rate", "features_30hz", "valid_mask_30hz",
+    "timestamps_30hz", "source_frame_indices_30hz", "target_frame_indices_30hz",
+    "contiguous_from_previous_30hz", "facial_transforms_30hz",
+    "facial_transform_mask_30hz", "feature_schema", "feature_names",
+    "side_convention", "capture_mirrored", "normalization_transform",
+    "facial_transform_source", "timestamp_unit", "timestamp_source", "source_fps",
+    "producer_protocol", "producer_adapter_version", "recording_id", "group_id",
+    "source_integrity_id", "source_fingerprint", "cache_schema",
+    "development_only", "patient_identity", "split_unit",
+})
+_ARKIT_CACHE_FIELDS = frozenset({
+    "features_60hz", "valid_mask_60hz", "timestamps_60hz",
+    "source_frame_indices_60hz", "features_30hz", "valid_mask_30hz",
+    "timestamps_30hz", "source_frame_indices_30hz", "target_frame_indices_30hz",
+    "contiguous_from_previous_30hz", "feature_schema", "feature_names",
+    "timestamp_unit", "timestamp_source", "recording_id", "group_id",
+    "source_integrity_id", "source_fingerprint", "cache_schema",
+    "development_only", "patient_identity", "split_unit",
+})
+
+
+class InventoryDriftError(ValueError):
+    """The live Mayo source tree differs from the frozen inventory."""
+
+
+@dataclass(frozen=True)
+class VideoMetadata:
+    frame_count: int
+    fps: float
+    width: int
+    height: int
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.frame_count / self.fps
+
+
+@dataclass(frozen=True)
+class ARKitInspection:
+    row_count: int
+    feature_names: tuple[str, ...]
+    missing_source_frames: int
+
+
+@dataclass(frozen=True)
+class VideoAsset:
+    session_path: Path
+    path: Path
+    metadata: VideoMetadata
+    source_sha256: str
+    export_dir: Path | None
+
+
+@dataclass(frozen=True)
+class ARKitAsset:
+    session_path: Path
+    path: Path
+    row_count: int
+    feature_names: tuple[str, ...]
+    source_sha256: str
+    missing_source_frames: int
+
+
+@dataclass(frozen=True)
+class MayoInventory:
+    data_root: Path
+    export_root: Path
+    counts: dict[str, int]
+    video_instances: tuple[VideoAsset, ...]
+    long_unique_videos: tuple[VideoAsset, ...]
+    existing_export_videos: tuple[VideoAsset, ...]
+    pending_videos: tuple[VideoAsset, ...]
+    duplicate_videos: tuple[VideoAsset, ...]
+    short_videos: tuple[VideoAsset, ...]
+    arkit_sessions: tuple[Path, ...]
+    arkit_trajectories: tuple[ARKitAsset, ...]
+    metadata_only_sessions: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class MayoMediaSequence:
+    features: np.ndarray
+    valid_mask: np.ndarray
+    timestamps: np.ndarray
+    source_frame_indices: np.ndarray
+    facial_transforms: np.ndarray
+    facial_transform_mask: np.ndarray
+    transform_source: str
+    source_fps: float = 60.0
+    timestamp_source: str = "source_frame_index_divided_by_audited_fps"
+
+
+@dataclass(frozen=True)
+class MayoSSLView:
+    features: np.ndarray
+    valid_mask: np.ndarray
+    timestamps: np.ndarray
+    source_frame_indices: np.ndarray
+    facial_transforms: np.ndarray
+    facial_transform_mask: np.ndarray
+    contiguous_from_previous: np.ndarray
+    target_frame_indices: np.ndarray
+
+
+@dataclass(frozen=True)
+class ARKitSequence:
+    features: np.ndarray
+    valid_mask: np.ndarray
+    timestamps: np.ndarray
+    source_frame_indices: np.ndarray
+    source_fps: float = ARKIT_TIMECODE_FPS
+    timestamp_source: str = "arkit_original_timecode_relative_seconds"
+
+
+@dataclass(frozen=True)
+class ARKitSSLView:
+    features: np.ndarray
+    valid_mask: np.ndarray
+    timestamps: np.ndarray
+    source_frame_indices: np.ndarray
+    target_frame_indices: np.ndarray
+    contiguous_from_previous: np.ndarray
+
+
+@dataclass(frozen=True)
+class CompactCacheSummary:
+    source_rows: int
+    missing_source_frames: int
+
+
+@dataclass(frozen=True)
+class DependencyFileSnapshot:
+    logical_name: str
+    distribution: str
+    record_name: str
+    path: Path
+    sha256: str
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True)
+class ProvenanceSnapshot:
+    source_files: tuple[tuple[Path, str], ...]
+    model_file: tuple[Path, str]
+    producer_files: tuple[tuple[str, Path, str], ...]
+    dependencies: dict[str, str]
+    dependency_distributions: dict[str, str]
+    dependency_files: tuple[DependencyFileSnapshot, ...]
+    dependency_aggregate_sha256: str
+    producer_aggregate_sha256: str
+    source_aggregate_sha256: str
+
+    @property
+    def source_sha256(self) -> tuple[str, ...]:
+        return tuple(digest for _path, digest in self.source_files)
+
+    @property
+    def model_sha256(self) -> str:
+        return self.model_file[1]
+
+    @property
+    def producer_sha256(self) -> dict[str, str]:
+        return {name: digest for name, _path, digest in self.producer_files}
+
+    @property
+    def dependency_sha256(self) -> dict[str, str]:
+        return {
+            item.logical_name: item.sha256 for item in self.dependency_files
+        }
+
+    @property
+    def dependency_file_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in self.dependency_files:
+            counts[item.distribution] = counts.get(item.distribution, 0) + 1
+        return counts
+
+
+@dataclass(frozen=True)
+class PinnedSourceSnapshot:
+    original_path: Path
+    pinned_path: Path
+    sha256: str
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+
+
+class MayoVideoClinical23Extractor(MediaPipeFeatureExtractor):
+    """One homogeneous FaceLandmarker VIDEO-mode producer for Mayo SSL.
+
+    Blendshapes, clinical landmarks, nuisance values, and the facial transform
+    are derived from the same ``detect_for_video`` result.  The legacy IMAGE
+    mode extractor is intentionally not used by this cache builder.
+    """
+
+    producer_protocol = VIDEO_PRODUCER_PROTOCOL
+    adapter_version = VIDEO_ADAPTER_VERSION
+
+    def __init__(
+        self,
+        model_path: str | Path,
+        *,
+        runtime_factory: Callable[[Path], tuple[object, object]] | None = None,
+    ):
+        model = _require_regular_file(model_path, "MediaPipe model")
+        self.landmark_features = "clinical23"
+        self.capture_mirrored = None
+        self.with_geometry = True
+        self._closed = False
+        self._bs_names = None
+        self._pairs = None
+        self._last_timestamp_ms: int | None = None
+        if runtime_factory is not None:
+            self._mp, self._landmarker = runtime_factory(model)
+            return
+
+        import mediapipe as mp
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision as mp_vision
+
+        self._mp = mp
+        self._landmarker = mp_vision.FaceLandmarker.create_from_options(
+            mp_vision.FaceLandmarkerOptions(
+                base_options=mp_python.BaseOptions(model_asset_path=str(model)),
+                running_mode=mp_vision.RunningMode.VIDEO,
+                num_faces=1,
+                output_face_blendshapes=True,
+                output_facial_transformation_matrixes=True,
+                min_face_detection_confidence=0.5,
+                min_face_presence_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+        )
+
+    def extract_video_frame(
+        self,
+        bgr: np.ndarray,
+        timestamp_ms: int,
+    ) -> tuple[np.ndarray | None, dict[str, float] | None, np.ndarray | None]:
+        if (
+            not isinstance(timestamp_ms, int) or isinstance(timestamp_ms, bool)
+            or timestamp_ms < 0
+            or (self._last_timestamp_ms is not None
+                and timestamp_ms <= self._last_timestamp_ms)
+        ):
+            raise ValueError("VIDEO-mode timestamps must be strictly increasing milliseconds")
+        if not isinstance(bgr, np.ndarray) or bgr.ndim != 3 or bgr.shape[2] != 3:
+            raise ValueError("VIDEO-mode input must be one BGR frame")
+        self._last_timestamp_ms = timestamp_ms
+        image = self._mp.Image(
+            image_format=self._mp.ImageFormat.SRGB,
+            data=cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB),
+        )
+        result = self._landmarker.detect_for_video(image, timestamp_ms)
+        if not result.face_blendshapes or not result.face_landmarks:
+            return None, None, None
+        categories = result.face_blendshapes[0]
+        self._ensure_layout([category.category_name for category in categories])
+        scores = np.asarray([category.score for category in categories], dtype=np.float32)
+        landmarks = result.face_landmarks[0]
+        try:
+            features = self._assemble_features(
+                scores, landmarks, image_width=bgr.shape[1], image_height=bgr.shape[0]
+            )
+            nuisance = self._nuisance_geometry(
+                landmarks, image_width=bgr.shape[1], image_height=bgr.shape[0]
+            )
+        except ValueError:
+            return None, None, None
+        transforms = getattr(result, "facial_transformation_matrixes", None)
+        transform = None
+        if transforms:
+            candidate = np.asarray(transforms[0], dtype=np.float32)
+            if candidate.shape == (4, 4) and np.isfinite(candidate).all():
+                transform = candidate
+        return features, nuisance, transform
+
+
+def _lexical_absolute(path: str | Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _is_symlink(path: Path) -> bool:
+    try:
+        return stat.S_ISLNK(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _assert_no_symlink_components(path: str | Path) -> Path:
+    absolute = _lexical_absolute(path)
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        candidate = current / part
+        try:
+            info = os.lstat(candidate)
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(info.st_mode):
+            if current == Path(absolute.anchor) and info.st_uid == 0:
+                current = Path(os.path.realpath(candidate))
+                continue
+            raise ValueError("filesystem path component must not be a symlink")
+        current = candidate
+    return absolute
+
+
+def _require_directory(path: str | Path, field: str) -> Path:
+    checked = _assert_no_symlink_components(path)
+    try:
+        info = os.lstat(checked)
+    except FileNotFoundError as exc:
+        raise ValueError(f"{field} is missing") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"{field} must be a real directory")
+    return checked
+
+
+def _require_regular_file(path: str | Path, field: str) -> Path:
+    checked = _assert_no_symlink_components(path)
+    try:
+        info = os.lstat(checked)
+    except FileNotFoundError as exc:
+        raise ValueError(f"{field} is missing") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{field} must be a regular file")
+    return checked
+
+
+def sha256_file(path: str | Path) -> str:
+    checked = _require_regular_file(path, "hashed file")
+    digest = hashlib.sha256()
+    with checked.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def pin_source_file(
+    source_path: str | Path,
+    snapshot_directory: str | Path,
+    opaque_name: str,
+    *,
+    expected_sha256: str,
+) -> PinnedSourceSnapshot:
+    """Hard-link one audited inode so decoding uses the bytes that were hashed."""
+    if _SHA256.fullmatch(expected_sha256) is None:
+        raise ValueError("pinned source expected SHA-256 is not canonical")
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]*", opaque_name) is None:
+        raise ValueError("pinned source name must be opaque and path-free")
+    original = _require_regular_file(source_path, "source to pin")
+    directory = _require_directory(snapshot_directory, "source snapshot directory")
+    pinned = directory / opaque_name
+    if pinned.exists() or _is_symlink(pinned):
+        raise FileExistsError("pinned source destination already exists")
+    before = os.lstat(original)
+    try:
+        os.link(original, pinned, follow_symlinks=False)
+        pinned_info = os.lstat(pinned)
+        after = os.lstat(original)
+        identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        identity_pinned = (
+            pinned_info.st_dev, pinned_info.st_ino,
+            pinned_info.st_size, pinned_info.st_mtime_ns,
+        )
+        if identity_before != identity_after or identity_after != identity_pinned:
+            raise ValueError("source inode changed while creating its pinned snapshot")
+        observed = sha256_file(pinned)
+        if not hmac.compare_digest(observed, expected_sha256):
+            raise ValueError("pinned bytes differ from the inventory SHA-256")
+        final = os.lstat(original)
+        if (
+            final.st_dev, final.st_ino, final.st_size, final.st_mtime_ns
+        ) != identity_after:
+            raise ValueError("source inode changed while hashing its pinned snapshot")
+        return PinnedSourceSnapshot(
+            original_path=original,
+            pinned_path=pinned,
+            sha256=observed,
+            device=after.st_dev,
+            inode=after.st_ino,
+            size=after.st_size,
+            mtime_ns=after.st_mtime_ns,
+        )
+    except BaseException:
+        if pinned.exists() and not _is_symlink(pinned):
+            pinned.unlink()
+        raise
+
+
+def assert_pinned_source_unchanged(snapshot: PinnedSourceSnapshot) -> None:
+    if not isinstance(snapshot, PinnedSourceSnapshot):
+        raise ValueError("pinned source snapshot has the wrong type")
+    original = _require_regular_file(snapshot.original_path, "original pinned source")
+    info = os.lstat(original)
+    if (
+        info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+    ) != (snapshot.device, snapshot.inode, snapshot.size, snapshot.mtime_ns):
+        raise ValueError("original source path or inode changed after pinning")
+    if not hmac.compare_digest(sha256_file(original), snapshot.sha256):
+        raise ValueError("original source bytes changed after pinning")
+    pinned = _require_regular_file(snapshot.pinned_path, "pinned source")
+    pinned_info = os.lstat(pinned)
+    if (pinned_info.st_dev, pinned_info.st_ino) != (snapshot.device, snapshot.inode):
+        raise ValueError("pinned decoder path no longer names the audited inode")
+
+
+def _probe_video(path: Path) -> VideoMetadata:
+    capture = cv2.VideoCapture(str(path))
+    try:
+        if not capture.isOpened():
+            raise ValueError("video cannot be opened")
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        raw_frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        raw_width = float(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        raw_height = float(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        capture.release()
+    if (
+        not math.isfinite(fps) or fps <= 0
+        or not math.isfinite(raw_frames) or raw_frames <= 0 or not raw_frames.is_integer()
+        or not math.isfinite(raw_width) or raw_width <= 0 or not raw_width.is_integer()
+        or not math.isfinite(raw_height) or raw_height <= 0 or not raw_height.is_integer()
+    ):
+        raise ValueError("video metadata must be finite positive integral dimensions/frames")
+    return VideoMetadata(int(raw_frames), fps, int(raw_width), int(raw_height))
+
+
+def _parse_arkit_timecode_milliframes(value: str) -> int:
+    match = _ARKIT_TIMECODE.fullmatch(value)
+    if match is None:
+        raise ValueError("ARKit Timecode must be HH:MM:SS:FF.subframe at 60 fps")
+    whole_frames = (
+        (int(match["hour"]) * 3600
+         + int(match["minute"]) * 60
+         + int(match["second"])) * 60
+        + int(match["frame"])
+    )
+    return whole_frames * 1000 + int(match["subframe"])
+
+
+def _arkit_timeline(timecodes: Sequence[str]) -> tuple[np.ndarray, np.ndarray, int]:
+    if not timecodes:
+        raise ValueError("ARKit trajectory has no Timecode rows")
+    clocks = [_parse_arkit_timecode_milliframes(value) for value in timecodes]
+    indices = np.zeros(len(clocks), dtype=np.int64)
+    missing = 0
+    for row in range(1, len(clocks)):
+        difference = clocks[row] - clocks[row - 1]
+        if difference <= 0:
+            raise ValueError("ARKit Timecode must increase strictly without duplicates")
+        source_step = (difference + 500) // 1000
+        if source_step < 1 or abs(difference - source_step * 1000) > 10:
+            raise ValueError("ARKit Timecode increment is not an integral 60-fps step")
+        indices[row] = indices[row - 1] + source_step
+        missing += source_step - 1
+    timestamps = (
+        np.asarray(clocks, dtype=np.float64) - float(clocks[0])
+    ) / (ARKIT_TIMECODE_FPS * 1000.0)
+    return indices, timestamps.astype(np.float64, copy=False), int(missing)
+
+
+def inspect_arkit_csv(path: str | Path) -> ARKitInspection:
+    checked = _require_regular_file(path, "ARKit trajectory")
+    with checked.open(newline="", encoding="utf-8") as handle:
+        reader = csv.reader(handle)
+        try:
+            header = tuple(next(reader))
+        except StopIteration as exc:
+            raise ValueError("ARKit trajectory is empty") from exc
+        expected = ("Timecode", "BlendshapeCount", *ARKIT_BLENDSHAPE_NAMES,
+                    *ARKIT_ROTATION_NAMES)
+        if header != expected:
+            raise ValueError("ARKit trajectory has a noncanonical 52-blendshape layout")
+        timecodes: list[str] = []
+        for row in reader:
+            if len(row) != len(expected):
+                raise ValueError("ARKit trajectory has a malformed-width data row")
+            timecodes.append(row[0])
+        count = len(timecodes)
+    if count <= 0:
+        raise ValueError("ARKit trajectory has no data rows")
+    _indices, _timestamps, missing = _arkit_timeline(timecodes)
+    return ARKitInspection(count, ARKIT_BLENDSHAPE_NAMES, missing)
+
+
+def _canonical_video(session: Path) -> Path | None:
+    candidates = sorted(
+        (item for item in session.iterdir()
+         if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS),
+        key=lambda item: item.name,
+    )
+    if not candidates:
+        return None
+    mov = [item for item in candidates if item.suffix.lower() == ".mov"]
+    if len(mov) == 1:
+        if any(item.stem != mov[0].stem for item in candidates if item != mov[0]):
+            raise ValueError(
+                "a Mayo session contains an unrelated second clip, not a container proxy"
+            )
+        return mov[0]
+    if len(mov) > 1 or len(candidates) > 1:
+        raise ValueError("a Mayo session has multiple ambiguous canonical videos")
+    return candidates[0]
+
+
+def _complete_export(export_root: Path, session_name: str) -> Path | None:
+    candidate = export_root / session_name
+    if not candidate.is_dir() or _is_symlink(candidate):
+        return None
+    for filename in EXISTING_EXPORT_FILES:
+        path = candidate / filename
+        if not path.is_file() or _is_symlink(path):
+            return None
+    return candidate
+
+
+def _validate_video_metadata(metadata: VideoMetadata) -> None:
+    if (
+        isinstance(metadata.frame_count, bool) or metadata.frame_count <= 0
+        or not math.isfinite(float(metadata.fps))
+        or float(metadata.fps) < TARGET_SSL_FPS or float(metadata.fps) > 240.0
+        or isinstance(metadata.width, bool) or metadata.width <= 0
+        or isinstance(metadata.height, bool) or metadata.height <= 0
+    ):
+        raise ValueError("Mayo video metadata must have a finite plausible source FPS")
+
+
+def inventory_mayo_sources(
+    data_root: str | Path,
+    export_root: str | Path,
+    *,
+    probe_video: Callable[[Path], VideoMetadata] = _probe_video,
+    inspect_arkit: Callable[[Path], ARKitInspection] = inspect_arkit_csv,
+    enforce_frozen: bool = True,
+) -> MayoInventory:
+    """Inspect the live source tree; frozen counts are a gate, never a substitute."""
+    data = _require_directory(data_root, "Mayo data root")
+    exports = _require_directory(export_root, "Mayo existing export root")
+    sessions = sorted(
+        (item for item in data.iterdir() if item.is_dir() and not _is_symlink(item)),
+        key=lambda item: item.name,
+    )
+    video_assets: list[VideoAsset] = []
+    without_video: list[Path] = []
+    for session in sessions:
+        video = _canonical_video(session)
+        if video is None:
+            without_video.append(session)
+            continue
+        metadata = probe_video(video)
+        if not isinstance(metadata, VideoMetadata):
+            raise ValueError("video probe must return VideoMetadata")
+        _validate_video_metadata(metadata)
+        video_assets.append(VideoAsset(
+            session_path=session,
+            path=video,
+            metadata=metadata,
+            source_sha256=sha256_file(video),
+            export_dir=_complete_export(exports, session.name),
+        ))
+
+    by_digest: dict[str, list[VideoAsset]] = {}
+    for asset in video_assets:
+        by_digest.setdefault(asset.source_sha256, []).append(asset)
+    unique: list[VideoAsset] = []
+    duplicates: list[VideoAsset] = []
+    for digest in sorted(by_digest):
+        members = sorted(by_digest[digest], key=lambda item: item.session_path.name)
+        first = members[0]
+        for other in members[1:]:
+            if other.metadata != first.metadata:
+                raise ValueError("equal source hashes have inconsistent video metadata")
+        unique.append(first)
+        duplicates.extend(members[1:])
+    unique.sort(key=lambda item: item.session_path.name)
+    duplicates.sort(key=lambda item: item.session_path.name)
+
+    short = tuple(
+        asset for asset in unique
+        if asset.metadata.duration_seconds <= SHORT_QC_MAX_SECONDS
+    )
+    short_paths = {asset.path for asset in short}
+    long_unique = tuple(asset for asset in unique if asset.path not in short_paths)
+    existing = tuple(asset for asset in long_unique if asset.export_dir is not None)
+    pending = tuple(asset for asset in long_unique if asset.export_dir is None)
+
+    arkit_assets: list[ARKitAsset] = []
+    arkit_sessions: list[Path] = []
+    metadata_only: list[Path] = []
+    for session in without_video:
+        csv_files = sorted(
+            (item for item in session.rglob("*_iPhone.csv")
+             if item.is_file() and not _is_symlink(item)),
+            key=lambda item: str(item.relative_to(session)),
+        )
+        if not csv_files:
+            metadata_only.append(session)
+            continue
+        arkit_sessions.append(session)
+        for path in csv_files:
+            inspection = inspect_arkit(path)
+            if (
+                not isinstance(inspection, ARKitInspection)
+                or inspection.row_count <= 0
+                or tuple(inspection.feature_names) != ARKIT_BLENDSHAPE_NAMES
+                or isinstance(inspection.missing_source_frames, bool)
+                or inspection.missing_source_frames < 0
+            ):
+                raise ValueError("ARKit inspection differs from the frozen 52-column schema")
+            arkit_assets.append(ARKitAsset(
+                session_path=session,
+                path=path,
+                row_count=inspection.row_count,
+                feature_names=tuple(inspection.feature_names),
+                source_sha256=sha256_file(path),
+                missing_source_frames=inspection.missing_source_frames,
+            ))
+    if len({asset.source_sha256 for asset in arkit_assets}) != len(arkit_assets):
+        raise ValueError("ARKit auxiliary pool contains duplicate trajectory content")
+
+    counts = {
+        "total_sessions": len(sessions),
+        "video_bearing_sessions": len(video_assets),
+        "without_video_sessions": len(without_video),
+        "exact_duplicate_copies_excluded": len(duplicates),
+        "short_qc_clips_excluded": len(short),
+        "long_unique_videos": len(long_unique),
+        "existing_complete_v2_exports": len(existing),
+        "remaining_long_videos": len(pending),
+        "remaining_long_video_frames": sum(asset.metadata.frame_count for asset in pending),
+        "arkit_only_sessions": len(arkit_sessions),
+        "arkit_trajectories": len(arkit_assets),
+        "arkit_rows": sum(asset.row_count for asset in arkit_assets),
+        "arkit_timecode_gaps": sum(
+            asset.missing_source_frames for asset in arkit_assets
+        ),
+        "metadata_only_sessions": len(metadata_only),
+    }
+    if enforce_frozen and counts != FROZEN_INVENTORY:
+        differences = {
+            key: {"expected": FROZEN_INVENTORY[key], "observed": counts.get(key)}
+            for key in FROZEN_INVENTORY if counts.get(key) != FROZEN_INVENTORY[key]
+        }
+        raise InventoryDriftError(
+            "live Mayo inventory drifted from the frozen contract: "
+            + json.dumps(differences, sort_keys=True)
+        )
+    return MayoInventory(
+        data_root=data,
+        export_root=exports,
+        counts=counts,
+        video_instances=tuple(video_assets),
+        long_unique_videos=long_unique,
+        existing_export_videos=existing,
+        pending_videos=pending,
+        duplicate_videos=tuple(duplicates),
+        short_videos=short,
+        arkit_sessions=tuple(arkit_sessions),
+        arkit_trajectories=tuple(arkit_assets),
+        metadata_only_sessions=tuple(metadata_only),
+    )
+
+
+def _require_salt(salt: bytes) -> bytes:
+    if not isinstance(salt, bytes) or len(salt) < 32:
+        raise ValueError("local HMAC salt must contain at least 32 bytes")
+    return salt
+
+
+def hmac_identifier(prefix: str, salt: bytes, context: str, material: str) -> str:
+    if prefix not in {"rec", "grp", "fp", "inst", "src", "cache", "agg"}:
+        raise ValueError("opaque identifier prefix is invalid")
+    if not context or not material:
+        raise ValueError("opaque identifier inputs must be nonempty")
+    digest = hmac.new(
+        _require_salt(salt),
+        f"{context}\0{material}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{prefix}_{digest}"
+
+
+def exposure_classification_integrity_id(
+    video_rows: Sequence[Mapping[str, object]], salt: bytes,
+) -> str:
+    """Bind opaque source instances to their frozen exposure classifications."""
+    fields = (
+        "instance_id", "recording_id", "group_id", "source_integrity_id",
+        "source_fingerprint", "status",
+    )
+    canonical: list[dict[str, str]] = []
+    for raw_row in video_rows:
+        if not isinstance(raw_row, Mapping):
+            raise ValueError("exposure classification row must be an object")
+        row: dict[str, str] = {}
+        for field in fields:
+            value = raw_row.get(field)
+            if not isinstance(value, str) or not value:
+                raise ValueError("exposure classification identity is incomplete")
+            row[field] = value
+        canonical.append(row)
+    canonical.sort(key=lambda row: row["instance_id"])
+    if len({row["instance_id"] for row in canonical}) != len(canonical):
+        raise ValueError("exposure classification repeats an instance")
+    material = hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    return hmac_identifier(
+        "agg", salt, "mayo-exposure-classification-v1", material
+    )
+
+
+def collection_classification_integrity_id(
+    media_rows: Sequence[Mapping[str, object]], salt: bytes,
+) -> str:
+    """Bind retained MediaPipe sources to their frozen legacy classifications."""
+    fields = (
+        "recording_id", "group_id", "source_integrity_id", "source_fingerprint",
+        "legacy_export_audit_status",
+    )
+    canonical: list[dict[str, str]] = []
+    for raw_row in media_rows:
+        if not isinstance(raw_row, Mapping):
+            raise ValueError("collection classification row must be an object")
+        row: dict[str, str] = {}
+        for field in fields:
+            value = raw_row.get(field)
+            if not isinstance(value, str) or not value:
+                raise ValueError("collection classification identity is incomplete")
+            row[field] = value
+        canonical.append(row)
+    canonical.sort(key=lambda row: row["recording_id"])
+    if len({row["recording_id"] for row in canonical}) != len(canonical):
+        raise ValueError("collection classification repeats a recording")
+    material = hashlib.sha256(json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    return hmac_identifier(
+        "agg", salt, "mayo-collection-classification-v1", material
+    )
+
+
+def _video_public_row(
+    asset: VideoAsset,
+    salt: bytes,
+    legacy_export_audit_status: str,
+) -> dict[str, object]:
+    digest = asset.source_sha256
+    return {
+        "recording_id": hmac_identifier("rec", salt, "mayo-mediapipe-recording", digest),
+        "group_id": hmac_identifier("grp", salt, "mayo-proven-source-group", digest),
+        "source_integrity_id": hmac_identifier(
+            "src", salt, "mayo-mediapipe-source-integrity", digest
+        ),
+        "source_fingerprint": hmac_identifier("fp", salt, "mayo-source-fingerprint", digest),
+        "cache_source": "raw_video_reextracted_homogeneous_video_mode",
+        "producer_protocol": VIDEO_PRODUCER_PROTOCOL,
+        "producer_adapter_version": VIDEO_ADAPTER_VERSION,
+        "legacy_export_audit_status": legacy_export_audit_status,
+        "identity_status": "unknown_patient_identity",
+        "split_unit": "recording_held_out",
+        "development_only": True,
+        "ssl_exposed": True,
+        "independent_evaluation_eligible": False,
+    }
+
+
+def _arkit_public_row(asset: ARKitAsset, salt: bytes) -> dict[str, object]:
+    digest = asset.source_sha256
+    return {
+        "recording_id": hmac_identifier("rec", salt, "mayo-arkit-recording", digest),
+        "group_id": hmac_identifier("grp", salt, "mayo-arkit-recording-group", digest),
+        "source_integrity_id": hmac_identifier(
+            "src", salt, "mayo-arkit-source-integrity", digest
+        ),
+        "source_fingerprint": hmac_identifier("fp", salt, "mayo-source-fingerprint", digest),
+        "feature_schema": "arkit_blendshapes_52_v1",
+        "identity_status": "unknown_patient_identity",
+        "split_unit": "recording_held_out",
+        "development_only": True,
+        "ssl_exposed": True,
+        "independent_evaluation_eligible": False,
+    }
+
+
+def build_public_manifests(
+    inventory: MayoInventory,
+    salt: bytes,
+) -> tuple[dict[str, object], dict[str, object]]:
+    salt = _require_salt(salt)
+    existing_paths = {asset.path for asset in inventory.existing_export_videos}
+    long_paths = {asset.path for asset in inventory.long_unique_videos}
+    duplicate_paths = {asset.path for asset in inventory.duplicate_videos}
+    short_paths = {asset.path for asset in inventory.short_videos}
+    media_rows = sorted(
+        (_video_public_row(
+            asset,
+            salt,
+            ("not_reused_unverifiable_source_binding"
+             if asset.path in existing_paths else "no_complete_legacy_export"),
+        ) for asset in inventory.long_unique_videos),
+        key=lambda row: str(row["recording_id"]),
+    )
+    arkit_rows = sorted(
+        (_arkit_public_row(asset, salt) for asset in inventory.arkit_trajectories),
+        key=lambda row: str(row["recording_id"]),
+    )
+    collection: dict[str, object] = {
+        "schema_version": COLLECTION_SCHEMA,
+        "dataset": COLLECTION_DATASET,
+        "identity_status": UNKNOWN_IDENTITY,
+        "split_unit": RECORDING_HELD_OUT,
+        "feature_schema": DYNAMIC_FEATURE_SCHEMA,
+        "feature_names": list(DYNAMIC_FEATURE_NAMES),
+        "capture_mirrored": "unknown",
+        "normalization_transform": TRANSFORM_NORMALIZATION,
+        "temporal_protocol": {
+            "source_timeline": "per_recording_audited_fps_and_monotonic_source_index",
+            "ssl_view_hz": 30,
+            "resampling": "exact_target_source_index_selection_no_interpolation_or_nearest_fill",
+        },
+        "modality_boundary": (
+            "ARKit 52-blendshape trajectories are auxiliary-only and are never "
+            "concatenated with or promoted to MediaPipe landmarks"
+        ),
+        "counts": dict(inventory.counts),
+        "mediapipe_records": media_rows,
+        "arkit_records": arkit_rows,
+        "classification_integrity_id": collection_classification_integrity_id(
+            media_rows, salt
+        ),
+        "metadata_only_exclusions": {
+            "index_or_depth_metadata_only_no_video_or_arkit_trajectory": (
+                len(inventory.metadata_only_sessions)
+            )
+        },
+    }
+    video_rows: list[dict[str, object]] = []
+    for asset in inventory.video_instances:
+        if asset.path in duplicate_paths:
+            status = "exact_duplicate_excluded"
+        elif asset.path in short_paths:
+            status = "qc_only_short_clip_excluded"
+        elif asset.path in long_paths:
+            status = "mediapipe_ssl"
+        else:
+            raise AssertionError("video instance was not classified")
+        digest = asset.source_sha256
+        private_instance_material = str(asset.path.relative_to(inventory.data_root))
+        video_rows.append({
+            "instance_id": hmac_identifier(
+                "inst", salt, "mayo-private-source-instance",
+                f"{digest}\0{private_instance_material}",
+            ),
+            "recording_id": hmac_identifier(
+                "rec", salt, "mayo-mediapipe-recording", digest
+            ),
+            "group_id": hmac_identifier(
+                "grp", salt, "mayo-proven-source-group", digest
+            ),
+            "source_integrity_id": hmac_identifier(
+                "src", salt, "mayo-mediapipe-source-integrity", digest
+            ),
+            "source_fingerprint": hmac_identifier(
+                "fp", salt, "mayo-source-fingerprint", digest
+            ),
+            "status": status,
+            "identity_status": UNKNOWN_IDENTITY,
+            "split_unit": RECORDING_HELD_OUT,
+            "development_only": True,
+            "ssl_exposed": True,
+            "independent_evaluation_eligible": False,
+        })
+    exposure: dict[str, object] = {
+        "schema_version": EXPOSURE_SCHEMA,
+        "dataset": EXPOSURE_DATASET,
+        "policy": EXPOSURE_POLICY,
+        "identity_status": UNKNOWN_IDENTITY,
+        "videos": sorted(video_rows, key=lambda row: str(row["instance_id"])),
+        "arkit_trajectories": arkit_rows,
+        "classification_integrity_id": exposure_classification_integrity_id(
+            video_rows, salt
+        ),
+        "counts": {
+            "videos": len(video_rows),
+            "arkit_trajectories": len(arkit_rows),
+        },
+    }
+    validate_public_manifest(collection)
+    validate_public_manifest(exposure)
+    return collection, exposure
+
+
+def validate_public_manifest(value: object) -> None:
+    """Reject raw locations, names, non-finite values, and JSON-unsafe objects."""
+    forbidden_keys = {"path", "filename", "session", "session_name", "stem", "dirname"}
+    forbidden_suffixes = ("_path", "_filename", "_session_name", "_stem", "_dirname")
+
+    def walk(item: object, key: str | None = None) -> None:
+        if key is not None:
+            lowered = key.lower()
+            if lowered in forbidden_keys or lowered.endswith(forbidden_suffixes):
+                raise ValueError("public manifest contains a private-location field")
+        if item is None or isinstance(item, (bool, int)):
+            return
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("public manifest contains a non-finite number")
+            return
+        if isinstance(item, str):
+            lower = item.lower()
+            if item.startswith(("/", "~")) or lower.endswith(
+                (".mov", ".mp4", ".m4v", ".csv")
+            ) or _RAW_MAYO_NAME.search(item) is not None:
+                raise ValueError("public manifest contains a raw location or filename")
+            return
+        if isinstance(item, list):
+            for child in item:
+                walk(child)
+            return
+        if isinstance(item, dict):
+            for child_key, child in item.items():
+                if not isinstance(child_key, str):
+                    raise ValueError("public manifest keys must be strings")
+                walk(child, child_key)
+            return
+        raise ValueError("public manifest contains a non-JSON value")
+
+    walk(value)
+    json.dumps(value, sort_keys=True, allow_nan=False)
+
+
+def _validate_media_sequence(sequence: MayoMediaSequence) -> MayoMediaSequence:
+    if not isinstance(sequence, MayoMediaSequence):
+        raise ValueError("MediaPipe sequence has the wrong type")
+    features = np.asarray(sequence.features)
+    mask = np.asarray(sequence.valid_mask)
+    timestamps = np.asarray(sequence.timestamps)
+    indices = np.asarray(sequence.source_frame_indices)
+    transforms = np.asarray(sequence.facial_transforms)
+    transform_mask = np.asarray(sequence.facial_transform_mask)
+    n = features.shape[0] if features.ndim == 2 else -1
+    if features.dtype != np.float32 or features.shape != (n, 95) or n <= 0:
+        raise ValueError("MediaPipe features must have shape (T,95) float32")
+    if mask.dtype != np.bool_ or mask.shape != (n,):
+        raise ValueError("MediaPipe valid mask must be bool with shape (T,)")
+    if not mask.any():
+        raise ValueError("MediaPipe sequence must contain a valid detected frame")
+    if timestamps.dtype != np.float64 or timestamps.shape != (n,):
+        raise ValueError("MediaPipe timestamps must be float64 with shape (T,)")
+    if indices.dtype != np.int64 or indices.shape != (n,):
+        raise ValueError("MediaPipe source indices must be int64 with shape (T,)")
+    if transforms.dtype != np.float32 or transforms.shape != (n, 4, 4):
+        raise ValueError("facial transform tensor must have shape (T,4,4) float32")
+    if transform_mask.dtype != np.bool_ or transform_mask.shape != (n,):
+        raise ValueError("facial transform mask must be bool with shape (T,)")
+    if not isinstance(sequence.transform_source, str) or not sequence.transform_source:
+        raise ValueError("facial transform provenance must be explicit")
+    if (
+        not isinstance(sequence.source_fps, (int, float))
+        or isinstance(sequence.source_fps, bool)
+        or not math.isfinite(float(sequence.source_fps))
+        or float(sequence.source_fps) < TARGET_SSL_FPS
+        or float(sequence.source_fps) > 240.0
+        or sequence.timestamp_source
+        != "source_frame_index_divided_by_audited_fps"
+    ):
+        raise ValueError("source FPS and timestamp provenance must be explicit")
+    if (
+        not np.isfinite(features).all() or not np.isfinite(timestamps).all()
+        or not np.isfinite(transforms).all()
+    ):
+        raise ValueError("MediaPipe cache arrays must be finite")
+    if (indices < 0).any() or (np.diff(indices) <= 0).any():
+        raise ValueError("source frame indices must increase strictly")
+    if (np.diff(timestamps) <= 0).any():
+        raise ValueError("timestamps must increase strictly")
+    expected_timestamps = indices.astype(np.float64) / float(sequence.source_fps)
+    if not np.allclose(timestamps, expected_timestamps, rtol=0.0, atol=1e-12):
+        raise ValueError("timestamps must preserve the audited source-FPS timeline")
+    if np.any(features[~mask] != 0.0):
+        raise ValueError("invalid MediaPipe feature rows must be canonical zero")
+    if np.any(transform_mask & ~mask):
+        raise ValueError("facial transforms cannot outlive their same-frame detection")
+    if np.any(transforms[~transform_mask] != 0.0):
+        raise ValueError("invalid facial transform rows must be canonical zero")
+    return sequence
+
+
+def downsample_to_30hz(sequence: MayoMediaSequence) -> MayoSSLView:
+    sequence = _validate_media_sequence(sequence)
+    selected_rows: list[int] = []
+    target_indices: list[int] = []
+    fps = float(sequence.source_fps)
+    fps_fraction = Fraction(str(fps))
+    fps_numerator = fps_fraction.numerator
+    fps_denominator = fps_fraction.denominator
+    target_rate = int(TARGET_SSL_FPS)
+    target_denominator = fps_denominator * target_rate
+    for row, raw_source_index in enumerate(sequence.source_frame_indices):
+        source_index = int(raw_source_index)
+        lower_numerator = (2 * source_index - 1) * target_denominator
+        target_index = max(
+            0, -(-lower_numerator // (2 * fps_numerator))
+        )
+        expected_source = (
+            2 * target_index * fps_numerator + target_denominator
+        ) // (2 * target_denominator)
+        if expected_source == source_index:
+            selected_rows.append(row)
+            target_indices.append(target_index)
+    selected = np.asarray(selected_rows, dtype=np.int64)
+    targets = np.asarray(target_indices, dtype=np.int64)
+    if selected.size == 0:
+        raise ValueError("30-Hz source-frame selection produced no rows")
+    if len(targets) > 1 and (np.diff(targets) <= 0).any():
+        raise ValueError("source FPS cannot support a unique exact 30-Hz view")
+    indices = sequence.source_frame_indices[selected].copy()
+    mask = sequence.valid_mask[selected].copy()
+    contiguous = np.zeros(len(selected), dtype=bool)
+    if len(selected) > 1:
+        contiguous[1:] = (
+            (np.diff(targets) == 1)
+            & mask[:-1]
+            & mask[1:]
+        )
+    return MayoSSLView(
+        features=sequence.features[selected].copy(),
+        valid_mask=mask,
+        timestamps=sequence.timestamps[selected].copy(),
+        source_frame_indices=indices,
+        facial_transforms=sequence.facial_transforms[selected].copy(),
+        facial_transform_mask=sequence.facial_transform_mask[selected].copy(),
+        contiguous_from_previous=contiguous,
+        target_frame_indices=targets,
+    )
+
+
+def downsample_60hz_to_30hz(sequence: MayoMediaSequence) -> MayoSSLView:
+    """Compatibility alias; the implementation now honors each source FPS."""
+    return downsample_to_30hz(sequence)
+
+
+def _capture_metadata(capture) -> VideoMetadata:
+    fps = float(capture.get(cv2.CAP_PROP_FPS))
+    raw_count = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    raw_width = float(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    raw_height = float(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if (
+        not math.isfinite(raw_count) or raw_count <= 0 or not raw_count.is_integer()
+        or not math.isfinite(raw_width) or raw_width <= 0 or not raw_width.is_integer()
+        or not math.isfinite(raw_height) or raw_height <= 0 or not raw_height.is_integer()
+    ):
+        raise ValueError("video capture metadata is invalid")
+    metadata = VideoMetadata(int(raw_count), fps, int(raw_width), int(raw_height))
+    _validate_video_metadata(metadata)
+    return metadata
+
+
+def extract_video_sequence(
+    path: str | Path,
+    extractor: MayoVideoClinical23Extractor,
+    *,
+    capture_factory: Callable[[str], object] = cv2.VideoCapture,
+    expected_metadata: VideoMetadata | None = None,
+) -> MayoMediaSequence:
+    """Stream one full video through the shared public clinical23 extractor."""
+    capture = capture_factory(str(path))
+    features: list[np.ndarray | None] = []
+    masks: list[bool] = []
+    transforms: list[np.ndarray | None] = []
+    try:
+        if not capture.isOpened():
+            raise ValueError("source video cannot be opened")
+        metadata = _capture_metadata(capture)
+        if expected_metadata is not None:
+            _validate_video_metadata(expected_metadata)
+            if (
+                metadata.frame_count != expected_metadata.frame_count
+                or metadata.width != expected_metadata.width
+                or metadata.height != expected_metadata.height
+                or abs(metadata.fps - expected_metadata.fps) > 1e-6
+            ):
+                raise ValueError("decode metadata differs from the audited source metadata")
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            source_index = len(features)
+            timestamp_ms = int(round(source_index * 1000.0 / metadata.fps))
+            vector, _nuisance, transform = extractor.extract_video_frame(
+                frame, timestamp_ms
+            )
+            if vector is None:
+                features.append(None)
+                masks.append(False)
+                transforms.append(None)
+                continue
+            array = np.asarray(vector, dtype=np.float32)
+            if array.shape != (95,) or not np.isfinite(array).all():
+                raise ValueError("public clinical23 extractor returned a malformed frame")
+            features.append(array)
+            masks.append(True)
+            if transform is None:
+                transforms.append(None)
+            else:
+                transform_array = np.asarray(transform, dtype=np.float32)
+                if transform_array.shape != (4, 4) or not np.isfinite(transform_array).all():
+                    raise ValueError("VIDEO extractor returned a malformed facial transform")
+                transforms.append(transform_array)
+    finally:
+        capture.release()
+    if len(features) != metadata.frame_count:
+        raise ValueError("decoded frame count differs from frozen video metadata")
+    if getattr(extractor, "feature_schema", None) != DYNAMIC_FEATURE_SCHEMA:
+        raise ValueError("public extractor schema differs from clinical23_v2")
+    if tuple(getattr(extractor, "feature_names", ())) != tuple(DYNAMIC_FEATURE_NAMES):
+        raise ValueError("public extractor feature order differs from the registered 95 columns")
+    matrix = np.zeros((len(features), 95), dtype=np.float32)
+    valid = np.asarray(masks, dtype=bool)
+    transform_matrix = np.zeros((len(features), 4, 4), dtype=np.float32)
+    transform_valid = np.zeros(len(features), dtype=bool)
+    for index, vector in enumerate(features):
+        if vector is not None:
+            matrix[index] = vector
+        if transforms[index] is not None:
+            transform_matrix[index] = transforms[index]
+            transform_valid[index] = True
+    if not valid.any():
+        raise ValueError("MediaPipe detected no valid clinical23 frames")
+    source_indices = np.arange(len(features), dtype=np.int64)
+    sequence = MayoMediaSequence(
+        features=matrix,
+        valid_mask=valid,
+        timestamps=source_indices.astype(np.float64) / metadata.fps,
+        source_frame_indices=source_indices,
+        facial_transforms=transform_matrix,
+        facial_transform_mask=transform_valid,
+        transform_source="same_detection_mediapipe_video_mode",
+        source_fps=float(metadata.fps),
+        timestamp_source="source_frame_index_divided_by_audited_fps",
+    )
+    return _validate_media_sequence(sequence)
+
+
+def extract_homogeneous_video_sequences(
+    assets: Sequence[VideoAsset],
+    extractor_factory: Callable[..., MayoVideoClinical23Extractor],
+    *,
+    model_path: str | Path,
+    capture_factory: Callable[[str], object] = cv2.VideoCapture,
+    source_paths: Mapping[Path, Path] | None = None,
+):
+    """Yield every long video through the same VIDEO-mode producer.
+
+    ``export_dir`` is deliberately ignored: existing exports have no
+    cryptographically verifiable binding to their source video.
+    """
+    remapped = dict(source_paths or {})
+    for asset in assets:
+        if not isinstance(asset, VideoAsset):
+            raise ValueError("homogeneous extraction received a non-video asset")
+        decode_path = remapped.get(asset.path, asset.path)
+        with managed_extractor(
+            extractor_factory, model_path=model_path
+        ) as extractor:
+            sequence = extract_video_sequence(
+                decode_path, extractor, capture_factory=capture_factory,
+                expected_metadata=asset.metadata,
+            )
+        yield asset, sequence
+
+
+def load_arkit_trajectory(path: str | Path) -> ARKitSequence:
+    checked = _require_regular_file(path, "ARKit trajectory")
+    features: list[list[float]] = []
+    timecodes: list[str] = []
+    with checked.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        expected = ("Timecode", "BlendshapeCount", *ARKIT_BLENDSHAPE_NAMES,
+                    *ARKIT_ROTATION_NAMES)
+        if tuple(reader.fieldnames or ()) != expected:
+            raise ValueError("ARKit trajectory has a noncanonical ordered schema")
+        for row in reader:
+            try:
+                declared = int(row["BlendshapeCount"])
+                vector = [float(row[name]) for name in ARKIT_BLENDSHAPE_NAMES]
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ValueError("ARKit trajectory has a malformed data row") from exc
+            if declared < len(ARKIT_BLENDSHAPE_NAMES) or not np.isfinite(vector).all():
+                raise ValueError("ARKit trajectory row is incomplete or non-finite")
+            features.append(vector)
+            timecodes.append(row["Timecode"])
+    if not features:
+        raise ValueError("ARKit trajectory has no usable rows")
+    matrix = np.asarray(features, dtype=np.float32)
+    indices, timestamps, _missing = _arkit_timeline(timecodes)
+    return _validate_arkit_sequence(ARKitSequence(
+        features=matrix,
+        valid_mask=np.ones(len(matrix), dtype=bool),
+        timestamps=timestamps,
+        source_frame_indices=indices,
+    ))
+
+
+def _validate_arkit_sequence(sequence: ARKitSequence) -> ARKitSequence:
+    if not isinstance(sequence, ARKitSequence):
+        raise ValueError("ARKit sequence has the wrong type")
+    features = np.asarray(sequence.features)
+    mask = np.asarray(sequence.valid_mask)
+    timestamps = np.asarray(sequence.timestamps)
+    indices = np.asarray(sequence.source_frame_indices)
+    n = features.shape[0] if features.ndim == 2 else -1
+    if (
+        features.dtype != np.float32 or features.shape != (n, 52) or n <= 0
+        or mask.dtype != np.bool_ or mask.shape != (n,) or not mask.all()
+        or timestamps.dtype != np.float64 or timestamps.shape != (n,)
+        or indices.dtype != np.int64 or indices.shape != (n,)
+        or not np.isfinite(features).all() or not np.isfinite(timestamps).all()
+        or indices[0] != 0 or timestamps[0] != 0.0
+        or (np.diff(indices) <= 0).any() or (np.diff(timestamps) <= 0).any()
+        or sequence.source_fps != ARKIT_TIMECODE_FPS
+        or sequence.timestamp_source != "arkit_original_timecode_relative_seconds"
+    ):
+        raise ValueError("ARKit cache does not satisfy its original-Timecode contract")
+    if n > 1:
+        expected_delta = np.diff(indices).astype(np.float64) / ARKIT_TIMECODE_FPS
+        if not np.allclose(np.diff(timestamps), expected_delta, rtol=0.0,
+                           atol=10.0 / (ARKIT_TIMECODE_FPS * 1000.0)):
+            raise ValueError("ARKit timestamps disagree with their source-frame gaps")
+    return sequence
+
+
+def downsample_arkit_to_30hz(sequence: ARKitSequence) -> ARKitSSLView:
+    sequence = _validate_arkit_sequence(sequence)
+    selected_rows: list[int] = []
+    target_indices: list[int] = []
+    for row, raw_source_index in enumerate(sequence.source_frame_indices):
+        source_index = int(raw_source_index)
+        if source_index % 2 == 0:
+            selected_rows.append(row)
+            target_indices.append(source_index // 2)
+    selected = np.asarray(selected_rows, dtype=np.int64)
+    targets = np.asarray(target_indices, dtype=np.int64)
+    if selected.size == 0:
+        raise ValueError("ARKit 30-Hz exact-source selection produced no rows")
+    mask = sequence.valid_mask[selected].copy()
+    contiguous = np.zeros(len(selected), dtype=bool)
+    if len(selected) > 1:
+        contiguous[1:] = (np.diff(targets) == 1) & mask[:-1] & mask[1:]
+    return ARKitSSLView(
+        features=sequence.features[selected].copy(),
+        valid_mask=mask,
+        timestamps=sequence.timestamps[selected].copy(),
+        source_frame_indices=sequence.source_frame_indices[selected].copy(),
+        target_frame_indices=targets,
+        contiguous_from_previous=contiguous,
+    )
+
+
+def _require_cache_identity(
+    path: Path,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+) -> None:
+    if _RECORDING_ID.fullmatch(recording_id) is None:
+        raise ValueError("recording ID is not canonical")
+    if _GROUP_ID.fullmatch(group_id) is None:
+        raise ValueError("group ID is not canonical")
+    if _INTEGRITY_ID.fullmatch(source_integrity_id) is None:
+        raise ValueError("source integrity ID is not canonical")
+    if _FINGERPRINT.fullmatch(source_fingerprint) is None:
+        raise ValueError("source fingerprint is not canonical")
+    if path.name != f"{recording_id}.npz":
+        raise ValueError("cache filename must contain only the opaque recording ID")
+
+
+def _write_npz_atomic(path: Path, payload: Mapping[str, np.ndarray]) -> None:
+    path = _lexical_absolute(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_symlink_components(path.parent)
+    temporary = path.parent / f".{path.stem}.tmp-{secrets.token_hex(8)}.npz"
+    try:
+        with temporary.open("xb") as handle:
+            np.savez_compressed(handle, **payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        with np.load(temporary, allow_pickle=False) as loaded:
+            if set(loaded.files) != set(payload):
+                raise ValueError("reread compact cache has a different field set")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def write_mediapipe_cache(
+    path: str | Path,
+    sequence: MayoMediaSequence,
+    *,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+) -> None:
+    path = _lexical_absolute(path)
+    _require_cache_identity(
+        path, recording_id, group_id, source_integrity_id, source_fingerprint
+    )
+    sequence = _validate_media_sequence(sequence)
+    view = downsample_to_30hz(sequence)
+    payload = {
+        "features_source_rate": sequence.features,
+        "valid_mask_source_rate": sequence.valid_mask,
+        "timestamps_source_rate": sequence.timestamps,
+        "source_frame_indices_source_rate": sequence.source_frame_indices,
+        "facial_transforms_source_rate": sequence.facial_transforms,
+        "facial_transform_mask_source_rate": sequence.facial_transform_mask,
+        "features_30hz": view.features,
+        "valid_mask_30hz": view.valid_mask,
+        "timestamps_30hz": view.timestamps,
+        "source_frame_indices_30hz": view.source_frame_indices,
+        "target_frame_indices_30hz": view.target_frame_indices,
+        "contiguous_from_previous_30hz": view.contiguous_from_previous,
+        "facial_transforms_30hz": view.facial_transforms,
+        "facial_transform_mask_30hz": view.facial_transform_mask,
+        "feature_schema": np.asarray(DYNAMIC_FEATURE_SCHEMA),
+        "feature_names": np.asarray(DYNAMIC_FEATURE_NAMES),
+        "side_convention": np.asarray(CLINICAL_SIDE_CONVENTION),
+        "capture_mirrored": np.asarray("unknown"),
+        "normalization_transform": np.asarray(TRANSFORM_NORMALIZATION),
+        "facial_transform_source": np.asarray(sequence.transform_source),
+        "timestamp_unit": np.asarray("seconds"),
+        "timestamp_source": np.asarray(sequence.timestamp_source),
+        "source_fps": np.asarray(sequence.source_fps, dtype=np.float64),
+        "producer_protocol": np.asarray(VIDEO_PRODUCER_PROTOCOL),
+        "producer_adapter_version": np.asarray(VIDEO_ADAPTER_VERSION),
+        "recording_id": np.asarray(recording_id),
+        "group_id": np.asarray(group_id),
+        "source_integrity_id": np.asarray(source_integrity_id),
+        "source_fingerprint": np.asarray(source_fingerprint),
+        "cache_schema": np.asarray(MEDIAPIPE_CACHE_SCHEMA),
+        "development_only": np.asarray(True),
+        "patient_identity": np.asarray("unknown"),
+        "split_unit": np.asarray("recording"),
+    }
+    _write_npz_atomic(path, payload)
+
+
+def write_arkit_cache(
+    path: str | Path,
+    sequence: ARKitSequence,
+    *,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+) -> None:
+    path = _lexical_absolute(path)
+    _require_cache_identity(
+        path, recording_id, group_id, source_integrity_id, source_fingerprint
+    )
+    sequence = _validate_arkit_sequence(sequence)
+    view = downsample_arkit_to_30hz(sequence)
+    payload = {
+        "features_60hz": sequence.features,
+        "valid_mask_60hz": sequence.valid_mask,
+        "timestamps_60hz": sequence.timestamps,
+        "source_frame_indices_60hz": sequence.source_frame_indices,
+        "features_30hz": view.features,
+        "valid_mask_30hz": view.valid_mask,
+        "timestamps_30hz": view.timestamps,
+        "source_frame_indices_30hz": view.source_frame_indices,
+        "target_frame_indices_30hz": view.target_frame_indices,
+        "contiguous_from_previous_30hz": view.contiguous_from_previous,
+        "feature_schema": np.asarray("arkit_blendshapes_52_v1"),
+        "feature_names": np.asarray(ARKIT_BLENDSHAPE_NAMES),
+        "timestamp_unit": np.asarray("seconds"),
+        "timestamp_source": np.asarray(sequence.timestamp_source),
+        "recording_id": np.asarray(recording_id),
+        "group_id": np.asarray(group_id),
+        "source_integrity_id": np.asarray(source_integrity_id),
+        "source_fingerprint": np.asarray(source_fingerprint),
+        "cache_schema": np.asarray(ARKIT_CACHE_SCHEMA),
+        "development_only": np.asarray(True),
+        "patient_identity": np.asarray("unknown"),
+        "split_unit": np.asarray("recording"),
+    }
+    _write_npz_atomic(path, payload)
+
+
+def _dependency_contract(
+    *,
+    version_resolver: Callable[[str], str] = importlib.metadata.version,
+) -> tuple[dict[str, str], dict[str, str]]:
+    python_version = platform.python_version()
+    if not python_version or python_version.lower() == "unknown":
+        raise ValueError("Python runtime version is unavailable")
+
+    def required(distribution: str) -> str:
+        try:
+            version = version_resolver(distribution)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise ValueError(f"required distribution {distribution} is unavailable") from exc
+        if not isinstance(version, str) or not version or version.lower() == "unknown":
+            raise ValueError(f"distribution {distribution} has no exact version")
+        return version
+
+    versions = {
+        "python": f"python=={python_version}",
+        "numpy": f"numpy=={required('numpy')}",
+        "mediapipe": f"mediapipe=={required('mediapipe')}",
+    }
+    opencv: list[tuple[str, str]] = []
+    for distribution in OPENCV_DISTRIBUTIONS:
+        try:
+            version = version_resolver(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        if not isinstance(version, str) or not version or version.lower() == "unknown":
+            raise ValueError("OpenCV distribution has no exact version")
+        opencv.append((distribution, version))
+    if len(opencv) != 1:
+        raise ValueError("exactly one OpenCV wheel distribution must be installed")
+    versions["opencv"] = f"{opencv[0][0]}=={opencv[0][1]}"
+    distributions = {
+        "numpy": "numpy",
+        "mediapipe": "mediapipe",
+        "opencv": opencv[0][0],
+    }
+    return versions, distributions
+
+
+def _dependency_versions(
+    *,
+    version_resolver: Callable[[str], str] = importlib.metadata.version,
+) -> dict[str, str]:
+    return _dependency_contract(version_resolver=version_resolver)[0]
+
+
+def _default_dependency_artifact_resolver(
+    distribution_name: str,
+) -> tuple[Path, Path]:
+    try:
+        distribution = importlib.metadata.distribution(distribution_name)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise ValueError(
+            f"required distribution {distribution_name} is unavailable"
+        ) from exc
+    metadata_root = getattr(distribution, "_path", None)
+    if metadata_root is None:
+        raise ValueError("distribution metadata location is unavailable")
+    root = Path(metadata_root)
+    return root / "METADATA", root / "RECORD"
+
+
+def _dependency_artifact_rows(
+    distributions: Mapping[str, str],
+    *,
+    dependency_artifact_resolver: Callable[[str], tuple[str | Path, str | Path]],
+    python_executable: str | Path,
+) -> tuple[DependencyFileSnapshot, ...]:
+    configured_executable = _lexical_absolute(python_executable)
+    executable_parent = configured_executable.parent
+    runtime_prefix = (
+        executable_parent.parent
+        if executable_parent.name.lower() in {"bin", "scripts"}
+        else executable_parent
+    )
+    runtime_prefix = _require_directory(runtime_prefix, "Python runtime prefix")
+    executable = Path(python_executable).resolve(strict=True)
+    executable = _require_regular_file(executable, "Python executable")
+    executable_snapshot, _payload = _snapshot_dependency_file(
+        executable,
+        logical_name="python_executable",
+        distribution="python",
+        record_name="<resolved-python-executable>",
+        capture_bytes=False,
+    )
+    rows: list[DependencyFileSnapshot] = [executable_snapshot]
+    seen_targets: set[Path] = set()
+    for logical_name, distribution_name in sorted(distributions.items()):
+        artifacts = dependency_artifact_resolver(distribution_name)
+        if not isinstance(artifacts, tuple) or len(artifacts) != 2:
+            raise ValueError("dependency artifact resolver must return METADATA and RECORD")
+        metadata = _require_regular_file(artifacts[0], f"{distribution_name} metadata")
+        record = _require_regular_file(artifacts[1], f"{distribution_name} RECORD")
+        if metadata.parent != record.parent:
+            raise ValueError("distribution METADATA and RECORD must share one dist-info root")
+        try:
+            record_name = record.relative_to(runtime_prefix).as_posix()
+        except ValueError as exc:
+            raise ValueError("distribution RECORD escapes the exact Python runtime") from exc
+        record_snapshot, record_payload = _snapshot_dependency_file(
+            record,
+            logical_name=f"{logical_name}_record",
+            distribution=distribution_name,
+            record_name=record_name,
+            capture_bytes=True,
+        )
+        assert record_payload is not None
+        entries = _parse_distribution_record(
+            record_payload,
+            record=record,
+            runtime_prefix=runtime_prefix,
+        )
+        targets = {target for _name, target, _hash, _size in entries}
+        if metadata not in targets or record not in targets:
+            raise ValueError("distribution RECORD must close over METADATA and itself")
+        for index, (listed_name, target, recorded_hash, recorded_size) in enumerate(entries):
+            if target in seen_targets:
+                raise ValueError("dependency RECORD closure contains a duplicate target")
+            seen_targets.add(target)
+            if target == record:
+                snapshot = record_snapshot
+            else:
+                suffix = (
+                    "metadata" if target == metadata else f"file_{index:05d}"
+                )
+                snapshot, _payload = _snapshot_dependency_file(
+                    target,
+                    logical_name=f"{logical_name}_{suffix}",
+                    distribution=distribution_name,
+                    record_name=listed_name,
+                    capture_bytes=False,
+                )
+            if recorded_size is not None and snapshot.size != recorded_size:
+                raise ValueError("installed dependency size disagrees with RECORD")
+            if recorded_hash is not None and not hmac.compare_digest(
+                snapshot.sha256, recorded_hash
+            ):
+                raise ValueError("installed dependency bytes disagree with RECORD")
+            rows.append(snapshot)
+    return tuple(rows)
+
+
+def _snapshot_dependency_file(
+    path: Path,
+    *,
+    logical_name: str,
+    distribution: str,
+    record_name: str,
+    capture_bytes: bool,
+) -> tuple[DependencyFileSnapshot, bytes | None]:
+    """Hash one exact regular-file descriptor and bind it back to its path."""
+    checked = _require_regular_file(path, f"{distribution} installed file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(checked, flags)
+    collected = bytearray() if capture_bytes else None
+    digest = hashlib.sha256()
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError("installed dependency must be a regular file")
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            if collected is not None:
+                collected.extend(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity_before = (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    )
+    identity_after = (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+    )
+    current = os.lstat(checked)
+    identity_path = (
+        current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns
+    )
+    if identity_before != identity_after or identity_after != identity_path:
+        raise ValueError("installed dependency changed while it was fingerprinted")
+    return DependencyFileSnapshot(
+        logical_name=logical_name,
+        distribution=distribution,
+        record_name=record_name,
+        path=checked,
+        sha256=digest.hexdigest(),
+        device=before.st_dev,
+        inode=before.st_ino,
+        size=before.st_size,
+        mtime_ns=before.st_mtime_ns,
+    ), (bytes(collected) if collected is not None else None)
+
+
+def _parse_distribution_record(
+    payload: bytes,
+    *,
+    record: Path,
+    runtime_prefix: Path,
+) -> tuple[tuple[str, Path, str | None, int | None], ...]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("dependency RECORD must be UTF-8") from exc
+    base = record.parent.parent
+    rows_by_target: dict[Path, tuple[str, Path, str | None, int | None]] = {}
+    seen: dict[Path, tuple[str, str, str]] = {}
+    try:
+        reader = csv.reader(io.StringIO(text, newline=""))
+        for row in reader:
+            if len(row) != 3:
+                raise ValueError("dependency RECORD row must have exactly three fields")
+            listed_name, recorded_hash_text, recorded_size_text = row
+            pure = PurePosixPath(listed_name)
+            if (
+                not listed_name or "\\" in listed_name or "\x00" in listed_name
+                or pure.is_absolute() or any(part in {"", "."} for part in pure.parts)
+            ):
+                raise ValueError("dependency RECORD contains an unsafe installed path")
+            target = _lexical_absolute(base.joinpath(*pure.parts))
+            try:
+                target.relative_to(runtime_prefix)
+            except ValueError as exc:
+                raise ValueError(
+                    "dependency RECORD path escapes the exact Python runtime"
+                ) from exc
+            target = _require_regular_file(target, "dependency RECORD target")
+            if bool(recorded_hash_text) != bool(recorded_size_text):
+                raise ValueError("dependency RECORD hash and size must both be present or absent")
+            recorded_hash: str | None = None
+            recorded_size: int | None = None
+            if recorded_hash_text:
+                try:
+                    algorithm, encoded = recorded_hash_text.split("=", 1)
+                    if algorithm != "sha256" or not encoded:
+                        raise ValueError
+                    padding = "=" * ((4 - len(encoded) % 4) % 4)
+                    decoded = base64.b64decode(
+                        encoded + padding, altchars=b"-_", validate=True
+                    )
+                except (ValueError, binascii.Error) as exc:
+                    raise ValueError("dependency RECORD hash is not canonical SHA-256") from exc
+                if len(decoded) != hashlib.sha256().digest_size:
+                    raise ValueError("dependency RECORD hash has the wrong length")
+                if (
+                    not recorded_size_text.isdigit()
+                    or str(int(recorded_size_text)) != recorded_size_text
+                ):
+                    raise ValueError("dependency RECORD size is not canonical")
+                recorded_hash = decoded.hex()
+                recorded_size = int(recorded_size_text)
+            prior = seen.get(target)
+            raw_row = (listed_name, recorded_hash_text, recorded_size_text)
+            if prior is not None:
+                prior_name, prior_hash, prior_size = prior
+                current_committed = bool(recorded_hash_text and recorded_size_text)
+                prior_committed = bool(prior_hash and prior_size)
+                # numpy 1.26.4 lists one identical canonical pycache name first
+                # as an unhashed placeholder and then with a SHA/size.  Merge
+                # only that strict strengthening pattern; every other repeated
+                # target remains ambiguous and is rejected.
+                mutable_bytecode = (
+                    "__pycache__" in pure.parts and pure.suffix == ".pyc"
+                )
+                if (
+                    prior_name == listed_name
+                    and prior_committed != current_committed
+                    and (not prior_committed or (not recorded_hash_text and not recorded_size_text))
+                    and mutable_bytecode
+                ):
+                    # Installed bytecode can be regenerated by Python.  If the
+                    # wheel explicitly lists both a blank mutable row and an
+                    # install-time hash for the same pyc, retain the blank
+                    # RECORD semantics but still snapshot the exact current
+                    # bytes for the extraction lifetime.
+                    if not prior_committed:
+                        continue
+                    # Replace a prior hashed row with the later blank row.
+                else:
+                    raise ValueError(
+                        "dependency RECORD contains a duplicate normalized target"
+                    )
+            seen[target] = raw_row
+            rows_by_target[target] = (
+                listed_name, target, recorded_hash, recorded_size
+            )
+    except csv.Error as exc:
+        raise ValueError("dependency RECORD is malformed") from exc
+    if not rows_by_target:
+        raise ValueError("dependency RECORD closure must be nonempty")
+    return tuple(sorted(rows_by_target.values(), key=lambda item: item[0]))
+
+
+def _artifact_aggregate(rows: Sequence[DependencyFileSnapshot]) -> str:
+    aggregate = hashlib.sha256()
+    for item in rows:
+        aggregate.update(
+            (
+                f"{item.logical_name}:{item.distribution}:"
+                f"{item.record_name}:{item.sha256}:{item.size}\n"
+            ).encode("utf-8")
+        )
+    return aggregate.hexdigest()
+
+
+def _public_dependency_provenance(
+    snapshot: ProvenanceSnapshot,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for logical_name, requirement in sorted(snapshot.dependencies.items()):
+        distribution = (
+            "python" if logical_name == "python"
+            else snapshot.dependency_distributions[logical_name]
+        )
+        prefix = (
+            "python==" if logical_name == "python" else f"{distribution}=="
+        )
+        if not requirement.startswith(prefix) or len(requirement) == len(prefix):
+            raise ValueError("dependency version requirement is noncanonical")
+        files = tuple(
+            item for item in snapshot.dependency_files
+            if item.distribution == distribution
+        )
+        if not files:
+            raise ValueError("dependency provenance has an empty installed-file closure")
+        rows.append({
+            "distribution": distribution,
+            "version": requirement[len(prefix):],
+            "installed_file_count": len(files),
+            "installed_file_aggregate_sha256": _artifact_aggregate(files),
+        })
+    return rows
+
+
+def snapshot_provenance(
+    source_paths: Sequence[str | Path],
+    model_path: str | Path,
+    producer_paths: Mapping[str, str | Path],
+    *,
+    version_resolver: Callable[[str], str] = importlib.metadata.version,
+    expected_source_hashes: Mapping[str | Path, str] | None = None,
+    dependency_artifact_resolver: Callable[
+        [str], tuple[str | Path, str | Path]
+    ] = _default_dependency_artifact_resolver,
+    python_executable: str | Path | None = None,
+) -> ProvenanceSnapshot:
+    if not source_paths or not producer_paths:
+        raise ValueError("source and producer hash closures must be nonempty")
+    expected = {
+        _lexical_absolute(path): digest
+        for path, digest in (expected_source_hashes or {}).items()
+    }
+    for digest in expected.values():
+        if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+            raise ValueError("expected source hash is not canonical")
+    source_rows: list[tuple[Path, str]] = []
+    for path in source_paths:
+        checked = _require_regular_file(path, "source artifact")
+        observed = sha256_file(checked)
+        frozen = expected.get(checked)
+        if frozen is not None and not hmac.compare_digest(observed, frozen):
+            raise ValueError("source changed between inventory and provenance snapshot")
+        source_rows.append((checked, observed))
+    sources = tuple(sorted(source_rows, key=lambda item: str(item[0])))
+    if set(expected) - {path for path, _digest in sources}:
+        raise ValueError("expected source hash references an artifact outside the source closure")
+    model = _require_regular_file(model_path, "MediaPipe model")
+    producers: list[tuple[str, Path, str]] = []
+    for name, path in sorted(producer_paths.items()):
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            raise ValueError("producer logical name is invalid")
+        checked = _require_regular_file(path, "producer source")
+        producers.append((name, checked, sha256_file(checked)))
+    producer_aggregate = hashlib.sha256()
+    for name, _path, digest in producers:
+        producer_aggregate.update(f"{name}:{digest}\n".encode("ascii"))
+    source_aggregate = hashlib.sha256()
+    for _path, digest in sorted(sources, key=lambda item: item[1]):
+        source_aggregate.update(f"{digest}\n".encode("ascii"))
+    dependencies, dependency_distributions = _dependency_contract(
+        version_resolver=version_resolver
+    )
+    dependency_files = _dependency_artifact_rows(
+        dependency_distributions,
+        dependency_artifact_resolver=dependency_artifact_resolver,
+        python_executable=(sys.executable if python_executable is None else python_executable),
+    )
+    return ProvenanceSnapshot(
+        source_files=sources,
+        model_file=(model, sha256_file(model)),
+        producer_files=tuple(producers),
+        dependencies=dependencies,
+        dependency_distributions=dependency_distributions,
+        dependency_files=dependency_files,
+        dependency_aggregate_sha256=_artifact_aggregate(dependency_files),
+        producer_aggregate_sha256=producer_aggregate.hexdigest(),
+        source_aggregate_sha256=source_aggregate.hexdigest(),
+    )
+
+
+def assert_provenance_unchanged(
+    snapshot: ProvenanceSnapshot,
+    *,
+    version_resolver: Callable[[str], str] = importlib.metadata.version,
+    dependency_artifact_resolver: Callable[
+        [str], tuple[str | Path, str | Path]
+    ] = _default_dependency_artifact_resolver,
+    python_executable: str | Path | None = None,
+) -> None:
+    if not isinstance(snapshot, ProvenanceSnapshot):
+        raise ValueError("provenance snapshot has the wrong type")
+    observed_versions, observed_distributions = _dependency_contract(
+        version_resolver=version_resolver
+    )
+    if (
+        observed_versions != snapshot.dependencies
+        or observed_distributions != snapshot.dependency_distributions
+    ):
+        raise ValueError("dependency versions or selected distributions changed")
+    dependency_files = _dependency_artifact_rows(
+        observed_distributions,
+        dependency_artifact_resolver=dependency_artifact_resolver,
+        python_executable=(sys.executable if python_executable is None else python_executable),
+    )
+    if dependency_files != snapshot.dependency_files:
+        raise ValueError("dependency artifact path or fingerprint changed")
+    if not hmac.compare_digest(
+        _artifact_aggregate(dependency_files), snapshot.dependency_aggregate_sha256
+    ):
+        raise ValueError("dependency artifact aggregate changed")
+    for path, expected in (*snapshot.source_files, snapshot.model_file):
+        if not hmac.compare_digest(sha256_file(path), expected):
+            raise ValueError("source or model changed before cache promotion")
+    aggregate = hashlib.sha256()
+    for name, path, expected in snapshot.producer_files:
+        observed = sha256_file(path)
+        if not hmac.compare_digest(observed, expected):
+            raise ValueError("producer source changed before cache promotion")
+        aggregate.update(f"{name}:{expected}\n".encode("ascii"))
+    if not hmac.compare_digest(aggregate.hexdigest(), snapshot.producer_aggregate_sha256):
+        raise ValueError("producer aggregate changed before cache promotion")
+    source_aggregate = hashlib.sha256()
+    for _path, digest in sorted(snapshot.source_files, key=lambda item: item[1]):
+        source_aggregate.update(f"{digest}\n".encode("ascii"))
+    if not hmac.compare_digest(
+        source_aggregate.hexdigest(), snapshot.source_aggregate_sha256
+    ):
+        raise ValueError("source aggregate changed before cache promotion")
+
+
+@contextmanager
+def managed_extractor(
+    extractor_factory: Callable[..., MayoVideoClinical23Extractor],
+    *,
+    model_path: str | Path,
+):
+    extractor = extractor_factory(model_path=model_path)
+    try:
+        yield extractor
+    finally:
+        extractor.close()
+
+
+@contextmanager
+def output_parent_lock(output_root: str | Path):
+    output = _lexical_absolute(output_root)
+    parent = _assert_no_symlink_components(output.parent)
+    if not parent.is_dir():
+        raise ValueError("output parent must exist before locking")
+    lock_path = parent / f".{output.name}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    acquired = registered = False
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("output lock must be a regular file")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("another Mayo SSL builder holds the output lock") from exc
+        acquired = True
+        if output in _HELD_OUTPUT_LOCKS:
+            raise RuntimeError("output lock is already held in this process")
+        _HELD_OUTPUT_LOCKS.add(output)
+        registered = True
+        yield
+    finally:
+        if registered:
+            _HELD_OUTPUT_LOCKS.discard(output)
+        if acquired:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _require_output_lock(output: Path) -> None:
+    if output not in _HELD_OUTPUT_LOCKS:
+        raise RuntimeError("output lifecycle mutation requires the exclusive lock")
+
+
+def _remove_real_tree(path: Path) -> None:
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError("generation cleanup target must be a real directory")
+    shutil.rmtree(path)
+
+
+def _fsync_directory(path: Path) -> None:
+    checked = _require_directory(path, "directory to fsync")
+    flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(checked, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_generation_tree(staging: Path) -> None:
+    for dirname in ("mediapipe", "arkit"):
+        _fsync_directory(staging / dirname)
+    _fsync_directory(staging)
+
+
+def _journal_path(output: Path) -> Path:
+    return output.parent / f".{output.name}.transaction.json"
+
+
+def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> None:
+    temporary = path.parent / f".{path.name}.tmp-{secrets.token_hex(8)}"
+    serialized = json.dumps(payload, sort_keys=True, allow_nan=False) + "\n"
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        if temporary.exists() and not _is_symlink(temporary):
+            temporary.unlink()
+
+
+def _load_transaction_journal(path: Path) -> dict[str, object]:
+    checked = _require_regular_file(path, "Mayo transaction journal")
+    if stat.S_IMODE(os.lstat(checked).st_mode) != 0o600:
+        raise ValueError("Mayo transaction journal must have mode 0600")
+    try:
+        payload = json.loads(checked.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Mayo transaction journal is invalid") from exc
+    required = {
+        "schema", "token", "staging_name", "exposure_name",
+        "had_output", "had_exposure", "phase", "generation_commitment",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ValueError("Mayo transaction journal has a noncanonical schema")
+    if (
+        payload["schema"] != "mayo_cache_exposure_transaction_v1"
+        or not isinstance(payload["token"], str)
+        or re.fullmatch(r"[0-9a-f]{16}", payload["token"]) is None
+        or not isinstance(payload["staging_name"], str)
+        or not isinstance(payload["exposure_name"], str)
+        or not isinstance(payload["had_output"], bool)
+        or not isinstance(payload["had_exposure"], bool)
+        or payload["phase"] not in {
+            "prepared", "old_output_moved", "old_exposure_moved",
+            "new_output_installed", "new_exposure_installed", "committed",
+        }
+    ):
+        raise ValueError("Mayo transaction journal contains invalid values")
+    payload["generation_commitment"] = _validate_generation_commitment(
+        payload["generation_commitment"]
+    )
+    return payload
+
+
+def _unlink_regular_if_present(path: Path, field: str) -> None:
+    if path.exists() or _is_symlink(path):
+        _require_regular_file(path, field).unlink()
+
+
+def _recover_cache_exposure_transaction(
+    output: Path,
+    exposure: Path,
+    *,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+) -> None:
+    journal_path = _journal_path(output)
+    if not journal_path.exists() and not _is_symlink(journal_path):
+        return
+    journal = _load_transaction_journal(journal_path)
+    if journal["exposure_name"] != exposure.name:
+        raise ValueError("transaction journal targets a different exposure manifest")
+    staging_name = str(journal["staging_name"])
+    if not staging_name.startswith(f".{output.name}.staging-") or "/" in staging_name:
+        raise ValueError("transaction journal staging name is unsafe")
+    token = str(journal["token"])
+    staging = output.parent / staging_name
+    output_backup = output.parent / f".{output.name}.backup-{token}"
+    exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
+    exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
+    committed = journal["phase"] == "committed"
+
+    if committed:
+        _require_directory(output, "committed output generation")
+        _require_regular_file(exposure, "committed exposure manifest")
+        _assert_committed_generation(
+            output, exposure, journal["generation_commitment"],
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+        )
+        _remove_real_tree(output_backup)
+        _unlink_regular_if_present(exposure_backup, "committed exposure backup")
+    else:
+        if bool(journal["had_output"]):
+            if output_backup.exists() or _is_symlink(output_backup):
+                _require_directory(output_backup, "interrupted output backup")
+                if output.exists() or _is_symlink(output):
+                    _remove_real_tree(output)
+                os.replace(output_backup, output)
+            else:
+                _require_directory(output, "unmoved previous output generation")
+        elif output.exists() or _is_symlink(output):
+            _remove_real_tree(output)
+
+        if bool(journal["had_exposure"]):
+            if exposure_backup.exists() or _is_symlink(exposure_backup):
+                _require_regular_file(exposure_backup, "interrupted exposure backup")
+                _unlink_regular_if_present(exposure, "interrupted new exposure")
+                os.replace(exposure_backup, exposure)
+            else:
+                _require_regular_file(exposure, "unmoved previous exposure manifest")
+        else:
+            _unlink_regular_if_present(exposure, "interrupted new exposure")
+
+    _unlink_regular_if_present(exposure_temporary, "interrupted exposure temporary")
+    if staging.exists() or _is_symlink(staging):
+        _remove_real_tree(staging)
+    _remove_real_tree(output_backup)
+    _unlink_regular_if_present(exposure_backup, "stale exposure backup")
+    _require_regular_file(journal_path, "completed transaction journal").unlink()
+    _fsync_directory(output.parent)
+    if exposure.parent != output.parent:
+        _fsync_directory(exposure.parent)
+
+
+def recover_interrupted_generations(
+    output_root: str | Path,
+    *,
+    exposure_manifest_path: str | Path | None = None,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+) -> None:
+    output = _lexical_absolute(output_root)
+    _require_output_lock(output)
+    parent = _assert_no_symlink_components(output.parent)
+    journal = _journal_path(output)
+    if journal.exists() or _is_symlink(journal):
+        if exposure_manifest_path is None:
+            raise ValueError("exposure path is required to recover a coupled transaction")
+        _recover_cache_exposure_transaction(
+            output, _lexical_absolute(exposure_manifest_path),
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+        )
+    staging = sorted(parent.glob(f".{output.name}.staging-*"), key=lambda item: item.name)
+    backups = sorted(parent.glob(f".{output.name}.backup-*"), key=lambda item: item.name)
+    for candidate in (*staging, *backups):
+        if _is_symlink(candidate) or not candidate.is_dir():
+            raise ValueError("interrupted generation candidate must be a real directory")
+    for candidate in staging:
+        _remove_real_tree(candidate)
+    if output.exists():
+        _require_directory(output, "existing output generation")
+        for backup in backups:
+            _remove_real_tree(backup)
+    elif len(backups) == 1:
+        os.replace(backups[0], output)
+    elif len(backups) > 1:
+        raise ValueError("multiple interrupted backups are ambiguous")
+
+
+def promote_generation(
+    staging_root: str | Path,
+    output_root: str | Path,
+    *,
+    exposure_manifest_path: str | Path | None = None,
+    replace_func: Callable[[str | Path, str | Path], None] = os.replace,
+    phase_hook: Callable[[str], None] | None = None,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+) -> None:
+    staging = _require_directory(staging_root, "staging generation")
+    output = _lexical_absolute(output_root)
+    _require_output_lock(output)
+    if staging.parent != output.parent:
+        raise ValueError("staging generation must be a sibling of output")
+    if exposure_manifest_path is not None:
+        _promote_generation_with_exposure(
+            staging,
+            output,
+            _lexical_absolute(exposure_manifest_path),
+            replace_func=replace_func,
+            phase_hook=phase_hook,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+        )
+        return
+    backup = output.parent / f".{output.name}.backup-{secrets.token_hex(8)}"
+    old_moved = False
+    try:
+        if output.exists():
+            _require_directory(output, "previous output generation")
+            replace_func(output, backup)
+            old_moved = True
+        try:
+            replace_func(staging, output)
+        except BaseException:
+            if old_moved:
+                if output.exists() or _is_symlink(output):
+                    raise RuntimeError("cannot restore previous output generation")
+                replace_func(backup, output)
+                old_moved = False
+            raise
+        if old_moved:
+            _remove_real_tree(backup)
+            old_moved = False
+    finally:
+        if old_moved and backup.exists() and not output.exists():
+            replace_func(backup, output)
+
+
+def _promote_generation_with_exposure(
+    staging: Path,
+    output: Path,
+    exposure: Path,
+    *,
+    replace_func: Callable[[str | Path, str | Path], None],
+    phase_hook: Callable[[str], None] | None,
+    salt: bytes | None,
+    expected_inventory_counts: Mapping[str, object] | None,
+    expected_collection_classification_integrity_id: str | None,
+    expected_classification_integrity_id: str | None,
+) -> None:
+    """Promote cache + exposure with a fsynced crash-recovery journal."""
+    staged_exposure = _require_regular_file(
+        staging / "mayo_exposure_manifest.json", "staged exposure manifest"
+    )
+    generation_commitment = _validate_staging(
+        staging,
+        salt=salt,
+        expected_inventory_counts=expected_inventory_counts,
+        expected_collection_classification_integrity_id=(
+            expected_collection_classification_integrity_id
+        ),
+        expected_classification_integrity_id=expected_classification_integrity_id,
+    )
+    _fsync_generation_tree(staging)
+    try:
+        exposure.relative_to(output)
+    except ValueError:
+        pass
+    else:
+        raise ValueError("external exposure manifest must not live inside output generation")
+    exposure.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_symlink_components(exposure.parent)
+    if exposure.exists() or _is_symlink(exposure):
+        _require_regular_file(exposure, "previous exposure manifest")
+
+    journal_path = _journal_path(output)
+    if journal_path.exists() or _is_symlink(journal_path):
+        raise RuntimeError("an interrupted Mayo cache transaction requires recovery")
+    token = secrets.token_hex(8)
+    output_backup = output.parent / f".{output.name}.backup-{token}"
+    exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
+    exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
+    journal: dict[str, object] = {
+        "schema": "mayo_cache_exposure_transaction_v1",
+        "token": token,
+        "staging_name": staging.name,
+        "exposure_name": exposure.name,
+        "had_output": output.exists(),
+        "had_exposure": exposure.exists(),
+        "generation_commitment": generation_commitment,
+        "phase": "prepared",
+    }
+
+    def set_phase(phase: str) -> None:
+        journal["phase"] = phase
+        _write_transaction_journal(journal_path, journal)
+        if phase_hook is not None:
+            phase_hook(phase)
+
+    set_phase("prepared")
+    try:
+        with staged_exposure.open("rb") as source, exposure_temporary.open("xb") as target:
+            shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+        _fsync_directory(exposure.parent)
+        if output.exists():
+            _require_directory(output, "previous output generation")
+            replace_func(output, output_backup)
+            _fsync_directory(output.parent)
+            set_phase("old_output_moved")
+        if exposure.exists():
+            replace_func(exposure, exposure_backup)
+            _fsync_directory(exposure.parent)
+            set_phase("old_exposure_moved")
+        replace_func(staging, output)
+        _fsync_directory(output.parent)
+        set_phase("new_output_installed")
+        replace_func(exposure_temporary, exposure)
+        _fsync_directory(exposure.parent)
+        set_phase("new_exposure_installed")
+        set_phase("committed")
+        _assert_committed_generation(
+            output, exposure, generation_commitment,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+        )
+    except Exception:
+        _recover_cache_exposure_transaction(
+            output, exposure,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+        )
+        raise
+    _remove_real_tree(output_backup)
+    _unlink_regular_if_present(exposure_backup, "committed exposure backup")
+    _unlink_regular_if_present(exposure_temporary, "committed exposure temporary")
+    _require_regular_file(journal_path, "committed transaction journal").unlink()
+    _fsync_directory(output.parent)
+    if exposure.parent != output.parent:
+        _fsync_directory(exposure.parent)
+
+
+def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
+    validate_public_manifest(dict(payload))
+    serialized = json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(serialized)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _read_regular_bytes(path: Path, field: str) -> tuple[bytes, str, int]:
+    checked = _require_regular_file(path, field)
+    descriptor = os.open(
+        checked, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    payload = bytearray()
+    digest = hashlib.sha256()
+    try:
+        before = os.fstat(descriptor)
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            payload.extend(block)
+            digest.update(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    current = os.lstat(checked)
+    before_identity = (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    )
+    if before_identity != (
+        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+    ) or before_identity != (
+        current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns
+    ):
+        raise ValueError(f"{field} changed while it was read")
+    return bytes(payload), digest.hexdigest(), before.st_size
+
+
+def _load_public_json(path: Path, field: str) -> tuple[dict[str, object], str]:
+    payload, digest, _size = _read_regular_bytes(path, field)
+    try:
+        value = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field} is not canonical JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must contain a JSON object")
+    validate_public_manifest(value)
+    return value, digest
+
+
+_COLLECTION_TOP_FIELDS = frozenset({
+    "schema_version", "dataset", "identity_status", "split_unit",
+    "feature_schema", "feature_names", "capture_mirrored",
+    "normalization_transform", "temporal_protocol", "modality_boundary",
+    "counts", "mediapipe_records", "arkit_records",
+    "classification_integrity_id", "metadata_only_exclusions", "provenance",
+})
+_EXPOSURE_TOP_FIELDS = frozenset({
+    "schema_version", "dataset", "policy", "identity_status", "videos",
+    "arkit_trajectories", "classification_integrity_id", "counts",
+})
+_MEDIA_COLLECTION_FIELDS = frozenset({
+    "recording_id", "group_id", "source_integrity_id", "source_fingerprint",
+    "cache_integrity_id", "cache_source", "producer_protocol",
+    "producer_adapter_version", "legacy_export_audit_status", "identity_status",
+    "split_unit", "development_only", "ssl_exposed",
+    "independent_evaluation_eligible",
+})
+_ARKIT_PUBLIC_FIELDS = frozenset({
+    "recording_id", "group_id", "source_integrity_id", "source_fingerprint",
+    "cache_integrity_id", "feature_schema", "identity_status", "split_unit",
+    "development_only", "ssl_exposed", "independent_evaluation_eligible",
+})
+_EXPOSURE_MEDIA_FIELDS = frozenset({
+    "instance_id", "recording_id", "group_id", "source_integrity_id",
+    "source_fingerprint", "cache_integrity_id", "status", "identity_status",
+    "split_unit", "development_only", "ssl_exposed",
+    "independent_evaluation_eligible",
+})
+_EXPOSURE_EXCLUDED_FIELDS = _EXPOSURE_MEDIA_FIELDS - {"cache_integrity_id"}
+_PROVENANCE_FIELDS = frozenset({
+    "runtime_dependencies", "dependency_aggregate_sha256", "model_sha256",
+    "source_collection_integrity_id", "producer_sha256",
+    "producer_aggregate_sha256",
+})
+_DEPENDENCY_ROW_FIELDS = frozenset({
+    "distribution", "version", "installed_file_count",
+    "installed_file_aggregate_sha256",
+})
+_PRODUCER_NAMES = frozenset({
+    "builder", "action_bundle", "clinical_landmarks",
+    "dynamic_landmark_schema", "feature_registry",
+})
+
+
+def _require_exact_object(
+    value: object, fields: frozenset[str], label: str,
+) -> Mapping[str, object]:
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError(f"{label} field schema is not exact")
+    return value
+
+
+def _require_public_governance(row: Mapping[str, object], label: str) -> None:
+    if (
+        row.get("identity_status") != UNKNOWN_IDENTITY
+        or row.get("split_unit") != RECORDING_HELD_OUT
+        or row.get("development_only") is not True
+        or row.get("ssl_exposed") is not True
+        or row.get("independent_evaluation_eligible") is not False
+    ):
+        raise ValueError(f"{label} governance is not development-only")
+
+
+def _require_public_identity(row: Mapping[str, object], label: str) -> None:
+    recording = row.get("recording_id")
+    group = row.get("group_id")
+    source_integrity = row.get("source_integrity_id")
+    fingerprint = row.get("source_fingerprint")
+    cache_integrity = row.get("cache_integrity_id")
+    if (
+        not isinstance(recording, str) or _RECORDING_ID.fullmatch(recording) is None
+        or not isinstance(group, str) or _GROUP_ID.fullmatch(group) is None
+        or not isinstance(source_integrity, str)
+        or _INTEGRITY_ID.fullmatch(source_integrity) is None
+        or not source_integrity.startswith("src_")
+        or not isinstance(fingerprint, str) or _FINGERPRINT.fullmatch(fingerprint) is None
+        or not isinstance(cache_integrity, str)
+        or _INTEGRITY_ID.fullmatch(cache_integrity) is None
+        or not cache_integrity.startswith("cache_")
+    ):
+        raise ValueError(f"{label} opaque identity is missing or noncanonical")
+
+
+def _validate_public_provenance(value: object) -> None:
+    provenance = _require_exact_object(value, _PROVENANCE_FIELDS, "public provenance")
+    for key in (
+        "dependency_aggregate_sha256", "model_sha256",
+        "producer_aggregate_sha256",
+    ):
+        if not isinstance(provenance[key], str) or _SHA256.fullmatch(provenance[key]) is None:
+            raise ValueError("public provenance contains a noncanonical hash")
+    aggregate = provenance["source_collection_integrity_id"]
+    if (
+        not isinstance(aggregate, str) or _INTEGRITY_ID.fullmatch(aggregate) is None
+        or not aggregate.startswith("agg_")
+    ):
+        raise ValueError("public source collection integrity ID is noncanonical")
+    producers = _require_exact_object(
+        provenance["producer_sha256"], _PRODUCER_NAMES, "producer provenance"
+    )
+    if any(not isinstance(value, str) or _SHA256.fullmatch(value) is None
+           for value in producers.values()):
+        raise ValueError("producer provenance hash is noncanonical")
+    dependencies = provenance["runtime_dependencies"]
+    if not isinstance(dependencies, list) or len(dependencies) != 4:
+        raise ValueError("runtime dependency provenance is incomplete")
+    names: list[str] = []
+    for value in dependencies:
+        row = _require_exact_object(value, _DEPENDENCY_ROW_FIELDS,
+                                    "runtime dependency provenance")
+        distribution = row["distribution"]
+        if not isinstance(distribution, str) or not distribution:
+            raise ValueError("runtime dependency distribution is invalid")
+        names.append(distribution)
+        if (
+            not isinstance(row["version"], str) or not row["version"]
+            or not isinstance(row["installed_file_count"], int)
+            or isinstance(row["installed_file_count"], bool)
+            or row["installed_file_count"] <= 0
+            or not isinstance(row["installed_file_aggregate_sha256"], str)
+            or _SHA256.fullmatch(row["installed_file_aggregate_sha256"]) is None
+        ):
+            raise ValueError("runtime dependency provenance is noncanonical")
+    if (
+        names != sorted(names) or len(names) != len(set(names))
+        or set(names) - ({"python", "numpy", "mediapipe"} | set(OPENCV_DISTRIBUTIONS))
+        or not {"python", "numpy", "mediapipe"}.issubset(names)
+        or len(set(names) & set(OPENCV_DISTRIBUTIONS)) != 1
+    ):
+        raise ValueError("runtime dependency set is noncanonical")
+
+
+def _validate_collection_top(manifest: Mapping[str, object]) -> dict[str, int]:
+    _require_exact_object(manifest, _COLLECTION_TOP_FIELDS, "collection manifest")
+    expected_temporal = {
+        "source_timeline": "per_recording_audited_fps_and_monotonic_source_index",
+        "ssl_view_hz": 30,
+        "resampling": "exact_target_source_index_selection_no_interpolation_or_nearest_fill",
+    }
+    expected_modality = (
+        "ARKit 52-blendshape trajectories are auxiliary-only and are never "
+        "concatenated with or promoted to MediaPipe landmarks"
+    )
+    if (
+        manifest["schema_version"] != COLLECTION_SCHEMA
+        or manifest["dataset"] != COLLECTION_DATASET
+        or manifest["identity_status"] != UNKNOWN_IDENTITY
+        or manifest["split_unit"] != RECORDING_HELD_OUT
+        or manifest["feature_schema"] != DYNAMIC_FEATURE_SCHEMA
+        or manifest["feature_names"] != list(DYNAMIC_FEATURE_NAMES)
+        or manifest["capture_mirrored"] != "unknown"
+        or manifest["normalization_transform"] != TRANSFORM_NORMALIZATION
+        or manifest["temporal_protocol"] != expected_temporal
+        or manifest["modality_boundary"] != expected_modality
+    ):
+        raise ValueError("collection manifest top-level policy is noncanonical")
+    counts = _require_exact_object(
+        manifest["counts"], frozenset(FROZEN_INVENTORY), "collection counts"
+    )
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+           for value in counts.values()):
+        raise ValueError("collection count is invalid")
+    exclusion = _require_exact_object(
+        manifest["metadata_only_exclusions"],
+        frozenset({"index_or_depth_metadata_only_no_video_or_arkit_trajectory"}),
+        "metadata-only exclusion",
+    )
+    if exclusion["index_or_depth_metadata_only_no_video_or_arkit_trajectory"] != counts[
+        "metadata_only_sessions"
+    ]:
+        raise ValueError("metadata-only exclusion count disagrees")
+    _validate_public_provenance(manifest["provenance"])
+    return dict(counts)
+
+
+def _manifest_cache_rows(
+    manifest: Mapping[str, object], key: str, modality: str,
+) -> dict[str, Mapping[str, object]]:
+    value = manifest.get(key)
+    if not isinstance(value, list):
+        raise ValueError(f"collection manifest {key} must be a list")
+    rows: dict[str, Mapping[str, object]] = {}
+    for item in value:
+        fields = _MEDIA_COLLECTION_FIELDS if modality == "mediapipe" else _ARKIT_PUBLIC_FIELDS
+        row = _require_exact_object(item, fields, f"{modality} collection record")
+        _require_public_identity(row, f"{modality} collection record")
+        _require_public_governance(row, f"{modality} collection record")
+        recording_id = row["recording_id"]
+        if modality == "mediapipe":
+            if (
+                row["cache_source"] != "raw_video_reextracted_homogeneous_video_mode"
+                or row["producer_protocol"] != VIDEO_PRODUCER_PROTOCOL
+                or row["producer_adapter_version"] != VIDEO_ADAPTER_VERSION
+                or row["legacy_export_audit_status"] not in {
+                    "not_reused_unverifiable_source_binding", "no_complete_legacy_export"
+                }
+            ):
+                raise ValueError("MediaPipe collection producer contract is noncanonical")
+        elif row["feature_schema"] != "arkit_blendshapes_52_v1":
+            raise ValueError("ARKit collection feature schema is noncanonical")
+        if recording_id in rows:
+            raise ValueError("collection manifest repeats a cache recording")
+        rows[str(recording_id)] = row
+    return rows
+
+
+def _require_cached_exact(
+    cached: object, name: str, expected: object,
+) -> None:
+    observed = np.asarray(cached[name])
+    canonical = np.asarray(expected)
+    if (
+        observed.dtype != canonical.dtype
+        or observed.shape != canonical.shape
+        or not np.array_equal(observed, canonical)
+    ):
+        raise ValueError(f"compact cache {name} is not canonical")
+
+
+def _require_cached_view(
+    cached: object,
+    mapping: Mapping[str, np.ndarray],
+) -> None:
+    for name, expected in mapping.items():
+        observed = np.asarray(cached[name])
+        if (
+            observed.dtype != expected.dtype
+            or observed.shape != expected.shape
+            or not np.array_equal(observed, expected)
+        ):
+            raise ValueError(f"compact cache {name} is not the exact 30-Hz view")
+
+
+def _validate_mediapipe_cache_payload(
+    cached: object,
+    *,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+) -> CompactCacheSummary:
+    sequence = _validate_media_sequence(MayoMediaSequence(
+        features=np.asarray(cached["features_source_rate"]),
+        valid_mask=np.asarray(cached["valid_mask_source_rate"]),
+        timestamps=np.asarray(cached["timestamps_source_rate"]),
+        source_frame_indices=np.asarray(cached["source_frame_indices_source_rate"]),
+        facial_transforms=np.asarray(cached["facial_transforms_source_rate"]),
+        facial_transform_mask=np.asarray(cached["facial_transform_mask_source_rate"]),
+        transform_source=str(np.asarray(cached["facial_transform_source"]).item()),
+        source_fps=float(np.asarray(cached["source_fps"]).item()),
+        timestamp_source=str(np.asarray(cached["timestamp_source"]).item()),
+    ))
+    view = downsample_to_30hz(sequence)
+    _require_cached_view(cached, {
+        "features_30hz": view.features,
+        "valid_mask_30hz": view.valid_mask,
+        "timestamps_30hz": view.timestamps,
+        "source_frame_indices_30hz": view.source_frame_indices,
+        "target_frame_indices_30hz": view.target_frame_indices,
+        "contiguous_from_previous_30hz": view.contiguous_from_previous,
+        "facial_transforms_30hz": view.facial_transforms,
+        "facial_transform_mask_30hz": view.facial_transform_mask,
+    })
+    for name, expected in (
+        ("feature_schema", DYNAMIC_FEATURE_SCHEMA),
+        ("feature_names", np.asarray(DYNAMIC_FEATURE_NAMES)),
+        ("side_convention", CLINICAL_SIDE_CONVENTION),
+        ("capture_mirrored", "unknown"),
+        ("normalization_transform", TRANSFORM_NORMALIZATION),
+        ("facial_transform_source", "same_detection_mediapipe_video_mode"),
+        ("timestamp_unit", "seconds"),
+        ("timestamp_source", "source_frame_index_divided_by_audited_fps"),
+        ("source_fps", np.asarray(sequence.source_fps, dtype=np.float64)),
+        ("producer_protocol", VIDEO_PRODUCER_PROTOCOL),
+        ("producer_adapter_version", VIDEO_ADAPTER_VERSION),
+        ("recording_id", recording_id),
+        ("group_id", group_id),
+        ("source_integrity_id", source_integrity_id),
+        ("source_fingerprint", source_fingerprint),
+        ("cache_schema", MEDIAPIPE_CACHE_SCHEMA),
+        ("development_only", np.asarray(True)),
+        ("patient_identity", "unknown"),
+        ("split_unit", "recording"),
+    ):
+        _require_cached_exact(cached, name, expected)
+    return CompactCacheSummary(len(sequence.features), 0)
+
+
+def _validate_arkit_cache_payload(
+    cached: object,
+    *,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+) -> CompactCacheSummary:
+    sequence = _validate_arkit_sequence(ARKitSequence(
+        features=np.asarray(cached["features_60hz"]),
+        valid_mask=np.asarray(cached["valid_mask_60hz"]),
+        timestamps=np.asarray(cached["timestamps_60hz"]),
+        source_frame_indices=np.asarray(cached["source_frame_indices_60hz"]),
+        timestamp_source=str(np.asarray(cached["timestamp_source"]).item()),
+    ))
+    view = downsample_arkit_to_30hz(sequence)
+    _require_cached_view(cached, {
+        "features_30hz": view.features,
+        "valid_mask_30hz": view.valid_mask,
+        "timestamps_30hz": view.timestamps,
+        "source_frame_indices_30hz": view.source_frame_indices,
+        "target_frame_indices_30hz": view.target_frame_indices,
+        "contiguous_from_previous_30hz": view.contiguous_from_previous,
+    })
+    for name, expected in (
+        ("feature_schema", "arkit_blendshapes_52_v1"),
+        ("feature_names", np.asarray(ARKIT_BLENDSHAPE_NAMES)),
+        ("timestamp_unit", "seconds"),
+        ("timestamp_source", "arkit_original_timecode_relative_seconds"),
+        ("recording_id", recording_id),
+        ("group_id", group_id),
+        ("source_integrity_id", source_integrity_id),
+        ("source_fingerprint", source_fingerprint),
+        ("cache_schema", ARKIT_CACHE_SCHEMA),
+        ("development_only", np.asarray(True)),
+        ("patient_identity", "unknown"),
+        ("split_unit", "recording"),
+    ):
+        _require_cached_exact(cached, name, expected)
+    missing = sum(
+        int(current) - int(previous) - 1
+        for previous, current in zip(
+            sequence.source_frame_indices[:-1], sequence.source_frame_indices[1:]
+        )
+    )
+    return CompactCacheSummary(len(sequence.features), missing)
+
+
+def _validate_compact_cache(
+    path: Path,
+    *,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+    expected_schema: str,
+) -> tuple[str, int, CompactCacheSummary]:
+    payload, digest, size = _read_regular_bytes(path, "compact cache")
+    try:
+        with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
+            observed_fields = tuple(cached.files)
+            expected_fields = (
+                _MEDIAPIPE_CACHE_FIELDS
+                if expected_schema == MEDIAPIPE_CACHE_SCHEMA
+                else _ARKIT_CACHE_FIELDS
+                if expected_schema == ARKIT_CACHE_SCHEMA
+                else None
+            )
+            if (
+                expected_fields is None
+                or len(observed_fields) != len(set(observed_fields))
+                or set(observed_fields) != expected_fields
+            ):
+                raise ValueError("compact cache field schema is not exact")
+            if expected_schema == MEDIAPIPE_CACHE_SCHEMA:
+                summary = _validate_mediapipe_cache_payload(
+                    cached, recording_id=recording_id, group_id=group_id,
+                    source_integrity_id=source_integrity_id,
+                    source_fingerprint=source_fingerprint,
+                )
+            else:
+                summary = _validate_arkit_cache_payload(
+                    cached, recording_id=recording_id, group_id=group_id,
+                    source_integrity_id=source_integrity_id,
+                    source_fingerprint=source_fingerprint,
+                )
+    except (OSError, ValueError, KeyError, TypeError, OverflowError, EOFError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("compact cache"):
+            raise
+        raise ValueError("compact cache cannot be validated") from exc
+    return digest, size, summary
+
+
+def _inventory_counts_sha256(value: Mapping[str, object]) -> str:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != set(FROZEN_INVENTORY)
+        or any(not isinstance(item, int) or isinstance(item, bool) or item < 0
+               for item in value.values())
+    ):
+        raise ValueError("inventory count commitment is noncanonical")
+    return hashlib.sha256(json.dumps(
+        dict(value), sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("ascii")).hexdigest()
+
+
+def _validate_staging(
+    staging: Path,
+    media_count: int | None = None,
+    arkit_count: int | None = None,
+    *,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+) -> dict[str, object]:
+    staging = _require_directory(staging, "staging generation")
+    allowed_top = {"collection_manifest.json", "mayo_exposure_manifest.json",
+                   "mediapipe", "arkit"}
+    if {item.name for item in staging.iterdir()} != allowed_top:
+        raise ValueError("staging generation has a stale, missing, or unexpected top-level file")
+    collection, collection_digest = _load_public_json(
+        staging / "collection_manifest.json", "collection manifest"
+    )
+    exposure, exposure_digest = _load_public_json(
+        staging / "mayo_exposure_manifest.json", "exposure manifest"
+    )
+    collection_counts = _validate_collection_top(collection)
+    inventory_counts_sha256 = _inventory_counts_sha256(collection_counts)
+    if expected_inventory_counts is not None:
+        expected_counts = dict(expected_inventory_counts)
+        _inventory_counts_sha256(expected_counts)
+        if collection_counts != expected_counts:
+            raise ValueError("collection counts disagree with the caller inventory")
+    _require_exact_object(exposure, _EXPOSURE_TOP_FIELDS, "exposure manifest")
+    if (
+        exposure["schema_version"] != EXPOSURE_SCHEMA
+        or exposure["dataset"] != EXPOSURE_DATASET
+        or exposure["policy"] != EXPOSURE_POLICY
+        or exposure["identity_status"] != UNKNOWN_IDENTITY
+    ):
+        raise ValueError("exposure manifest top-level policy is noncanonical")
+    media_rows = _manifest_cache_rows(
+        collection, "mediapipe_records", "mediapipe"
+    )
+    arkit_rows = _manifest_cache_rows(collection, "arkit_records", "arkit")
+    collection_classification_integrity = collection[
+        "classification_integrity_id"
+    ]
+    if (
+        not isinstance(collection_classification_integrity, str)
+        or _INTEGRITY_ID.fullmatch(collection_classification_integrity) is None
+        or not collection_classification_integrity.startswith("agg_")
+    ):
+        raise ValueError("collection classification integrity ID is noncanonical")
+    if expected_collection_classification_integrity_id is not None:
+        if (
+            not isinstance(expected_collection_classification_integrity_id, str)
+            or _INTEGRITY_ID.fullmatch(
+                expected_collection_classification_integrity_id
+            ) is None
+            or not expected_collection_classification_integrity_id.startswith("agg_")
+        ):
+            raise ValueError("caller collection classification is noncanonical")
+        if not hmac.compare_digest(
+            collection_classification_integrity,
+            expected_collection_classification_integrity_id,
+        ):
+            raise ValueError("collection classification disagrees with caller inventory")
+    if salt is not None:
+        recomputed_collection_classification = (
+            collection_classification_integrity_id(
+                list(media_rows.values()), salt
+            )
+        )
+        if not hmac.compare_digest(
+            collection_classification_integrity,
+            recomputed_collection_classification,
+        ):
+            raise ValueError("collection classification HMAC is invalid")
+    exposure_videos = exposure.get("videos")
+    exposure_arkit = exposure.get("arkit_trajectories")
+    exposure_counts = exposure.get("counts")
+    if (
+        not isinstance(exposure_videos, list)
+        or not isinstance(exposure_arkit, list)
+        or not isinstance(exposure_counts, dict)
+        or set(exposure_counts) != {"videos", "arkit_trajectories"}
+        or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+               for value in exposure_counts.values())
+        or exposure_counts != {
+            "videos": len(exposure_videos),
+            "arkit_trajectories": len(exposure_arkit),
+        }
+    ):
+        raise ValueError("exposure manifest counts or record lists are noncanonical")
+    classification_integrity = exposure["classification_integrity_id"]
+    if (
+        not isinstance(classification_integrity, str)
+        or _INTEGRITY_ID.fullmatch(classification_integrity) is None
+        or not classification_integrity.startswith("agg_")
+    ):
+        raise ValueError("exposure classification integrity ID is noncanonical")
+    if expected_classification_integrity_id is not None:
+        if (
+            not isinstance(expected_classification_integrity_id, str)
+            or _INTEGRITY_ID.fullmatch(expected_classification_integrity_id) is None
+            or not expected_classification_integrity_id.startswith("agg_")
+        ):
+            raise ValueError("caller classification commitment is noncanonical")
+        if not hmac.compare_digest(
+            classification_integrity, expected_classification_integrity_id
+        ):
+            raise ValueError("exposure classification disagrees with the caller inventory")
+    if salt is not None:
+        recomputed_classification = exposure_classification_integrity_id(
+            exposure_videos, salt
+        )
+        if not hmac.compare_digest(classification_integrity,
+                                   recomputed_classification):
+            raise ValueError("exposure classification HMAC is invalid")
+    exposure_media_rows: dict[str, Mapping[str, object]] = {}
+    exposure_instance_ids: set[str] = set()
+    duplicate_rows: list[Mapping[str, object]] = []
+    short_rows: list[Mapping[str, object]] = []
+    for item in exposure_videos:
+        if not isinstance(item, dict) or item.get("status") not in {
+            "mediapipe_ssl", "exact_duplicate_excluded", "qc_only_short_clip_excluded"
+        }:
+            raise ValueError("exposure video status is noncanonical")
+        status = str(item["status"])
+        fields = (
+            _EXPOSURE_MEDIA_FIELDS if status == "mediapipe_ssl"
+            else _EXPOSURE_EXCLUDED_FIELDS
+        )
+        row = _require_exact_object(item, fields, "exposure video record")
+        identity_fields = dict(row)
+        if status != "mediapipe_ssl":
+            identity_fields["cache_integrity_id"] = "cache_" + "0" * 64
+        _require_public_identity(identity_fields, "exposure video record")
+        _require_public_governance(row, "exposure video record")
+        instance_id = row["instance_id"]
+        if (
+            not isinstance(instance_id, str) or _INSTANCE_ID.fullmatch(instance_id) is None
+            or instance_id in exposure_instance_ids
+        ):
+            raise ValueError("exposure video instance ID is missing or repeated")
+        exposure_instance_ids.add(instance_id)
+        recording_id = str(row["recording_id"])
+        if status == "mediapipe_ssl":
+            if recording_id in exposure_media_rows:
+                raise ValueError("exposure manifest repeats a MediaPipe cache record")
+            exposure_media_rows[recording_id] = row
+        elif status == "exact_duplicate_excluded":
+            duplicate_rows.append(row)
+        else:
+            short_rows.append(row)
+    exposure_arkit_rows = _manifest_cache_rows(
+        {"arkit_trajectories": exposure_arkit}, "arkit_trajectories", "arkit"
+    )
+    if set(exposure_media_rows) != set(media_rows) or set(exposure_arkit_rows) != set(arkit_rows):
+        raise ValueError("collection and exposure cache record sets disagree")
+    shared_fields = {
+        "recording_id", "group_id", "source_integrity_id", "source_fingerprint",
+        "cache_integrity_id", "identity_status", "split_unit", "development_only",
+        "ssl_exposed", "independent_evaluation_eligible",
+    }
+    for recording_id, row in media_rows.items():
+        exposed = exposure_media_rows[recording_id]
+        if any(exposed[field] != row[field] for field in shared_fields):
+            raise ValueError("MediaPipe collection and exposure records disagree")
+    for recording_id, row in arkit_rows.items():
+        if exposure_arkit_rows[recording_id] != row:
+            raise ValueError("ARKit collection and exposure records disagree")
+    media_group_bindings = {
+        (row["recording_id"], row["group_id"], row["source_integrity_id"],
+         row["source_fingerprint"])
+        for row in exposure_media_rows.values()
+    }
+    if any(
+        (row["recording_id"], row["group_id"], row["source_integrity_id"],
+         row["source_fingerprint"]) not in media_group_bindings
+        for row in duplicate_rows
+    ):
+        raise ValueError("excluded duplicate does not bind a retained MediaPipe source")
+    protected_rows = (*exposure_media_rows.values(), *duplicate_rows)
+    for field in (
+        "recording_id", "group_id", "source_integrity_id", "source_fingerprint",
+    ):
+        protected = {row[field] for row in protected_rows}
+        short_values = [row[field] for row in short_rows]
+        if protected.intersection(short_values) or len(short_values) != len(
+            set(short_values)
+        ):
+            raise ValueError("short-clip exposure identities must be unique and disjoint")
+    observed_media_count = len(media_rows)
+    observed_arkit_count = len(arkit_rows)
+    if (
+        collection_counts["total_sessions"]
+        != collection_counts["video_bearing_sessions"]
+        + collection_counts["without_video_sessions"]
+        or collection_counts["without_video_sessions"]
+        != collection_counts["arkit_only_sessions"]
+        + collection_counts["metadata_only_sessions"]
+        or collection_counts["video_bearing_sessions"] != len(exposure_videos)
+        or collection_counts["long_unique_videos"] != observed_media_count
+        or collection_counts["exact_duplicate_copies_excluded"] != len(duplicate_rows)
+        or collection_counts["short_qc_clips_excluded"] != len(short_rows)
+        or collection_counts["existing_complete_v2_exports"]
+        != sum(row["legacy_export_audit_status"]
+               == "not_reused_unverifiable_source_binding"
+               for row in media_rows.values())
+        or collection_counts["remaining_long_videos"]
+        != sum(row["legacy_export_audit_status"] == "no_complete_legacy_export"
+               for row in media_rows.values())
+        or collection_counts["existing_complete_v2_exports"]
+        + collection_counts["remaining_long_videos"]
+        != collection_counts["long_unique_videos"]
+        or collection_counts["arkit_trajectories"] != observed_arkit_count
+    ):
+        raise ValueError("collection counts disagree with exact staged records")
+    if media_count is not None and observed_media_count != media_count:
+        raise ValueError("staged MediaPipe manifest count is incomplete")
+    if arkit_count is not None and observed_arkit_count != arkit_count:
+        raise ValueError("staged ARKit manifest count is incomplete")
+    cache_commitments: list[tuple[str, str, int]] = []
+    remaining_media_rows = 0
+    observed_arkit_rows = 0
+    observed_arkit_gaps = 0
+    for dirname, rows, expected_schema, context in (
+        ("mediapipe", media_rows, MEDIAPIPE_CACHE_SCHEMA,
+         "mayo-mediapipe-cache-integrity"),
+        ("arkit", arkit_rows, ARKIT_CACHE_SCHEMA,
+         "mayo-arkit-cache-integrity"),
+    ):
+        directory = _require_directory(staging / dirname, f"staged {dirname} cache")
+        files = sorted(directory.iterdir(), key=lambda item: item.name)
+        expected_names = {f"{recording_id}.npz" for recording_id in rows}
+        if {path.name for path in files} != expected_names or any(
+            _is_symlink(path) or not path.is_file() or path.suffix != ".npz" for path in files
+        ):
+            raise ValueError(f"staged {dirname} cache file set is incomplete or unsafe")
+        for path in files:
+            recording_id = path.stem
+            row = rows[recording_id]
+            digest, size, summary = _validate_compact_cache(
+                path,
+                recording_id=recording_id,
+                group_id=str(row["group_id"]),
+                source_integrity_id=str(row["source_integrity_id"]),
+                source_fingerprint=str(row["source_fingerprint"]),
+                expected_schema=expected_schema,
+            )
+            if salt is not None:
+                expected_integrity = hmac_identifier(
+                    "cache", salt, context, digest
+                )
+                if not hmac.compare_digest(
+                    expected_integrity, str(row["cache_integrity_id"])
+                ):
+                    raise ValueError("cache integrity ID does not bind the staged bytes")
+            if dirname == "mediapipe":
+                if row["legacy_export_audit_status"] == "no_complete_legacy_export":
+                    remaining_media_rows += summary.source_rows
+            else:
+                observed_arkit_rows += summary.source_rows
+                observed_arkit_gaps += summary.missing_source_frames
+            cache_commitments.append((f"{dirname}/{path.name}", digest, size))
+    if (
+        collection_counts["remaining_long_video_frames"] != remaining_media_rows
+        or collection_counts["arkit_rows"] != observed_arkit_rows
+        or collection_counts["arkit_timecode_gaps"] != observed_arkit_gaps
+    ):
+        raise ValueError("collection temporal totals disagree with private cache arrays")
+    if list(staging.rglob("*.csv")) or list(staging.rglob("*.mp4")) or list(staging.rglob("*.mov")):
+        raise ValueError("staged generation must not contain raw CSV or preview video")
+    cache_aggregate = hashlib.sha256()
+    for relative_name, digest, size in cache_commitments:
+        cache_aggregate.update(
+            f"{relative_name}:{digest}:{size}\n".encode("ascii")
+        )
+    generation_aggregate = hashlib.sha256()
+    generation_aggregate.update(f"collection:{collection_digest}\n".encode("ascii"))
+    generation_aggregate.update(f"exposure:{exposure_digest}\n".encode("ascii"))
+    generation_aggregate.update(
+        f"caches:{cache_aggregate.hexdigest()}\n".encode("ascii")
+    )
+    return {
+        "schema": "mayo_cache_generation_commitment_v3",
+        "collection_manifest_sha256": collection_digest,
+        "exposure_manifest_sha256": exposure_digest,
+        "mediapipe_file_count": observed_media_count,
+        "arkit_file_count": observed_arkit_count,
+        "cache_file_count": len(cache_commitments),
+        "cache_tree_aggregate_sha256": cache_aggregate.hexdigest(),
+        "generation_aggregate_sha256": generation_aggregate.hexdigest(),
+        "inventory_counts_sha256": inventory_counts_sha256,
+        "collection_classification_integrity_id": (
+            collection_classification_integrity
+        ),
+        "exposure_classification_integrity_id": classification_integrity,
+    }
+
+
+def _validate_generation_commitment(value: object) -> dict[str, object]:
+    required = {
+        "schema", "collection_manifest_sha256", "exposure_manifest_sha256",
+        "mediapipe_file_count", "arkit_file_count", "cache_file_count",
+        "cache_tree_aggregate_sha256", "generation_aggregate_sha256",
+        "inventory_counts_sha256", "collection_classification_integrity_id",
+        "exposure_classification_integrity_id",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        raise ValueError("transaction generation commitment has a noncanonical schema")
+    if value["schema"] != "mayo_cache_generation_commitment_v3":
+        raise ValueError("transaction generation commitment has the wrong version")
+    for key in (
+        "collection_manifest_sha256", "exposure_manifest_sha256",
+        "cache_tree_aggregate_sha256", "generation_aggregate_sha256",
+        "inventory_counts_sha256",
+    ):
+        if not isinstance(value[key], str) or _SHA256.fullmatch(value[key]) is None:
+            raise ValueError("transaction generation commitment digest is invalid")
+    for key in (
+        "collection_classification_integrity_id",
+        "exposure_classification_integrity_id",
+    ):
+        classification = value[key]
+        if (
+            not isinstance(classification, str)
+            or _INTEGRITY_ID.fullmatch(classification) is None
+            or not classification.startswith("agg_")
+        ):
+            raise ValueError("transaction classification commitment is invalid")
+    for key in ("mediapipe_file_count", "arkit_file_count", "cache_file_count"):
+        if not isinstance(value[key], int) or isinstance(value[key], bool) or value[key] < 0:
+            raise ValueError("transaction generation commitment count is invalid")
+    if value["cache_file_count"] != (
+        value["mediapipe_file_count"] + value["arkit_file_count"]
+    ):
+        raise ValueError("transaction generation commitment counts disagree")
+    return dict(value)
+
+
+def _assert_committed_generation(
+    output: Path,
+    exposure: Path,
+    commitment: Mapping[str, object],
+    *,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+) -> None:
+    expected = _validate_generation_commitment(dict(commitment))
+    observed = _validate_staging(
+        output,
+        int(expected["mediapipe_file_count"]),
+        int(expected["arkit_file_count"]),
+        salt=salt,
+        expected_inventory_counts=expected_inventory_counts,
+        expected_collection_classification_integrity_id=(
+            expected_collection_classification_integrity_id
+        ),
+        expected_classification_integrity_id=expected_classification_integrity_id,
+    )
+    if observed != expected:
+        raise ValueError("committed cache generation no longer matches its journal")
+    _payload, exposure_digest, _size = _read_regular_bytes(
+        exposure, "committed external exposure manifest"
+    )
+    if not hmac.compare_digest(
+        exposure_digest, str(expected["exposure_manifest_sha256"])
+    ):
+        raise ValueError("committed external exposure manifest changed")
+
+
+def validate_output_locations(
+    output_root: str | Path,
+    exposure_manifest: str | Path,
+    *,
+    project_root: str | Path = PROJECT_ROOT,
+) -> tuple[Path, Path]:
+    """Confine biometric artifacts to the two exact repository-ignored layouts."""
+    output = _assert_no_symlink_components(output_root)
+    exposure = _assert_no_symlink_components(exposure_manifest)
+    root = _assert_no_symlink_components(project_root)
+    expected_output = (
+        root / "outputs" / "dynamic_landmark" / "pretraining" / "mayo_ssl_cache"
+    )
+    expected_exposure = (
+        root / "outputs" / "dynamic_landmark" / "mayo_exposure_manifest.json"
+    )
+    if output != expected_output:
+        raise ValueError(
+            "Mayo SSL cache path must exactly equal PROJECT_ROOT/outputs/"
+            "dynamic_landmark/pretraining/mayo_ssl_cache"
+        )
+    if exposure != expected_exposure:
+        raise ValueError(
+            "exposure manifest path must exactly equal PROJECT_ROOT/outputs/"
+            "dynamic_landmark/mayo_exposure_manifest.json"
+        )
+    return output, exposure
+
+
+def _paths_overlap(first: Path, second: Path) -> bool:
+    return first == second or first in second.parents or second in first.parents
+
+
+def validate_source_output_separation(
+    data_root: str | Path,
+    existing_export_root: str | Path,
+    output_root: str | Path,
+    exposure_manifest: str | Path,
+) -> None:
+    data = _lexical_absolute(data_root)
+    exports = _lexical_absolute(existing_export_root)
+    output = _lexical_absolute(output_root)
+    exposure = _lexical_absolute(exposure_manifest)
+    for protected in (data, exports):
+        if _paths_overlap(protected, output) or _paths_overlap(protected, exposure):
+            raise ValueError("derived cache/exposure paths must not overlap source roots")
+
+
+def read_canonical_salt(
+    salt_file: str | Path,
+    *,
+    project_root: str | Path = PROJECT_ROOT,
+    owner_uid: int | None = None,
+) -> bytes:
+    root = _assert_no_symlink_components(project_root)
+    expected = (
+        root / "outputs" / "dynamic_landmark" / "pretraining" / ".mayo_ssl_hmac.key"
+    )
+    path = _assert_no_symlink_components(salt_file)
+    if path != expected:
+        raise ValueError("HMAC salt path must exactly equal the canonical ignored key path")
+    expected_owner = os.getuid() if owner_uid is None else owner_uid
+    descriptor = os.open(
+        path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("HMAC salt must be a regular file")
+        if info.st_uid != expected_owner:
+            raise ValueError("HMAC salt must be owned by the current user")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("HMAC salt must have exact mode 0600")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            salt = handle.read(4097)
+        if len(salt) > 4096:
+            raise ValueError("HMAC salt file is unexpectedly large")
+        return _require_salt(salt)
+    finally:
+        os.close(descriptor)
+
+
+def validate_extraction_runtime(
+    current_executable: str | Path,
+    *,
+    expected_executable: str | Path = PINNED_MEDIAPIPE_PYTHON,
+) -> Path:
+    try:
+        current = Path(current_executable).resolve(strict=True)
+        expected = Path(expected_executable).resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError("pinned isolated MediaPipe Python is unavailable") from exc
+    if current != expected:
+        raise RuntimeError(
+            "Mayo extraction must run with the isolated MediaPipe runtime: "
+            f"{expected_executable}"
+        )
+    return current
+
+
+def _run_builder_impl(
+    data_root: str | Path,
+    existing_export_root: str | Path,
+    model_path: str | Path,
+    salt_file: str | Path,
+    output_root: str | Path,
+    exposure_manifest: str | Path,
+    *,
+    extractor_factory: Callable[
+        ..., MayoVideoClinical23Extractor
+    ] = MayoVideoClinical23Extractor,
+    capture_factory: Callable[[str], object] = cv2.VideoCapture,
+    inventory_factory: Callable[..., MayoInventory] = inventory_mayo_sources,
+    project_root: str | Path = PROJECT_ROOT,
+    current_executable: str | Path = sys.executable,
+    expected_executable: str | Path = PINNED_MEDIAPIPE_PYTHON,
+    version_resolver: Callable[[str], str] = importlib.metadata.version,
+    dependency_artifact_resolver: Callable[
+        [str], tuple[str | Path, str | Path]
+    ] = _default_dependency_artifact_resolver,
+    provenance_python_executable: str | Path | None = None,
+) -> dict[str, object]:
+    """Build and atomically promote one complete cache generation."""
+    validate_extraction_runtime(
+        current_executable, expected_executable=expected_executable
+    )
+    data = _require_directory(data_root, "Mayo data root")
+    exports = _require_directory(existing_export_root, "existing MediaPipe export root")
+    model = _require_regular_file(model_path, "MediaPipe model")
+    salt = read_canonical_salt(salt_file, project_root=project_root)
+    output, exposure_path = validate_output_locations(
+        output_root, exposure_manifest, project_root=project_root
+    )
+    validate_source_output_separation(data, exports, output, exposure_path)
+    inventory = inventory_factory(data, exports, enforce_frozen=True)
+    if not isinstance(inventory, MayoInventory):
+        raise ValueError("Mayo inventory factory returned the wrong type")
+    expected_inventory_counts = dict(inventory.counts)
+    _inventory_counts_sha256(expected_inventory_counts)
+
+    source_paths: list[Path] = [asset.path for asset in inventory.video_instances]
+    source_paths.extend(asset.path for asset in inventory.arkit_trajectories)
+    producer_paths = {
+        "builder": Path(__file__),
+        "action_bundle": PROJECT_ROOT / "src" / "preprocessing" / "action_bundle.py",
+        "clinical_landmarks": PROJECT_ROOT / "src" / "preprocessing" / "clinical_landmarks.py",
+        "dynamic_landmark_schema": PROJECT_ROOT / "src" / "datasets" / "dynamic_landmark.py",
+        "feature_registry": PROJECT_ROOT / "src" / "datasets" / "patient_multistream.py",
+    }
+    inventory_source_hashes = {
+        asset.path: asset.source_sha256 for asset in inventory.video_instances
+    }
+    inventory_source_hashes.update({
+        asset.path: asset.source_sha256 for asset in inventory.arkit_trajectories
+    })
+    provenance = snapshot_provenance(
+        source_paths,
+        model,
+        producer_paths,
+        expected_source_hashes=inventory_source_hashes,
+        version_resolver=version_resolver,
+        dependency_artifact_resolver=dependency_artifact_resolver,
+        python_executable=(
+            current_executable
+            if provenance_python_executable is None
+            else provenance_python_executable
+        ),
+    )
+    collection, exposure = build_public_manifests(inventory, salt)
+    expected_collection_classification_integrity_id = str(
+        collection["classification_integrity_id"]
+    )
+    expected_classification_integrity_id = str(
+        exposure["classification_integrity_id"]
+    )
+    collection["provenance"] = {
+        "runtime_dependencies": _public_dependency_provenance(provenance),
+        "dependency_aggregate_sha256": provenance.dependency_aggregate_sha256,
+        "model_sha256": provenance.model_sha256,
+        "source_collection_integrity_id": hmac_identifier(
+            "agg", salt, "mayo-source-collection-integrity",
+            provenance.source_aggregate_sha256,
+        ),
+        "producer_sha256": provenance.producer_sha256,
+        "producer_aggregate_sha256": provenance.producer_aggregate_sha256,
+    }
+    validate_public_manifest(collection)
+
+    media_by_recording_id = {
+        str(row["recording_id"]): row for row in collection["mediapipe_records"]
+    }
+    arkit_by_recording_id = {
+        str(row["recording_id"]): row for row in collection["arkit_records"]
+    }
+    exposure_media_by_recording_id = {
+        str(row["recording_id"]): row
+        for row in exposure["videos"] if row["status"] == "mediapipe_ssl"
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_symlink_components(output.parent)
+    with output_parent_lock(output):
+        recover_interrupted_generations(
+            output, exposure_manifest_path=exposure_path,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+        )
+        staging = Path(tempfile.mkdtemp(
+            prefix=f".{output.name}.staging-", dir=output.parent
+        ))
+        try:
+            snapshot_dir = staging / ".source_snapshots"
+            snapshot_dir.mkdir()
+            pinned: list[PinnedSourceSnapshot] = []
+            video_decode_paths: dict[Path, Path] = {}
+            for index, asset in enumerate(inventory.long_unique_videos):
+                item = pin_source_file(
+                    asset.path,
+                    snapshot_dir,
+                    f"video-{index:03d}{asset.path.suffix.lower()}",
+                    expected_sha256=asset.source_sha256,
+                )
+                pinned.append(item)
+                video_decode_paths[asset.path] = item.pinned_path
+            arkit_decode_paths: dict[Path, Path] = {}
+            for index, asset in enumerate(inventory.arkit_trajectories):
+                item = pin_source_file(
+                    asset.path, snapshot_dir, f"arkit-{index:03d}.csv",
+                    expected_sha256=asset.source_sha256,
+                )
+                pinned.append(item)
+                arkit_decode_paths[asset.path] = item.pinned_path
+            pinned_model = pin_source_file(
+                model, snapshot_dir, "model.task",
+                expected_sha256=provenance.model_sha256,
+            )
+            pinned.append(pinned_model)
+
+            media_dir = staging / "mediapipe"
+            arkit_dir = staging / "arkit"
+            media_dir.mkdir()
+            arkit_dir.mkdir()
+            for asset, sequence in extract_homogeneous_video_sequences(
+                inventory.long_unique_videos,
+                extractor_factory,
+                model_path=pinned_model.pinned_path,
+                capture_factory=capture_factory,
+                source_paths=video_decode_paths,
+            ):
+                recording_id = hmac_identifier(
+                    "rec", salt, "mayo-mediapipe-recording", asset.source_sha256
+                )
+                row = media_by_recording_id[recording_id]
+                cache_path = media_dir / f"{row['recording_id']}.npz"
+                write_mediapipe_cache(
+                    cache_path,
+                    sequence,
+                    recording_id=str(row["recording_id"]),
+                    group_id=str(row["group_id"]),
+                    source_integrity_id=str(row["source_integrity_id"]),
+                    source_fingerprint=str(row["source_fingerprint"]),
+                )
+                cache_integrity_id = hmac_identifier(
+                    "cache", salt, "mayo-mediapipe-cache-integrity",
+                    sha256_file(cache_path),
+                )
+                row["cache_integrity_id"] = cache_integrity_id
+                exposure_media_by_recording_id[recording_id][
+                    "cache_integrity_id"
+                ] = cache_integrity_id
+            for asset in inventory.arkit_trajectories:
+                recording_id = hmac_identifier(
+                    "rec", salt, "mayo-arkit-recording", asset.source_sha256
+                )
+                row = arkit_by_recording_id[recording_id]
+                sequence = load_arkit_trajectory(arkit_decode_paths[asset.path])
+                if len(sequence.features) != asset.row_count:
+                    raise ValueError("ARKit row count changed after inventory")
+                cache_path = arkit_dir / f"{row['recording_id']}.npz"
+                write_arkit_cache(
+                    cache_path,
+                    sequence,
+                    recording_id=str(row["recording_id"]),
+                    group_id=str(row["group_id"]),
+                    source_integrity_id=str(row["source_integrity_id"]),
+                    source_fingerprint=str(row["source_fingerprint"]),
+                )
+                row["cache_integrity_id"] = hmac_identifier(
+                    "cache", salt, "mayo-arkit-cache-integrity",
+                    sha256_file(cache_path),
+                )
+            validate_public_manifest(collection)
+            validate_public_manifest(exposure)
+            _write_json_exclusive(staging / "collection_manifest.json", collection)
+            _write_json_exclusive(staging / "mayo_exposure_manifest.json", exposure)
+            for item in pinned:
+                assert_pinned_source_unchanged(item)
+            assert_provenance_unchanged(
+                provenance,
+                version_resolver=version_resolver,
+                dependency_artifact_resolver=dependency_artifact_resolver,
+                python_executable=(
+                    current_executable
+                    if provenance_python_executable is None
+                    else provenance_python_executable
+                ),
+            )
+            _remove_real_tree(snapshot_dir)
+            _validate_staging(
+                staging, len(inventory.long_unique_videos),
+                len(inventory.arkit_trajectories),
+                salt=salt,
+                expected_inventory_counts=expected_inventory_counts,
+                expected_collection_classification_integrity_id=(
+                    expected_collection_classification_integrity_id
+                ),
+                expected_classification_integrity_id=(
+                    expected_classification_integrity_id
+                ),
+            )
+            promote_generation(
+                staging,
+                output,
+                exposure_manifest_path=exposure_path,
+                salt=salt,
+                expected_inventory_counts=expected_inventory_counts,
+                expected_collection_classification_integrity_id=(
+                    expected_collection_classification_integrity_id
+                ),
+                expected_classification_integrity_id=(
+                    expected_classification_integrity_id
+                ),
+            )
+        finally:
+            if staging.exists():
+                _remove_real_tree(staging)
+    return collection
+
+
+def run_builder(
+    data_root: str | Path,
+    existing_export_root: str | Path,
+    model_path: str | Path,
+    salt_file: str | Path,
+    output_root: str | Path,
+    exposure_manifest: str | Path,
+) -> dict[str, object]:
+    """Run the frozen production policy without caller-overridable safeguards."""
+    return _run_builder_impl(
+        data_root,
+        existing_export_root,
+        model_path,
+        salt_file,
+        output_root,
+        exposure_manifest,
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Extraction runtime (required for a build): "
+            f"{PINNED_MEDIAPIPE_PYTHON} with mediapipe==0.10.35. "
+            "--inventory-only requires only the two source-root arguments."
+        ),
+    )
+    parser.add_argument("--data-root", required=True, type=Path)
+    parser.add_argument("--existing-export-root", required=True, type=Path)
+    parser.add_argument("--model-path", type=Path)
+    parser.add_argument("--salt-file", type=Path)
+    parser.add_argument("--output-root", type=Path)
+    parser.add_argument("--exposure-manifest", type=Path)
+    parser.add_argument("--inventory-only", action="store_true")
+    return parser
+
+
+def main() -> None:
+    parser = _parser()
+    args = parser.parse_args()
+    if args.inventory_only:
+        inventory = inventory_mayo_sources(
+            args.data_root, args.existing_export_root, enforce_frozen=True
+        )
+        print(json.dumps({"counts": inventory.counts}, sort_keys=True))
+        return
+    missing = [
+        option for option, value in (
+            ("--model-path", args.model_path),
+            ("--salt-file", args.salt_file),
+            ("--output-root", args.output_root),
+            ("--exposure-manifest", args.exposure_manifest),
+        ) if value is None
+    ]
+    if missing:
+        parser.error(
+            "build mode requires " + ", ".join(missing)
+            + f" and must run under {PINNED_MEDIAPIPE_PYTHON}"
+        )
+    validate_extraction_runtime(sys.executable)
+    manifest = run_builder(
+        data_root=args.data_root,
+        existing_export_root=args.existing_export_root,
+        model_path=args.model_path,
+        salt_file=args.salt_file,
+        output_root=args.output_root,
+        exposure_manifest=args.exposure_manifest,
+    )
+    print(json.dumps({"counts": manifest["counts"], "output": "deidentified_cache"},
+                     sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

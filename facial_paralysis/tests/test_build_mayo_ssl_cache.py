@@ -1,0 +1,2482 @@
+"""Contract tests for the transactional, deidentified Mayo SSL cache builder."""
+from __future__ import annotations
+
+import csv
+import base64
+import hashlib
+import inspect
+import importlib.metadata
+import importlib.util
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+
+import cv2
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from _testlib import Check, run_all  # noqa: E402
+from src.datasets.dynamic_landmark import (  # noqa: E402
+    DYNAMIC_FEATURE_NAMES,
+    DYNAMIC_FEATURE_SCHEMA,
+)
+
+SCRIPT = ROOT / "scripts" / "build_mayo_ssl_cache.py"
+SPEC = importlib.util.spec_from_file_location("build_mayo_ssl_cache", SCRIPT)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("cannot load Mayo SSL builder module")
+builder = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = builder
+SPEC.loader.exec_module(builder)
+
+
+EXISTING_FRAME_COUNTS = (
+    5536, 7376, 7140, 7038, 4579, 5604, 6962,
+    5313, 4021, 5029, 6580, 7175, 8529,
+)
+PENDING_FRAME_COUNTS = (
+    6021, 6779, 5210, 5576, 7040, 4758, 4444, 5524, 5384,
+    6780, 4952, 4861, 6769, 6900, 6583, 5471, 4502, 6738,
+    5641, 5312, 7442, 7094, 6858, 6877, 6730, 6632, 6801,
+    6673, 7339, 6778, 6916, 7731, 7114, 7338, 7553,
+)
+ARKIT_ROW_COUNTS = (8435, 7433, 8356, 7367, 6892, 6042, 6218, 7311)
+ARKIT_GAP_COUNTS = (3, 3, 3, 4, 3, 2, 3, 3)
+
+
+def _sha(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _record_digest(payload: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+    return "sha256=" + encoded.rstrip(b"=").decode("ascii")
+
+
+def _write_complete_export(root: Path, session_name: str) -> None:
+    target = root / session_name
+    target.mkdir(parents=True)
+    (target / "done.json").write_text("{}")
+    (target / "landmarks.csv").write_text("frame,point_idx,x,y,z\n")
+    (target / "blendshapes_wide.csv").write_text("frame,timestamp_ms\n")
+    np.save(target / "transform_matrices.npy", np.empty((0, 4, 4), np.float32))
+
+
+def _inventory_fixture(root: Path):
+    data = root / "PHI_raw_mayo"
+    exports = root / "PHI_existing_exports"
+    data.mkdir()
+    exports.mkdir()
+    video_meta: dict[Path, object] = {}
+    arkit_rows: dict[Path, int] = {}
+    arkit_gaps: dict[Path, int] = {}
+
+    representative_payload = b"exact-duplicate-video"
+    representative_frames = EXISTING_FRAME_COUNTS[3]
+    for index, frame_count in enumerate(EXISTING_FRAME_COUNTS):
+        name = f"PHI_existing_{index:02d}"
+        session = data / name
+        session.mkdir()
+        payload = representative_payload if index == 3 else f"existing-{index}".encode()
+        video = session / f"private_{index}.mov"
+        video.write_bytes(payload)
+        video_meta[video] = builder.VideoMetadata(
+            frame_count=frame_count, fps=60.0, width=720, height=1280
+        )
+        _write_complete_export(exports, name)
+        if index < 2:
+            (session / f"private_{index}.mp4").write_bytes(b"proxy-not-a-recording")
+
+    for index, frame_count in enumerate(PENDING_FRAME_COUNTS):
+        name = f"PHI_pending_{index:02d}"
+        session = data / name
+        session.mkdir()
+        video = session / f"private_pending_{index}.mov"
+        video.write_bytes(f"pending-{index}".encode())
+        video_meta[video] = builder.VideoMetadata(
+            frame_count=frame_count, fps=60.0, width=720, height=1280
+        )
+        if index == 0:
+            (session / "private_pending_0.mp4").write_bytes(b"proxy")
+
+    duplicate_name = "ZZ_PHI_duplicate_copy"
+    duplicate = data / duplicate_name
+    duplicate.mkdir()
+    duplicate_video = duplicate / "duplicate.mov"
+    duplicate_video.write_bytes(representative_payload)
+    video_meta[duplicate_video] = builder.VideoMetadata(
+        frame_count=representative_frames, fps=60.0, width=720, height=1280
+    )
+    _write_complete_export(exports, duplicate_name)
+
+    short_name = "ZZ_PHI_qc_short"
+    short = data / short_name
+    short.mkdir()
+    short_video = short / "short.mov"
+    short_video.write_bytes(b"short-qc")
+    video_meta[short_video] = builder.VideoMetadata(
+        frame_count=68, fps=60.0, width=720, height=1280
+    )
+    _write_complete_export(exports, short_name)
+
+    row_index = 0
+    for session_index in range(7):
+        session = data / f"PHI_arkit_only_{session_index:02d}"
+        session.mkdir()
+        trajectory_count = 2 if session_index == 5 else 1
+        for trajectory_index in range(trajectory_count):
+            csv_path = session / f"private_trajectory_{trajectory_index}_iPhone.csv"
+            csv_path.write_text(
+                f"Timecode,BlendshapeCount\nopaque-{row_index},61\n"
+            )
+            arkit_rows[csv_path] = ARKIT_ROW_COUNTS[row_index]
+            arkit_gaps[csv_path] = ARKIT_GAP_COUNTS[row_index]
+            row_index += 1
+
+    for index in range(8):
+        session = data / f"PHI_metadata_only_{index:02d}"
+        session.mkdir()
+        (session / "frame_log.csv").write_text("kind,index\nV,0\n")
+        (session / "video_metadata.json").write_text('{"FrameRate":60}')
+
+    def probe(path: Path):
+        return video_meta[Path(path)]
+
+    def inspect_arkit(path: Path):
+        return builder.ARKitInspection(
+            row_count=arkit_rows[Path(path)],
+            feature_names=builder.ARKIT_BLENDSHAPE_NAMES,
+            missing_source_frames=arkit_gaps[Path(path)],
+        )
+
+    return data, exports, probe, inspect_arkit
+
+
+def _inventory(root: Path):
+    data, exports, probe, inspect_arkit = _inventory_fixture(root)
+    inventory = builder.inventory_mayo_sources(
+        data,
+        exports,
+        probe_video=probe,
+        inspect_arkit=inspect_arkit,
+        enforce_frozen=True,
+    )
+    return data, exports, inventory, probe, inspect_arkit
+
+
+def test_frozen_inventory_classifies_video_exports_and_arkit_pool(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _data, _exports, inventory, _probe, _inspect = _inventory(Path(td))
+        c.eq(inventory.counts, builder.FROZEN_INVENTORY,
+             "observed inventory exactly matches the frozen 65-session contract")
+        c.eq(len(inventory.video_instances), 50)
+        c.eq(len(inventory.long_unique_videos), 48)
+        c.eq(len(inventory.existing_export_videos), 13)
+        c.eq(sum(item.metadata.frame_count for item in inventory.pending_videos), 221_121)
+        c.eq(len(inventory.duplicate_videos), 1)
+        c.eq(len(inventory.short_videos), 1)
+        c.true(abs(inventory.short_videos[0].metadata.duration_seconds - 1.1333333333) < 1e-8)
+        c.eq(len(inventory.arkit_sessions), 7)
+        c.eq(len(inventory.arkit_trajectories), 8)
+        c.eq(sum(item.row_count for item in inventory.arkit_trajectories), 58_054)
+        c.eq(inventory.counts["arkit_timecode_gaps"], 24,
+             "the frozen auxiliary audit preserves all 24 missing source frames")
+        c.eq(len(inventory.metadata_only_sessions), 8)
+
+
+def test_inventory_drift_is_reported_not_silently_reclassified(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        data, exports, _inventory_ok, probe, inspect_arkit = _inventory(Path(td))
+        unexpected_clip = data / "PHI_pending_00" / "unrelated_second_clip.mp4"
+        unexpected_clip.write_bytes(b"not-a-proxy")
+        c.raises(lambda: builder.inventory_mayo_sources(
+            data, exports, probe_video=probe, inspect_arkit=inspect_arkit,
+            enforce_frozen=True,
+        ), ValueError, "an unrelated second clip cannot hide behind canonical MOV preference")
+        unexpected_clip.unlink()
+        (data / "PHI_unexpected_session").mkdir()
+        c.raises(lambda: builder.inventory_mayo_sources(
+            data, exports, probe_video=probe, inspect_arkit=inspect_arkit,
+            enforce_frozen=True,
+        ), builder.InventoryDriftError, "a 66th session trips the frozen-inventory gate")
+
+
+def _sequence_with_gap() -> object:
+    source = np.asarray([0, 1, 2, 5, 6, 7], dtype=np.int64)
+    features = np.repeat(source[:, None], 95, axis=1).astype(np.float32)
+    mask = np.asarray([True, True, True, True, True, False], dtype=bool)
+    features[~mask] = 0.0
+    transforms = np.repeat(np.eye(4, dtype=np.float32)[None], len(source), axis=0)
+    transform_mask = mask.copy()
+    transforms[~transform_mask] = 0.0
+    return builder.MayoMediaSequence(
+        features=features,
+        valid_mask=mask,
+        timestamps=source.astype(np.float64) / 60.0,
+        source_frame_indices=source,
+        facial_transforms=transforms,
+        facial_transform_mask=transform_mask,
+        transform_source="same_detection_mediapipe_video_mode",
+    )
+
+
+def test_deterministic_30hz_view_selects_without_interpolating_gaps(c: Check):
+    view = builder.downsample_60hz_to_30hz(_sequence_with_gap())
+    c.eq(view.source_frame_indices.tolist(), [0, 2, 6],
+         "30-Hz view selects an exact source-frame phase")
+    c.eq(view.timestamps.tolist(), [0.0, 2.0 / 60.0, 6.0 / 60.0])
+    c.eq(view.features[:, 0].tolist(), [0.0, 2.0, 6.0])
+    c.eq(view.contiguous_from_previous.tolist(), [False, True, False],
+         "the source gap is explicit and never bridged")
+
+    base = _sequence_with_gap()
+    transforms = base.facial_transforms.copy()
+    transform_mask = base.facial_transform_mask.copy()
+    transforms[-1] = np.eye(4, dtype=np.float32)
+    transform_mask[-1] = True
+    inconsistent = builder.MayoMediaSequence(
+        features=base.features,
+        valid_mask=base.valid_mask,
+        timestamps=base.timestamps,
+        source_frame_indices=base.source_frame_indices,
+        facial_transforms=transforms,
+        facial_transform_mask=transform_mask,
+        transform_source=base.transform_source,
+    )
+    c.raises(lambda: builder.downsample_to_30hz(inconsistent), ValueError,
+             "a transform cannot be declared valid when the same detection is invalid")
+
+
+def test_hmac_manifests_hide_names_and_mark_every_video_exposed(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        data, exports, inventory, _probe, _inspect = _inventory(Path(td))
+        salt = b"local-secret-salt-for-mayo-ssl-0123456789"
+        collection, exposure = builder.build_public_manifests(inventory, salt)
+        builder.validate_public_manifest(collection)
+        builder.validate_public_manifest(exposure)
+        c.raises(lambda: builder.validate_public_manifest(
+            {"opaque": "20260305_FACES018"}), ValueError,
+                 "a bare Mayo session identifier is a raw-name leak")
+        c.eq(len(collection["mediapipe_records"]), 48)
+        c.eq(len(collection["arkit_records"]), 8)
+        c.eq(len(exposure["videos"]), 50)
+        c.true(all(row["development_only"] and row["ssl_exposed"]
+                   and not row["independent_evaluation_eligible"]
+                   for row in exposure["videos"]))
+        serialized = json.dumps((collection, exposure), sort_keys=True)
+        raw_source_hashes = {
+            asset.source_sha256 for asset in inventory.video_instances
+        } | {
+            asset.source_sha256 for asset in inventory.arkit_trajectories
+        }
+        c.true(not any(digest in serialized for digest in raw_source_hashes),
+               "public collection and exposure ledgers never serialize raw source hashes")
+        c.true("PHI_" not in serialized and str(data) not in serialized
+               and str(exports) not in serialized,
+               "no session name or filesystem location reaches either manifest")
+        c.true(salt.decode() not in serialized, "the local HMAC salt is never serialized")
+        duplicate_groups = [row["group_id"] for row in exposure["videos"]
+                            if row["status"] == "exact_duplicate_excluded"]
+        c.eq(len(duplicate_groups), 1)
+        c.true(duplicate_groups[0] in {
+            row["group_id"] for row in exposure["videos"]
+            if row["status"] != "exact_duplicate_excluded"
+        }, "only exact duplicate provenance creates a shared group")
+        other_collection, other_exposure = builder.build_public_manifests(
+            inventory, b"x" * 40
+        )
+        c.true(collection["mediapipe_records"][0]["recording_id"]
+               != other_collection["mediapipe_records"][0]["recording_id"],
+               "opaque identifiers are keyed by the local salt")
+        first_integrity_ids = {
+            row["source_integrity_id"]
+            for row in (*collection["mediapipe_records"], *collection["arkit_records"])
+        }
+        first_integrity_ids.update(
+            row["source_integrity_id"] for row in exposure["videos"]
+        )
+        other_integrity_ids = {
+            row["source_integrity_id"]
+            for row in (
+                *other_collection["mediapipe_records"],
+                *other_collection["arkit_records"],
+                *other_exposure["videos"],
+            )
+        }
+        c.true(first_integrity_ids.isdisjoint(other_integrity_ids),
+               "per-record integrity bindings are scoped to the local salt")
+        simulated_cache_hashes = [
+            hashlib.sha256(f"cache-{index}".encode()).hexdigest()
+            for index in range(4)
+        ]
+        first_cache_ids = {
+            builder.hmac_identifier(
+                "cache", salt, "mayo-mediapipe-cache-integrity", digest
+            ) for digest in simulated_cache_hashes
+        }
+        other_cache_ids = {
+            builder.hmac_identifier(
+                "cache", b"x" * 40, "mayo-mediapipe-cache-integrity", digest
+            ) for digest in simulated_cache_hashes
+        }
+        c.true(first_cache_ids.isdisjoint(other_cache_ids),
+               "cache integrity bindings are also scoped to the local salt")
+
+
+def test_public_rows_omit_exact_temporal_quasi_identifiers(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _data, _exports, inventory, _probe, _inspect = _inventory(Path(td))
+        collection, exposure = builder.build_public_manifests(
+            inventory, b"quasi-identifier-salt-012345678901"
+        )
+        public_text = json.dumps((collection, exposure), sort_keys=True)
+        for forbidden in (
+            "source_frame_count", "\"fps\"", "rows_60hz",
+            "missing_source_frames",
+        ):
+            c.true(forbidden not in public_text,
+                   f"per-record exact temporal metadata {forbidden} stays private")
+
+        pending_rows = [
+            row for row in collection["mediapipe_records"]
+            if row["legacy_export_audit_status"] == "no_complete_legacy_export"
+        ]
+        c.true(len(pending_rows) >= 2)
+        opaque = {
+            "recording_id", "group_id", "source_integrity_id", "source_fingerprint"
+        }
+        c.eq(
+            {key: value for key, value in pending_rows[0].items() if key not in opaque},
+            {key: value for key, value in pending_rows[1].items() if key not in opaque},
+            "two videos with different exact lengths/FPS are not enumerable publicly",
+        )
+        arkit_rows = collection["arkit_records"]
+        c.true(len(arkit_rows) >= 2)
+        c.eq(
+            {key: value for key, value in arkit_rows[0].items() if key not in opaque},
+            {key: value for key, value in arkit_rows[1].items() if key not in opaque},
+            "ARKit row counts and Timecode gaps do not fingerprint public rows",
+        )
+
+
+def _synthetic_face_landmarks():
+    points = np.full((478, 3), (0.5, 0.5, 0.0), dtype=np.float32)
+    coordinates = {
+        33: (0.30, 0.40), 133: (0.40, 0.40),
+        159: (0.35, 0.38), 158: (0.37, 0.38), 160: (0.33, 0.38),
+        145: (0.35, 0.42), 144: (0.33, 0.42), 153: (0.37, 0.42),
+        263: (0.70, 0.40), 362: (0.60, 0.40),
+        386: (0.65, 0.38), 385: (0.63, 0.38), 387: (0.67, 0.38),
+        374: (0.65, 0.42), 380: (0.67, 0.42), 373: (0.63, 0.42),
+        61: (0.40, 0.70), 291: (0.60, 0.70),
+        13: (0.50, 0.68), 14: (0.50, 0.72),
+    }
+    for index, xy in coordinates.items():
+        points[index, :2] = xy
+    for index, x in zip((70, 63, 105, 66, 107), np.linspace(0.30, 0.40, 5)):
+        points[index, :2] = (x, 0.30)
+    for index, x in zip((300, 293, 334, 296, 336), np.linspace(0.70, 0.60, 5)):
+        points[index, :2] = (x, 0.30)
+    for offset, index in enumerate((168, 6, 197, 195, 5, 4, 1, 19, 2, 164, 0, 17, 152, 10)):
+        points[index, :2] = (0.5, 0.25 + 0.04 * offset)
+    return [SimpleNamespace(x=float(x), y=float(y), z=float(z)) for x, y, z in points]
+
+
+def test_video_mode_extractor_uses_one_detection_for_95d_and_transform(c: Check):
+    class FakeMP:
+        class ImageFormat:
+            SRGB = "srgb"
+
+        class Image:
+            def __init__(self, *, image_format, data):
+                self.image_format = image_format
+                self.data = data
+
+    class VideoOnlyLandmarker:
+        def __init__(self):
+            self.video_calls = []
+            self.closed = 0
+
+        def detect_for_video(self, image, timestamp_ms):
+            self.video_calls.append((image, timestamp_ms))
+            categories = [
+                SimpleNamespace(category_name=name, score=0.01 * (index + 1))
+                for index, name in enumerate(DYNAMIC_FEATURE_NAMES[:52])
+            ]
+            return SimpleNamespace(
+                face_blendshapes=[categories],
+                face_landmarks=[_synthetic_face_landmarks()],
+                facial_transformation_matrixes=[np.eye(4, dtype=np.float32)],
+            )
+
+        def close(self):
+            self.closed += 1
+
+    landmarker = VideoOnlyLandmarker()
+    with tempfile.TemporaryDirectory() as td:
+        model = Path(td) / "face_landmarker.task"
+        model.write_bytes(b"model")
+        extractor = builder.MayoVideoClinical23Extractor(
+            model_path=model,
+            runtime_factory=lambda _model: (FakeMP, landmarker),
+        )
+        frame = np.zeros((80, 100, 3), dtype=np.uint8)
+        features, nuisance, transform = extractor.extract_video_frame(frame, 17)
+        c.eq(features.shape, (95,), "same VIDEO detection yields the registered 95-d vector")
+        c.eq(tuple(extractor.feature_names), tuple(DYNAMIC_FEATURE_NAMES))
+        c.eq(extractor.feature_schema, DYNAMIC_FEATURE_SCHEMA)
+        c.eq(transform.shape, (4, 4))
+        c.true(bool(np.isfinite(features).all()) and bool(np.isfinite(transform).all()))
+        c.true(nuisance is not None, "same landmarks provide nuisance metadata")
+        c.eq([call[1] for call in landmarker.video_calls], [17],
+             "producer calls detect_for_video, never IMAGE detect")
+        extractor.close()
+        extractor.close()
+        c.eq(landmarker.closed, 1, "VIDEO landmarker closes exactly once")
+
+
+def test_source_fps_timeline_and_exact_30hz_rows_preserve_gaps(c: Check):
+    class FakeCapture:
+        def __init__(self):
+            self.frames = [np.zeros((4, 5, 3), np.uint8) for _ in range(7)]
+            self.index = 0
+            self.released = False
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {
+                cv2.CAP_PROP_FPS: 59.95,
+                cv2.CAP_PROP_FRAME_COUNT: 7.0,
+                cv2.CAP_PROP_FRAME_WIDTH: 5.0,
+                cv2.CAP_PROP_FRAME_HEIGHT: 4.0,
+            }.get(prop, 0.0)
+
+        def read(self):
+            if self.index == len(self.frames):
+                return False, None
+            frame = self.frames[self.index]
+            self.index += 1
+            return True, frame
+
+        def release(self):
+            self.released = True
+
+    class FakeExtractor:
+        feature_schema = DYNAMIC_FEATURE_SCHEMA
+        feature_names = list(DYNAMIC_FEATURE_NAMES)
+        producer_protocol = "mediapipe_face_landmarker_running_mode_video_v1"
+
+        def __init__(self):
+            self.timestamps_ms = []
+
+        def extract_video_frame(self, _frame, timestamp_ms):
+            self.timestamps_ms.append(timestamp_ms)
+            value = len(self.timestamps_ms)
+            return (np.full(95, value, np.float32),
+                    {"face_scale": 0.2, "eye_line_roll_degrees": 3.0},
+                    np.eye(4, dtype=np.float32))
+
+    capture = FakeCapture()
+    extractor = FakeExtractor()
+    sequence = builder.extract_video_sequence(
+        Path("not-opened-by-the-fake"), extractor,
+        capture_factory=lambda _path: capture,
+    )
+    c.eq(sequence.features.shape, (7, 95))
+    c.true(bool(sequence.valid_mask.all()))
+    c.eq(sequence.source_fps, 59.95)
+    c.true(bool(np.allclose(sequence.timestamps,
+                            np.arange(7, dtype=np.float64) / 59.95,
+                            rtol=0.0, atol=1e-12)),
+           "timestamps retain the audited source FPS rather than pretending 60 Hz")
+    c.eq(extractor.timestamps_ms, [0, 17, 33, 50, 67, 83, 100])
+    c.true(capture.released, "video capture is released explicitly")
+    c.eq(sequence.transform_source, "same_detection_mediapipe_video_mode")
+    c.true(bool(sequence.facial_transform_mask.all()))
+
+    gap_indices = np.asarray([0, 1, 2, 5, 6, 7], dtype=np.int64)
+    gap_features = np.repeat(gap_indices[:, None], 95, axis=1).astype(np.float32)
+    gap_sequence = builder.MayoMediaSequence(
+        features=gap_features,
+        valid_mask=np.ones(len(gap_indices), dtype=bool),
+        timestamps=gap_indices.astype(np.float64) / 59.95,
+        source_frame_indices=gap_indices,
+        facial_transforms=np.repeat(np.eye(4, dtype=np.float32)[None],
+                                    len(gap_indices), axis=0),
+        facial_transform_mask=np.ones(len(gap_indices), dtype=bool),
+        transform_source="same_detection_mediapipe_video_mode",
+        source_fps=59.95,
+        timestamp_source="source_frame_index_divided_by_audited_fps",
+    )
+    view = builder.downsample_to_30hz(gap_sequence)
+    c.eq(view.source_frame_indices.tolist(), [0, 2, 6],
+         "30-Hz targets select exact source indices and never nearest-fill index 4")
+    c.eq(view.target_frame_indices.tolist(), [0, 1, 3])
+    c.eq(view.contiguous_from_previous.tolist(), [False, True, False])
+
+
+def test_homogeneous_materializer_reextracts_assets_with_legacy_exports(c: Check):
+    class OneFrameCapture:
+        def __init__(self, label):
+            self.label = label
+            self.read_count = 0
+            self.released = False
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {
+                cv2.CAP_PROP_FPS: 59.95,
+                cv2.CAP_PROP_FRAME_COUNT: 1.0,
+                cv2.CAP_PROP_FRAME_WIDTH: 5.0,
+                cv2.CAP_PROP_FRAME_HEIGHT: 4.0,
+            }.get(prop, 0.0)
+
+        def read(self):
+            if self.read_count:
+                return False, None
+            self.read_count += 1
+            return True, np.zeros((4, 5, 3), np.uint8)
+
+        def release(self):
+            self.released = True
+
+    class Extractor:
+        feature_schema = DYNAMIC_FEATURE_SCHEMA
+        feature_names = list(DYNAMIC_FEATURE_NAMES)
+
+        def __init__(self):
+            self.calls = 0
+            self.timestamps = []
+            self.closed = 0
+
+        def extract_video_frame(self, _frame, timestamp_ms):
+            self.calls += 1
+            self.timestamps.append(timestamp_ms)
+            return (np.full(95, self.calls, np.float32), None,
+                    np.eye(4, dtype=np.float32))
+
+        def close(self):
+            self.closed += 1
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        export = root / "legacy_export"
+        export.mkdir()
+        first = root / "first.mov"
+        second = root / "second.mov"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        model = root / "model.task"
+        model.write_bytes(b"model")
+        assets = (
+            builder.VideoAsset(root, first, builder.VideoMetadata(1, 59.95, 5, 4),
+                               _sha(b"first"), export),
+            builder.VideoAsset(root, second, builder.VideoMetadata(1, 59.95, 5, 4),
+                               _sha(b"second"), None),
+        )
+        captures = {}
+
+        def capture_factory(path):
+            captures[path] = OneFrameCapture(path)
+            return captures[path]
+
+        extractors = []
+
+        def extractor_factory(**_kwargs):
+            item = Extractor()
+            extractors.append(item)
+            return item
+
+        materialized = list(builder.extract_homogeneous_video_sequences(
+            assets, extractor_factory, model_path=model,
+            capture_factory=capture_factory,
+        ))
+        c.eq([asset.path for asset, _sequence in materialized], [first, second])
+        c.eq(len(extractors), 2,
+             "each VIDEO stream gets fresh tracking state under one producer protocol")
+        c.eq([item.timestamps for item in extractors], [[0], [0]],
+             "per-video MediaPipe timestamps restart without cross-recording state")
+        c.eq([item.closed for item in extractors], [1, 1])
+        c.eq(set(captures), {str(first), str(second)})
+        c.true(all(capture.released for capture in captures.values()))
+
+        def drifted_capture_factory(path):
+            capture = OneFrameCapture(path)
+            original_get = capture.get
+
+            def get(prop):
+                return 60.0 if prop == cv2.CAP_PROP_FPS else original_get(prop)
+
+            capture.get = get
+            return capture
+
+        c.raises(lambda: list(builder.extract_homogeneous_video_sequences(
+            assets[:1], extractor_factory, model_path=model,
+            capture_factory=drifted_capture_factory,
+        )), ValueError,
+                 "decode metadata must match the already-audited source FPS")
+
+
+def test_existing_exports_are_audited_but_never_reused(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        data, exports, _inventory_ok, probe, inspect_arkit = _inventory(Path(td))
+
+        def live_like_probe(path: Path):
+            metadata = probe(path)
+            if path.parent.name == "PHI_existing_00":
+                return builder.VideoMetadata(
+                    frame_count=metadata.frame_count, fps=59.95,
+                    width=metadata.width, height=metadata.height,
+                )
+            return metadata
+
+        inventory = builder.inventory_mayo_sources(
+            data, exports, probe_video=live_like_probe,
+            inspect_arkit=inspect_arkit, enforce_frozen=True,
+        )
+        collection, _exposure = builder.build_public_manifests(
+            inventory, b"local-secret-salt-for-mayo-ssl-0123456789"
+        )
+        rows = collection["mediapipe_records"]
+        c.eq(sum(row["legacy_export_audit_status"]
+                 == "not_reused_unverifiable_source_binding" for row in rows), 13)
+        c.true(all(row["cache_source"]
+                   == "raw_video_reextracted_homogeneous_video_mode" for row in rows),
+               "all 48 final caches use one producer regardless of legacy availability")
+        c.eq(collection["temporal_protocol"]["source_timeline"],
+             "per_recording_audited_fps_and_monotonic_source_index")
+
+
+def _arkit_timecode(source_index: int, subframe: int = 746) -> str:
+    absolute = 12 * 3600 * 60 + source_index
+    hours, within_hour = divmod(absolute, 3600 * 60)
+    minutes, within_minute = divmod(within_hour, 60 * 60)
+    seconds, frames = divmod(within_minute, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{frames:02d}.{subframe:03d}"
+
+
+def _write_arkit_csv(
+    path: Path,
+    rows: int = 3,
+    *,
+    source_indices: tuple[int, ...] | None = None,
+) -> None:
+    rotations = (
+        "HeadYaw", "HeadPitch", "HeadRoll", "LeftEyeYaw", "LeftEyePitch",
+        "LeftEyeRoll", "RightEyeYaw", "RightEyePitch", "RightEyeRoll",
+    )
+    header = ("Timecode", "BlendshapeCount", *builder.ARKIT_BLENDSHAPE_NAMES, *rotations)
+    with path.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(header)
+        indices = source_indices if source_indices is not None else tuple(range(rows))
+        for row, source_index in enumerate(indices):
+            writer.writerow((_arkit_timecode(source_index), 61,
+                             *[0.01 * (row + index) for index in range(52)],
+                             *([0.0] * 9)))
+
+
+def test_arkit_timecode_preserves_gaps_and_rejects_nonmonotonic_rows(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        source = root / "private_iPhone.csv"
+        _write_arkit_csv(source, source_indices=(0, 1, 3, 4, 6))
+        inspection = builder.inspect_arkit_csv(source)
+        c.eq(inspection.missing_source_frames, 2)
+        sequence = builder.load_arkit_trajectory(source)
+        c.eq(sequence.source_frame_indices.tolist(), [0, 1, 3, 4, 6])
+        c.eq(sequence.timestamps.tolist(), [0.0, 1 / 60, 3 / 60, 4 / 60, 6 / 60])
+
+        rec = "rec_" + "a" * 64
+        cached_path = root / f"{rec}.npz"
+        builder.write_arkit_cache(
+            cached_path, sequence, recording_id=rec, group_id="grp_" + "b" * 64,
+            source_integrity_id="src_" + "c" * 64,
+            source_fingerprint="fp_" + "d" * 64,
+        )
+        with np.load(cached_path, allow_pickle=False) as cached:
+            c.eq(cached["source_frame_indices_30hz"].tolist(), [0, 4, 6],
+                 "30-Hz ARKit view never nearest-fills missing target indices 2")
+            c.eq(cached["target_frame_indices_30hz"].tolist(), [0, 2, 3])
+            c.eq(cached["contiguous_from_previous_30hz"].tolist(),
+                 [False, False, True])
+
+        duplicate = root / "duplicate_iPhone.csv"
+        _write_arkit_csv(duplicate, source_indices=(0, 1, 1))
+        c.raises(lambda: builder.load_arkit_trajectory(duplicate), ValueError,
+                 "duplicate original Timecode is rejected")
+        backward = root / "backward_iPhone.csv"
+        _write_arkit_csv(backward, source_indices=(0, 2, 1))
+        c.raises(lambda: builder.load_arkit_trajectory(backward), ValueError,
+                 "backward original Timecode is rejected")
+
+
+def test_compact_caches_keep_mediapipe_and_arkit_modalities_separate(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        rec = "rec_" + "1" * 64
+        group = "grp_" + "2" * 64
+        source_hash = "3" * 64
+        fingerprint = "fp_" + "4" * 64
+        media_path = root / f"{rec}.npz"
+        builder.write_mediapipe_cache(
+            media_path, _sequence_with_gap(), recording_id=rec, group_id=group,
+            source_integrity_id="src_" + source_hash,
+            source_fingerprint=fingerprint,
+        )
+        with np.load(media_path, allow_pickle=False) as cached:
+            c.eq(cached["features_source_rate"].shape, (6, 95))
+            c.eq(cached["features_30hz"].shape, (3, 95))
+            c.eq(float(cached["source_fps"].item()), 60.0)
+            c.eq(cached["target_frame_indices_30hz"].tolist(), [0, 1, 3])
+            c.true("features_60hz" not in cached.files,
+                   "MediaPipe source tensors are never mislabeled as exactly 60 Hz")
+            c.eq(str(cached["feature_schema"].item()), DYNAMIC_FEATURE_SCHEMA)
+            c.true("annotated_preview" not in cached.files)
+            c.true("source_sha256" not in cached.files,
+                   "shareable compact caches never persist a raw source digest")
+
+        arkit_csv = root / "private_iPhone.csv"
+        _write_arkit_csv(arkit_csv)
+        arkit = builder.load_arkit_trajectory(arkit_csv)
+        c.eq(arkit.features.shape, (3, 52))
+        arkit_rec = "rec_" + "5" * 64
+        arkit_path = root / f"{arkit_rec}.npz"
+        builder.write_arkit_cache(
+            arkit_path, arkit, recording_id=arkit_rec, group_id="grp_" + "6" * 64,
+            source_integrity_id="src_" + "7" * 64,
+            source_fingerprint="fp_" + "8" * 64,
+        )
+        with np.load(arkit_path, allow_pickle=False) as cached:
+            c.eq(cached["features_60hz"].shape, (3, 52))
+            c.eq(str(cached["feature_schema"].item()), "arkit_blendshapes_52_v1")
+            c.true(not any("landmark" in name.lower() for name in cached.files),
+                   "ARKit-only trajectories never receive fabricated landmark columns")
+            c.true("source_sha256" not in cached.files,
+                   "ARKit compact caches never persist a raw source digest")
+        c.eq(sorted(path.suffix for path in root.iterdir()),
+             [".csv", ".npz", ".npz"],
+             "cache writing creates no annotated preview or giant derived CSV")
+
+
+def test_provenance_hashes_dependencies_and_detects_toctou(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        source = root / "source.mov"
+        model = root / "face_landmarker.task"
+        producer = root / "producer.py"
+        python_executable = root / "python"
+        source.write_bytes(b"source-v1")
+        model.write_bytes(b"model-v1")
+        producer.write_text("producer-v1")
+        python_executable.write_bytes(b"python-runtime-v1")
+
+        versions = {
+            "numpy": "1.2.3", "mediapipe": "0.10.35", "opencv-python": "4.9.0",
+        }
+
+        def resolver(name: str) -> str:
+            if name not in versions:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return versions[name]
+
+        artifact_paths = {}
+        for distribution in versions:
+            dist_info = root / f"{distribution}.dist-info"
+            dist_info.mkdir()
+            metadata = dist_info / "METADATA"
+            record = dist_info / "RECORD"
+            installed = root / distribution
+            installed_bytes = f"installed-{distribution}".encode()
+            installed.write_bytes(installed_bytes)
+            metadata_bytes = (
+                f"Name: {distribution}\nVersion: {versions[distribution]}\n"
+            ).encode()
+            metadata.write_bytes(metadata_bytes)
+            with record.open("w", newline="", encoding="utf-8") as handle:
+                csv.writer(handle).writerows((
+                    (distribution, _record_digest(installed_bytes),
+                     str(len(installed_bytes))),
+                    (f"{distribution}.dist-info/METADATA",
+                     _record_digest(metadata_bytes), str(len(metadata_bytes))),
+                    (f"{distribution}.dist-info/RECORD", "", ""),
+                ))
+            artifact_paths[distribution] = (metadata, record)
+
+        def artifact_resolver(distribution: str):
+            return artifact_paths[distribution]
+
+        snapshot = builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            dependency_artifact_resolver=artifact_resolver,
+            python_executable=python_executable,
+        )
+        c.eq(snapshot.model_sha256, _sha(b"model-v1"))
+        c.eq(snapshot.source_sha256, (_sha(b"source-v1"),))
+        c.eq(snapshot.producer_sha256["builder"], _sha(b"producer-v1"))
+        c.true(snapshot.dependencies["mediapipe"] == "mediapipe==0.10.35")
+        c.eq(snapshot.dependency_sha256["python_executable"],
+             _sha(b"python-runtime-v1"))
+        c.true({"numpy_metadata", "numpy_record", "mediapipe_metadata",
+                "mediapipe_record", "opencv_metadata", "opencv_record"}
+               .issubset(snapshot.dependency_sha256),
+               "dependency provenance fingerprints wheel metadata and RECORD artifacts")
+        builder.assert_provenance_unchanged(
+            snapshot, version_resolver=resolver,
+            dependency_artifact_resolver=artifact_resolver,
+            python_executable=python_executable,
+        )
+        artifact_paths["mediapipe"][0].write_text("changed metadata")
+        c.raises(lambda: builder.assert_provenance_unchanged(
+            snapshot, version_resolver=resolver,
+            dependency_artifact_resolver=artifact_resolver,
+            python_executable=python_executable,
+        ), ValueError, "dependency artifact drift blocks promotion")
+        artifact_paths["mediapipe"][0].write_text(
+            "Name: mediapipe\nVersion: 0.10.35\n"
+        )
+        source.write_bytes(b"source-v2")
+        c.raises(lambda: builder.assert_provenance_unchanged(
+            snapshot, version_resolver=resolver,
+            dependency_artifact_resolver=artifact_resolver,
+            python_executable=python_executable,
+        ), ValueError,
+                 "a source mutation before promotion is detected")
+        c.raises(lambda: builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            expected_source_hashes={source: _sha(b"source-v1")},
+            dependency_artifact_resolver=artifact_resolver,
+            python_executable=python_executable,
+        ), ValueError,
+                 "inventory-to-snapshot source replacement cannot establish a new baseline")
+
+
+def test_dependency_record_closure_hashes_installed_code_and_native_bytes(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        runtime = root / "runtime"
+        site = runtime / "lib" / "python3.10" / "site-packages"
+        python_executable = runtime / "bin" / "python"
+        python_executable.parent.mkdir(parents=True)
+        python_executable.write_bytes(b"python-runtime")
+        site.mkdir(parents=True)
+        versions = {
+            "numpy": "1.2.3", "mediapipe": "0.10.35", "opencv-python": "4.9.0",
+        }
+        artifact_paths = {}
+        installed_code = {}
+        record_rows = {}
+        mutable_pyc = None
+        for index, (distribution, version) in enumerate(versions.items()):
+            package = site / f"package_{index}"
+            package.mkdir()
+            suffix = ".so" if distribution == "mediapipe" else ".py"
+            code = package / f"runtime{suffix}"
+            code_bytes = f"runtime-code-{distribution}".encode("ascii")
+            code.write_bytes(code_bytes)
+            dist_info = site / f"{distribution}-{version}.dist-info"
+            dist_info.mkdir()
+            metadata = dist_info / "METADATA"
+            metadata_bytes = f"Name: {distribution}\nVersion: {version}\n".encode()
+            metadata.write_bytes(metadata_bytes)
+            record = dist_info / "RECORD"
+            rows = [
+                (code.relative_to(site).as_posix(), _record_digest(code_bytes),
+                 str(len(code_bytes))),
+                (metadata.relative_to(site).as_posix(), _record_digest(metadata_bytes),
+                 str(len(metadata_bytes))),
+                (record.relative_to(site).as_posix(), "", ""),
+            ]
+            if distribution == "numpy":
+                pycache = package / "__pycache__"
+                pycache.mkdir()
+                mutable_pyc = pycache / "runtime.cpython-310.pyc"
+                pyc_bytes = b"runtime-generated-bytecode"
+                mutable_pyc.write_bytes(pyc_bytes)
+                pyc_name = mutable_pyc.relative_to(site).as_posix()
+                rows[1:1] = [
+                    (pyc_name, "", ""),
+                    (pyc_name, _record_digest(b"install-time-bytecode"), "21"),
+                ]
+            with record.open("w", newline="", encoding="utf-8") as handle:
+                csv.writer(handle).writerows(rows)
+            artifact_paths[distribution] = (metadata, record)
+            installed_code[distribution] = (code, code_bytes)
+            record_rows[distribution] = rows
+
+        def resolver(name: str) -> str:
+            if name not in versions:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return versions[name]
+
+        source = root / "source.mov"
+        model = root / "model.task"
+        producer = root / "producer.py"
+        source.write_bytes(b"source")
+        model.write_bytes(b"model")
+        producer.write_bytes(b"producer")
+        snapshot = builder.snapshot_provenance(
+            [source], model, {"builder": producer},
+            version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        )
+        builder.assert_provenance_unchanged(
+            snapshot, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        )
+        c.eq(snapshot.dependency_file_counts, {
+            "python": 1, "numpy": 4, "mediapipe": 3, "opencv-python": 3,
+        }, "runtime provenance exposes installed-file counts without paths")
+        code, original = installed_code["mediapipe"]
+        code.write_bytes(b"X" * len(original))
+        c.raises(lambda: builder.assert_provenance_unchanged(
+            snapshot, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError,
+                 "installed .py/.so drift is detected even when METADATA and RECORD stay fixed")
+        code.write_bytes(original)
+        assert mutable_pyc is not None
+        mutable_pyc.write_bytes(b"changed-runtime-bytecode")
+        c.raises(lambda: builder.assert_provenance_unchanged(
+            snapshot, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError,
+                 "mutable pyc is still frozen from snapshot through promotion")
+        mutable_pyc.write_bytes(b"runtime-generated-bytecode")
+
+        mediapipe_record = artifact_paths["mediapipe"][1]
+        ordinary_duplicate = list(record_rows["mediapipe"])
+        ordinary_duplicate.insert(1, (ordinary_duplicate[0][0], "", ""))
+        with mediapipe_record.open("w", newline="", encoding="utf-8") as handle:
+            csv.writer(handle).writerows(ordinary_duplicate)
+        c.raises(lambda: builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError,
+                 "blank-plus-hashed duplicate semantics are forbidden for .py/.so files")
+
+        def write_mediapipe_rows(rows):
+            with mediapipe_record.open("w", newline="", encoding="utf-8") as handle:
+                csv.writer(handle).writerows(rows)
+
+        missing_rows = list(record_rows["mediapipe"])
+        missing_rows.insert(1, ("package_1/missing.so", "", ""))
+        write_mediapipe_rows(missing_rows)
+        c.raises(lambda: builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError, "a missing RECORD target fails closed")
+
+        escape = runtime.parent / "outside-runtime.so"
+        escape.write_bytes(b"outside")
+        traversal = os.path.relpath(escape, site).replace(os.sep, "/")
+        traversal_rows = list(record_rows["mediapipe"])
+        traversal_rows.insert(1, (traversal, "", ""))
+        write_mediapipe_rows(traversal_rows)
+        c.raises(lambda: builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError,
+                 "RECORD dot-dot paths are allowed only while confined to the exact runtime")
+
+        link = installed_code["mediapipe"][0].parent / "runtime_alias.so"
+        link.symlink_to(installed_code["mediapipe"][0])
+        symlink_rows = list(record_rows["mediapipe"])
+        symlink_rows.insert(1, (link.relative_to(site).as_posix(), "", ""))
+        write_mediapipe_rows(symlink_rows)
+        c.raises(lambda: builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError, "a symlinked RECORD target is rejected")
+
+        alias_rows = list(record_rows["mediapipe"])
+        alias_rows.insert(1, ("package_1/subdir/../runtime.so", "", ""))
+        write_mediapipe_rows(alias_rows)
+        c.raises(lambda: builder.snapshot_provenance(
+            [source], model, {"builder": producer}, version_resolver=resolver,
+            dependency_artifact_resolver=lambda name: artifact_paths[name],
+            python_executable=python_executable,
+        ), ValueError,
+                 "different RECORD spellings cannot alias one normalized target")
+
+
+def test_hardlink_snapshot_pins_hashed_bytes_and_detects_source_swap(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        source = root / "source.mov"
+        source.write_bytes(b"audited-video-bytes")
+        snapshot_dir = root / "snapshots"
+        snapshot_dir.mkdir()
+        pinned = builder.pin_source_file(
+            source, snapshot_dir, "source-000.mov",
+            expected_sha256=_sha(b"audited-video-bytes"),
+        )
+        c.eq(pinned.sha256, _sha(b"audited-video-bytes"))
+        c.eq(os.stat(source).st_ino, os.stat(pinned.pinned_path).st_ino,
+             "decoder snapshot is a pinned hard link to the exact hashed inode")
+
+        replacement = root / "replacement.mov"
+        replacement.write_bytes(b"swapped-video-bytes")
+        os.replace(replacement, source)
+        c.eq(pinned.pinned_path.read_bytes(), b"audited-video-bytes",
+             "the bytes subsequently decoded remain the bytes that were hashed")
+        c.raises(lambda: builder.assert_pinned_source_unchanged(pinned), ValueError,
+                 "postvalidation detects a source-path inode swap")
+
+
+def test_extractor_lifecycle_lock_and_transaction_are_fail_closed(c: Check):
+    class FakeExtractor:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    created: list[FakeExtractor] = []
+
+    def factory(**kwargs):
+        c.eq(set(kwargs), {"model_path"},
+             "managed producer cannot silently fall back to IMAGE-mode options")
+        item = FakeExtractor()
+        created.append(item)
+        return item
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        model = root / "model.task"
+        model.write_bytes(b"model")
+        try:
+            with builder.managed_extractor(factory, model_path=model):
+                raise RuntimeError("forced")
+        except RuntimeError:
+            pass
+        c.eq(len(created), 1, "one extractor instance is constructed")
+        c.eq(created[0].closed, 1, "the underlying resource closes exactly once")
+
+        output = root / "cache"
+        output.mkdir()
+        (output / "sentinel").write_text("old")
+        staging = root / ".cache.staging-test"
+        staging.mkdir()
+        (staging / "sentinel").write_text("new")
+        with builder.output_parent_lock(output):
+            def nested():
+                with builder.output_parent_lock(output):
+                    pass
+            c.raises(nested, RuntimeError, "same-process concurrent generation is rejected")
+            builder.promote_generation(staging, output)
+        c.eq((output / "sentinel").read_text(), "new")
+
+        staging2 = root / ".cache.staging-failure"
+        staging2.mkdir()
+        (staging2 / "sentinel").write_text("bad-new")
+        failed = False
+
+        def fail_once(src, dst):
+            nonlocal failed
+            if Path(src) == staging2 and Path(dst) == output and not failed:
+                failed = True
+                raise OSError("forced promotion failure")
+            return os.replace(src, dst)
+
+        with builder.output_parent_lock(output):
+            c.raises(lambda: builder.promote_generation(
+                staging2, output, replace_func=fail_once), OSError,
+                "failed promotion restores the prior complete generation")
+        c.eq((output / "sentinel").read_text(), "new")
+
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        staging3 = _canonical_transaction_staging(
+            root, ".cache.staging-exposure-failure",
+            b"failed-exposure-salt-012345678901",
+        )
+
+        def fail_exposure_install(src, dst):
+            if Path(dst) == exposure and ".tmp-" in Path(src).name:
+                raise OSError("forced exposure install failure")
+            return os.replace(src, dst)
+
+        with builder.output_parent_lock(output):
+            c.raises(lambda: builder.promote_generation(
+                staging3, output, exposure_manifest_path=exposure,
+                replace_func=fail_exposure_install), OSError,
+                "cache and ignored exposure manifest promote as one transaction")
+        c.eq((output / "sentinel").read_text(), "new")
+        c.eq(exposure.read_text(), "old-exposure")
+
+
+def _test_provenance(salt: bytes) -> dict[str, object]:
+    return {
+        "runtime_dependencies": [
+            {
+                "distribution": distribution,
+                "version": "1.0.0",
+                "installed_file_count": 1,
+                "installed_file_aggregate_sha256": digest * 64,
+            }
+            for distribution, digest in (
+                ("mediapipe", "1"), ("numpy", "2"),
+                ("opencv-python", "3"), ("python", "4"),
+            )
+        ],
+        "dependency_aggregate_sha256": "5" * 64,
+        "model_sha256": "6" * 64,
+        "source_collection_integrity_id": builder.hmac_identifier(
+            "agg", salt, "mayo-source-collection-integrity", "7" * 64
+        ),
+        "producer_sha256": {
+            "action_bundle": "8" * 64,
+            "builder": "9" * 64,
+            "clinical_landmarks": "a" * 64,
+            "dynamic_landmark_schema": "b" * 64,
+            "feature_registry": "c" * 64,
+        },
+        "producer_aggregate_sha256": "d" * 64,
+    }
+
+
+def _semantic_staging(
+    root: Path,
+    name: str,
+    salt: bytes,
+    *,
+    include_arkit: bool,
+    include_exclusions: bool = False,
+) -> Path:
+    staging = root / name
+    media = staging / "mediapipe"
+    arkit = staging / "arkit"
+    media.mkdir(parents=True)
+    arkit.mkdir()
+    private = root / "private_fixture"
+    video = builder.VideoAsset(
+        private / "video", private / "video" / "source.mov",
+        builder.VideoMetadata(6, 60.0, 10, 10), "1" * 64, None,
+    )
+    duplicate = builder.VideoAsset(
+        private / "duplicate", private / "duplicate" / "copy.mov",
+        builder.VideoMetadata(6, 60.0, 10, 10), "1" * 64, None,
+    )
+    short_one = builder.VideoAsset(
+        private / "short_one", private / "short_one" / "qc.mov",
+        builder.VideoMetadata(30, 60.0, 10, 10), "3" * 64, None,
+    )
+    short_two = builder.VideoAsset(
+        private / "short_two", private / "short_two" / "qc.mov",
+        builder.VideoMetadata(45, 60.0, 10, 10), "4" * 64, None,
+    )
+    arkit_asset = builder.ARKitAsset(
+        private / "arkit", private / "arkit" / "source_iPhone.csv",
+        5, builder.ARKIT_BLENDSHAPE_NAMES, "2" * 64, 2,
+    )
+    counts = {
+        "total_sessions": 1 + int(include_arkit) + 3 * int(include_exclusions),
+        "video_bearing_sessions": 1 + 3 * int(include_exclusions),
+        "without_video_sessions": int(include_arkit),
+        "exact_duplicate_copies_excluded": int(include_exclusions),
+        "short_qc_clips_excluded": 2 * int(include_exclusions),
+        "long_unique_videos": 1,
+        "existing_complete_v2_exports": 0,
+        "remaining_long_videos": 1,
+        "remaining_long_video_frames": 6,
+        "arkit_only_sessions": int(include_arkit),
+        "arkit_trajectories": int(include_arkit),
+        "arkit_rows": 5 if include_arkit else 0,
+        "arkit_timecode_gaps": 2 if include_arkit else 0,
+        "metadata_only_sessions": 0,
+    }
+    inventory = builder.MayoInventory(
+        private, private / "exports", counts,
+        ((video, duplicate, short_one, short_two)
+         if include_exclusions else (video,)),
+        (video,), (), (video,),
+        ((duplicate,) if include_exclusions else ()),
+        ((short_one, short_two) if include_exclusions else ()),
+        ((private / "arkit",) if include_arkit else ()),
+        ((arkit_asset,) if include_arkit else ()), (),
+    )
+    collection, exposure = builder.build_public_manifests(inventory, salt)
+    collection["provenance"] = _test_provenance(salt)
+    media_row = collection["mediapipe_records"][0]
+    media_path = media / f"{media_row['recording_id']}.npz"
+    builder.write_mediapipe_cache(
+        media_path, _sequence_with_gap(),
+        recording_id=media_row["recording_id"], group_id=media_row["group_id"],
+        source_integrity_id=media_row["source_integrity_id"],
+        source_fingerprint=media_row["source_fingerprint"],
+    )
+    media_integrity = builder.hmac_identifier(
+        "cache", salt, "mayo-mediapipe-cache-integrity",
+        _sha(media_path.read_bytes()),
+    )
+    media_row["cache_integrity_id"] = media_integrity
+    next(row for row in exposure["videos"]
+         if row["status"] == "mediapipe_ssl")["cache_integrity_id"] = media_integrity
+    if include_arkit:
+        arkit_row = collection["arkit_records"][0]
+        source_indices = np.asarray([0, 1, 3, 4, 6], dtype=np.int64)
+        arkit_sequence = builder.ARKitSequence(
+            features=np.repeat(source_indices[:, None], 52, axis=1).astype(np.float32),
+            valid_mask=np.ones(5, dtype=bool),
+            timestamps=source_indices.astype(np.float64) / 60.0,
+            source_frame_indices=source_indices,
+        )
+        arkit_path = arkit / f"{arkit_row['recording_id']}.npz"
+        builder.write_arkit_cache(
+            arkit_path, arkit_sequence,
+            recording_id=arkit_row["recording_id"], group_id=arkit_row["group_id"],
+            source_integrity_id=arkit_row["source_integrity_id"],
+            source_fingerprint=arkit_row["source_fingerprint"],
+        )
+        arkit_integrity = builder.hmac_identifier(
+            "cache", salt, "mayo-arkit-cache-integrity",
+            _sha(arkit_path.read_bytes()),
+        )
+        arkit_row["cache_integrity_id"] = arkit_integrity
+    (staging / "collection_manifest.json").write_text(
+        json.dumps(collection, sort_keys=True)
+    )
+    (staging / "mayo_exposure_manifest.json").write_text(
+        json.dumps(exposure, sort_keys=True)
+    )
+    return staging
+
+
+def _canonical_transaction_staging(root: Path, name: str, salt: bytes) -> Path:
+    return _semantic_staging(root, name, salt, include_arkit=False)
+
+
+def _media_sequence_of_length(length: int) -> object:
+    indices = np.arange(length, dtype=np.int64)
+    return builder.MayoMediaSequence(
+        features=np.repeat(indices[:, None], 95, axis=1).astype(np.float32),
+        valid_mask=np.ones(length, dtype=bool),
+        timestamps=indices.astype(np.float64) / 60.0,
+        source_frame_indices=indices,
+        facial_transforms=np.repeat(
+            np.eye(4, dtype=np.float32)[None], length, axis=0
+        ),
+        facial_transform_mask=np.ones(length, dtype=bool),
+        transform_source="same_detection_mediapipe_video_mode",
+    )
+
+
+def _legacy_swap_staging(root: Path, name: str, salt: bytes) -> Path:
+    staging = root / name
+    media = staging / "mediapipe"
+    arkit = staging / "arkit"
+    media.mkdir(parents=True)
+    arkit.mkdir()
+    private = root / "private_legacy_fixture"
+    lengths = (2, 5, 3, 4)
+    assets = tuple(
+        builder.VideoAsset(
+            private / f"video_{index}",
+            private / f"video_{index}" / "source.mov",
+            builder.VideoMetadata(length, 60.0, 10, 10),
+            f"{index + 1:x}" * 64,
+            None,
+        )
+        for index, length in enumerate(lengths)
+    )
+    counts = {
+        "total_sessions": 4,
+        "video_bearing_sessions": 4,
+        "without_video_sessions": 0,
+        "exact_duplicate_copies_excluded": 0,
+        "short_qc_clips_excluded": 0,
+        "long_unique_videos": 4,
+        "existing_complete_v2_exports": 2,
+        "remaining_long_videos": 2,
+        "remaining_long_video_frames": 7,
+        "arkit_only_sessions": 0,
+        "arkit_trajectories": 0,
+        "arkit_rows": 0,
+        "arkit_timecode_gaps": 0,
+        "metadata_only_sessions": 0,
+    }
+    inventory = builder.MayoInventory(
+        private, private / "exports", counts,
+        assets, assets, assets[:2], assets[2:], (), (), (), (), (),
+    )
+    collection, exposure = builder.build_public_manifests(inventory, salt)
+    collection["provenance"] = _test_provenance(salt)
+    exposure_by_recording = {
+        row["recording_id"]: row for row in exposure["videos"]
+    }
+    rows_by_recording = {
+        row["recording_id"]: row for row in collection["mediapipe_records"]
+    }
+    for asset, length in zip(assets, lengths):
+        recording_id = builder.hmac_identifier(
+            "rec", salt, "mayo-mediapipe-recording", asset.source_sha256
+        )
+        row = rows_by_recording[recording_id]
+        cache_path = media / f"{recording_id}.npz"
+        builder.write_mediapipe_cache(
+            cache_path, _media_sequence_of_length(length),
+            recording_id=recording_id, group_id=row["group_id"],
+            source_integrity_id=row["source_integrity_id"],
+            source_fingerprint=row["source_fingerprint"],
+        )
+        integrity = builder.hmac_identifier(
+            "cache", salt, "mayo-mediapipe-cache-integrity",
+            _sha(cache_path.read_bytes()),
+        )
+        row["cache_integrity_id"] = integrity
+        exposure_by_recording[recording_id]["cache_integrity_id"] = integrity
+    _write_staging_manifests(
+        staging / "collection_manifest.json",
+        staging / "mayo_exposure_manifest.json",
+        collection, exposure,
+    )
+    return staging
+
+
+def _rewrite_npz(path: Path, mutate) -> None:
+    with np.load(path, allow_pickle=False) as loaded:
+        payload = {name: loaded[name].copy() for name in loaded.files}
+    mutate(payload)
+    with path.open("wb") as handle:
+        np.savez_compressed(handle, **payload)
+
+
+def _refresh_cache_integrity(staging: Path, salt: bytes, modality: str) -> None:
+    collection_path = staging / "collection_manifest.json"
+    exposure_path = staging / "mayo_exposure_manifest.json"
+    collection = json.loads(collection_path.read_text())
+    exposure = json.loads(exposure_path.read_text())
+    manifest_key = "mediapipe_records" if modality == "mediapipe" else "arkit_records"
+    row = collection[manifest_key][0]
+    cache_path = staging / modality / f"{row['recording_id']}.npz"
+    context = (
+        "mayo-mediapipe-cache-integrity"
+        if modality == "mediapipe" else "mayo-arkit-cache-integrity"
+    )
+    integrity = builder.hmac_identifier(
+        "cache", salt, context, _sha(cache_path.read_bytes())
+    )
+    row["cache_integrity_id"] = integrity
+    if modality == "mediapipe":
+        exposed = next(
+            item for item in exposure["videos"]
+            if item["status"] == "mediapipe_ssl"
+        )
+        exposed["cache_integrity_id"] = integrity
+    else:
+        exposure["arkit_trajectories"][0]["cache_integrity_id"] = integrity
+    collection_path.write_text(json.dumps(collection, sort_keys=True))
+    exposure_path.write_text(json.dumps(exposure, sort_keys=True))
+
+
+def _set_nonfinite(payload: dict[str, np.ndarray], field: str) -> None:
+    value = payload[field].copy()
+    value.flat[0] = np.nan
+    payload[field] = value
+
+
+def _duplicate_first_source_index(
+    payload: dict[str, np.ndarray], field: str,
+) -> None:
+    value = payload[field].copy()
+    value[1] = value[0]
+    payload[field] = value
+
+
+def _make_media_all_masked(payload: dict[str, np.ndarray]) -> None:
+    payload["valid_mask_source_rate"][:] = False
+    payload["features_source_rate"][:] = 0.0
+    payload["facial_transform_mask_source_rate"][:] = False
+    payload["facial_transforms_source_rate"][:] = 0.0
+
+
+def test_compact_cache_validation_is_exact_and_recomputes_30hz(c: Check):
+    media_mutations = (
+        ("extra PHI field", lambda p: p.__setitem__(
+            "raw_patient_name", np.asarray("PHI_person"))),
+        ("missing source features", lambda p: p.pop("features_source_rate")),
+        ("wrong feature shape", lambda p: p.__setitem__(
+            "features_source_rate", p["features_source_rate"][:, :-1])),
+        ("wrong feature dtype", lambda p: p.__setitem__(
+            "features_source_rate", p["features_source_rate"].astype(np.float64))),
+        ("non-finite features", lambda p: _set_nonfinite(
+            p, "features_source_rate")),
+        ("wrong source timeline", lambda p: p.__setitem__(
+            "timestamps_source_rate", p["timestamps_source_rate"] + 0.001)),
+        ("duplicate source index", lambda p: _duplicate_first_source_index(
+            p, "source_frame_indices_source_rate")),
+        ("all-masked source", _make_media_all_masked),
+        ("wrong feature registry", lambda p: p.__setitem__(
+            "feature_names", p["feature_names"][::-1])),
+        ("wrong schema metadata", lambda p: p.__setitem__(
+            "feature_schema", np.asarray("clinical23_v1"))),
+        ("wrong scalar governance dtype", lambda p: p.__setitem__(
+            "development_only", np.asarray(1, dtype=np.int64))),
+        ("independent 30-Hz features", lambda p: p.__setitem__(
+            "features_30hz", p["features_30hz"] + np.float32(0.25))),
+    )
+    arkit_mutations = (
+        ("extra PHI field", lambda p: p.__setitem__(
+            "raw_patient_name", np.asarray("PHI_person"))),
+        ("missing source features", lambda p: p.pop("features_60hz")),
+        ("wrong feature shape", lambda p: p.__setitem__(
+            "features_60hz", p["features_60hz"][:, :-1])),
+        ("wrong feature dtype", lambda p: p.__setitem__(
+            "features_60hz", p["features_60hz"].astype(np.float64))),
+        ("non-finite features", lambda p: _set_nonfinite(p, "features_60hz")),
+        ("wrong Timecode timeline", lambda p: p.__setitem__(
+            "timestamps_60hz", p["timestamps_60hz"] + 0.001)),
+        ("invalid Timecode gap", lambda p: _duplicate_first_source_index(
+            p, "source_frame_indices_60hz")),
+        ("invalid mask", lambda p: p.__setitem__(
+            "valid_mask_60hz", np.zeros_like(p["valid_mask_60hz"]))),
+        ("wrong feature registry", lambda p: p.__setitem__(
+            "feature_names", p["feature_names"][::-1])),
+        ("wrong schema metadata", lambda p: p.__setitem__(
+            "feature_schema", np.asarray("arkit_blendshapes_unknown"))),
+        ("wrong scalar governance dtype", lambda p: p.__setitem__(
+            "development_only", np.asarray(1, dtype=np.int64))),
+        ("independent 30-Hz indices", lambda p: p.__setitem__(
+            "target_frame_indices_30hz", p["target_frame_indices_30hz"] + 1)),
+    )
+    salt = b"exact-cache-validation-salt-012345678"
+    for modality, mutations in (
+        ("mediapipe", media_mutations), ("arkit", arkit_mutations)
+    ):
+        for index, (label, mutate) in enumerate(mutations):
+            with tempfile.TemporaryDirectory() as td:
+                staging = _semantic_staging(
+                    Path(td), f".cache.staging-{modality}-{index}", salt,
+                    include_arkit=True,
+                )
+                cache_path = next((staging / modality).glob("*.npz"))
+                _rewrite_npz(cache_path, mutate)
+                _refresh_cache_integrity(staging, salt, modality)
+                c.raises(
+                    lambda: builder._validate_staging(staging, salt=salt),
+                    ValueError,
+                    f"{modality} {label} fails despite a freshly valid cache HMAC/tree",
+                )
+
+
+def test_staging_validation_joins_every_identity_and_governance_field(c: Check):
+    salt = b"full-manifest-join-salt-0123456789012"
+    npz_mutations = (
+        ("recording_id", np.asarray("rec_" + "f" * 64)),
+        ("group_id", np.asarray("grp_" + "e" * 64)),
+        ("source_fingerprint", np.asarray("fp_" + "d" * 64)),
+        ("development_only", np.asarray(False)),
+        ("patient_identity", np.asarray("known")),
+        ("split_unit", np.asarray("patient")),
+    )
+    for modality in ("mediapipe", "arkit"):
+        for index, (field, replacement) in enumerate(npz_mutations):
+            with tempfile.TemporaryDirectory() as td:
+                staging = _semantic_staging(
+                    Path(td), f".cache.staging-{modality}-npz-{index}", salt,
+                    include_arkit=True,
+                )
+                cache_path = next((staging / modality).glob("*.npz"))
+                _rewrite_npz(
+                    cache_path,
+                    lambda payload, key=field, value=replacement:
+                    payload.__setitem__(key, value),
+                )
+                _refresh_cache_integrity(staging, salt, modality)
+                c.raises(
+                    lambda: builder._validate_staging(staging, salt=salt),
+                    ValueError,
+                    f"{modality} NPZ {field} cannot escape the manifest join",
+                )
+
+    manifest_mutations = (
+        ("collection media extra field", "collection", "mediapipe_records",
+         "raw_patient_name", "private"),
+        ("collection media group", "collection", "mediapipe_records", "group_id",
+         "grp_" + "a" * 64),
+        ("collection media fingerprint", "collection", "mediapipe_records",
+         "source_fingerprint", "fp_" + "b" * 64),
+        ("collection media development", "collection", "mediapipe_records",
+         "development_only", False),
+        ("collection media split", "collection", "mediapipe_records",
+         "split_unit", "patient_held_out"),
+        ("exposure media group", "exposure", "videos", "group_id",
+         "grp_" + "c" * 64),
+        ("exposure media fingerprint", "exposure", "videos", "source_fingerprint",
+         "fp_" + "d" * 64),
+        ("exposure media ssl flag", "exposure", "videos", "ssl_exposed", False),
+        ("exposure media identity", "exposure", "videos", "identity_status",
+         "known_patient_identity"),
+        ("exposure media split", "exposure", "videos", "split_unit",
+         "patient_held_out"),
+        ("exposure media independent flag", "exposure", "videos",
+         "independent_evaluation_eligible", True),
+        ("collection ARKit extra field", "collection", "arkit_records",
+         "raw_patient_name", "private"),
+        ("collection ARKit group", "collection", "arkit_records", "group_id",
+         "grp_" + "e" * 64),
+        ("exposure ARKit fingerprint", "exposure", "arkit_trajectories",
+         "source_fingerprint", "fp_" + "f" * 64),
+        ("exposure ARKit development", "exposure", "arkit_trajectories",
+         "development_only", False),
+    )
+    for index, (label, target, list_key, field, replacement) in enumerate(
+        manifest_mutations
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-manifest-{index}", salt,
+                include_arkit=True,
+            )
+            collection_path = staging / "collection_manifest.json"
+            exposure_path = staging / "mayo_exposure_manifest.json"
+            collection = json.loads(collection_path.read_text())
+            exposure = json.loads(exposure_path.read_text())
+            manifest = collection if target == "collection" else exposure
+            manifest[list_key][0][field] = replacement
+            collection_path.write_text(json.dumps(collection, sort_keys=True))
+            exposure_path.write_text(json.dumps(exposure, sort_keys=True))
+            c.raises(
+                lambda: builder._validate_staging(staging, salt=salt),
+                ValueError, f"{label} cannot escape the collection/exposure join",
+            )
+
+    for index, mutate in enumerate((
+        lambda collection, _exposure: collection["counts"].__setitem__(
+            "long_unique_videos", 2),
+        lambda _collection, exposure: exposure.__setitem__("policy", "reusable test"),
+        lambda _collection, exposure: exposure["counts"].__setitem__("videos", 2),
+    )):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-top-{index}", salt,
+                include_arkit=True,
+            )
+            collection_path = staging / "collection_manifest.json"
+            exposure_path = staging / "mayo_exposure_manifest.json"
+            collection = json.loads(collection_path.read_text())
+            exposure = json.loads(exposure_path.read_text())
+            mutate(collection, exposure)
+            collection_path.write_text(json.dumps(collection, sort_keys=True))
+            exposure_path.write_text(json.dumps(exposure, sort_keys=True))
+            c.raises(
+                lambda: builder._validate_staging(staging, salt=salt),
+                ValueError, "top-level collection/exposure policy is exact",
+            )
+
+
+def _load_staging_manifests(staging: Path):
+    collection_path = staging / "collection_manifest.json"
+    exposure_path = staging / "mayo_exposure_manifest.json"
+    return (
+        collection_path,
+        exposure_path,
+        json.loads(collection_path.read_text()),
+        json.loads(exposure_path.read_text()),
+    )
+
+
+def _write_staging_manifests(
+    collection_path: Path,
+    exposure_path: Path,
+    collection: dict[str, object],
+    exposure: dict[str, object],
+) -> None:
+    collection_path.write_text(json.dumps(collection, sort_keys=True))
+    exposure_path.write_text(json.dumps(exposure, sort_keys=True))
+
+
+def _append_valid_media_cache_row(staging: Path, salt: bytes) -> None:
+    collection_path, exposure_path, collection, exposure = _load_staging_manifests(
+        staging
+    )
+    row = collection["mediapipe_records"][0]
+    path = staging / "mediapipe" / f"{row['recording_id']}.npz"
+    base = _sequence_with_gap()
+    indices = np.append(base.source_frame_indices, np.int64(8))
+    features = np.concatenate((base.features, np.full((1, 95), 8, np.float32)))
+    valid = np.append(base.valid_mask, True)
+    transforms = np.concatenate((
+        base.facial_transforms, np.eye(4, dtype=np.float32)[None],
+    ))
+    transform_mask = np.append(base.facial_transform_mask, True)
+    builder.write_mediapipe_cache(
+        path,
+        builder.MayoMediaSequence(
+            features=features,
+            valid_mask=valid,
+            timestamps=indices.astype(np.float64) / 60.0,
+            source_frame_indices=indices,
+            facial_transforms=transforms,
+            facial_transform_mask=transform_mask,
+            transform_source="same_detection_mediapipe_video_mode",
+        ),
+        recording_id=row["recording_id"], group_id=row["group_id"],
+        source_integrity_id=row["source_integrity_id"],
+        source_fingerprint=row["source_fingerprint"],
+    )
+    collection["counts"]["remaining_long_video_frames"] = 7
+    _write_staging_manifests(collection_path, exposure_path, collection, exposure)
+    _refresh_cache_integrity(staging, salt, "mediapipe")
+
+
+def _append_valid_arkit_cache_row(staging: Path, salt: bytes) -> None:
+    collection_path, exposure_path, collection, exposure = _load_staging_manifests(
+        staging
+    )
+    row = collection["arkit_records"][0]
+    path = staging / "arkit" / f"{row['recording_id']}.npz"
+    with np.load(path, allow_pickle=False) as cached:
+        features = np.concatenate((
+            cached["features_60hz"], np.full((1, 52), 8, np.float32),
+        ))
+        indices = np.append(cached["source_frame_indices_60hz"], np.int64(8))
+    builder.write_arkit_cache(
+        path,
+        builder.ARKitSequence(
+            features=features,
+            valid_mask=np.ones(len(indices), dtype=bool),
+            timestamps=indices.astype(np.float64) / 60.0,
+            source_frame_indices=indices,
+        ),
+        recording_id=row["recording_id"], group_id=row["group_id"],
+        source_integrity_id=row["source_integrity_id"],
+        source_fingerprint=row["source_fingerprint"],
+    )
+    collection["counts"]["arkit_rows"] = 6
+    collection["counts"]["arkit_timecode_gaps"] = 3
+    _write_staging_manifests(collection_path, exposure_path, collection, exposure)
+    _refresh_cache_integrity(staging, salt, "arkit")
+
+
+def test_collection_summary_closes_over_private_caches_and_frozen_inventory(c: Check):
+    salt = b"collection-summary-closure-salt-0123456"
+    for index, field in enumerate((
+        "remaining_long_video_frames", "arkit_rows", "arkit_timecode_gaps",
+    )):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-count-{index}", salt,
+                include_arkit=True,
+            )
+            collection_path, exposure_path, collection, exposure = (
+                _load_staging_manifests(staging)
+            )
+            collection["counts"][field] += 1
+            _write_staging_manifests(
+                collection_path, exposure_path, collection, exposure
+            )
+            c.raises(
+                lambda: builder._validate_staging(staging, salt=salt),
+                ValueError, f"summary field {field} closes over private cache rows",
+            )
+
+    for modality, mutate in (
+        ("mediapipe", _append_valid_media_cache_row),
+        ("arkit", _append_valid_arkit_cache_row),
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-coordinated-{modality}", salt,
+                include_arkit=True,
+            )
+            original_counts = json.loads(
+                (staging / "collection_manifest.json").read_text()
+            )["counts"]
+            mutate(staging, salt)
+            c.raises(
+                lambda: builder._validate_staging(
+                    staging, salt=salt,
+                    expected_inventory_counts=original_counts,
+                ),
+                ValueError,
+                f"coordinated {modality} cache/HMAC/count rewrite breaks frozen inventory",
+            )
+
+    with tempfile.TemporaryDirectory() as td:
+        staging = _semantic_staging(
+            Path(td), ".cache.staging-session-counts", salt,
+            include_arkit=True,
+        )
+        collection_path, exposure_path, collection, exposure = (
+            _load_staging_manifests(staging)
+        )
+        original_counts = dict(collection["counts"])
+        collection["counts"]["total_sessions"] += 1
+        collection["counts"]["without_video_sessions"] += 1
+        collection["counts"]["metadata_only_sessions"] += 1
+        collection["metadata_only_exclusions"][
+            "index_or_depth_metadata_only_no_video_or_arkit_trajectory"
+        ] += 1
+        _write_staging_manifests(
+            collection_path, exposure_path, collection, exposure
+        )
+        c.raises(
+            lambda: builder._validate_staging(
+                staging, salt=salt,
+                expected_inventory_counts=original_counts,
+            ),
+            ValueError,
+            "coordinated session-class rewrite is bound to the caller inventory",
+        )
+
+
+def test_short_exposure_identities_are_disjoint_and_classification_is_frozen(c: Check):
+    salt = b"short-exposure-identity-salt-01234567"
+    identity_fields = (
+        "recording_id", "group_id", "source_integrity_id", "source_fingerprint",
+    )
+
+    def refresh_classification(exposure):
+        exposure["classification_integrity_id"] = (
+            builder.exposure_classification_integrity_id(exposure["videos"], salt)
+        )
+
+    for scenario in ("retained_copy", "short_collision"):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-short-{scenario}", salt,
+                include_arkit=False, include_exclusions=True,
+            )
+            collection_path, exposure_path, collection, exposure = (
+                _load_staging_manifests(staging)
+            )
+            retained = next(
+                row for row in exposure["videos"] if row["status"] == "mediapipe_ssl"
+            )
+            short_rows = [
+                row for row in exposure["videos"]
+                if row["status"] == "qc_only_short_clip_excluded"
+            ]
+            source = retained if scenario == "retained_copy" else short_rows[0]
+            target = short_rows[0] if scenario == "retained_copy" else short_rows[1]
+            for field in identity_fields:
+                target[field] = source[field]
+            refresh_classification(exposure)
+            _write_staging_manifests(
+                collection_path, exposure_path, collection, exposure
+            )
+            c.raises(
+                lambda: builder._validate_staging(staging, salt=salt),
+                ValueError, f"short identity collision {scenario} fails closed",
+            )
+
+    with tempfile.TemporaryDirectory() as td:
+        staging = _semantic_staging(
+            Path(td), ".cache.staging-status-swap", salt,
+            include_arkit=False, include_exclusions=True,
+        )
+        collection_path, exposure_path, collection, exposure = (
+            _load_staging_manifests(staging)
+        )
+        expected_classification = exposure["classification_integrity_id"]
+        retained = next(
+            row for row in exposure["videos"] if row["status"] == "mediapipe_ssl"
+        )
+        short = next(
+            row for row in exposure["videos"]
+            if row["status"] == "qc_only_short_clip_excluded"
+        )
+        retained_identity = {field: retained[field] for field in identity_fields}
+        short_identity = {field: short[field] for field in identity_fields}
+        cache_integrity = retained.pop("cache_integrity_id")
+        retained["status"] = "qc_only_short_clip_excluded"
+        retained.update(short_identity)
+        short["status"] = "mediapipe_ssl"
+        short.update(retained_identity)
+        short["cache_integrity_id"] = cache_integrity
+        refresh_classification(exposure)
+        _write_staging_manifests(
+            collection_path, exposure_path, collection, exposure
+        )
+        c.raises(
+            lambda: builder._validate_staging(
+                staging, salt=salt,
+                expected_classification_integrity_id=expected_classification,
+            ),
+            ValueError,
+            "coordinated status/identity/HMAC rewrite breaks frozen classification",
+        )
+
+
+def test_committed_recovery_rechecks_caller_inventory_commitment(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    salt = b"committed-inventory-binding-salt-012345"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        staging = _semantic_staging(
+            root, ".cache.staging-expected-inventory", salt,
+            include_arkit=True,
+        )
+        collection = json.loads(
+            (staging / "collection_manifest.json").read_text()
+        )
+        exposure_payload = json.loads(
+            (staging / "mayo_exposure_manifest.json").read_text()
+        )
+        expected_counts = dict(collection["counts"])
+        expected_classification = exposure_payload["classification_integrity_id"]
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+
+        def interrupt(phase):
+            if phase == "committed":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging, output, exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                    expected_inventory_counts=expected_counts,
+                    expected_classification_integrity_id=expected_classification,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("committed interruption did not occur")
+
+        collection_path = output / "collection_manifest.json"
+        changed = json.loads(collection_path.read_text())
+        changed["counts"]["total_sessions"] += 1
+        changed["counts"]["without_video_sessions"] += 1
+        changed["counts"]["metadata_only_sessions"] += 1
+        changed["metadata_only_exclusions"][
+            "index_or_depth_metadata_only_no_video_or_arkit_trajectory"
+        ] += 1
+        collection_path.write_text(json.dumps(changed, sort_keys=True))
+        forged_commitment = builder._validate_staging(output, salt=salt)
+        journal_path = root / ".cache.transaction.json"
+        journal = json.loads(journal_path.read_text())
+        journal["generation_commitment"] = forged_commitment
+        journal_path.write_text(json.dumps(journal, sort_keys=True))
+        journal_path.chmod(0o600)
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                    expected_inventory_counts=expected_counts,
+                    expected_classification_integrity_id=expected_classification,
+                ),
+                ValueError,
+                "committed recovery rejects a self-consistent forged count/journal",
+            )
+
+
+def _swap_equal_total_legacy_classes(staging: Path, salt: bytes) -> None:
+    collection_path, exposure_path, collection, exposure = _load_staging_manifests(
+        staging
+    )
+    for row in collection["mediapipe_records"]:
+        status = row["legacy_export_audit_status"]
+        row["legacy_export_audit_status"] = (
+            "no_complete_legacy_export"
+            if status == "not_reused_unverifiable_source_binding"
+            else "not_reused_unverifiable_source_binding"
+        )
+    collection["classification_integrity_id"] = (
+        builder.collection_classification_integrity_id(
+            collection["mediapipe_records"], salt
+        )
+    )
+    _write_staging_manifests(
+        collection_path, exposure_path, collection, exposure
+    )
+
+
+def test_collection_classification_blocks_equal_total_legacy_status_swaps(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    salt = b"collection-classification-salt-01234567"
+    with tempfile.TemporaryDirectory() as td:
+        staging = _legacy_swap_staging(
+            Path(td), ".cache.staging-legacy-swap", salt
+        )
+        collection = json.loads(
+            (staging / "collection_manifest.json").read_text()
+        )
+        expected_counts = dict(collection["counts"])
+        expected_collection_classification = collection[
+            "classification_integrity_id"
+        ]
+        _swap_equal_total_legacy_classes(staging, salt)
+        c.raises(
+            lambda: builder._validate_staging(
+                staging, salt=salt,
+                expected_inventory_counts=expected_counts,
+                expected_collection_classification_integrity_id=(
+                    expected_collection_classification
+                ),
+            ),
+            ValueError,
+            "equal-count/equal-frame legacy status swap breaks frozen classification",
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        staging = _legacy_swap_staging(
+            root, ".cache.staging-legacy-committed", salt
+        )
+        collection = json.loads(
+            (staging / "collection_manifest.json").read_text()
+        )
+        exposure_payload = json.loads(
+            (staging / "mayo_exposure_manifest.json").read_text()
+        )
+        expected_counts = dict(collection["counts"])
+        expected_collection_classification = collection[
+            "classification_integrity_id"
+        ]
+        expected_exposure_classification = exposure_payload[
+            "classification_integrity_id"
+        ]
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+
+        def interrupt(phase):
+            if phase == "committed":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging, output, exposure_manifest_path=exposure,
+                    phase_hook=interrupt, salt=salt,
+                    expected_inventory_counts=expected_counts,
+                    expected_collection_classification_integrity_id=(
+                        expected_collection_classification
+                    ),
+                    expected_classification_integrity_id=(
+                        expected_exposure_classification
+                    ),
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("committed interruption did not occur")
+
+        _swap_equal_total_legacy_classes(output, salt)
+        forged_commitment = builder._validate_staging(output, salt=salt)
+        journal_path = root / ".cache.transaction.json"
+        journal = json.loads(journal_path.read_text())
+        journal["generation_commitment"] = forged_commitment
+        journal_path.write_text(json.dumps(journal, sort_keys=True))
+        journal_path.chmod(0o600)
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure, salt=salt,
+                    expected_inventory_counts=expected_counts,
+                    expected_collection_classification_integrity_id=(
+                        expected_collection_classification
+                    ),
+                    expected_classification_integrity_id=(
+                        expected_exposure_classification
+                    ),
+                ),
+                ValueError,
+                "forged committed journal cannot rewrite legacy classification",
+            )
+
+
+def test_sparse_int64_timelines_never_construct_source_span_ranges(c: Check):
+    huge = np.iinfo(np.int64).max - 1
+    indices = np.asarray([0, huge], dtype=np.int64)
+    media = builder.MayoMediaSequence(
+        features=np.zeros((2, 95), dtype=np.float32),
+        valid_mask=np.ones(2, dtype=bool),
+        timestamps=indices.astype(np.float64) / 60.0,
+        source_frame_indices=indices,
+        facial_transforms=np.repeat(np.eye(4, dtype=np.float32)[None], 2, axis=0),
+        facial_transform_mask=np.ones(2, dtype=bool),
+        transform_source="same_detection_mediapipe_video_mode",
+    )
+    arkit = builder.ARKitSequence(
+        features=np.zeros((2, 52), dtype=np.float32),
+        valid_mask=np.ones(2, dtype=bool),
+        timestamps=indices.astype(np.float64) / 60.0,
+        source_frame_indices=indices,
+    )
+    real_range = range
+
+    class SuperlinearRange(RuntimeError):
+        pass
+
+    def guarded_range(*args):
+        stop = args[0] if len(args) == 1 else args[1]
+        if stop > 32:
+            raise SuperlinearRange("source-index span was used as an iteration bound")
+        return real_range(*args)
+
+    builder.range = guarded_range
+    try:
+        for operation in (
+            lambda: builder.downsample_to_30hz(media),
+            lambda: builder.downsample_arkit_to_30hz(arkit),
+        ):
+            try:
+                view = operation()
+            except ValueError:
+                pass
+            else:
+                c.eq(view.source_frame_indices.tolist(), [0, huge],
+                     "exact integer selection preserves an extreme observed row")
+                c.eq(view.target_frame_indices.tolist(), [0, huge // 2],
+                     "target index is computed without float precision loss")
+    finally:
+        del builder.range
+
+
+def test_transaction_journal_recovers_simulated_process_interruptions(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    phases = (
+        "old_output_moved",
+        "old_exposure_moved",
+        "new_output_installed",
+        "new_exposure_installed",
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for phase_to_interrupt in phases:
+            root = outer / phase_to_interrupt
+            root.mkdir()
+            output = root / "cache"
+            output.mkdir()
+            (output / "sentinel").write_text("old-cache")
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            staging = _canonical_transaction_staging(
+                root, ".cache.staging-new",
+                b"interrupt-recovery-salt-0123456789",
+            )
+
+            def interrupt(phase):
+                if phase == phase_to_interrupt:
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging, output, exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("simulated process death did not interrupt promotion")
+
+            journal = root / ".cache.transaction.json"
+            c.true(journal.is_file(), f"{phase_to_interrupt} leaves a recovery journal")
+            with builder.output_parent_lock(output):
+                builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure
+                )
+            c.eq((output / "sentinel").read_text(), "old-cache",
+                 f"{phase_to_interrupt} restores the old complete cache")
+            c.eq(exposure.read_text(), "old-exposure",
+                 f"{phase_to_interrupt} restores the matching exposure ledger")
+            c.true(not journal.exists(), "successful recovery removes the journal")
+            c.true(not any(root.glob(".cache.*-*")),
+                   "successful recovery removes transaction staging/backups")
+
+
+def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    salt = b"transaction-integrity-salt-0123456789"
+    scenarios = ("cache_deleted", "cache_changed", "manifest_changed", "exposure_changed")
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for scenario in scenarios:
+            root = outer / scenario
+            root.mkdir()
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root, ".cache.staging-committed", salt
+            )
+
+            def interrupt(phase):
+                if phase == "committed":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging, output, exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("committed phase was not interrupted")
+
+            cache_path = next((output / "mediapipe").glob("*.npz"))
+            if scenario == "cache_deleted":
+                cache_path.unlink()
+            elif scenario == "cache_changed":
+                cache_path.write_bytes(b"tampered-cache")
+            elif scenario == "manifest_changed":
+                (output / "collection_manifest.json").write_text("{}")
+            else:
+                exposure.write_text("{}")
+            journal = root / ".cache.transaction.json"
+            with builder.output_parent_lock(output):
+                c.raises(lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure
+                ), ValueError,
+                         f"{scenario} makes committed recovery fail closed")
+            c.true(journal.is_file(),
+                   f"{scenario} preserves the private journal for investigation")
+
+
+def test_generation_tree_is_directory_fsynced_before_promotion(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-fsync", b"directory-fsync-salt-0123456789012"
+        )
+        real_open = builder.os.open
+        real_fsync = builder.os.fsync
+        descriptor_paths = {}
+        events = []
+
+        def monitored_open(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            if flags & getattr(os, "O_DIRECTORY", 0):
+                descriptor_paths[descriptor] = Path(path)
+                c.true(bool(flags & getattr(os, "O_NOFOLLOW", 0)),
+                       "generation directories are opened no-follow before fsync")
+            return descriptor
+
+        def monitored_fsync(descriptor):
+            path = descriptor_paths.get(descriptor)
+            if path is not None:
+                events.append(path)
+            return real_fsync(descriptor)
+
+        def interrupt(phase):
+            if phase == "prepared":
+                events.append("prepared")
+                raise SimulatedProcessDeath(phase)
+
+        builder.os.open = monitored_open
+        builder.os.fsync = monitored_fsync
+        try:
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging, output, exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("prepared phase was not interrupted")
+        finally:
+            builder.os.open = real_open
+            builder.os.fsync = real_fsync
+        prepared_index = events.index("prepared")
+        c.true(all(path in events[:prepared_index] for path in (
+            staging / "mediapipe", staging / "arkit", staging,
+        )), "both cache subdirectories and staging root are durable before promotion")
+
+
+def test_run_builder_uses_pinned_homogeneous_sources_and_exact_runtime(c: Check):
+    class OneFrameCapture:
+        def __init__(self):
+            self.read_count = 0
+            self.released = False
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {
+                cv2.CAP_PROP_FPS: 59.95,
+                cv2.CAP_PROP_FRAME_COUNT: 1.0,
+                cv2.CAP_PROP_FRAME_WIDTH: 5.0,
+                cv2.CAP_PROP_FRAME_HEIGHT: 4.0,
+            }.get(prop, 0.0)
+
+        def read(self):
+            if self.read_count:
+                return False, None
+            self.read_count += 1
+            return True, np.zeros((4, 5, 3), np.uint8)
+
+        def release(self):
+            self.released = True
+
+    class FakeVideoExtractor:
+        feature_schema = DYNAMIC_FEATURE_SCHEMA
+        feature_names = list(DYNAMIC_FEATURE_NAMES)
+
+        def __init__(self, model_path):
+            self.model_path = Path(model_path)
+            self.closed = 0
+
+        def extract_video_frame(self, _frame, _timestamp_ms):
+            return (np.ones(95, dtype=np.float32), None,
+                    np.eye(4, dtype=np.float32))
+
+        def close(self):
+            self.closed += 1
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        data = root / "data" / "livelinkface_data"
+        exports = root / "data" / "mediapipe_out"
+        session = data / "PHI_session"
+        legacy = exports / "PHI_session"
+        session.mkdir(parents=True)
+        legacy.mkdir(parents=True)
+        source = session / "private.mov"
+        source.write_bytes(b"one-frame-video")
+        asset = builder.VideoAsset(
+            session, source, builder.VideoMetadata(1, 59.95, 5, 4),
+            _sha(b"one-frame-video"), legacy,
+        )
+        counts = {
+            "total_sessions": 1, "video_bearing_sessions": 1,
+            "without_video_sessions": 0, "exact_duplicate_copies_excluded": 0,
+            "short_qc_clips_excluded": 0, "long_unique_videos": 1,
+            "existing_complete_v2_exports": 1, "remaining_long_videos": 0,
+            "remaining_long_video_frames": 0, "arkit_only_sessions": 0,
+            "arkit_trajectories": 0, "arkit_rows": 0,
+            "arkit_timecode_gaps": 0, "metadata_only_sessions": 0,
+        }
+        inventory = builder.MayoInventory(
+            data, exports, counts, (asset,), (asset,), (asset,), (), (), (), (), (), (),
+        )
+
+        model = root / "face_landmarker.task"
+        model.write_bytes(b"model")
+        expected_python = root / "isolated" / "bin" / "python"
+        expected_python.parent.mkdir(parents=True)
+        expected_python.write_bytes(b"python-runtime")
+        versions = {
+            "numpy": "1.2.3", "mediapipe": "0.10.35", "opencv-python": "4.9.0",
+        }
+
+        def version_resolver(name):
+            if name not in versions:
+                raise importlib.metadata.PackageNotFoundError(name)
+            return versions[name]
+
+        artifacts = {}
+        fake_site_packages = (
+            expected_python.parent.parent / "lib" / "python3.10" / "site-packages"
+        )
+        fake_site_packages.mkdir(parents=True)
+        for distribution, version in versions.items():
+            dist_info = fake_site_packages / f"{distribution}.dist-info"
+            dist_info.mkdir()
+            metadata = dist_info / "METADATA"
+            record = dist_info / "RECORD"
+            installed = fake_site_packages / distribution
+            installed_bytes = f"installed-{distribution}".encode()
+            installed.write_bytes(installed_bytes)
+            metadata_bytes = f"Name: {distribution}\nVersion: {version}\n".encode()
+            metadata.write_bytes(metadata_bytes)
+            with record.open("w", newline="", encoding="utf-8") as handle:
+                csv.writer(handle).writerows((
+                    (distribution, _record_digest(installed_bytes),
+                     str(len(installed_bytes))),
+                    (f"{distribution}.dist-info/METADATA",
+                     _record_digest(metadata_bytes), str(len(metadata_bytes))),
+                    (f"{distribution}.dist-info/RECORD", "", ""),
+                ))
+            artifacts[distribution] = (metadata, record)
+
+        output = root / "outputs" / "dynamic_landmark" / "pretraining" / "mayo_ssl_cache"
+        exposure = root / "outputs" / "dynamic_landmark" / "mayo_exposure_manifest.json"
+        salt = output.parent / ".mayo_ssl_hmac.key"
+        salt.parent.mkdir(parents=True)
+        salt.write_bytes(b"k" * 32)
+        salt.chmod(0o600)
+        captures = []
+        extractors = []
+
+        def capture_factory(path):
+            pinned = Path(path)
+            c.true(".source_snapshots" in pinned.parts)
+            c.eq(os.stat(pinned).st_ino, os.stat(source).st_ino,
+                 "the decoder opens the hard-linked audited inode")
+            capture = OneFrameCapture()
+            captures.append(capture)
+            return capture
+
+        def extractor_factory(**kwargs):
+            pinned_model = Path(kwargs["model_path"])
+            c.true(".source_snapshots" in pinned_model.parts)
+            item = FakeVideoExtractor(pinned_model)
+            extractors.append(item)
+            return item
+
+        manifest = builder._run_builder_impl(
+            data, exports, model, salt, output, exposure,
+            extractor_factory=extractor_factory,
+            capture_factory=capture_factory,
+            inventory_factory=lambda *_args, **_kwargs: inventory,
+            project_root=root,
+            current_executable=expected_python,
+            expected_executable=expected_python,
+            version_resolver=version_resolver,
+            dependency_artifact_resolver=lambda name: artifacts[name],
+            provenance_python_executable=expected_python,
+        )
+        c.eq(manifest["mediapipe_records"][0]["legacy_export_audit_status"],
+             "not_reused_unverifiable_source_binding")
+        c.eq(len(captures), 1, "legacy export was not opened or compacted")
+        c.true(captures[0].released and extractors[0].closed == 1)
+        c.true(output.is_dir() and exposure.is_file())
+        c.true(not any(output.rglob(".source_snapshots")),
+               "pinned raw hard links never enter the promoted cache")
+        saved_manifest = json.loads((output / "collection_manifest.json").read_text())
+        c.true("dependency_sha256" not in saved_manifest["provenance"],
+               "public provenance does not expose per-file dependency digests")
+        c.true("dependency_aggregate_sha256" in saved_manifest["provenance"])
+        dependency_rows = saved_manifest["provenance"]["runtime_dependencies"]
+        c.eq({row["distribution"]: row["installed_file_count"]
+              for row in dependency_rows}, {
+                  "python": 1, "numpy": 3, "mediapipe": 3, "opencv-python": 3,
+              })
+        public_text = (
+            (output / "collection_manifest.json").read_text()
+            + exposure.read_text()
+        )
+        raw_cache_digest = _sha(next((output / "mediapipe").glob("*.npz")).read_bytes())
+        c.true(asset.source_sha256 not in public_text
+               and raw_cache_digest not in public_text
+               and salt.read_bytes().hex() not in public_text,
+               "ignored generation JSON contains no raw source/cache digest or salt")
+
+
+def test_public_builder_cannot_override_frozen_security_dependencies(c: Check):
+    parameters = tuple(inspect.signature(builder.run_builder).parameters)
+    c.eq(parameters, (
+        "data_root", "existing_export_root", "model_path", "salt_file",
+        "output_root", "exposure_manifest",
+    ), "public build API cannot override runtime, inventory, path policy, or provenance")
+
+
+def test_output_locations_are_confined_to_ignored_mayo_paths(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        output = root / "outputs" / "dynamic_landmark" / "pretraining" / "mayo_ssl_cache"
+        exposure = root / "outputs" / "dynamic_landmark" / "mayo_exposure_manifest.json"
+        got_output, got_exposure = builder.validate_output_locations(
+            output, exposure, project_root=root
+        )
+        c.eq(got_output, output)
+        c.eq(got_exposure, exposure)
+        c.raises(lambda: builder.validate_output_locations(
+            root / "tracked" / "mayo_ssl_cache", exposure, project_root=root), ValueError,
+                 "large biometric cache cannot be directed to a trackable location")
+        c.raises(lambda: builder.validate_output_locations(
+            output, root / "tracked" / "exposure.json", project_root=root), ValueError,
+                 "the permanent exposure ledger must use its exact ignored path")
+        suffix_copy = root / "other-repository" / "outputs" / "dynamic_landmark"
+        c.raises(lambda: builder.validate_output_locations(
+            suffix_copy / "pretraining" / "mayo_ssl_cache",
+            suffix_copy / "mayo_exposure_manifest.json", project_root=root,
+        ), ValueError, "matching suffixes outside PROJECT_ROOT are rejected")
+
+        data = root / "data" / "livelinkface_data"
+        exports = root / "data" / "mediapipe_out"
+        data.mkdir(parents=True)
+        exports.mkdir()
+        builder.validate_source_output_separation(data, exports, output, exposure)
+        c.raises(lambda: builder.validate_source_output_separation(
+            root / "outputs", exports, output, exposure,
+        ), ValueError, "derived cache cannot overlap the raw-data tree in either direction")
+
+
+def test_canonical_salt_permissions_runtime_and_inventory_only_cli(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        salt = root / "outputs" / "dynamic_landmark" / "pretraining" / ".mayo_ssl_hmac.key"
+        salt.parent.mkdir(parents=True)
+        salt.write_bytes(b"s" * 32)
+        salt.chmod(0o600)
+        real_os_open = builder.os.open
+        observed_open_flags = []
+
+        def monitored_open(path, flags, *args, **kwargs):
+            observed_open_flags.append(flags)
+            return real_os_open(path, flags, *args, **kwargs)
+
+        builder.os.open = monitored_open
+        try:
+            c.eq(builder.read_canonical_salt(salt, project_root=root), b"s" * 32)
+        finally:
+            builder.os.open = real_os_open
+        c.true(any(flags & getattr(os, "O_NOFOLLOW", 0)
+                   for flags in observed_open_flags),
+               "salt bytes are read from a no-follow file descriptor")
+        salt.chmod(0o640)
+        c.raises(lambda: builder.read_canonical_salt(salt, project_root=root), ValueError,
+                 "salt must be owner-only mode 0600")
+        salt.chmod(0o600)
+        c.raises(lambda: builder.read_canonical_salt(
+            salt, project_root=root, owner_uid=os.getuid() + 1,
+        ), ValueError, "salt must belong to the current user")
+
+        parser = builder._parser()
+        args = parser.parse_args([
+            "--data-root", str(root / "data"),
+            "--existing-export-root", str(root / "exports"),
+            "--inventory-only",
+        ])
+        c.true(args.inventory_only)
+        c.true(args.model_path is None and args.salt_file is None
+               and args.output_root is None and args.exposure_manifest is None,
+               "inventory audit does not require extraction-only arguments")
+        c.true(str(builder.PINNED_MEDIAPIPE_PYTHON) in parser.format_help(),
+               "real CLI help pins the isolated MediaPipe runtime")
+
+        expected_python = root / "isolated" / "bin" / "python"
+        expected_python.parent.mkdir(parents=True)
+        expected_python.write_bytes(b"python")
+        builder.validate_extraction_runtime(
+            expected_python, expected_executable=expected_python
+        )
+        other_python = root / "other-python"
+        other_python.write_bytes(b"other")
+        c.raises(lambda: builder.validate_extraction_runtime(
+            other_python, expected_executable=expected_python,
+        ), RuntimeError, "cache extraction fails outside the pinned isolated runtime")
+
+
+if __name__ == "__main__":
+    run_all("test_build_mayo_ssl_cache", dict(globals()))
