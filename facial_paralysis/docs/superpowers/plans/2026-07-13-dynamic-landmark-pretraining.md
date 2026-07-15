@@ -136,6 +136,8 @@ Command:
 
 ## Task 6: Pretrain with masked spans and explicit source-transfer boundaries
 
+> **2026-07-15 execution amendment:** The source builders and SSL core are complete, but real pretraining now follows the reviewed bridge plan in `2026-07-15-dynamic-landmark-ssl-bridge.md`. That plan supersedes the older extraction/window details below wherever they differ: all 48 retained Mayo videos are homogeneously re-extracted; all 2,452 RAVDESS trials are retained; both stages use canonical 30-Hz indices with step 1 and local window timestamps; Mayo uses 16 fixed uniform packets per recording; and SSL authorization binds a private bridge receipt through manifest/stage-evidence v2.
+
 **Files:**
 
 - Create: `facial_paralysis/tests/test_dynamic_landmark_ssl.py`
@@ -148,7 +150,7 @@ Command:
 - [ ] First write failing tests for contiguous span masking, masked-only SmoothL1 reconstruction, actor/recording split isolation, 30-Hz resampling, train-only source scalers, full 64-dimensional GRU input compatibility, checkpoint names/shapes, and permitted weight transfer.
 - [ ] Use masked-span reconstruction only. Do not use a BiGRU next-step objective because its representation already sees future frames.
 - [ ] RAVDESS stage: actor-disjoint 32-frame windows at 30 Hz, a RAVDESS-only scaler/input adapter, zero 32-dimensional base latent, and landmark latent in the second half of the full 64-dimensional shared GRU input. Transfer only shared GRU/pooling weights downstream unless cross-detector agreement is independently proven.
-- [ ] Freeze the expanded aggregate inventory before extraction: 65 sessions total; 50 video-bearing; 15 without video. Of the video sessions, exclude one exact duplicate copy and one 1.13-second QC-only clip, leaving 48 unique long videos. Existing complete V2 exports cover 13 of those; extract the remaining 35 long unique videos (about 221,121 frames) without annotated preview video.
+- [ ] Freeze the expanded aggregate inventory before extraction: 65 sessions total; 50 video-bearing; 15 without video. Of the video sessions, exclude one exact duplicate copy and one 1.13-second QC-only clip, leaving 48 unique long videos. Existing complete V2 exports cover 13 of those for audit only; do not reuse them. Re-extract all 48 retained long videos homogeneously in MediaPipe VIDEO mode without annotated preview video.
 - [ ] Save compact 60-Hz normalized landmark/blendshape tensors, masks, timestamps, and transform metadata rather than new multi-gigabyte CSV/preview artifacts; then downsample the SSL view to 30 Hz. Group only what provenance proves and publish an ignored manifest using salted IDs/fingerprints rather than recording names. Mark every exposed current Mayo recording permanently development-only.
 - [ ] Keep the 7 usable ARKit-only sessions (8 nonduplicate 52-blendshape trajectories, 58,054 rows) in a separate auxiliary blendshape SSL pool; never fabricate Landmark columns or concatenate them directly with MediaPipe geometry. Keep the remaining 8 index/metadata-only sessions isolated until source video or depth decoding becomes available.
 - [ ] Use a Mayo-only scaler for SSL. The compatible MediaPipe landmark projections plus shared GRU/pooling may warm-start downstream, but the pretraining scaler is never substituted for the PalsyNet fold scaler.
