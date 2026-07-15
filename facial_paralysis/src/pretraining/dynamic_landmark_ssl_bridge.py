@@ -148,10 +148,10 @@ def _validate_trajectory(
     expected_names: tuple[str, ...],
     policy: BridgePolicy,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    if not isinstance(policy, BridgePolicy):
+    if type(policy) is not BridgePolicy:
         raise ValueError("packet construction requires BridgePolicy")
     # Revalidate even a forged/deserialized object rather than trusting its type.
-    policy.__post_init__()
+    BridgePolicy.__post_init__(policy)
     if type(feature_schema) is not str or feature_schema != expected_schema:
         raise ValueError(f"feature schema must be exactly {expected_schema!r}")
     _exact_feature_names(feature_names, expected_names)

@@ -261,5 +261,27 @@ def test_malformed_trajectories_fail_closed(c: Check):
     ), ValueError, "ARKit 52d is auxiliary-only")
 
 
+def test_forged_bridge_policies_fail_closed(c: Check):
+    class BadPolicy(BridgePolicy):
+        def __post_init__(self) -> None:
+            pass
+
+    subclass_policy = BadPolicy(
+        sample_rate_hz=31.0,
+        ravdess_packets_per_trial=99,
+        selection="anything",
+    )
+    c.raises(lambda: _ravdess(
+        88, policy=subclass_policy,
+    ), ValueError, "a subclass cannot override frozen policy validation")
+
+    mutated_policy = BridgePolicy()
+    object.__setattr__(mutated_policy, "sample_rate_hz", 31.0)
+    object.__setattr__(mutated_policy, "selection", "anything")
+    c.raises(lambda: _ravdess(
+        88, policy=mutated_policy,
+    ), ValueError, "an exact-type policy is revalidated after construction")
+
+
 if __name__ == "__main__":
     run_all("test_dynamic_landmark_ssl_bridge", dict(globals()))
