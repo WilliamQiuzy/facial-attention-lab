@@ -24,6 +24,8 @@
 - ARKit 52d is rejected by the main bridge and remains auxiliary-only.
 - Frozen training configuration for both formal stages: seeds `0,1,2`; AdamW; learning rate `0.001`; weight decay `0.0001`; 30 epochs; full train partition; span length `4`; two spans per window; CPU. A separately HMAC-attested one-epoch smoke config may test execution in an exclusive disposable namespace but cannot mint or initialize formal checkpoints.
 - Existing Mayo recordings remain development-only. No Mayo HB accuracy or patient-held-out generalization claim is allowed.
+- Every operation that authorizes, builds from, freezes, verifies, or trains against the Mayo bridge must receive both the live Mayo source root and the legacy-export audit root explicitly. The deidentified cache/exposure manifests intentionally cannot reveal or reconstruct these paths; omitting either root must fail closed rather than reuse a caller-supplied inventory commitment or a hard-coded user path.
+- Those two Mayo roots are transient authorization inputs only. Their absolute values, basenames, relative forms, and reversible encodings must never enter a persisted bundle, artifact, receipt, stage evidence, checkpoint metadata, checkpoint receipt, report, summary, outer result, registry, stdout, or stderr. Only path-independent opaque identities and keyed commitments may persist. Every Mayo-consuming CLI named below (`inventory`, `build-bundles`, `freeze-stage`, `verify-determinism`, `two-stage`, and the locked outer evaluator) must reject a missing root before creating a staging directory, bundle, input artifact, result, report, or outer prediction; the independent `initialize-mayo-key` command is the only exception because it does not authorize Mayo data.
 
 ## Canonical local outputs
 
@@ -176,7 +178,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 - [ ] **Step 2: Write failing Mayo authorization tests.**
 
-  Expose a narrow, public, read-only committed-generation authorizer from `build_mayo_ssl_cache.py` rather than implementing a weaker parallel validator. It must take the output lock, reject unresolved journal/staging/backup state, rebuild expected counts/classification commitments from the frozen inventory, run the full committed cache/exposure validation, and return the recomputed v3 commitment without recovery or mutation. Require the canonical 0600 Mayo key, exact 48 retained MediaPipe caches, all identity/governance joins, and reject duplicate/short/ARKit records as main bridge inputs. Add an equivalent narrow RAVDESS authorizer that verifies the exact manifest/file set, keyed cache IDs, frozen inventory, and same-descriptor snapshots.
+  Expose a narrow, public, read-only committed-generation authorizer from `build_mayo_ssl_cache.py` rather than implementing a weaker parallel validator. Its required inputs include the live Mayo source root and the legacy-export audit root as well as cache/exposure/key paths. It must take the output lock, reject unresolved journal/staging/backup state, rebuild expected counts/classification commitments from the frozen inventory, run the full committed cache/exposure validation, and return the recomputed v3 commitment without recovery or mutation. Require the canonical 0600 Mayo key, exact 48 retained MediaPipe caches, all identity/governance joins, and reject duplicate/short/ARKit records as main bridge inputs. Add an equivalent narrow RAVDESS authorizer that verifies the exact manifest/file set, keyed cache IDs, frozen inventory, and same-descriptor snapshots.
 
 - [ ] **Step 3: Write failing bundle and receipt tests.**
 
@@ -204,6 +206,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
   It must contain no raw path, filename, source SHA, key material, Mayo session name, or patient identifier.
 
+  Add sentinels for both Mayo roots and scan the shared bridge generation plus every frozen `inputs/` receipt and manifest/config/split/scaler artifact for the exact absolute values, basename components, relative forms, hexadecimal encoding, and Base64 encoding. Each representation must be absent. For `inventory`, `build-bundles`, `freeze-stage`, and `verify-determinism`, omitting either Mayo root must fail before any output or staging path is created, and stdout/stderr must not echo either supplied root.
+
 - [ ] **Step 4: Run all three changed suites and observe RED for missing authorizers/publisher.**
 
   ```bash
@@ -229,10 +233,10 @@ Expected: commit succeeds; `git status --short` prints nothing.
   The CLI uses explicit subcommands:
 
   - `initialize-mayo-key`: atomically creates the exact canonical 32-byte key with `O_EXCL`, no-follow checks, fsync, and mode `0600`; existing keys are validated and never replaced;
-  - `inventory`: read-only authorization and aggregate counts;
-  - `build-bundles`: requires both upstream roots/manifests and canonical keys and atomically publishes the two shared bundles plus a keyed `bundle_generation.json` closure;
-  - `freeze-stage --mode smoke|formal`: reauthorizes the live upstreams and shared bundle, then writes the mode-bound HMAC receipts and exact config/split/scaler/manifest artifacts into only that mode namespace;
-  - `verify-determinism`: builds into an internal safe temporary sibling, compares keyed commitments, then removes it; it never accepts an arbitrary output path.
+  - `inventory`: requires `--mayo-data-root` and `--mayo-existing-export-root`, performs read-only live authorization, and prints aggregate counts;
+  - `build-bundles`: requires both upstream roots/manifests and canonical keys, including the two explicit live Mayo roots, and atomically publishes the two shared bundles plus a keyed `bundle_generation.json` closure;
+  - `freeze-stage --mode smoke|formal`: requires the two explicit live Mayo roots, reauthorizes the live upstreams and shared bundle, then writes the mode-bound HMAC receipts and exact config/split/scaler/manifest artifacts into only that mode namespace;
+  - `verify-determinism`: requires the two explicit live Mayo roots, builds into an internal safe temporary sibling, compares keyed commitments, then removes it; it never accepts an arbitrary output path. With an optional canonical `--run-root`, it must additionally scan the committed smoke/formal `inputs/` and `results/` trees without changing the same seven-field aggregate JSON output.
 
   It prints aggregate deidentified counts only.
 
@@ -244,7 +248,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl_bridge.py
   ```
 
-  Expected: every suite reports zero failures. Synthetic receipt/privacy tests must explicitly reject raw paths, filenames, source SHA values, keys, Mayo session identifiers, and patient fields; transaction fault injection must leave no published partial generation.
+  Expected: every suite reports zero failures. Synthetic receipt/privacy tests must explicitly reject raw paths, filenames, source SHA values, keys, Mayo session identifiers, patient fields, and every raw-root representation defined above across the shared generation and frozen inputs; captured stdout/stderr must also be clean. Transaction fault injection must leave no published partial generation.
 
 - [ ] **Step 9: Commit Task 2.**
 
@@ -291,6 +295,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
   `pretrain_dynamic_landmarks.py` must stay locked when any required file is missing or mismatched. With two exact stage directories, both upstream roots/keys, and a one-epoch smoke config, it must authorize RAVDESS, train one seed, authorize the resulting prior checkpoint, run Mayo, save both checkpoint receipts, and write one execution-only report inside `smoke/<exclusive-run-id>`. Smoke must verify finite train loss, serialization/reload, and lineage without computing or emitting heldout performance. A smoke config/receipt/path cannot be accepted as a formal checkpoint input.
 
+  Require a root-privacy regression over manifest/config/split/scaler artifacts, stage evidence, public checkpoint metadata, private checkpoint receipts, smoke/formal reports, summaries, and captured stdout/stderr. The exact absolute Mayo roots, basenames, relative forms, hexadecimal encodings, and Base64 encodings must all be absent. Omitting either Mayo root from `two-stage` must fail before optimizer construction and before any result staging path is created.
+
 - [ ] **Step 4: Write failing source-boundary parameter tests.**
 
   Require that RAVDESS training leaves all Mayo projections/decoder byte-identical, Mayo training leaves the RAVDESS adapter/decoder byte-identical, and only the registered shared temporal/attention/pooling modules continue across stages. Verify the downstream transfer allowlist exactly: RAVDESS-only transfers only the allowed landmark half/shared modules; RAVDESS-then-Mayo adds only registered MediaPipe projections; extra, missing, or wrong-shape state fails closed. No source scaler crosses a stage or enters PalsyNet.
@@ -307,7 +313,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 - [ ] **Step 8: Replace the unconditional runner lock with exact file authorization.**
 
-  The CLI uses one `two-stage` subcommand and accepts stage artifact directories, bridge receipts, both live upstream roots/manifests, both canonical keys, output root, and `--mode smoke|formal`. It reconstructs split/scaler/group/sample order only from exact artifacts. `freeze-stage` first atomically commits an `inputs/` generation. The runner requires that exact committed `inputs/` generation and that `results/` does not exist; it writes checkpoints, checkpoint receipts, and the report under `.results.staging-*`, fsyncs and fully revalidates them, then atomically promotes the complete `results/` tree. Failure publishes no result and preserves the immutable inputs. Formal mode requires the frozen 30-epoch config, all three seeds, and a mode-bound formal receipt. Smoke mode requires one epoch/seed 0 and a mode-bound smoke receipt. No CLI flag may override epochs, optimizer, seeds, packet policy, or output namespace.
+  The CLI uses one `two-stage` subcommand and accepts stage artifact directories, bridge receipts, both live upstream roots/manifests, both canonical keys, output root, and `--mode smoke|formal`. For Mayo, "live upstream roots" explicitly means both `--mayo-data-root` and `--mayo-existing-export-root` in addition to cache/exposure/key paths. It reconstructs split/scaler/group/sample order only from exact artifacts. `freeze-stage` first atomically commits an `inputs/` generation. The runner requires that exact committed `inputs/` generation and that `results/` does not exist; it writes checkpoints, checkpoint receipts, and the report under `.results.staging-*`, fsyncs and fully revalidates them, then atomically promotes the complete `results/` tree. Failure publishes no result and preserves the immutable inputs. Formal mode requires the frozen 30-epoch config, all three seeds, and a mode-bound formal receipt. Smoke mode requires one epoch/seed 0 and a mode-bound smoke receipt. No CLI flag may override epochs, optimizer, seeds, packet policy, or output namespace.
 
 - [ ] **Step 9: Run focused tests and deterministic two-stage synthetic integration to GREEN.**
 
@@ -315,6 +321,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl.py
   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl_bridge.py
   ```
+
+  Expected: the integration also scans every synthetic `inputs/` and `results/` file plus captured stdout/stderr for both raw-root sentinels and all required reversible representations; zero matches are allowed.
 
 - [ ] **Step 10: Commit Task 3.**
 
@@ -443,6 +451,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
     facial_paralysis/scripts/prepare_dynamic_landmark_ssl_inputs.py build-bundles \
     --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
     --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+    --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+    --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
     --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
     --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
     --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key \
@@ -458,6 +468,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
     facial_paralysis/scripts/prepare_dynamic_landmark_ssl_inputs.py verify-determinism \
     --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
     --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+    --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+    --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
     --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
     --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
     --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key \
@@ -480,6 +492,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
     --bridge-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/bridge \
     --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
     --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+    --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+    --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
     --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
     --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
     --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key
@@ -491,6 +505,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
     --bridge-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/bridge \
     --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
     --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+    --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+    --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
     --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
     --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
     --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key
@@ -498,6 +514,16 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
   Expected: exit 0; exactly one optimizer step per stage; finite train loss; both checkpoints serialize/reload with exact lineage; no heldout loss or model-selection metric is computed or emitted. Stop on missing mask span, lineage mismatch, or unexpected runtime/memory pressure.
   The two `.pt` files, two `.pt.receipt.json` files, and one execution-only report must appear together only after atomic `results/` promotion; a fault-injected run must leave `results/` absent.
+
+- [ ] **Step 7: Re-run privacy verification over the committed smoke inputs and results.**
+
+  Repeat the Step 5 `verify-determinism` command with:
+
+  ```bash
+  --run-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/smoke/preflight-seed0
+  ```
+
+  Expected: the same exact seven-field JSON and `privacy_ok=true`; the scan covers every shared bundle/closure, smoke manifest/config/split/scaler artifact, bridge receipt, checkpoint metadata/receipt, report, and captured persisted log. Any absolute root, basename, relative form, hexadecimal encoding, Base64 encoding, source SHA, key material, session/patient identifier, or non-0600 private file fails nonzero.
 
 ---
 
@@ -525,6 +551,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
     --bridge-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/bridge \
     --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
     --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+    --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+    --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
     --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
     --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
     --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key
@@ -544,6 +572,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
     --bridge-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/bridge \
     --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
     --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+    --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+    --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
     --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
     --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
     --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key
@@ -557,7 +587,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 - [ ] **Step 5: Verify every checkpoint and receipt from disk.**
 
-  Reload with exact authorization, confirm state schemas and lineage, and confirm all validation actions leave caller RNG unchanged.
+  Reload with exact authorization, confirm state schemas and lineage, and confirm all validation actions leave caller RNG unchanged. Repeat Task 5 Step 5 `verify-determinism` with `--run-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/formal`; require the same exact seven-field JSON and scan every formal `inputs/` and `results/` artifact, checkpoint, receipt, report, and persisted log for both raw Mayo roots and all forbidden representations defined in the frozen contract.
 
 - [ ] **Step 6: Commit only code, tests, plan, and small deidentified aggregate metadata.**
 
@@ -565,7 +595,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 ---
 
-## Task 7: Post-training verification, documentation, and handoff to the locked PalsyNet outer experiment
+## Task 7: Post-training verification, documentation, and non-executable handoff to the locked PalsyNet outer experiment
 
 **Files:**
 
@@ -575,14 +605,14 @@ Expected: commit succeeds; `git status --short` prints nothing.
 - Modify: `facial_paralysis/docs/model_design.md`
 - Modify: `facial_paralysis/docs/training_runs.md`
 - Modify: `facial_paralysis/autoresearch_fp/FINDINGS.md`
-- Modify or create only after checkpoint freeze: `facial_paralysis/configs/dynamic_landmark_experiment_registry.json`
 
-- [ ] Generate the deidentified summary, then update `2026-07-13-dynamic-landmark-pretraining.md`, research documentation, findings, and the experiment registry with exact checkpoint hashes and claim boundaries. These are evidence-only updates: do not alter this frozen scientific contract or producer/trainer behavior.
+- [ ] Generate the deidentified summary, then update `2026-07-13-dynamic-landmark-pretraining.md`, research documentation, and findings with exact checkpoint hashes and claim boundaries. These are evidence-only updates: do not alter this frozen scientific contract or producer/trainer behavior.
 - [ ] Run Task 1–3 focused tests plus all previously completed source-builder/SSL tests on that exact final diff.
 - [ ] Run `py_compile`, static checks, `git diff --check`, `git status --short`, and tracked-file privacy/size scans on that exact final diff.
 - [ ] Obtain a fresh plan-document review of the evidence-only upper-plan amendment, then independent final specification review and independent final code-quality/security review of the exact complete diff. Fix every Critical/Important and repeat all affected verification and reviews after every change, including a pure documentation correction.
 - [ ] If any review requires a producer, trainer, bridge, or scientific-contract change, declare every formal result made by the prior producer invalid, move it to an explicitly non-citable quarantine or remove it, and return to Task 4 for both gate reviews followed by a new `freeze-stage` and complete three-seed training. Never retain the old checkpoint or summary as current evidence.
-- [ ] Only after the exact final diff passes all reviews, register the two pretrained candidates for the one-shot PalsyNet outer evaluation. Do not view outer predictions during bridge/pretraining work.
+- [ ] Freeze only the non-executable handoff contract in the upper plan: its later Task 7 must implement the single shared Task 3 checkpoint load/transfer authorizer, accept the RAVDESS live root/key, both Mayo live roots plus cache/exposure/key, the committed bridge root, and the immutable formal run root, and run adversarial/privacy tests before any registry is created. It must also create a persistent path-free `O_EXCL` one-shot claim before any checkpoint load/prediction and never delete that claim after success, failure, or interruption. This bridge task must not modify evaluator code, create the final registry/claim, or run/view outer predictions.
+- [ ] Only after the exact evidence diff passes all reviews and is committed cleanly may the deidentified summary be handed to upper-plan Task 7. Upper-plan Task 7 then owns the separate reviewed evaluator-code commit, subsequent path-free registry commit, and one-shot outer run; none of those actions are part of this bridge-plan commit.
 - [ ] Stage only the exact files listed above after a tracked-file privacy/size audit, then commit the verified implementation and deidentified summary.
 
   ```bash
@@ -591,8 +621,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
     facial_paralysis/docs/landmark_research_20260713.md \
     facial_paralysis/docs/model_design.md \
     facial_paralysis/docs/training_runs.md \
-    facial_paralysis/autoresearch_fp/FINDINGS.md \
-    facial_paralysis/configs/dynamic_landmark_experiment_registry.json
+    facial_paralysis/autoresearch_fp/FINDINGS.md
   git commit -m "docs(ssl): freeze dynamic pretraining evidence"
   ```
 

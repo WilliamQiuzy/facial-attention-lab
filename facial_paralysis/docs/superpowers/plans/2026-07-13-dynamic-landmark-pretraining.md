@@ -165,10 +165,41 @@ Command:
 - Create: `facial_paralysis/configs/dynamic_landmark_experiment_registry.json`
 - Modify: `facial_paralysis/scripts/run_dynamic_landmark_classical.py`
 - Modify: `facial_paralysis/scripts/run_dynamic_landmark_benchmark.py`
+- Modify: `facial_paralysis/src/training/dynamic_landmark_benchmark.py`
+- Modify: `facial_paralysis/tests/test_dynamic_landmark_benchmark.py`
+- Generate owner-local, never delete: `facial_paralysis/outputs/dynamic_landmark/.locked_outer_run_claim.json`
 - Generate: `facial_paralysis/outputs/dynamic_landmark/locked_outer_results.json`
 
-- [ ] Before any outer prediction, freeze and hash the data manifest, identity groups, outer/inner folds, code commit, hyperparameter grids, seeds, metric code, and the complete candidate set: nuisance-only classical; classical BS/LM/Fusion/Rao-Fusion; neural BS/LM/Fusion-random/Fusion-RAVDESS/Fusion-RAVDESS-Mayo.
-- [ ] Make the outer evaluator refuse a dirty/mismatched registry, cache hash, split hash, checkpoint hash, missing candidate, or prior partial outer-result file.
+- [ ] **Outer producer RED phase:** first write adversarial synthetic tests for the missing shared pretrained-candidate authorizer and the still-locked unified outer evaluator, then run them against the current stubs and observe RED at the intended missing/locked APIs before implementation. Cover omitted or changed live inputs, forged checkpoint/receipt lineage, failure before checkpoint load/transfer, exact five-fold OOF completeness with no duplicated/missing group, inner/outer selection isolation, the complete candidate set, all six formal checkpoints, probability-level three-seed ensembles, pooled metrics, the paired group bootstrap, and deterministic result fingerprints. Require zero real outer predictions/outputs during tests. Add owner-local result-transaction fault injection proving no partial prediction, report, stdout, or final file is published, plus privacy scans for all transient paths and the Mayo roots in absolute, basename, relative, hexadecimal, and Base64 forms. Add concurrent double-start, alternate registry/output path, deleted-final-result, pre-existing unknown staging, and exception/SIGKILL-after-claim cases; assert at most one process crosses the durable claim and every rejected process performs zero checkpoint load, prediction, or output.
+- [ ] **Outer producer GREEN phase:** only after RED, implement the single shared authorizer and the complete unified outer execution engine in `src/training/dynamic_landmark_benchmark.py`; both CLI scripts and tests must call these shared units rather than create parallel registry/checkpoint/evaluation logic. The authorizer reuses the receipt-bound live authorization from the 2026-07-15 bridge plan and explicitly requires `--ravdess-data-root`, `--ravdess-key`, `--mayo-data-root`, `--mayo-existing-export-root`, `--mayo-cache-root`, `--mayo-exposure-manifest`, `--mayo-key`, `--bridge-root`, and the immutable `--pretraining-run-root` containing formal `inputs/` and checkpoint receipts. The execution engine must implement the frozen five-fold nested selection, every registered classical/neural candidate, six-checkpoint three-seed probability ensembles, OOF metrics, paired bootstrap, and exact result schema/fingerprints before the registry is frozen. Missing or changed authorization input fails before checkpoint load, transfer, outer prediction, output creation, or partial-result publication.
+- [ ] Freeze the only legal registry, claim, and result paths to the exact canonical files listed in this Task. Reject alternate targets, symlinks, noncanonical parents, any unknown result staging file, an existing final result, or an existing claim before checkpoint load or prediction. Immediately before the first checkpoint load and any outer prediction, atomically create the claim with `O_EXCL`, no-follow, exact mode `0600`, file+directory fsync, and no replacement. Its path-free canonical JSON binds the registry freeze commit/hash, `outer_producer_commit`, complete candidate-set hash, and a domain-separated claim digest. The claim never contains a path, key, patient/session identifier, or prediction.
+- [ ] The durable claim is never deleted or replaced after success, validation failure, exception, crash, or SIGKILL. If prediction starts and no final result is published, the experiment remains indeterminate/invalid and cannot be retried. The result publisher writes only to a random owner-local sibling staging file, mode `0600`; reloads and validates exact schema, OOF completeness, fingerprints, metrics, claim digest, root/path privacy, and absence of partial/logged predictions from staged bytes; fsyncs the file and directory; then atomically publishes the absent canonical final result without replacement. Any validation or fault-injection failure may remove only its provably owned staging file, never the claim. Run all synthetic focused tests to GREEN, path/privacy scans, `py_compile`, and `git diff --check`; obtain independent specification review followed by independent code-quality/security review, fix every Critical/Important, and repeat both reviews after any producer-code change.
+- [ ] After both reviews return READY, commit only the clean evaluator implementation and tests. Record this as `outer_producer_commit`; no registry or outer result may exist yet.
+
+  ```bash
+  git add facial_paralysis/scripts/run_dynamic_landmark_classical.py \
+    facial_paralysis/scripts/run_dynamic_landmark_benchmark.py \
+    facial_paralysis/src/training/dynamic_landmark_benchmark.py \
+    facial_paralysis/tests/test_dynamic_landmark_benchmark.py
+  git commit -m "feat(outer): authorize pretrained candidates"
+  test -z "$(git status --short)"
+  ```
+
+- [ ] **Registry phase:** only from that clean producer commit, freeze and hash the data manifest, identity groups, outer/inner folds, producer file bytes/commit, hyperparameter grids, seeds, metric code, all six formal checkpoints/receipts, and the complete candidate set: nuisance-only classical; classical BS/LM/Fusion/Rao-Fusion; neural BS/LM/Fusion-random/Fusion-RAVDESS/Fusion-RAVDESS-Mayo. The registry is path-free and key-free. Validate its exact schema/privacy and obtain independent registry/spec review before committing it separately.
+- [ ] The registry commit must be the direct child of `outer_producer_commit`, and its only changed path must be `facial_paralysis/configs/dynamic_landmark_experiment_registry.json`. Commit only that file and require a clean worktree. At one-shot preflight, require clean `HEAD` to be exactly this direct-child registry freeze commit; verify `HEAD^` equals the producer commit recorded in the registry and `git diff --name-only HEAD^ HEAD` contains exactly the registry path. Any intervening or later commit, producer-byte change, or registry change invalidates authorization and requires a new pre-prediction review/registry freeze; no outer prediction may be reused.
+
+  ```bash
+  OUTER_PRODUCER_COMMIT="$(/Users/williamqiu/opt/anaconda3/bin/python3 -c \
+    'import json; print(json.load(open("facial_paralysis/configs/dynamic_landmark_experiment_registry.json", encoding="utf-8"))["outer_producer_commit"])')"
+  git add facial_paralysis/configs/dynamic_landmark_experiment_registry.json
+  git commit -m "chore(outer): freeze candidate registry"
+  test -z "$(git status --short)"
+  test "$(git rev-parse HEAD^)" = "$OUTER_PRODUCER_COMMIT"
+  test "$(git diff --name-only HEAD^ HEAD)" = \
+    "facial_paralysis/configs/dynamic_landmark_experiment_registry.json"
+  ```
+
+- [ ] **One-shot execution phase:** make the already-committed outer evaluator refuse a dirty/mismatched registry, producer byte/commit, cache hash, split hash, checkpoint/receipt hash, live authorization, missing candidate, noncanonical target, unknown staging, existing durable claim, or prior outer-result file. Re-run read-only preflight against the committed registry and absent canonical claim/result targets; only then permit the single outer invocation below. The first process that atomically creates the durable claim is the only process allowed to load checkpoints or predict. The frozen producer validates the completed real result and its claim/root/privacy constraints inside owner-local staging before atomic publication, so neither stdout/stderr nor the final path can expose a partial or unvalidated prediction. Deleting the final result never restores authorization because the claim persists.
 - [ ] For every outer fold, perform selection using only its inner folds, refit on the outer train group, and predict the outer test group once. Do not use outer results to alter candidates or rerun a favored configuration.
 - [ ] Primary metric: pooled group OOF AUROC. Secondary: PR-AUC, Brier score, and fixed-0.5 balanced accuracy/sensitivity/specificity. Report all fold probabilities and metrics.
 - [ ] Compute a class-stratified paired 5,000-repeat group bootstrap for fixed OOF predictions. Label its interval descriptive/exploratory because it does not include training-set/fold uncertainty.
@@ -183,6 +214,15 @@ Command:
   facial_paralysis/scripts/run_dynamic_landmark_benchmark.py \
   --registry facial_paralysis/configs/dynamic_landmark_experiment_registry.json \
   --cache-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/palsynet/derived/clinical23_v2_windows \
+  --ravdess-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking \
+  --ravdess-key /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/ravdess_facial_tracking/.semantic23_private_id_key \
+  --mayo-data-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/livelinkface_data \
+  --mayo-existing-export-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/mediapipe_out \
+  --mayo-cache-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/mayo_ssl_cache \
+  --mayo-exposure-manifest /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json \
+  --mayo-key /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key \
+  --bridge-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/bridge \
+  --pretraining-run-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/formal \
   --output facial_paralysis/outputs/dynamic_landmark/locked_outer_results.json
 ```
 
@@ -194,13 +234,14 @@ Command:
 - Modify: `facial_paralysis/docs/model_design.md`
 - Modify: `facial_paralysis/docs/training_runs.md`
 - Modify: `facial_paralysis/autoresearch_fp/FINDINGS.md`
+- Modify: `facial_paralysis/outputs/dynamic_landmark/locked_outer_results.json`
 
 - [ ] Run every focused test, then the full script-style repository test suite with the Anaconda runtime.
 - [ ] Validate result JSON fingerprints and rerun extraction/inner-training smoke tests; do not rerun outer evaluation after viewing its results.
 - [ ] Run `git diff --check` and inspect `git status`. Confirm no raw dataset, face montage, clinical identifier, secret, environment, large cache, or checkpoint is tracked.
 - [ ] Obtain independent review of identity grouping, source confounds, inner/outer isolation, timestamp/delta logic, mirror semantics, cross-topology adapters, SSL exposure, checkpoint transfer, metrics, and claims.
 - [ ] Record negative and positive results. Keep deployment unchanged. State that current Mayo is development-exposed and that HB accuracy remains unknown.
-- [ ] Commit implementation, configs, tests, documentation, and only small de-identified result manifests after all verification passes.
+- [ ] Do not change or recommit evaluator code, tests, or the frozen registry after the one-shot run, and never delete or stage the owner-local durable claim. Verify that the locked result binds the exact claim digest, then commit only documentation and the small de-identified locked result manifest after all verification passes. If post-result review finds a producer or registry defect, or if a claim exists without a final result, mark the experiment invalid/indeterminate and do not rerun or replace it after viewing; any later corrected experiment is a separately preregistered exploratory successor with a different frozen namespace.
 
 Focused verification commands:
 
