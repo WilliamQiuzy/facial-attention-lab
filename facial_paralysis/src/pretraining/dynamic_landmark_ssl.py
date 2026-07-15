@@ -945,12 +945,20 @@ def _parse_training_cache_payloads(
         raise ValueError("SSL cache values must be finite")
     if not valid_mask.reshape(sample_count, -1).any(axis=1).all():
         raise ValueError("every SSL cache recording requires observed frames")
-    if not np.all(np.diff(timestamps, axis=2) > 0):
-        raise ValueError("SSL cache timestamps must increase within each window")
-    if np.any(source_indices < 0) or not np.all(
-        np.diff(source_indices, axis=2) > 0
+    expected_timestamps = np.arange(32, dtype=np.float32) / np.float32(30.0)
+    if not np.array_equal(
+        timestamps,
+        np.broadcast_to(expected_timestamps, expected_leading),
     ):
-        raise ValueError("SSL cache source indices must increase within each window")
+        raise ValueError("SSL cache timestamps must be the exact local 30-Hz axis")
+    expected_indices = np.arange(32, dtype=np.int64)
+    if not np.array_equal(
+        source_indices,
+        np.broadcast_to(expected_indices, expected_leading),
+    ):
+        raise ValueError("SSL cache source indices must be the exact local canonical axis")
+    if np.any(features[~valid_mask] != np.float32(0.0)):
+        raise ValueError("SSL cache invalid feature rows must be canonical zero")
     return (
         torch.from_numpy(features),
         torch.from_numpy(valid_mask),
@@ -1643,7 +1651,7 @@ class DynamicLandmarkSSLModel(nn.Module):
             observed_mask,
             timestamps,
             source_frame_indices,
-            expected_source_step=(1 if source == "ravdess" else 2),
+            expected_source_step=1,
         )
         if source == "ravdess":
             landmark = self.ravdess_proj_x(x) + self.ravdess_proj_dx(dx)
@@ -1935,7 +1943,7 @@ def train_ssl_stage(
         authorization.split, authorization.group_ids
     )
     source_key = "ravdess" if stage_evidence.stage == RAVDESS_STAGE else "mayo"
-    expected_source_step = 1 if source_key == "ravdess" else 2
+    expected_source_step = 1
     training_config = _validate_training_config(
         authorization.training_config,
         stage=stage_evidence.stage,

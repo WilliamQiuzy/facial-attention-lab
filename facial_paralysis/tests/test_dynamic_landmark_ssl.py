@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -146,7 +147,6 @@ def _write_training_cache(
     feature_multiplier: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     width = 23 if source == "ravdess_semantic23_v1" else 95
-    source_step = 1 if source == "ravdess_semantic23_v1" else 2
     generator = np.random.default_rng(seed)
     features = generator.normal(
         size=(len(groups), 4, 32, width)
@@ -162,9 +162,7 @@ def _write_training_cache(
         valid_mask.shape,
     ).copy()
     source_frame_indices = np.broadcast_to(
-        (
-            np.arange(32, dtype=np.int64) * source_step
-        ).reshape(1, 1, 32),
+        np.arange(32, dtype=np.int64).reshape(1, 1, 32),
         valid_mask.shape,
     ).copy()
     np.savez(
@@ -527,6 +525,61 @@ def test_source_scaler_is_train_only_and_cannot_cross_sources(c: Check):
     ), ValueError, "corrupt nonfinite scaler state fails closed")
 
 
+def test_training_cache_requires_exact_local_axes_and_zero_gaps(c: Check):
+    groups = ("actor_a", "actor_b")
+    leading = (len(groups), 4, 32)
+    features = np.ones(leading + (23,), dtype=np.float32)
+    valid_mask = np.ones(leading, dtype=np.bool_)
+    valid_mask[0, 1, 7] = False
+    features[0, 1, 7] = np.float32(0.0)
+    expected_t = np.arange(32, dtype=np.float32) / np.float32(30.0)
+    expected_i = np.arange(32, dtype=np.int64)
+    timestamps = np.broadcast_to(expected_t, leading).copy()
+    indices = np.broadcast_to(expected_i, leading).copy()
+
+    def payload(**changes) -> bytes:
+        fields = {
+            "features": features,
+            "valid_mask": valid_mask,
+            "timestamps": timestamps,
+            "source_frame_indices": indices,
+            "group_ids": np.asarray(groups, dtype=np.str_),
+        }
+        fields.update(changes)
+        buffer = io.BytesIO()
+        np.savez(buffer, **fields)
+        return buffer.getvalue()
+
+    parsed = ssl_core._parse_training_cache_payloads(
+        [payload()], stage="ravdess", group_ids=groups,
+    )
+    c.true(bool(torch.equal(
+        parsed[2], torch.from_numpy(timestamps),
+    )), "authorized bundle preserves the exact local float32 timeline")
+    c.true(bool(torch.equal(
+        parsed[3], torch.from_numpy(indices),
+    )), "authorized bundle preserves exact local int64 indices")
+
+    shifted_timestamps = timestamps.copy()
+    shifted_timestamps[0, 2] += np.float32(1.0 / 30.0)
+    c.raises(lambda: ssl_core._parse_training_cache_payloads(
+        [payload(timestamps=shifted_timestamps)],
+        stage="ravdess", group_ids=groups,
+    ), ValueError, "recording offsets cannot masquerade as local bundle time")
+    shifted_indices = indices.copy()
+    shifted_indices[1, 3] += 100
+    c.raises(lambda: ssl_core._parse_training_cache_payloads(
+        [payload(source_frame_indices=shifted_indices)],
+        stage="ravdess", group_ids=groups,
+    ), ValueError, "original source offsets are private provenance, not bundle axes")
+    nonzero_gap = features.copy()
+    nonzero_gap[0, 1, 7] = np.float32(9.0)
+    c.raises(lambda: ssl_core._parse_training_cache_payloads(
+        [payload(features=nonzero_gap)],
+        stage="ravdess", group_ids=groups,
+    ), ValueError, "invalid bundle slots must be canonical zero")
+
+
 def test_ssl_model_uses_full64_contract_and_source_specific_adapters(c: Check):
     torch.manual_seed(101)
     model = DynamicLandmarkSSLModel().eval()
@@ -576,16 +629,15 @@ def test_ssl_model_uses_full64_contract_and_source_specific_adapters(c: Check):
     mayo_ramp[..., 0] = ramp
     mayo_ramp[..., 72] = ramp
     mayo_valid, mayo_times, mayo_indices = _temporal(batch=1)
-    mayo_indices = mayo_indices * 2
     derivative_input = model.build_gru_input(
         mayo_ramp, mayo_valid, mayo_times, mayo_indices, source="mayo"
     )
     c.true(bool(torch.allclose(
         derivative_input[..., 1:, 0], torch.full((1, 4, 31), 30.0)
-    )), "Mayo 60-to-30 provenance step two retains per-second blendshape deltas")
+    )), "Mayo bundle-local canonical step one retains per-second blendshape deltas")
     c.true(bool(torch.allclose(
         derivative_input[..., 1:, 32], torch.full((1, 4, 31), 30.0)
-    )), "Mayo 60-to-30 provenance step two retains per-second landmark deltas")
+    )), "Mayo bundle-local canonical step one retains per-second landmark deltas")
     gap_mask = mayo_valid.clone()
     gap_mask[..., 2] = False
     gap_input = model.build_gru_input(
@@ -596,7 +648,7 @@ def test_ssl_model_uses_full64_contract_and_source_specific_adapters(c: Check):
     c.eq(gap_input[0, 0, 3, [0, 32]].tolist(), [0.0, 0.0],
          "derivatives never bridge a missing row")
     jumped_indices = mayo_indices.clone()
-    jumped_indices[..., 16:] += 2
+    jumped_indices[..., 16:] += 1
     jumped_input = model.build_gru_input(
         mayo_ramp, mayo_valid, mayo_times, jumped_indices, source="mayo"
     )
