@@ -6,7 +6,7 @@
 
 **Architecture:** Each PalsyNet video yields four deterministic, non-overlapping 32-frame windows sampled across the recording. MediaPipe produces one versioned `72 + 23 = 95` stream from the same frames. The neural model always instantiates both branches: `proj_x(x) + proj_dx(dx)` maps the 72-dimensional blendshape block and the 23-dimensional clinical-landmark block independently to 32 dimensions; concatenation gives a fixed 64-dimensional BiGRU input. Masked max and attention pooling are concatenated, then pooled over windows for binary classification. Input blocks are zeroed for equal-shape ablations. A paper-style classical arm uses robust extrema, bilateral synchrony, and train-only healthy-reference Mahalanobis/Wasserstein distances. RAVDESS and MediaPipe use explicit source adapters into one generic semantic order; OpenFace projection/scaling is never assumed numerically interchangeable with MediaPipe.
 
-**Tech Stack:** Python 3.10 in `/Users/williamqiu/.cache/facial-paralysis/mediapipe-py310` with MediaPipe `0.10.35` and OpenCV for extraction; `/Users/williamqiu/opt/anaconda3/bin/python3` with NumPy, SciPy, scikit-learn, and PyTorch for analysis/training; repository script-style tests; locked group-nested cross-validation; class-stratified paired bootstrap.
+**Tech Stack:** Mayo/PalsyNet extraction alone uses `/Users/williamqiu/.cache/facial-paralysis/mediapipe-py310/bin/python` exactly: Python `3.10.2`, NumPy `1.26.4`, PyTorch `2.2.1`, MediaPipe `0.10.35`, OpenCV `4.11.0`. Tests, analysis, authorization, bridge construction, and training use `/Users/williamqiu/opt/anaconda3/bin/python3` exactly: Python `3.9.12`, NumPy `1.26.4`, PyTorch `2.2.1`, OpenCV `4.8.1`, with MediaPipe intentionally absent. The plan also uses SciPy, scikit-learn, repository script-style tests, locked group-nested cross-validation, and a class-stratified paired bootstrap.
 
 **Research basis:**
 
@@ -64,7 +64,7 @@ Commands:
 - Test: `facial_paralysis/tests/test_dynamic_window_data.py`
 - Generate outside Git: `/Users/williamqiu/Desktop/Harvard/Mayo-Clinic/facial_paralysis/data/external/palsynet/derived/clinical23_v2_windows/`
 
-- [ ] Create the dedicated Python 3.10 environment and install pinned `mediapipe==0.10.35`, NumPy, and OpenCV without modifying the Anaconda or system environments. Save a local environment lock.
+- [ ] Reuse and verify the existing dedicated Python `3.10.2` extraction environment at `/Users/williamqiu/.cache/facial-paralysis/mediapipe-py310/bin/python`, including exact NumPy `1.26.4`, PyTorch `2.2.1`, MediaPipe `0.10.35`, and OpenCV `4.11.0`; stop on any drift. Do not mutate the Anaconda, extraction, or system environments during this execution. Preserve the existing local environment lock.
 - [ ] Enumerate exactly 49 canonical MP4s: 27 affected and 22 unaffected. Verify the observed audit values before extraction: 49 unique SHA-256 hashes, 177,511 frames, 30 Hz, 98.617 total minutes, minimum 172 frames.
 - [ ] Do not call `action_bundle._read_frames(max_frames=...)`, which reads entire long videos and produces isolated samples. Use `CAP_PROP_FRAME_COUNT`, seek to each locked start, sequentially decode 32 frames, and verify the reported source frame index after every read.
 - [ ] Run one `MediaPipeFeatureExtractor(model_path=..., landmark_features="clinical23", capture_mirrored=None)` instance so the 72- and 23-dimensional blocks come from identical frames.

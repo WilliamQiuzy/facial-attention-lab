@@ -6,7 +6,7 @@
 
 **Architecture:** A new bridge module sits between the already-reviewed source caches and the already-reviewed SSL trainer. It validates the upstream HMAC-bound manifests and exact NPZ schemas, applies a content-independent uniform window policy, emits one exact five-field bundle plus a mode-bound owner-only HMAC receipt per stage, and upgrades SSL authorization so checkpoints are cryptographically bound to the live upstream generation, canonical key, bridge policy, and run mode. RAVDESS and Mayo keep separate feature adapters/scalers while sharing only the intended temporal representation; ARKit remains auxiliary-only and is rejected by this bridge.
 
-**Tech Stack:** Python 3.10; NumPy; PyTorch; existing script-style `Check` tests; MediaPipe `0.10.35` extraction environment for Mayo; Anaconda analysis runtime; SHA-256/HMAC provenance; transactional local-only outputs.
+**Tech Stack:** Tests, analysis, RAVDESS authorization, bridge construction, and training use `/Users/williamqiu/opt/anaconda3/bin/python3` exactly: Python `3.9.12`, NumPy `1.26.4`, PyTorch `2.2.1`, OpenCV `4.8.1`, with MediaPipe intentionally absent. Mayo extraction alone uses `/Users/williamqiu/.cache/facial-paralysis/mediapipe-py310/bin/python` exactly: Python `3.10.2`, NumPy `1.26.4`, PyTorch `2.2.1`, MediaPipe `0.10.35`, OpenCV `4.11.0`. The implementation also uses existing script-style `Check` tests, SHA-256/HMAC provenance, and transactional local-only outputs.
 
 ---
 
@@ -224,19 +224,19 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 - [ ] **Step 6: Implement the mode-neutral bundle transaction.**
 
-  Stage under the ignored bridge parent, write both bundles and `bundle_generation.json` mode `0600`, fsync files/directories, and validate the two staged bundles plus the dual-stage keyed bundle-generation closure from the bytes actually staged. Atomically promote that complete shared generation and never overwrite an existing committed generation implicitly. This transaction has no run mode, config, split, scaler, or mode-bound receipt. On failure, remove staging and preserve any prior committed generation.
+  Stage under the ignored bridge parent, write both bundles and `bundle_generation.json` mode `0600`, fsync files/directories, and validate the two staged bundles plus the dual-stage keyed bundle-generation closure from the bytes actually staged. Atomically promote that complete shared generation and never overwrite an existing committed generation implicitly. This transaction has no run mode, config, split, scaler, or mode-bound receipt. Python/macOS path APIs do not offer an atomic condition-by-inode deletion primitive, so a failed prepublication transaction must retain its owner-only staging residue rather than perform a path-based destructive cleanup; the residue makes the outcome auditable and blocks every retry until explicit offline review. It must never publish a partial canonical generation. Exact owner-only `0700` canonical parent directories created before failure may remain, and any prior committed generation remains untouched.
 
-  `freeze-stage` is a separate transaction: after reauthorizing the live upstreams, canonical keys, and committed shared bundle, it derives the requested mode/config/split/scaler closure, stages the two mode-bound receipts plus all manifest/config/split/scaler artifacts under `<run-root>/.inputs.staging-*`, validates their HMACs and cross-links from staged bytes, fsyncs, and atomically promotes the directory to `<run-root>/inputs/`. It must fail closed if `inputs/` already exists or any live authorization changed; it never mutates the shared bundle generation.
+  `freeze-stage` is a separate transaction: after reauthorizing the live upstreams, canonical keys, and committed shared bundle, it derives the requested mode/config/split/scaler closure, stages the two mode-bound receipts plus all manifest/config/split/scaler artifacts under `<run-root>/.inputs.staging-*`, validates their HMACs and cross-links from staged bytes, fsyncs, and atomically promotes the complete directory to `<run-root>/inputs/`. It must fail closed if `inputs/` already exists or any live authorization changed; it never mutates the shared bundle generation. As above, a failed prepublication freeze retains its owner-only staging residue and blocks retry instead of deleting by pathname; only a fully validated staging tree can become canonical, and a post-publication inconsistency retains the canonical tree as indeterminate evidence.
 
 - [ ] **Step 7: Implement the CLI with canonical, fail-closed paths.**
 
   The CLI uses explicit subcommands:
 
-  - `initialize-mayo-key`: atomically creates the exact canonical 32-byte key with `O_EXCL`, no-follow checks, fsync, and mode `0600`; existing keys are validated and never replaced;
+  - `initialize-mayo-key`: creates an owner-only staged 32-byte key with `O_EXCL`, no-follow checks, fsync, and mode `0600`, validates the staged bytes and identity, then no-replace renames that valid staging file to the exact canonical key; existing keys are validated and never replaced. Any prepublication failure after staging creation retains the owned staging residue as indeterminate evidence and never publishes a partial canonical key. A postpublication failure never deletes or replaces the canonical key, which must be revalidated on the next call. Every stale canonical `..mayo_ssl_hmac.key.staging-*` residue blocks before secret generation until explicit offline review;
   - `inventory`: requires `--mayo-data-root` and `--mayo-existing-export-root`, performs read-only live authorization, and prints aggregate counts;
   - `build-bundles`: requires both upstream roots/manifests and canonical keys, including the two explicit live Mayo roots, and atomically publishes the two shared bundles plus a keyed `bundle_generation.json` closure;
   - `freeze-stage --mode smoke|formal`: requires the two explicit live Mayo roots, reauthorizes the live upstreams and shared bundle, then writes the mode-bound HMAC receipts and exact config/split/scaler/manifest artifacts into only that mode namespace;
-  - `verify-determinism`: requires the two explicit live Mayo roots, builds into an internal safe temporary sibling, compares keyed commitments, then removes it; it never accepts an arbitrary output path. With an optional canonical `--run-root`, it must additionally scan the committed smoke/formal `inputs/` and `results/` trees without changing the same seven-field aggregate JSON output.
+  - `verify-determinism`: requires the two explicit live Mayo roots, performs two independent live generation prepares entirely in memory, compares their keyed commitments, and validates the exact committed tree through held descriptors before and after those prepares. It performs zero filesystem writes, creates no sibling, and calls no fsync; nevertheless, any pre-existing `.bridge.verify-*` residue is rejected as an indeterminate prior attempt. With an optional canonical `--run-root`, it must additionally scan the committed smoke/formal `inputs/` and `results/` trees without changing the same seven-field aggregate JSON output.
 
   It prints aggregate deidentified counts only.
 
@@ -351,6 +351,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
 - [ ] Run the exact pre-data verification gate:
 
   ```bash
+  /Users/williamqiu/opt/anaconda3/bin/python3 -c 'import importlib.util,sys,numpy,torch,cv2; assert sys.version_info[:3] == (3,9,12); assert numpy.__version__ == "1.26.4"; assert torch.__version__ == "2.2.1"; assert cv2.__version__ == "4.8.1"; assert importlib.util.find_spec("mediapipe") is None'
+  /Users/williamqiu/.cache/facial-paralysis/mediapipe-py310/bin/python -c 'import sys,numpy,torch,mediapipe,cv2; assert sys.version_info[:3] == (3,10,2); assert numpy.__version__ == "1.26.4"; assert torch.__version__ == "2.2.1"; assert mediapipe.__version__ == "0.10.35"; assert cv2.__version__ == "4.11.0"'
   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_openface68_semantic.py
   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_build_mayo_ssl_cache.py
   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl_bridge.py
@@ -376,7 +378,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
   fi
   ```
 
-  Expected: every command exits 0; all four suites report zero failures; worktree is clean; the approved plan commit is an ancestor and both plan files are byte-unchanged; the tracked-path privacy scan prints nothing.
+  Expected: every command exits 0; both runtime tuples match exactly, including MediaPipe being absent from the analysis runtime; all four suites report zero failures; worktree is clean; the approved plan commit is an ancestor and both plan files are byte-unchanged; the tracked-path privacy scan prints nothing.
 - [ ] Obtain one independent specification review against this complete plan. Fix every Critical/Important and repeat the whole review.
 - [ ] Only after spec approval, obtain an independent code-quality/security review covering forged bundles/receipts, key/path/FD races, recovery state, mode confusion, source/group joins, scaler leakage, time/gap semantics, transfer allowlists, and output transactions.
 - [ ] Fix every Critical/Important and repeat review until both reviewers return READY. Record the exact clean `HEAD` approved by both reviewers. Any producer/trainer/bridge code change or scientific-contract plan change after approval invalidates the gate and requires both reviews again; if formal results already exist, quarantine or remove them and repeat Task 4, `freeze-stage`, and training before they may be cited. The evidence-only documentation updates explicitly scheduled in Task 7 do not alter the producer digest, but they still require the plan-document re-review and final exact-diff reviews defined there before handoff.
@@ -479,7 +481,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
     "$VERIFY_JSON"
   ```
 
-  The CLI itself must fail nonzero unless all seven claims are true. `privacy_ok` covers the committed generation and emitted JSON and rejects raw paths, filenames, source SHA values, key bytes, patient/session identifiers, and patient fields; `modes_ok` covers every private bundle/closure file; `size_ok` enforces the same 100 MiB bound checked above. Expected: both commands exit 0, the JSON contains only those exact aggregate fields, and the implementation creates/removes its own safe sibling.
+  The CLI itself must fail nonzero unless all seven claims are true. `privacy_ok` covers the committed generation and emitted JSON and rejects raw paths, filenames, source SHA values, key bytes, patient/session identifiers, and patient fields; `modes_ok` covers every private bundle/closure file; `size_ok` enforces the same 100 MiB bound checked above. Expected: both commands exit 0, the JSON contains only those exact aggregate fields, and verification proves determinism with two independent in-memory prepares plus held-descriptor committed-tree validation while performing zero filesystem writes, sibling creation, or fsync.
 
 - [ ] **Step 6: Run the authorized one-epoch smoke path.**
 
