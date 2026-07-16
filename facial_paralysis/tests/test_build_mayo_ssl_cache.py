@@ -2669,13 +2669,24 @@ def test_coupled_promotion_rechecks_old_tree_after_move(c: Check):
                 ValueError,
                 "old generation mode drift inside rename hook fails closed",
             )
-        c.true(output.is_dir(), "old generation remains canonical after rejection")
-        c.eq(sentinel.read_text(), "old-cache")
+        journal = root / ".cache.transaction.json"
+        c.true(journal.is_file(), "move drift retains a transaction journal")
+        retained = json.loads(journal.read_text())
+        c.true(retained["indeterminate"] is True)
+        backup = root / f".cache.backup-{retained['token']}"
+        c.true(not output.exists(), "polluted generation is not restored canonical")
+        c.eq((backup / sentinel.name).read_text(), "old-cache")
+        c.eq(stat.S_IMODE((backup / sentinel.name).stat().st_mode), 0o666)
         c.eq(exposure.read_text(), "old-exposure")
-        c.true(
-            not (output / "collection_manifest.json").exists(),
-            "new generation remains unpublished",
-        )
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                RuntimeError,
+                "automatic recovery refuses polluted retained evidence",
+            )
+        c.true(journal.is_file() and backup.is_dir())
 
 
 def test_coupled_promotion_rechecks_old_exposure_after_move(c: Check):
@@ -2711,13 +2722,141 @@ def test_coupled_promotion_rechecks_old_exposure_after_move(c: Check):
                 ValueError,
                 "old exposure mode drift inside rename hook fails closed",
             )
-        c.true(output.is_dir(), "old generation remains canonical after rejection")
-        c.eq(sentinel.read_text(), "old-cache")
-        c.eq(exposure.read_text(), "old-exposure")
-        c.true(
-            not (output / "collection_manifest.json").exists(),
-            "new generation remains unpublished",
+        journal = root / ".cache.transaction.json"
+        c.true(journal.is_file(), "move drift retains a transaction journal")
+        retained = json.loads(journal.read_text())
+        c.true(retained["indeterminate"] is True)
+        output_backup = root / f".cache.backup-{retained['token']}"
+        exposure_backup = root / (
+            f".mayo_exposure_manifest.json.backup-{retained['token']}"
         )
+        c.true(not output.exists() and not exposure.exists())
+        c.eq((output_backup / sentinel.name).read_text(), "old-cache")
+        c.eq(exposure_backup.read_text(), "old-exposure")
+        c.eq(stat.S_IMODE(exposure_backup.stat().st_mode), 0o666)
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                RuntimeError,
+                "automatic recovery refuses polluted retained evidence",
+            )
+        c.true(
+            journal.is_file()
+            and output_backup.is_dir()
+            and exposure_backup.is_file()
+        )
+
+
+def test_coupled_promotion_retains_hardlinked_old_tree_evidence(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-old-tree-hardlink-race",
+            b"old-tree-hardlink-race-salt-01234",
+        )
+        alias = root / ".attacker-hardlink"
+
+        def hardlink_during_old_output_move(source, destination):
+            if Path(source) == output and ".backup-" in Path(destination).name:
+                os.link(sentinel, alias)
+            return os.replace(source, destination)
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    replace_func=hardlink_during_old_output_move,
+                ),
+                ValueError,
+                "old generation hardlink drift fails closed",
+            )
+        journal = root / ".cache.transaction.json"
+        c.true(journal.is_file(), "hardlink drift retains transaction evidence")
+        retained = json.loads(journal.read_text())
+        c.true(retained["indeterminate"] is True)
+        backup = root / f".cache.backup-{retained['token']}"
+        retained_sentinel = backup / sentinel.name
+        c.true(not output.exists() and backup.is_dir() and alias.is_file())
+        c.eq(retained_sentinel.stat().st_nlink, 2)
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                RuntimeError,
+                "automatic recovery refuses hardlinked retained evidence",
+            )
+        c.true(journal.is_file() and backup.is_dir() and alias.is_file())
+
+
+def test_recovery_rejects_old_backup_polluted_after_process_interruption(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-interrupted-backup-race",
+            b"interrupted-backup-race-salt-01234",
+        )
+
+        def interrupt_after_old_output_move(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt_after_old_output_move,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not stop after the old output move")
+
+        journal = root / ".cache.transaction.json"
+        retained = json.loads(journal.read_text())
+        c.true(retained["indeterminate"] is False)
+        backup = root / f".cache.backup-{retained['token']}"
+        retained_sentinel = backup / sentinel.name
+        retained_sentinel.chmod(0o666)
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                ValueError,
+                "recovery preflights backup privacy before any restoration",
+            )
+        c.true(not output.exists(), "polluted backup is not restored canonical")
+        c.eq(stat.S_IMODE(retained_sentinel.stat().st_mode), 0o666)
+        c.true(journal.is_file() and backup.is_dir())
+        c.eq(exposure.read_text(), "old-exposure")
 
 
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):

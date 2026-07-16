@@ -2459,6 +2459,33 @@ def _recover_cache_exposure_transaction(
     else:
         if bool(journal["had_output"]):
             if output_backup.exists() or _is_symlink(output_backup):
+                _require_private_generation_storage_tree(
+                    output_backup, "interrupted output backup",
+                )
+            else:
+                _require_private_generation_storage_tree(
+                    output, "unmoved previous output generation",
+                )
+        if bool(journal["had_exposure"]):
+            if exposure_backup.exists() or _is_symlink(exposure_backup):
+                checked_exposure_backup = _require_regular_file(
+                    exposure_backup, "interrupted exposure backup",
+                )
+                _require_private_regular_stat(
+                    os.lstat(checked_exposure_backup),
+                    "interrupted exposure backup",
+                )
+            else:
+                checked_exposure = _require_regular_file(
+                    exposure, "unmoved previous exposure manifest",
+                )
+                _require_private_regular_stat(
+                    os.lstat(checked_exposure),
+                    "unmoved previous exposure manifest",
+                )
+
+        if bool(journal["had_output"]):
+            if output_backup.exists() or _is_symlink(output_backup):
                 _require_directory(output_backup, "interrupted output backup")
                 if output.exists() or _is_symlink(output):
                     _remove_real_tree(output)
@@ -2691,6 +2718,13 @@ def _promote_generation_with_exposure(
         if phase_hook is not None:
             phase_hook(phase)
 
+    def retain_indeterminate_move(phase: str) -> None:
+        nonlocal rollback_is_durable
+        rollback_is_durable = False
+        journal["phase"] = phase
+        journal["indeterminate"] = True
+        _write_transaction_journal(journal_path, journal)
+
     rollback_is_durable = True
     allow_indeterminate_recovery = False
     if continuity_validator is not None:
@@ -2716,13 +2750,22 @@ def _promote_generation_with_exposure(
             if current_output_ledger != previous_output_ledger:
                 raise ValueError("previous output generation changed before move")
             replace_func(output, output_backup)
-            _moved_output, moved_output_ledger = (
-                _private_generation_storage_ledger(
-                    output_backup, "moved previous output generation",
+            try:
+                _moved_output, moved_output_ledger = (
+                    _private_generation_storage_ledger(
+                        output_backup, "moved previous output generation",
+                    )
                 )
-            )
-            if moved_output_ledger != previous_output_ledger:
-                raise ValueError("previous output generation changed during move")
+                if moved_output_ledger != previous_output_ledger:
+                    raise ValueError(
+                        "previous output generation changed during move"
+                    )
+            except Exception as primary_error:
+                try:
+                    retain_indeterminate_move("old_output_moved")
+                except Exception as evidence_error:
+                    raise primary_error from evidence_error
+                raise
             _fsync_directory(output.parent)
             set_phase("old_output_moved")
         if exposure.exists():
@@ -2731,24 +2774,35 @@ def _promote_generation_with_exposure(
             if _regular_snapshot(live_exposure) != previous_exposure_identity:
                 raise ValueError("previous exposure manifest changed before move")
             replace_func(exposure, exposure_backup)
-            moved_exposure = os.lstat(exposure_backup)
-            _require_private_regular_stat(
-                moved_exposure, "moved previous exposure manifest",
-            )
-            if (
-                _movement_stable_regular_snapshot(moved_exposure)
-                != previous_exposure_stable_identity
-            ):
-                raise ValueError("previous exposure manifest changed during move")
-            _payload, moved_exposure_sha256, _size = _read_regular_bytes(
-                exposure_backup,
-                "moved previous exposure manifest",
-                max_bytes=_MAX_MAYO_MANIFEST_BYTES,
-            )
-            if not hmac.compare_digest(
-                moved_exposure_sha256, previous_exposure_sha256,
-            ):
-                raise ValueError("previous exposure manifest changed during move")
+            try:
+                moved_exposure = os.lstat(exposure_backup)
+                _require_private_regular_stat(
+                    moved_exposure, "moved previous exposure manifest",
+                )
+                if (
+                    _movement_stable_regular_snapshot(moved_exposure)
+                    != previous_exposure_stable_identity
+                ):
+                    raise ValueError(
+                        "previous exposure manifest changed during move"
+                    )
+                _payload, moved_exposure_sha256, _size = _read_regular_bytes(
+                    exposure_backup,
+                    "moved previous exposure manifest",
+                    max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                )
+                if not hmac.compare_digest(
+                    moved_exposure_sha256, previous_exposure_sha256,
+                ):
+                    raise ValueError(
+                        "previous exposure manifest changed during move"
+                    )
+            except Exception as primary_error:
+                try:
+                    retain_indeterminate_move("old_exposure_moved")
+                except Exception as evidence_error:
+                    raise primary_error from evidence_error
+                raise
             _fsync_directory(exposure.parent)
             set_phase("old_exposure_moved")
         replace_func(staging, output)
