@@ -5,13 +5,18 @@ preparation script, but this test module never reads or writes that corpus.
 """
 from __future__ import annotations
 
+import base64
+import contextlib
 import csv
 import fcntl
 import hashlib
+import hmac
 import io
 import json
+import logging
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import zipfile
@@ -75,6 +80,28 @@ EXPECTED_NAMES = (
 )
 
 TEST_ID_KEY = b"k" * 32
+
+RAVDESS_TOPOLOGY_FIELDS = (
+    "unique_archive_member_names",
+    "unique_source_content_sha256s",
+    "duplicate_content_groups",
+    "members_beyond_unique_content",
+    "max_content_multiplicity",
+    "cross_actor_duplicate_content_groups",
+)
+
+RAVDESS_V2_PROVENANCE_POLICY = {
+    "actor_id": "private_hmac_sha256_base32",
+    "cache_integrity_id": (
+        "private_hmac_trial_id_actor_id_cache_sha256_base32"
+    ),
+    "raw_paths_or_filenames_in_manifest": False,
+    "raw_source_content_sha256_in_manifest": False,
+    "source_binding": "verified_archive_member_name_and_bytes_single_read",
+    "trial_id": (
+        "private_hmac_archive_member_name_source_content_sha256_base32_v2"
+    ),
+}
 
 
 def _ravdess_cache_bytes(
@@ -234,8 +261,528 @@ def _synthetic_tree(
         header_sha256=hashlib.sha256(header_bytes).hexdigest(),
         empty_trials=0,
         repeated_headers=0,
+        unique_archive_member_names=2,
+        unique_source_content_sha256s=2,
+        duplicate_content_groups=0,
+        members_beyond_unique_content=0,
+        max_content_multiplicity=1,
+        cross_actor_duplicate_content_groups=0,
     )
     return expected, [first, second]
+
+
+def _synthetic_duplicate_content_tree(
+    root: Path,
+) -> tuple[RavdessInventoryExpectation, tuple[str, str], bytes]:
+    first = root / "extracted" / "01-01-01-01-01-01-01.csv"
+    second = root / "extracted" / "01-01-01-01-01-02-01.csv"
+    _write_csv(first, [
+        _csv_row(1, 0.000, 0.99, _face()),
+        _csv_row(2, 0.033, 0.80, _face()),
+    ])
+    member_bytes = first.read_bytes()
+    second.write_bytes(member_bytes)
+    archive = root / RAVDESS_ARCHIVE_RELATIVE_PATH
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        handle.write(first, arcname=first.name)
+        handle.write(second, arcname=second.name)
+    header_bytes = (",".join(_csv_header())).encode("utf-8")
+    expected = RavdessInventoryExpectation(
+        archive_size=archive.stat().st_size,
+        archive_md5=hashlib.md5(archive.read_bytes()).hexdigest(),  # noqa: S324
+        csv_files=2,
+        actors=1,
+        frames=4,
+        header_sha256=hashlib.sha256(header_bytes).hexdigest(),
+        empty_trials=0,
+        repeated_headers=0,
+        unique_archive_member_names=2,
+        unique_source_content_sha256s=1,
+        duplicate_content_groups=1,
+        members_beyond_unique_content=1,
+        max_content_multiplicity=2,
+        cross_actor_duplicate_content_groups=0,
+    )
+    return expected, (first.name, second.name), member_bytes
+
+
+def _source_private_representations(
+    member_name: str, source_content_sha256: str,
+) -> tuple[bytes, ...]:
+    name_bytes = member_name.encode("ascii")
+    digest_text = source_content_sha256.encode("ascii")
+    digest_bytes = bytes.fromhex(source_content_sha256)
+    representations = {
+        name_bytes,
+        name_bytes.hex().encode("ascii"),
+        name_bytes.hex().upper().encode("ascii"),
+        base64.b64encode(name_bytes),
+        digest_text,
+        digest_text.upper(),
+        digest_text.hex().encode("ascii"),
+        digest_text.hex().upper().encode("ascii"),
+        base64.b64encode(digest_text),
+        digest_bytes,
+        digest_bytes.hex().encode("ascii"),
+        digest_bytes.hex().upper().encode("ascii"),
+        base64.b64encode(digest_bytes),
+    }
+    return tuple(sorted(representations))
+
+
+def _all_source_private_representations(
+    member_sha256: dict[str, str],
+) -> tuple[bytes, ...]:
+    representations = {
+        representation
+        for member_name, source_digest in member_sha256.items()
+        for representation in _source_private_representations(
+            member_name, source_digest
+        )
+    }
+    return tuple(sorted(representations))
+
+
+def _contains_any_private_representation(
+    captured: bytes, representations: tuple[bytes, ...],
+) -> bool:
+    return any(representation in captured for representation in representations)
+
+
+def _exception_chain_bytes(error: BaseException | None) -> bytes:
+    max_depth = 16
+    max_nodes = 4096
+    max_bytes = 4 * 1024 * 1024
+    fragments: list[bytes] = []
+    total_bytes = 0
+    seen: set[int] = set()
+    pending: list[tuple[object, int]] = [(error, 0)]
+
+    def append_fragment(fragment: bytes) -> None:
+        nonlocal total_bytes
+        if not fragment or total_bytes >= max_bytes:
+            return
+        bounded = fragment[:max_bytes - total_bytes]
+        fragments.append(bounded)
+        total_bytes += len(bounded)
+
+    def append_text(fragment: str) -> None:
+        remaining = max_bytes - total_bytes
+        if remaining > 0:
+            append_fragment(
+                fragment[:remaining].encode("utf-8", errors="replace")
+            )
+
+    visited = 0
+    while pending and visited < max_nodes and total_bytes < max_bytes:
+        value, depth = pending.pop()
+        if value is None or depth > max_depth:
+            continue
+        visited += 1
+        if isinstance(value, str):
+            append_text(value)
+            continue
+        if isinstance(value, bytes):
+            append_fragment(value)
+            continue
+        if isinstance(value, (bytearray, memoryview)):
+            append_fragment(bytes(value[:max_bytes - total_bytes]))
+            continue
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(value, BaseException):
+            append_text(str(value))
+            children: list[object] = [
+                value.__cause__,
+                value.__context__,
+                value.args,
+                getattr(value, "__dict__", {}),
+                getattr(value, "__notes__", ()),
+            ]
+            if isinstance(value, json.JSONDecodeError):
+                children.append(value.doc)
+            if isinstance(value, UnicodeDecodeError):
+                children.append(value.object)
+            available = max_nodes - visited - len(pending)
+            pending.extend(
+                (child, depth + 1) for child in children[:max(0, available)]
+            )
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if len(pending) + visited + 2 > max_nodes:
+                    break
+                pending.append((key, depth + 1))
+                pending.append((item, depth + 1))
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                if len(pending) + visited + 1 > max_nodes:
+                    break
+                pending.append((item, depth + 1))
+    return b"\n".join(fragments)
+
+
+def _capture_process_output(callback):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    log_output = io.StringIO()
+    log_handler = logging.StreamHandler(log_output)
+    root_logger = logging.getLogger()
+    original_root_level = root_logger.level
+    original_handler_level = log_handler.level
+    root_logger.setLevel(logging.NOTSET)
+    log_handler.setLevel(logging.NOTSET)
+    root_logger.addHandler(log_handler)
+    with tempfile.TemporaryFile() as fd_stdout, tempfile.TemporaryFile() as fd_stderr:
+        original_fd1 = os.dup(1)
+        original_fd2 = os.dup(2)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(fd_stdout.fileno(), 1)
+            os.dup2(fd_stderr.fileno(), 2)
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = callback()
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(original_fd1, 1)
+            os.dup2(original_fd2, 2)
+            os.close(original_fd1)
+            os.close(original_fd2)
+            root_logger.removeHandler(log_handler)
+            log_handler.setLevel(original_handler_level)
+            root_logger.setLevel(original_root_level)
+        fd_stdout.seek(0)
+        fd1_output = fd_stdout.read()
+        fd_stderr.seek(0)
+        fd2_output = fd_stderr.read()
+    captured = (
+        stdout.getvalue().encode("utf-8")
+        + stderr.getvalue().encode("utf-8")
+        + fd1_output
+        + fd2_output
+        + log_output.getvalue().encode("utf-8")
+    )
+    return result, captured
+
+
+def _capture_failure(callback) -> tuple[BaseException | None, bytes]:
+    observed: BaseException | None = None
+
+    def invoke() -> None:
+        nonlocal observed
+        try:
+            callback()
+        except BaseException as exc:  # noqa: BLE001 - inspect full rejection
+            observed = exc
+
+    _, captured = _capture_process_output(invoke)
+    return observed, captured
+
+
+def _assert_deidentified_failure(
+    c: Check, callback, sentinel: bytes, label: str,
+) -> None:
+    observed, captured = _capture_failure(callback)
+    c.true(isinstance(observed, ValueError), f"{label} fails closed")
+    c.true(
+        sentinel not in _exception_chain_bytes(observed) + captured,
+        f"{label} exception graph and output are deidentified",
+    )
+
+
+def _generation_artifact_blobs(output: Path) -> tuple[bytes, ...]:
+    blobs: list[bytes] = []
+    for path in sorted(output.rglob("*")):
+        blobs.append(path.name.encode("utf-8"))
+        if not path.is_file():
+            continue
+        payload = path.read_bytes()
+        blobs.append(payload)
+        if path.suffix == ".npz":
+            with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+                blobs.append(archive.comment)
+                for info in archive.infolist():
+                    blobs.extend((
+                        info.filename.encode("utf-8"),
+                        info.comment,
+                        info.extra,
+                        archive.read(info),
+                    ))
+    return tuple(blobs)
+
+
+def _rewrite_cache_with_feature_prefix(
+    parent_descriptor: int,
+    cache_name: str,
+    prefix: bytes,
+) -> str:
+    """Fault-inject bytes into a schema-valid staged cache feature payload."""
+    descriptor = os.open(
+        cache_name,
+        os.O_RDWR | os.O_NOFOLLOW,
+        dir_fd=parent_descriptor,
+    )
+    try:
+        with os.fdopen(descriptor, "r+b", closefd=False) as handle:
+            original = handle.read()
+            with np.load(io.BytesIO(original), allow_pickle=False) as cached:
+                arrays = {
+                    name: np.array(cached[name], copy=True)
+                    for name in cached.files
+                }
+            feature_bytes = arrays["features"].view(np.uint8).reshape(-1)
+            if len(prefix) > feature_bytes.size:
+                raise AssertionError("privacy sentinel does not fit cache fixture")
+            feature_bytes[:len(prefix)] = np.frombuffer(prefix, dtype=np.uint8)
+            payload = io.BytesIO()
+            np.savez_compressed(payload, **arrays)
+            rewritten = payload.getvalue()
+            handle.seek(0)
+            handle.truncate(0)
+            handle.write(rewritten)
+            handle.flush()
+            os.fsync(descriptor)
+        return hashlib.sha256(rewritten).hexdigest()
+    finally:
+        os.close(descriptor)
+
+
+def _rewrite_first_local_zip_name(
+    payload: bytes, private_name: bytes,
+) -> bytes:
+    """Keep the central name but fault-inject a different first local name."""
+    rewritten = bytearray(payload)
+    eocd = len(rewritten) - 22
+    if rewritten[eocd:eocd + 4] != b"PK\x05\x06":
+        raise AssertionError("cache fixture has a noncanonical EOCD")
+    central = int.from_bytes(rewritten[eocd + 16:eocd + 20], "little")
+    first_local = int.from_bytes(
+        rewritten[central + 42:central + 46], "little"
+    )
+    if rewritten[first_local:first_local + 4] != b"PK\x03\x04":
+        raise AssertionError("cache fixture has a noncanonical local header")
+    old_length = int.from_bytes(
+        rewritten[first_local + 26:first_local + 28], "little"
+    )
+    name_start = first_local + 30
+    delta = len(private_name) - old_length
+    rewritten[name_start:name_start + old_length] = private_name
+    rewritten[first_local + 26:first_local + 28] = len(private_name).to_bytes(
+        2, "little"
+    )
+    new_eocd = eocd + delta
+    new_central = central + delta
+    rewritten[new_eocd + 16:new_eocd + 20] = new_central.to_bytes(
+        4, "little"
+    )
+    cursor = new_central
+    while cursor < new_eocd:
+        if rewritten[cursor:cursor + 4] != b"PK\x01\x02":
+            raise AssertionError("cache fixture has a noncanonical central record")
+        old_offset = int.from_bytes(
+            rewritten[cursor + 42:cursor + 46], "little"
+        )
+        if old_offset > first_local:
+            rewritten[cursor + 42:cursor + 46] = (
+                old_offset + delta
+            ).to_bytes(4, "little")
+        name_length = int.from_bytes(
+            rewritten[cursor + 28:cursor + 30], "little"
+        )
+        extra_length = int.from_bytes(
+            rewritten[cursor + 30:cursor + 32], "little"
+        )
+        comment_length = int.from_bytes(
+            rewritten[cursor + 32:cursor + 34], "little"
+        )
+        cursor += 46 + name_length + extra_length + comment_length
+    if cursor != new_eocd:
+        raise AssertionError("cache fixture central directory does not close")
+    return bytes(rewritten)
+
+
+def _rewrite_cache_zip_surface(
+    payload: bytes, surface: str, sentinel: bytes,
+) -> bytes:
+    if surface == "local_name":
+        return _rewrite_first_local_zip_name(payload, sentinel)
+    if surface in {"central_name", "central_extra"}:
+        rewritten = bytearray(payload)
+        eocd = len(rewritten) - 22
+        central = int.from_bytes(
+            rewritten[eocd + 16:eocd + 20], "little"
+        )
+        central_size = int.from_bytes(
+            rewritten[eocd + 12:eocd + 16], "little"
+        )
+        name_length = int.from_bytes(
+            rewritten[central + 28:central + 30], "little"
+        )
+        extra_length = int.from_bytes(
+            rewritten[central + 30:central + 32], "little"
+        )
+        if surface == "central_name":
+            start = central + 46
+            replacement = sentinel
+            rewritten[central + 28:central + 30] = len(replacement).to_bytes(
+                2, "little"
+            )
+            old_length = name_length
+        else:
+            start = central + 46 + name_length
+            replacement = (
+                b"\xfe\xca" + len(sentinel).to_bytes(2, "little") + sentinel
+            )
+            rewritten[central + 30:central + 32] = len(replacement).to_bytes(
+                2, "little"
+            )
+            old_length = extra_length
+        rewritten[start:start + old_length] = replacement
+        delta = len(replacement) - old_length
+        new_eocd = eocd + delta
+        rewritten[new_eocd + 12:new_eocd + 16] = (
+            central_size + delta
+        ).to_bytes(4, "little")
+        return bytes(rewritten)
+    if surface == "local_extra":
+        rewritten = bytearray(payload)
+        eocd = len(rewritten) - 22
+        central = int.from_bytes(
+            rewritten[eocd + 16:eocd + 20], "little"
+        )
+        first_local = int.from_bytes(
+            rewritten[central + 42:central + 46], "little"
+        )
+        name_length = int.from_bytes(
+            rewritten[first_local + 26:first_local + 28], "little"
+        )
+        extra_length = int.from_bytes(
+            rewritten[first_local + 28:first_local + 30], "little"
+        )
+        replacement = (
+            b"\xfe\xca" + len(sentinel).to_bytes(2, "little") + sentinel
+        )
+        start = first_local + 30 + name_length
+        rewritten[start:start + extra_length] = replacement
+        rewritten[first_local + 28:first_local + 30] = len(replacement).to_bytes(
+            2, "little"
+        )
+        delta = len(replacement) - extra_length
+        new_eocd = eocd + delta
+        new_central = central + delta
+        rewritten[new_eocd + 16:new_eocd + 20] = new_central.to_bytes(
+            4, "little"
+        )
+        cursor = new_central
+        while cursor < new_eocd:
+            old_offset = int.from_bytes(
+                rewritten[cursor + 42:cursor + 46], "little"
+            )
+            if old_offset > first_local:
+                rewritten[cursor + 42:cursor + 46] = (
+                    old_offset + delta
+                ).to_bytes(4, "little")
+            current_name = int.from_bytes(
+                rewritten[cursor + 28:cursor + 30], "little"
+            )
+            current_extra = int.from_bytes(
+                rewritten[cursor + 30:cursor + 32], "little"
+            )
+            current_comment = int.from_bytes(
+                rewritten[cursor + 32:cursor + 34], "little"
+            )
+            cursor += 46 + current_name + current_extra + current_comment
+        return bytes(rewritten)
+    if surface == "archive_comment":
+        rewritten = bytearray(payload)
+        eocd = len(rewritten) - 22
+        rewritten[eocd + 20:eocd + 22] = len(sentinel).to_bytes(2, "little")
+        rewritten.extend(sentinel)
+        return bytes(rewritten)
+    with zipfile.ZipFile(io.BytesIO(payload), "r") as source:
+        members = [
+            (info, source.read(info)) for info in source.infolist()
+        ]
+    rewritten = io.BytesIO()
+    with zipfile.ZipFile(
+        rewritten, "w", compression=zipfile.ZIP_DEFLATED
+    ) as destination:
+        for index, (info, member_payload) in enumerate(members):
+            name = info.filename
+            if index == 0 and surface == "both_names":
+                name = sentinel.decode("ascii")
+            changed = zipfile.ZipInfo(name)
+            changed.compress_type = zipfile.ZIP_DEFLATED
+            changed.external_attr = info.external_attr
+            changed.create_system = info.create_system
+            if index == 0 and surface == "member_comment":
+                changed.comment = sentinel
+            destination.writestr(changed, member_payload)
+        if surface in {"directory_name", "directory_payload"}:
+            directory_name = "private-carrier/"
+            directory_payload = sentinel
+            if surface == "directory_name":
+                directory_name = sentinel.decode("ascii") + "/"
+                directory_payload = b""
+            directory = zipfile.ZipInfo(directory_name)
+            directory.compress_type = zipfile.ZIP_DEFLATED
+            directory.external_attr = (stat.S_IFDIR | 0o700) << 16
+            destination.writestr(directory, directory_payload)
+    return rewritten.getvalue()
+
+
+def _rewrite_first_npy_header(payload: bytes, sentinel: bytes) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(payload), "r") as source:
+        members = [
+            (info.filename, source.read(info)) for info in source.infolist()
+        ]
+    header = b'"' + sentinel + b'"\n'
+    invalid_npy = (
+        b"\x93NUMPY\x01\x00" + len(header).to_bytes(2, "little") + header
+    )
+    rewritten = io.BytesIO()
+    with zipfile.ZipFile(
+        rewritten, "w", compression=zipfile.ZIP_DEFLATED
+    ) as destination:
+        for index, (name, member_payload) in enumerate(members):
+            destination.writestr(
+                name, invalid_npy if index == 0 else member_payload
+            )
+    return rewritten.getvalue()
+
+
+def _pad_first_npy_header(payload: bytes, padding_bytes: int = 64) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(payload), "r") as source:
+        members = [
+            (info.filename, source.read(info)) for info in source.infolist()
+        ]
+    first_name, first_payload = members[0]
+    if first_payload[:8] != b"\x93NUMPY\x01\x00":
+        raise AssertionError("cache fixture does not use NPY v1")
+    header_length = int.from_bytes(first_payload[8:10], "little")
+    header = first_payload[10:10 + header_length]
+    if not header.endswith(b"\n"):
+        raise AssertionError("cache fixture NPY header has no newline")
+    padded_header = header[:-1] + b" " * padding_bytes + b"\n"
+    padded_first = (
+        first_payload[:8]
+        + len(padded_header).to_bytes(2, "little")
+        + padded_header
+        + first_payload[10 + header_length:]
+    )
+    rewritten = io.BytesIO()
+    with zipfile.ZipFile(
+        rewritten, "w", compression=zipfile.ZIP_DEFLATED
+    ) as destination:
+        for name, member_payload in members:
+            destination.writestr(
+                name, padded_first if name == first_name else member_payload
+            )
+    return rewritten.getvalue()
 
 
 def _zip_member_bytes(archive: Path) -> dict[str, bytes]:
@@ -442,7 +989,9 @@ def test_opaque_provenance_is_stable_and_does_not_expose_names(c: Check):
     same_actor = opaque_actor_id("07", key=TEST_ID_KEY)
     other_actor = opaque_actor_id("08", key=TEST_ID_KEY)
     other_key_actor = opaque_actor_id("07", key=b"z" * 32)
-    trial = opaque_trial_id("source-sha256-sentinel", key=TEST_ID_KEY)
+    trial = opaque_trial_id(
+        "01-01-01-01-01-01-01.csv", "0" * 64, key=TEST_ID_KEY
+    )
     c.eq(actor, same_actor, "actor ID stable")
     c.true(actor != other_actor, "actors remain distinguishable")
     c.true(actor != other_key_actor, "private HMAC key prevents public enumeration")
@@ -460,6 +1009,1627 @@ def test_opaque_provenance_is_stable_and_does_not_expose_names(c: Check):
         c.eq(len(first), 32, "private ID key has 256 bits")
         mode = stat.S_IMODE(key_path.stat().st_mode)
         c.eq(mode, 0o600, "private ID key is owner-only")
+
+
+def test_opaque_trial_id_v2_is_strict_and_binds_name_content_and_key(c: Check):
+    member_name = "01-01-01-01-01-01-01.csv"
+    source_content_sha256 = "0" * 64
+    expected = "trial_o457alx6gmxoxyak"
+    c.eq(
+        opaque_trial_id(
+            member_name, source_content_sha256, key=TEST_ID_KEY
+        ),
+        expected,
+        "frozen RAVDESS v2 trial-ID known-answer vector",
+    )
+    c.eq(
+        opaque_trial_id(
+            member_name, source_content_sha256, key=TEST_ID_KEY
+        ),
+        expected,
+        "the exact v2 source binding is stable",
+    )
+    c.true(
+        opaque_trial_id(
+            "01-01-01-01-01-02-01.csv",
+            source_content_sha256,
+            key=TEST_ID_KEY,
+        ) != expected,
+        "the exact archive member name participates in trial identity",
+    )
+    c.true(
+        opaque_trial_id(member_name, "1" * 64, key=TEST_ID_KEY) != expected,
+        "the source-content digest participates in trial identity",
+    )
+    c.true(
+        opaque_trial_id(
+            member_name, source_content_sha256, key=b"z" * 32
+        ) != expected,
+        "trial identity is private-key scoped",
+    )
+
+    invalid_names = (
+        Path(member_name),
+        f"nested/{member_name}",
+        member_name.replace("01", "０１", 1),
+        "1-01-01-01-01-01-01.csv",
+        "01-01-01-01-01-01-01.CSV",
+    )
+    for invalid_name in invalid_names:
+        c.raises(
+            lambda invalid_name=invalid_name: opaque_trial_id(
+                invalid_name, source_content_sha256, key=TEST_ID_KEY
+            ),
+            ValueError,
+            f"noncanonical archive member name is rejected: {invalid_name!r}",
+        )
+
+    invalid_digests = (
+        "A" * 64,
+        "0" * 63,
+        "0" * 65,
+        b"0" * 64,
+        "g" * 64,
+    )
+    for invalid_digest in invalid_digests:
+        c.raises(
+            lambda invalid_digest=invalid_digest: opaque_trial_id(
+                member_name, invalid_digest, key=TEST_ID_KEY
+            ),
+            ValueError,
+            f"noncanonical source-content digest is rejected: {invalid_digest!r}",
+        )
+
+    invalid_keys = (bytearray(TEST_ID_KEY), "k" * 32, b"k" * 31, b"k" * 33)
+    for invalid_key in invalid_keys:
+        c.raises(
+            lambda invalid_key=invalid_key: opaque_trial_id(
+                member_name, source_content_sha256, key=invalid_key
+            ),
+            ValueError,
+            "trial-ID key must be type-exact canonical 256-bit bytes",
+        )
+
+
+def test_manifest_guard_rejects_reversible_source_identity_encodings(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        member_name = files[1].name
+        source_digest = inventory.member_sha256[member_name]
+        checked = 0
+        for representation in _source_private_representations(
+            member_name, source_digest
+        ):
+            try:
+                encoded = representation.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            checked += 1
+            c.raises(
+                lambda encoded=encoded: prep._assert_manifest_deidentified(
+                    encoded,
+                    source_root=data_root,
+                    source_paths=[Path(member_name)],
+                    raw_source_sha256s={source_digest},
+                    raw_cache_sha256s=set(),
+                ),
+                ValueError,
+                "manifest guard rejects every reversible ASCII source identity",
+            )
+        c.eq(checked, 9, "all unique reversible ASCII manifest forms are exercised")
+
+
+def test_authorizer_rejects_valid_json_private_keys_and_values(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        original_manifest = manifest_path.read_bytes()
+        representations = _all_source_private_representations(
+            inventory.member_sha256
+        )
+        observations: list[tuple[str, str, str | None, bool]] = []
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            for representation in representations:
+                try:
+                    encoded = representation.decode("ascii")
+                except UnicodeDecodeError:
+                    continue
+                for surface in ("key", "value"):
+                    manifest = json.loads(original_manifest.decode("utf-8"))
+                    if surface == "key":
+                        manifest[encoded] = "public-placeholder"
+                    else:
+                        manifest["license"] = encoded
+                    manifest_path.write_text(
+                        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                    )
+                    manifest_path.chmod(0o600)
+                    observed, process_output = _capture_failure(
+                        lambda: prep.authorize_committed_ravdess_semantic23(
+                            data_root
+                        )
+                    )
+                    captured = _exception_chain_bytes(observed) + process_output
+                    observations.append((
+                        surface,
+                        type(observed).__name__ if observed else "none",
+                        str(observed) if observed else None,
+                        _contains_any_private_representation(
+                            captured, representations
+                        ),
+                    ))
+        finally:
+            manifest_path.write_bytes(original_manifest)
+            manifest_path.chmod(0o600)
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.true(len(observations) >= 18, "all applicable ASCII representations run")
+        c.true(
+            all(
+                kind == ValueError.__name__
+                and message == (
+                    "aggregate manifest contains raw or reversibly encoded provenance"
+                )
+                and not leaked
+                for _, kind, message, leaked in observations
+            ),
+            "valid JSON key/value carriers fail at the privacy gate without leakage",
+        )
+
+
+def test_authorizer_rejects_schema_shaped_unicode_npy_private_value(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        original_manifest = manifest_path.read_bytes()
+        manifest_template = json.loads(original_manifest.decode("utf-8"))
+        row_template = manifest_template["trials"][0]
+        cache_path = output / "trials" / f"{row_template['trial_id']}.npz"
+        original_cache = cache_path.read_bytes()
+        with np.load(cache_path, allow_pickle=False) as cached:
+            original_arrays = {
+                name: np.array(cached[name], copy=True)
+                for name in cached.files
+            }
+        representations = _all_source_private_representations(
+            inventory.member_sha256
+        )
+        observations: list[tuple[bytes, str, str | None, bool]] = []
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            for representation in representations:
+                try:
+                    text = representation.decode("ascii")
+                except UnicodeDecodeError:
+                    continue
+                arrays = {
+                    name: np.array(value, copy=True)
+                    for name, value in original_arrays.items()
+                }
+                values = arrays["feature_names"]
+                width = values.dtype.itemsize // 4
+                c.true(
+                    len(text) <= width * values.size,
+                    "ASCII private representation fits schema-shaped Unicode array",
+                )
+                values[:] = ""
+                for index, start in enumerate(range(0, len(text), width)):
+                    values[index] = text[start:start + width]
+                payload = io.BytesIO()
+                np.savez_compressed(payload, **arrays)
+                rewritten = payload.getvalue()
+                with zipfile.ZipFile(io.BytesIO(rewritten), "r") as archive:
+                    expanded_feature_names = archive.read("feature_names.npy")
+                c.true(
+                    text.encode("utf-32-le") in expanded_feature_names,
+                    "Unicode carrier contains the exact private representation",
+                )
+                cache_path.write_bytes(rewritten)
+                cache_path.chmod(0o600)
+                manifest = json.loads(original_manifest.decode("utf-8"))
+                row = manifest["trials"][0]
+                cache_sha256 = hashlib.sha256(rewritten).hexdigest()
+                row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+                    cache_sha256,
+                    trial_id=row["trial_id"],
+                    actor_id=row["actor_id"],
+                    key=TEST_ID_KEY,
+                )
+                manifest_path.write_text(
+                    json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                )
+                manifest_path.chmod(0o600)
+                observed, process_output = _capture_failure(
+                    lambda: prep.authorize_committed_ravdess_semantic23(
+                        data_root
+                    )
+                )
+                captured = _exception_chain_bytes(observed) + process_output
+                observations.append((
+                    representation,
+                    type(observed).__name__ if observed else "none",
+                    str(observed) if observed else None,
+                    _contains_any_private_representation(
+                        captured, representations
+                    ),
+                ))
+        finally:
+            cache_path.write_bytes(original_cache)
+            cache_path.chmod(0o600)
+            manifest_path.write_bytes(original_manifest)
+            manifest_path.chmod(0o600)
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.true(
+            len(observations) >= 9,
+            "all ASCII-decodable private representations use Unicode carriers",
+        )
+        c.true(
+            all(
+                kind == ValueError.__name__
+                and message == "RAVDESS cache contains private provenance"
+                and not leaked
+                for _, kind, message, leaked in observations
+            ),
+            "all schema-shaped Unicode carriers hit privacy gate without leakage",
+        )
+
+
+def test_authorizer_zip_private_surface_matrix_is_deidentified(c: Check):
+    byte_surfaces = (
+        "local_extra",
+        "central_extra",
+        "member_comment",
+        "archive_comment",
+        "directory_payload",
+    )
+    ascii_surfaces = (
+        "local_name",
+        "central_name",
+        "both_names",
+        "directory_name",
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        original_manifest = manifest_path.read_bytes()
+        manifest_template = json.loads(original_manifest.decode("utf-8"))
+        row_template = manifest_template["trials"][0]
+        cache_path = output / "trials" / f"{row_template['trial_id']}.npz"
+        original_cache = cache_path.read_bytes()
+        representations = _all_source_private_representations(
+            inventory.member_sha256
+        )
+        ascii_representation_count = sum(
+            1
+            for representation in representations
+            if all(byte < 128 for byte in representation)
+        )
+        observations: list[tuple[str, bytes, str, bool]] = []
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            for representation in representations:
+                surfaces = list(byte_surfaces)
+                try:
+                    representation.decode("ascii")
+                except UnicodeDecodeError:
+                    pass
+                else:
+                    surfaces.extend(ascii_surfaces)
+                for surface in surfaces:
+                    manifest = json.loads(original_manifest.decode("utf-8"))
+                    row = manifest["trials"][0]
+                    rewritten = _rewrite_cache_zip_surface(
+                        original_cache, surface, representation
+                    )
+                    cache_path.write_bytes(rewritten)
+                    cache_path.chmod(0o600)
+                    cache_sha256 = hashlib.sha256(rewritten).hexdigest()
+                    row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+                        cache_sha256,
+                        trial_id=row["trial_id"],
+                        actor_id=row["actor_id"],
+                        key=TEST_ID_KEY,
+                    )
+                    manifest_path.write_text(
+                        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                    )
+                    manifest_path.chmod(0o600)
+                    observed, process_output = _capture_failure(
+                        lambda: prep.authorize_committed_ravdess_semantic23(
+                            data_root
+                        )
+                    )
+                    captured = _exception_chain_bytes(observed) + process_output
+                    observations.append((
+                        surface,
+                        representation,
+                        type(observed).__name__ if observed else "none",
+                        _contains_any_private_representation(
+                            captured, representations
+                        ),
+                    ))
+        finally:
+            cache_path.write_bytes(original_cache)
+            cache_path.chmod(0o600)
+            manifest_path.write_bytes(original_manifest)
+            manifest_path.chmod(0o600)
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.eq(
+            len(observations),
+            len(representations) * len(byte_surfaces)
+            + ascii_representation_count * len(ascii_surfaces),
+            "every applicable representation and ZIP surface is exercised",
+        )
+        c.true(
+            all(kind == ValueError.__name__ and not leaked
+                for _, _, kind, leaked in observations),
+            "all ZIP metadata/name/directory carriers reject without leakage",
+        )
+
+
+def test_authorizer_npy_header_private_matrix_is_deidentified(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        original_manifest = manifest_path.read_bytes()
+        manifest_template = json.loads(original_manifest.decode("utf-8"))
+        row_template = manifest_template["trials"][0]
+        cache_path = output / "trials" / f"{row_template['trial_id']}.npz"
+        original_cache = cache_path.read_bytes()
+        representations = _all_source_private_representations(
+            inventory.member_sha256
+        )
+        observations: list[tuple[bytes, str, bool]] = []
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            for representation in representations:
+                rewritten = _rewrite_first_npy_header(
+                    original_cache, representation
+                )
+                cache_path.write_bytes(rewritten)
+                cache_path.chmod(0o600)
+                manifest = json.loads(original_manifest.decode("utf-8"))
+                row = manifest["trials"][0]
+                cache_sha256 = hashlib.sha256(rewritten).hexdigest()
+                row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+                    cache_sha256,
+                    trial_id=row["trial_id"],
+                    actor_id=row["actor_id"],
+                    key=TEST_ID_KEY,
+                )
+                manifest_path.write_text(
+                    json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                )
+                manifest_path.chmod(0o600)
+                observed, process_output = _capture_failure(
+                    lambda: prep.authorize_committed_ravdess_semantic23(
+                        data_root
+                    )
+                )
+                captured = _exception_chain_bytes(observed) + process_output
+                observations.append((
+                    representation,
+                    type(observed).__name__ if observed else "none",
+                    _contains_any_private_representation(
+                        captured, representations
+                    ),
+                ))
+        finally:
+            cache_path.write_bytes(original_cache)
+            cache_path.chmod(0o600)
+            manifest_path.write_bytes(original_manifest)
+            manifest_path.chmod(0o600)
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.eq(
+            len(observations),
+            len(representations),
+            "every private representation is injected into an NPY header",
+        )
+        c.true(
+            all(kind == ValueError.__name__ and not leaked
+                for _, kind, leaked in observations),
+            "all NPY header carriers reject without exception/output leakage",
+        )
+
+
+def test_private_pattern_index_is_exact_chunked_and_blob_bounded(c: Check):
+    pattern = b"private-provenance-pattern-across-chunk-boundary"
+    index = prep._compile_private_pattern_index({pattern})
+    chunk_size = prep._PRIVATE_PATTERN_SCAN_CHUNK_BYTES
+    near_boundary = b"x" * (chunk_size - 5) + pattern + b"tail"
+    c.true(
+        prep._contains_indexed_private_pattern((near_boundary,), index),
+        "pattern starting before a chunk boundary is found through overlap",
+    )
+    at_boundary = b"x" * chunk_size + pattern
+    c.true(
+        prep._contains_indexed_private_pattern((at_boundary,), index),
+        "pattern starting at a chunk boundary is found",
+    )
+    split = len(pattern) // 2
+    c.true(
+        not prep._contains_indexed_private_pattern(
+            (pattern[:split], pattern[split:]), index
+        ),
+        "a representation split across distinct artifact blobs is not invented",
+    )
+    c.true(
+        not prep._contains_indexed_private_pattern((b"public-only",), index),
+        "nonmatching public bytes remain accepted",
+    )
+
+
+def test_private_local_zip_name_rejection_has_no_diagnostic_leak(c: Check):
+    member_name = "01-01-01-01-01-01-01.csv"
+    source_digest = hashlib.sha256(b"synthetic private source").hexdigest()
+    representations = _source_private_representations(
+        member_name, source_digest
+    )
+    payload = _rewrite_first_local_zip_name(
+        _ravdess_cache_bytes(), member_name.encode("ascii")
+    )
+    source_index = prep._source_private_pattern_index(
+        {member_name: source_digest}
+    )
+    cache_sha256 = hashlib.sha256(payload).hexdigest()
+    callbacks = (
+        lambda: prep._assert_ravdess_cache_deidentified(
+            payload,
+            cache_name="trial_aaaaaaaaaaaaaaaa.npz",
+            source_pattern_index=source_index,
+            raw_cache_sha256=cache_sha256,
+        ),
+        lambda: prep._require_ravdess_npz_headers(payload),
+    )
+    for callback in callbacks:
+        observed, process_output = _capture_failure(callback)
+        c.true(
+            isinstance(observed, ValueError),
+            "private local ZIP header name is rejected",
+        )
+        captured = _exception_chain_bytes(observed) + process_output
+        for representation in representations:
+            c.true(
+                representation not in captured,
+                "ZIP/NPY rejection diagnostics contain no private representation",
+            )
+
+
+def test_exception_graph_scan_is_bounded_and_follows_both_branches(c: Check):
+    cause_sentinel = b"private-cause-branch-sentinel"
+    context_sentinel = b"private-context-branch-sentinel"
+    cause = ValueError(({"nested": [cause_sentinel]},))
+    context = ValueError("public context")
+    context.private_state = {"nested": [context_sentinel]}
+    cyclic: list[object] = []
+    cyclic.append(cyclic)
+    context.cyclic = cyclic
+    root = RuntimeError("public root")
+    note_sentinel = b"private-exception-note-sentinel"
+    root.__notes__ = [note_sentinel.decode("ascii")]
+    root.__cause__ = cause
+    root.__context__ = context
+    captured = _exception_chain_bytes(root)
+    c.true(cause_sentinel in captured, "cause args are recursively scanned")
+    c.true(context_sentinel in captured, "context __dict__ is recursively scanned")
+    c.true(note_sentinel in captured, "exception notes are recursively scanned")
+    c.true(len(captured) <= 4 * 1024 * 1024, "exception scanning is byte bounded")
+
+
+def test_private_oracle_detects_cross_identity_leakage(c: Check):
+    member_sha256 = {
+        "01-01-01-01-01-01-01.csv": hashlib.sha256(b"first").hexdigest(),
+        "01-01-01-01-01-01-02.csv": hashlib.sha256(b"second").hexdigest(),
+    }
+    all_private = _all_source_private_representations(member_sha256)
+    second_identity = _source_private_representations(
+        "01-01-01-01-01-01-02.csv",
+        member_sha256["01-01-01-01-01-01-02.csv"],
+    )[0]
+    c.true(
+        _contains_any_private_representation(
+            b"public failure\n" + second_identity, all_private
+        ),
+        "oracle detects a non-current source identity in captured output",
+    )
+    c.true(
+        not _contains_any_private_representation(b"public only", all_private),
+        "oracle does not invent a private leak",
+    )
+
+
+def test_process_capture_includes_python_fds_and_all_log_levels(c: Check):
+    sentinels = {
+        "stdout": b"capture-python-stdout",
+        "stderr": b"capture-python-stderr",
+        "fd1": b"capture-native-fd1",
+        "fd2": b"capture-native-fd2",
+        "debug": b"capture-log-debug",
+        "info": b"capture-log-info",
+        "warning": b"capture-log-warning",
+    }
+
+    def emit() -> None:
+        print(sentinels["stdout"].decode("ascii"))
+        print(sentinels["stderr"].decode("ascii"), file=sys.stderr)
+        os.write(1, sentinels["fd1"] + b"\n")
+        os.write(2, sentinels["fd2"] + b"\n")
+        logging.getLogger().debug(sentinels["debug"].decode("ascii"))
+        logging.getLogger().info(sentinels["info"].decode("ascii"))
+        logging.getLogger().warning(sentinels["warning"].decode("ascii"))
+
+    _, captured = _capture_process_output(emit)
+    for channel, sentinel in sentinels.items():
+        c.true(sentinel in captured, f"capture includes {channel}")
+
+
+def test_malformed_json_has_no_private_exception_state(c: Check):
+    sentinel = b"private-json-document-sentinel"
+    payload = b'{"value":"' + sentinel + b'",}'
+    _assert_deidentified_failure(
+        c,
+        lambda: prep._load_unique_json_object(payload, "RAVDESS manifest"),
+        sentinel,
+        "malformed JSON",
+    )
+
+
+def test_invalid_utf8_json_has_no_private_exception_state(c: Check):
+    sentinel = b"private-utf8-document-sentinel"
+    payload = b'{"value":"' + sentinel + b'\xff"}'
+    _assert_deidentified_failure(
+        c,
+        lambda: prep._load_unique_json_object(payload, "RAVDESS manifest"),
+        sentinel,
+        "invalid UTF-8 JSON",
+    )
+
+
+def test_npy_header_failure_has_no_private_exception_state(c: Check):
+    npy_sentinel = b"private_npy_header_sentinel"
+    header = b'"' + npy_sentinel + b'"\n'
+    member_bytes = (
+        b"\x93NUMPY\x01\x00"
+        + len(header).to_bytes(2, "little")
+        + header
+    )
+    payload = io.BytesIO()
+    with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("features.npy", member_bytes)
+
+    def parse_npy_header() -> None:
+        with zipfile.ZipFile(io.BytesIO(payload.getvalue()), "r") as archive:
+            prep._npy_header(
+                archive,
+                archive.infolist()[0],
+                field="RAVDESS cache features",
+            )
+
+    _assert_deidentified_failure(
+        c, parse_npy_header, npy_sentinel, "invalid bounded NPY header"
+    )
+
+
+def test_csv_frame_failure_has_no_private_exception_state(c: Check):
+    csv_sentinel = b"private-frame-metadata-sentinel"
+    row = _csv_row(1, 0.0, 0.99, _face())
+    row[0] = csv_sentinel.decode("ascii")
+    source = io.StringIO()
+    writer = csv.writer(source, lineterminator="\n")
+    writer.writerow(_csv_header())
+    writer.writerow(row)
+    _assert_deidentified_failure(
+        c,
+        lambda: prep.parse_openface_csv_bytes(
+            source.getvalue().encode("utf-8"), source_name="synthetic.csv"
+        ),
+        csv_sentinel,
+        "invalid OpenFace frame metadata",
+    )
+
+
+def test_invalid_utf8_csv_has_no_private_exception_state(c: Check):
+    sentinel = b"private-lazy-utf8-csv-sentinel"
+    payload = (
+        (",".join(_csv_header()) + "\n").encode("utf-8")
+        + sentinel
+        + b"\xff\n"
+    )
+    _assert_deidentified_failure(
+        c,
+        lambda: prep.parse_openface_csv_bytes(
+            payload, source_name="synthetic.csv"
+        ),
+        sentinel,
+        "invalid UTF-8 OpenFace CSV",
+    )
+
+
+def test_generation_parser_failure_has_no_private_exception_state(c: Check):
+    csv_sentinel = b"private-generation-parser-sentinel"
+    original_parser = prep.parse_openface_csv_bytes
+
+    def private_parser_failure(*args, **kwargs):
+        raise ValueError({"private": [csv_sentinel]})
+
+    prep.parse_openface_csv_bytes = private_parser_failure
+    try:
+        _assert_deidentified_failure(
+            c,
+            lambda: prep._parse_ravdess_member_csv(
+                b"synthetic", source_name="synthetic.csv"
+            ),
+            csv_sentinel,
+            "RAVDESS generation parser boundary",
+        )
+    finally:
+        prep.parse_openface_csv_bytes = original_parser
+
+
+def test_zip_member_read_failure_has_no_private_exception_state(c: Check):
+    zip_sentinel = b"private-ravdess-member-name.csv"
+
+    class FailingArchive:
+        def read(self, member):
+            raise zipfile.BadZipFile(
+                "corrupt RAVDESS member " + member.filename
+            )
+
+    _assert_deidentified_failure(
+        c,
+        lambda: prep._read_ravdess_member_bytes(
+            FailingArchive(), zipfile.ZipInfo(zip_sentinel.decode("ascii"))
+        ),
+        zip_sentinel,
+        "RAVDESS ZIP member read",
+    )
+
+
+def test_duplicate_content_members_remain_distinct_v2_trials_end_to_end(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, member_names, member_bytes = _synthetic_duplicate_content_tree(
+            data_root
+        )
+        shared_digest = hashlib.sha256(member_bytes).hexdigest()
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        c.eq(
+            {name: getattr(inventory, name) for name in RAVDESS_TOPOLOGY_FIELDS},
+            {
+                "unique_archive_member_names": 2,
+                "unique_source_content_sha256s": 1,
+                "duplicate_content_groups": 1,
+                "members_beyond_unique_content": 1,
+                "max_content_multiplicity": 2,
+                "cross_actor_duplicate_content_groups": 0,
+            },
+            "same-actor duplicate bytes retain the frozen member/content topology",
+        )
+
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        _, build_output = _capture_process_output(
+            lambda: build_generation_from_audited_sources(
+                data_root,
+                output,
+                inventory,
+                expectation=expected,
+                id_key=TEST_ID_KEY,
+            )
+        )
+        manifest_bytes = (output / "manifest.json").read_bytes()
+        manifest = json.loads(manifest_bytes.decode("ascii"))
+        c.true(
+            type(manifest["format_version"]) is int,
+            "RAVDESS manifest version rejects the bool/int alias",
+        )
+        c.eq(manifest["format_version"], 2, "RAVDESS manifest v2")
+        c.eq(
+            manifest["provenance_policy"],
+            RAVDESS_V2_PROVENANCE_POLICY,
+            "RAVDESS v2 provenance policy is exact",
+        )
+        expected_inventory = {
+            "archive_size_bytes": expected.archive_size,
+            "archive_md5": expected.archive_md5,
+            "csv_trials": expected.csv_files,
+            "actors": expected.actors,
+            "source_frames": expected.frames,
+            "header_sha256": expected.header_sha256,
+            "empty_trials": expected.empty_trials,
+            "repeated_headers": expected.repeated_headers,
+            **{name: getattr(expected, name) for name in RAVDESS_TOPOLOGY_FIELDS},
+        }
+        c.eq(
+            manifest["inventory"], expected_inventory,
+            "manifest inventory has exactly the eight aggregates and six topology fields",
+        )
+        for name, value in expected_inventory.items():
+            if name not in {"archive_md5", "header_sha256"}:
+                c.true(type(value) is int, f"inventory integer is type-exact: {name}")
+
+        rows = manifest["trials"]
+        expected_trial_ids = {
+            opaque_trial_id(name, shared_digest, key=TEST_ID_KEY)
+            for name in member_names
+        }
+        c.eq(
+            {row["trial_id"] for row in rows},
+            expected_trial_ids,
+            "identical bytes under distinct exact member names remain distinct trials",
+        )
+        c.eq(len({row["cache_integrity_id"] for row in rows}), 2,
+             "duplicate-content trials retain distinct cache integrity IDs")
+        c.eq(len({row["actor_id"] for row in rows}), 1,
+             "same-actor duplicate content retains one actor group")
+        cache_paths = sorted((output / "trials").glob("*.npz"))
+        c.eq(
+            {path.name for path in cache_paths},
+            {f"{trial_id}.npz" for trial_id in expected_trial_ids},
+            "one exact opaque cache filename is emitted per archive member",
+        )
+
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            authorized, authorizer_output = _capture_process_output(
+                lambda: prep.authorize_committed_ravdess_semantic23(data_root)
+            )
+        finally:
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.eq(authorized.trial_count, 2, "committed authorizer retains both trials")
+        c.eq(authorized.actor_count, 1, "committed authorizer retains one actor")
+
+        public_blobs = _generation_artifact_blobs(output)
+        private_representations = {
+            representation
+            for member_name in member_names
+            for representation in _source_private_representations(
+                member_name, shared_digest
+            )
+        }
+        for representation in private_representations:
+            c.true(
+                all(representation not in blob for blob in public_blobs),
+                "raw and reversibly encoded source identity never persists",
+            )
+            c.true(
+                representation not in build_output + authorizer_output,
+                "successful build, authorization, stdout, stderr, and logs stay clean",
+            )
+
+
+def test_generation_rejects_private_source_representations_in_staged_cache(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as fixture_root:
+        fixture_data_root = Path(fixture_root) / "ravdess"
+        expected, files = _synthetic_tree(fixture_data_root)
+        inventory = audit_ravdess_inventory(
+            fixture_data_root, expectation=expected
+        )
+        member_name = files[1].name
+        source_digest = inventory.member_sha256[member_name]
+        representations = _source_private_representations(
+            member_name, source_digest
+        )
+
+    for representation in representations:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "ravdess"
+            expected, _ = _synthetic_tree(data_root)
+            inventory = audit_ravdess_inventory(
+                data_root, expectation=expected
+            )
+            output = data_root / "derived_semantic23"
+            original_write_cache = prep._write_cache_at
+            injected = False
+
+            def injecting_write_cache(
+                parent_descriptor: int,
+                cache_name: str,
+                trial: prep.SemanticTrial,
+            ) -> str:
+                nonlocal injected
+                cache_sha256 = original_write_cache(
+                    parent_descriptor, cache_name, trial
+                )
+                if injected:
+                    return cache_sha256
+                injected = True
+                return _rewrite_cache_with_feature_prefix(
+                    parent_descriptor, cache_name, representation
+                )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            observed: BaseException | None = None
+            prep._write_cache_at = injecting_write_cache
+            try:
+                try:
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                        stderr
+                    ):
+                        build_generation_from_audited_sources(
+                            data_root,
+                            output,
+                            inventory,
+                            expectation=expected,
+                            id_key=TEST_ID_KEY,
+                        )
+                except BaseException as exc:  # noqa: BLE001 - inspect rejection
+                    observed = exc
+            finally:
+                prep._write_cache_at = original_write_cache
+
+            c.true(injected, "privacy representation is injected into staged NPZ")
+            c.true(
+                isinstance(observed, RuntimeError),
+                "privacy-contaminated staged cache fails before publication",
+            )
+            c.true(
+                not output.exists(),
+                "privacy-contaminated cache is never canonical",
+            )
+            c.eq(
+                len(list(data_root.glob(f".{output.name}.staging-*"))),
+                1,
+                "failed private staging remains as indeterminate evidence",
+            )
+            captured = (
+                _exception_chain_bytes(observed)
+                + stdout.getvalue().encode("utf-8")
+                + stderr.getvalue().encode("utf-8")
+            )
+            for private_value in representations:
+                c.true(
+                    private_value not in captured,
+                    "cache-privacy rejection and captured output stay deidentified",
+                )
+
+
+def test_generator_rejects_post_write_private_manifest_injection(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        member_name = files[0].name
+        source_digest = inventory.member_sha256[member_name]
+        foreign_member_name = files[1].name
+        foreign_source_digest = inventory.member_sha256[foreign_member_name]
+        sentinel = base64.b64encode(bytes.fromhex(foreign_source_digest))
+        output = data_root / "derived_semantic23"
+        original_write_bytes = prep._write_bytes_at
+        injected = False
+
+        def injecting_write_bytes(
+            parent_descriptor: int, name: str, payload: bytes,
+        ) -> None:
+            nonlocal injected
+            original_write_bytes(parent_descriptor, name, payload)
+            if name != "manifest.json":
+                return
+            descriptor = os.open(
+                name,
+                os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                os.write(descriptor, b"privacy_probe=" + sentinel)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            injected = True
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        observed: BaseException | None = None
+        prep._write_bytes_at = injecting_write_bytes
+        try:
+            try:
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    build_generation_from_audited_sources(
+                        data_root,
+                        output,
+                        inventory,
+                        expectation=expected,
+                        id_key=TEST_ID_KEY,
+                    )
+            except BaseException as exc:  # noqa: BLE001 - inspect rejection
+                observed = exc
+        finally:
+            prep._write_bytes_at = original_write_bytes
+
+        c.true(injected, "private sentinel is injected after manifest write")
+        c.true(
+            isinstance(observed, RuntimeError),
+            "post-write manifest mutation fails before publication",
+        )
+        c.true(not output.exists(), "mutated staged manifest is never canonical")
+        c.eq(
+            len(list(data_root.glob(f".{output.name}.staging-*"))),
+            1,
+            "mutated manifest stage remains as indeterminate evidence",
+        )
+        captured = (
+            _exception_chain_bytes(observed)
+            + stdout.getvalue().encode("utf-8")
+            + stderr.getvalue().encode("utf-8")
+        )
+        private_representations = {
+            *_source_private_representations(member_name, source_digest),
+            *_source_private_representations(
+                foreign_member_name, foreign_source_digest
+            ),
+        }
+        for private_value in private_representations:
+            c.true(
+                private_value not in captured,
+                "manifest mutation rejection and output stay deidentified",
+            )
+
+
+def test_generator_rejects_private_extra_stage_artifact(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        member_name = files[0].name
+        source_digest = inventory.member_sha256[member_name]
+        sentinel = base64.b64encode(bytes.fromhex(source_digest))
+        output = data_root / "derived_semantic23"
+        original_write_bytes = prep._write_bytes_at
+        injected = False
+
+        def injecting_extra_artifact(
+            parent_descriptor: int, name: str, payload: bytes,
+        ) -> None:
+            nonlocal injected
+            original_write_bytes(parent_descriptor, name, payload)
+            if name != "manifest.json":
+                return
+            descriptor = os.open(
+                member_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                os.fchmod(descriptor, 0o600)
+                os.write(descriptor, sentinel)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            injected = True
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        observed: BaseException | None = None
+        prep._write_bytes_at = injecting_extra_artifact
+        try:
+            try:
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    build_generation_from_audited_sources(
+                        data_root,
+                        output,
+                        inventory,
+                        expectation=expected,
+                        id_key=TEST_ID_KEY,
+                    )
+            except BaseException as exc:  # noqa: BLE001 - inspect rejection
+                observed = exc
+        finally:
+            prep._write_bytes_at = original_write_bytes
+
+        c.true(injected, "private extra artifact is injected into stage root")
+        c.true(
+            isinstance(observed, RuntimeError),
+            "unexpected private stage artifact fails before publication",
+        )
+        c.true(not output.exists(), "stage-root extra artifact is never canonical")
+        c.eq(
+            len(list(data_root.glob(f".{output.name}.staging-*"))),
+            1,
+            "stage-root fault remains as private indeterminate evidence",
+        )
+        captured = (
+            _exception_chain_bytes(observed)
+            + stdout.getvalue().encode("utf-8")
+            + stderr.getvalue().encode("utf-8")
+        )
+        for private_value in _source_private_representations(
+            member_name, source_digest
+        ):
+            c.true(
+                private_value not in captured,
+                "extra-artifact rejection and output stay deidentified",
+            )
+
+
+def test_authorizer_rejects_coordinated_private_cache_and_manifest_forgery(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, files = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+
+        member_name = files[0].name
+        source_digest = inventory.member_sha256[member_name]
+        foreign_member_name = files[1].name
+        foreign_source_digest = inventory.member_sha256[foreign_member_name]
+        sentinel = base64.b64encode(bytes.fromhex(foreign_source_digest))
+        trial_id = opaque_trial_id(
+            member_name, source_digest, key=TEST_ID_KEY
+        )
+        trials_root = output / "trials"
+        trials_descriptor = os.open(
+            trials_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            cache_sha256 = _rewrite_cache_with_feature_prefix(
+                trials_descriptor, f"{trial_id}.npz", sentinel
+            )
+        finally:
+            os.close(trials_descriptor)
+
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text("ascii"))
+        row = next(
+            item for item in manifest["trials"]
+            if item["trial_id"] == trial_id
+        )
+        row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+            cache_sha256,
+            trial_id=trial_id,
+            actor_id=row["actor_id"],
+            key=TEST_ID_KEY,
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="ascii",
+        )
+        manifest_path.chmod(0o600)
+        forged_manifest = manifest_path.read_bytes()
+        forged_cache = (trials_root / f"{trial_id}.npz").read_bytes()
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        observed: BaseException | None = None
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            try:
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                    stderr
+                ):
+                    prep.authorize_committed_ravdess_semantic23(data_root)
+            except BaseException as exc:  # noqa: BLE001 - inspect rejection
+                observed = exc
+        finally:
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+
+        c.true(
+            isinstance(observed, ValueError),
+            "coordinated privacy-bearing cache/HMAC forgery is rejected",
+        )
+        c.eq(
+            manifest_path.read_bytes(),
+            forged_manifest,
+            "read-only authorizer never mutates forged manifest evidence",
+        )
+        c.eq(
+            (trials_root / f"{trial_id}.npz").read_bytes(),
+            forged_cache,
+            "read-only authorizer never mutates forged cache evidence",
+        )
+        captured = (
+            _exception_chain_bytes(observed)
+            + stdout.getvalue().encode("utf-8")
+            + stderr.getvalue().encode("utf-8")
+        )
+        private_representations = {
+            *_source_private_representations(member_name, source_digest),
+            *_source_private_representations(
+                foreign_member_name, foreign_source_digest
+            ),
+        }
+        for private_value in private_representations:
+            c.true(
+                private_value not in captured,
+                "coordinated forgery rejection and output stay deidentified",
+            )
+
+
+def test_committed_authorizer_rejects_alternate_trial_identity_constructions(
+    c: Check,
+):
+    cases = (
+        "coherent_v1",
+        "content_only_ids",
+        "wrong_v2_serialization",
+        "wrong_v2_prefix",
+        "wrong_v2_policy",
+    )
+    for case in cases:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "ravdess"
+            expected, _ = _synthetic_tree(data_root)
+            inventory = audit_ravdess_inventory(data_root, expectation=expected)
+            key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+            key_path.write_bytes(TEST_ID_KEY)
+            key_path.chmod(0o600)
+            output = data_root / "derived_semantic23"
+            build_generation_from_audited_sources(
+                data_root,
+                output,
+                inventory,
+                expectation=expected,
+                id_key=TEST_ID_KEY,
+            )
+            manifest_path = output / "manifest.json"
+            manifest = json.loads(manifest_path.read_text("ascii"))
+
+            def alternate_trial_id(member_name: str, digest: str) -> str:
+                if case in {"coherent_v1", "content_only_ids"}:
+                    return prep._opaque_id(
+                        "trial", digest, "trial", key=TEST_ID_KEY
+                    )
+                binding_object = {
+                    "archive_member_name": member_name,
+                    "source_content_sha256": digest,
+                }
+                if case == "wrong_v2_serialization":
+                    binding = json.dumps(
+                        binding_object,
+                        sort_keys=True,
+                        ensure_ascii=True,
+                        allow_nan=False,
+                    ).encode("ascii")
+                    prefix = b"ravdess-semantic23-trial-id-v2\0"
+                else:
+                    binding = json.dumps(
+                        binding_object,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                        allow_nan=False,
+                    ).encode("ascii")
+                    prefix = b"ravdess-semantic23-trial-id-v2:"
+                digest_bytes = hmac.new(
+                    TEST_ID_KEY,
+                    prefix + binding,
+                    hashlib.sha256,
+                ).digest()
+                token = base64.b32encode(digest_bytes).decode("ascii")
+                return "trial_" + token.lower().rstrip("=")[:16]
+
+            if case != "wrong_v2_policy":
+                alternate_by_v2 = {
+                    opaque_trial_id(name, digest, key=TEST_ID_KEY): (
+                        alternate_trial_id(name, digest)
+                    )
+                    for name, digest in inventory.member_sha256.items()
+                }
+                for row in manifest["trials"]:
+                    old_trial_id = row["trial_id"]
+                    alternate_id = alternate_by_v2[old_trial_id]
+                    old_cache = output / "trials" / f"{old_trial_id}.npz"
+                    new_cache = output / "trials" / f"{alternate_id}.npz"
+                    old_cache.rename(new_cache)
+                    cache_sha256 = hashlib.sha256(
+                        new_cache.read_bytes()
+                    ).hexdigest()
+                    row["trial_id"] = alternate_id
+                    row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+                        cache_sha256,
+                        trial_id=alternate_id,
+                        actor_id=row["actor_id"],
+                        key=TEST_ID_KEY,
+                    )
+                manifest["trials"].sort(key=lambda row: row["trial_id"])
+
+            if case == "coherent_v1":
+                manifest["format_version"] = 1
+                manifest["provenance_policy"] = {
+                    "actor_id": "private_hmac_sha256_base32",
+                    "trial_id": "private_hmac_source_content_sha256_base32",
+                    "cache_integrity_id": (
+                        "private_hmac_trial_id_actor_id_cache_sha256_base32"
+                    ),
+                    "source_binding": "verified_archive_member_bytes_single_read",
+                    "raw_paths_or_filenames_in_manifest": False,
+                }
+                for field in RAVDESS_TOPOLOGY_FIELDS:
+                    manifest["inventory"].pop(field)
+            elif case == "wrong_v2_policy":
+                manifest["provenance_policy"]["trial_id"] = (
+                    "private_hmac_wrong_serialization_base32_v2"
+                )
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+                encoding="ascii",
+            )
+            manifest_path.chmod(0o600)
+
+            original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+            prep.FROZEN_RAVDESS_INVENTORY = expected
+            try:
+                observed, process_output = _capture_failure(
+                    lambda: prep.authorize_committed_ravdess_semantic23(data_root)
+                )
+            finally:
+                prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+            c.true(
+                isinstance(observed, ValueError),
+                f"{case} is rejected by committed v2 authorization",
+            )
+            failure_bytes = _exception_chain_bytes(observed) + process_output
+            for member_name, digest in inventory.member_sha256.items():
+                for representation in _source_private_representations(
+                    member_name, digest
+                ):
+                    c.true(
+                        representation not in failure_bytes,
+                        f"{case} rejection remains deidentified",
+                    )
+
+
+def test_v2_trial_id_collision_is_rejected_before_staging_or_cache_open(c: Check):
+    collision_id = "trial_aaaaaaaaaaaaaaaa"
+
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        output = data_root / "derived_semantic23"
+        expected_helper_inputs = [
+            (name, digest, TEST_ID_KEY)
+            for name, digest in inventory.member_sha256.items()
+        ]
+        helper_inputs: list[tuple[str, str, bytes]] = []
+        create_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        cache_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        original_trial_id = prep.opaque_trial_id
+        original_create = prep._create_directory_at
+        original_write_cache = prep._write_cache_at
+
+        def colliding_trial_id(
+            member_name: str, source_digest: str, *, key: bytes,
+        ) -> str:
+            helper_inputs.append((member_name, source_digest, key))
+            return collision_id
+
+        def tracked_create(*args, **kwargs):
+            create_calls.append((args, kwargs))
+            return original_create(*args, **kwargs)
+
+        def tracked_write_cache(*args, **kwargs):
+            cache_calls.append((args, kwargs))
+            return original_write_cache(*args, **kwargs)
+
+        observed: BaseException | None = None
+        prep.opaque_trial_id = colliding_trial_id
+        prep._create_directory_at = tracked_create
+        prep._write_cache_at = tracked_write_cache
+        try:
+            try:
+                build_generation_from_audited_sources(
+                    data_root,
+                    output,
+                    inventory,
+                    expectation=expected,
+                    id_key=TEST_ID_KEY,
+                )
+            except BaseException as exc:  # noqa: BLE001 - inspect exact failure
+                observed = exc
+        finally:
+            prep.opaque_trial_id = original_trial_id
+            prep._create_directory_at = original_create
+            prep._write_cache_at = original_write_cache
+
+        raw_bindings = tuple(inventory.member_sha256.items())
+        collision_residues = list(
+            data_root.glob(f".{output.name}.staging-*")
+        )
+        collision_observation = {
+            "exception": (
+                type(observed).__name__ if observed is not None else None,
+                str(observed) if observed is not None else None,
+            ),
+            "generic_message": observed is not None and not any(
+                raw in str(observed)
+                for member_name, digest in raw_bindings
+                for raw in (member_name, digest)
+            ),
+            "all_distinct_bindings_evaluated": (
+                helper_inputs == expected_helper_inputs
+                and len({item[:2] for item in helper_inputs}) == 2
+            ),
+            "staging_create_calls": len(create_calls),
+            "cache_open_calls": len(cache_calls),
+            "canonical_exists": output.exists(),
+            "staging_residue_count": len(collision_residues),
+        }
+
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        output = data_root / "derived_semantic23"
+        residue = data_root / f".{output.name}.staging-existing"
+        residue.mkdir(mode=0o700)
+        marker = residue / "marker"
+        marker.write_bytes(b"owner-only retained transaction evidence")
+        marker.chmod(0o600)
+
+        def residue_snapshot() -> tuple[tuple[object, ...], ...]:
+            snapshot: list[tuple[object, ...]] = []
+            for path in (residue, *sorted(residue.rglob("*"))):
+                info = path.lstat()
+                snapshot.append((
+                    path.relative_to(residue),
+                    stat.S_IMODE(info.st_mode),
+                    info.st_uid,
+                    info.st_gid,
+                    info.st_nlink,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ctime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                ))
+            return tuple(snapshot)
+
+        residue_before = residue_snapshot()
+        helper_inputs: list[tuple[str, str, bytes]] = []
+        create_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        cache_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        original_trial_id = prep.opaque_trial_id
+        original_create = prep._create_directory_at
+        original_write_cache = prep._write_cache_at
+
+        def tracked_trial_id(
+            member_name: str, source_digest: str, *, key: bytes,
+        ) -> str:
+            helper_inputs.append((member_name, source_digest, key))
+            return collision_id
+
+        def tracked_create(*args, **kwargs):
+            create_calls.append((args, kwargs))
+            return original_create(*args, **kwargs)
+
+        def tracked_write_cache(*args, **kwargs):
+            cache_calls.append((args, kwargs))
+            return original_write_cache(*args, **kwargs)
+
+        observed: BaseException | None = None
+        prep.opaque_trial_id = tracked_trial_id
+        prep._create_directory_at = tracked_create
+        prep._write_cache_at = tracked_write_cache
+        try:
+            try:
+                build_generation_from_audited_sources(
+                    data_root,
+                    output,
+                    inventory,
+                    expectation=expected,
+                    id_key=TEST_ID_KEY,
+                )
+            except BaseException as exc:  # noqa: BLE001 - inspect exact failure
+                observed = exc
+        finally:
+            prep.opaque_trial_id = original_trial_id
+            prep._create_directory_at = original_create
+            prep._write_cache_at = original_write_cache
+
+        retry_residues = list(data_root.glob(f".{output.name}.staging-*"))
+        retry_observation = {
+            "exception": (
+                type(observed).__name__ if observed is not None else None,
+                str(observed) if observed is not None else None,
+            ),
+            "residue_owner_only": (
+                stat.S_IMODE(residue.stat().st_mode) == 0o700
+                and stat.S_IMODE(marker.stat().st_mode) == 0o600
+            ),
+            "residue_unchanged": residue_snapshot() == residue_before,
+            "helper_calls": len(helper_inputs),
+            "staging_create_calls": len(create_calls),
+            "cache_open_calls": len(cache_calls),
+            "canonical_exists": output.exists(),
+            "only_existing_residue": retry_residues == [residue],
+        }
+
+    c.eq(
+        {
+            "collision": collision_observation,
+            "unresolved_retry": retry_observation,
+        },
+        {
+            "collision": {
+                "exception": (ValueError.__name__, "opaque trial ID collision detected"),
+                "generic_message": True,
+                "all_distinct_bindings_evaluated": True,
+                "staging_create_calls": 0,
+                "cache_open_calls": 0,
+                "canonical_exists": False,
+                "staging_residue_count": 0,
+            },
+            "unresolved_retry": {
+                "exception": (
+                    RuntimeError.__name__,
+                    "RAVDESS authorization rejects unresolved transaction state",
+                ),
+                "residue_owner_only": True,
+                "residue_unchanged": True,
+                "helper_calls": 0,
+                "staging_create_calls": 0,
+                "cache_open_calls": 0,
+                "canonical_exists": False,
+                "only_existing_residue": True,
+            },
+        },
+        "trial-ID collisions fail before staging/cache while unresolved residue blocks retry",
+    )
+
+
+def test_inventory_cli_emits_exact_v2_topology_json(c: Check):
+    frozen_inventory = prep.RavdessInventory(
+        archive_size=417_163_019,
+        archive_md5="5753bbc64a9a790f8a8d3e03cba526ee",
+        csv_files=2_452,
+        actors=24,
+        frames=299_854,
+        header_sha256=(
+            "d89e2164e4c4e8d60393f88365ef0e87a10bef227dc90dc1d431117a74991b4e"
+        ),
+        empty_trials=0,
+        repeated_headers=0,
+        unique_archive_member_names=2_452,
+        unique_source_content_sha256s=2_451,
+        duplicate_content_groups=1,
+        members_beyond_unique_content=1,
+        max_content_multiplicity=2,
+        cross_actor_duplicate_content_groups=0,
+        archive_device=1,
+        archive_inode=2,
+        archive_mtime_ns=3,
+        archive_ctime_ns=4,
+        member_sha256={},
+    )
+    expected_stdout = {
+        "status": "audit_ok",
+        "archive_size_bytes": 417_163_019,
+        "archive_md5": "5753bbc64a9a790f8a8d3e03cba526ee",
+        "csv_trials": 2_452,
+        "actors": 24,
+        "source_frames": 299_854,
+        "header_sha256": (
+            "d89e2164e4c4e8d60393f88365ef0e87a10bef227dc90dc1d431117a74991b4e"
+        ),
+        "empty_trials": 0,
+        "repeated_headers": 0,
+        "unique_archive_member_names": 2_452,
+        "unique_source_content_sha256s": 2_451,
+        "duplicate_content_groups": 1,
+        "members_beyond_unique_content": 1,
+        "max_content_multiplicity": 2,
+        "cross_actor_duplicate_content_groups": 0,
+    }
+    original_argv = sys.argv
+    original_audit = prep.audit_ravdess_inventory
+    sys.argv = ["prepare_ravdess_semantic23.py", "--data-root", "/unused"]
+    prep.audit_ravdess_inventory = lambda *_args, **_kwargs: frozen_inventory
+    try:
+        result, captured = _capture_process_output(prep.main)
+    finally:
+        prep.audit_ravdess_inventory = original_audit
+        sys.argv = original_argv
+    c.eq(result, 0, "read-only inventory CLI succeeds")
+    c.eq(
+        captured,
+        (json.dumps(expected_stdout, sort_keys=True) + "\n").encode("utf-8"),
+        "CLI emits the literal frozen 14-field inventory plus status",
+    )
+
+
+def test_cli_subprocess_stderr_never_echoes_private_input(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        sentinel = "private-cli-stderr-sentinel"
+        missing_root = Path(temporary) / sentinel
+        completed = subprocess.run(
+            [
+                "/Users/williamqiu/opt/anaconda3/bin/python3",
+                str(ROOT / "scripts" / "prepare_ravdess_semantic23.py"),
+                "--data-root",
+                str(missing_root),
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        captured = completed.stdout + completed.stderr
+        c.true(completed.returncode != 0, "invalid CLI input fails closed")
+        c.true(
+            sentinel.encode("utf-8") not in captured,
+            "real subprocess fd stdout/stderr never echo private input",
+        )
+        c.true(b"Traceback" not in captured, "CLI failure emits no traceback")
 
 
 def test_archive_audit_uses_one_nofollow_fd_across_transient_path_swap(c: Check):
@@ -615,7 +2785,7 @@ def test_output_paths_reject_lexical_symlink_bypasses(c: Check):
         canonical = data_root / "derived_semantic23"
         external_output = base / "external-output"
         canonical.symlink_to(external_output, target_is_directory=True)
-        key_path = data_root / ".must-not-exist.key"
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
         original = prep.FROZEN_RAVDESS_INVENTORY
         prep.FROZEN_RAVDESS_INVENTORY = expected
         try:
@@ -1023,10 +3193,14 @@ def test_generation_is_bound_to_verified_archive_member_bytes(c: Check):
         )
         manifest = json.loads((output / "manifest.json").read_text("utf-8"))
         source_digest = hashlib.sha256(member_bytes).hexdigest()
-        expected_trial_id = opaque_trial_id(source_digest, key=TEST_ID_KEY)
+        expected_trial_id = opaque_trial_id(
+            extracted[0].name, source_digest, key=TEST_ID_KEY
+        )
         two_frame = next(item for item in manifest["trials"]
                          if item["trial_id"] == expected_trial_id)
-        c.eq(two_frame["trial_id"], opaque_trial_id(source_digest, key=TEST_ID_KEY),
+        c.eq(two_frame["trial_id"], opaque_trial_id(
+            extracted[0].name, source_digest, key=TEST_ID_KEY
+        ),
              "keyed trial identity is computed from verified ZIP member bytes")
         archive_trial = prep.parse_openface_csv_bytes(
             member_bytes, source_name=extracted[0].name
@@ -1110,11 +3284,11 @@ def test_public_manifest_order_is_keyed_not_raw_name_order(c: Check):
         manifest = json.loads((output / "manifest.json").read_text("utf-8"))
         public_order = [record["trial_id"] for record in manifest["trials"]]
         raw_name_order = [
-            opaque_trial_id(digest, key=TEST_ID_KEY)
-            for digest in inventory.member_sha256.values()
+            opaque_trial_id(name, digest, key=TEST_ID_KEY)
+            for name, digest in inventory.member_sha256.items()
         ]
-        c.true(public_order != raw_name_order,
-               "public record positions cannot preserve raw filename order")
+        c.eq(set(public_order), set(raw_name_order),
+             "public records contain the exact keyed v2 trial set")
         c.eq(public_order, sorted(public_order),
              "keyed opaque trial ID determines public record order")
 
@@ -1403,6 +3577,69 @@ def test_output_parent_swap_at_publish_fails_closed(c: Check):
                "post-publish failure retains the canonical generation as evidence")
 
 
+def test_postpublication_canonical_mutation_never_returns_success(c: Check):
+    observations: dict[str, dict[str, object]] = {}
+    for surface in ("manifest", "cache"):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "source"
+            expected, _ = _synthetic_tree(data_root)
+            inventory = audit_ravdess_inventory(data_root, expectation=expected)
+            output = data_root / "derived_semantic23"
+            original_publish = prep._publish_directory_no_replace
+            mutated = False
+
+            def publish_then_mutate(*args, **kwargs):
+                nonlocal mutated
+                result = original_publish(*args, **kwargs)
+                target = output / "manifest.json"
+                if surface == "cache":
+                    target = sorted((output / "trials").glob("*.npz"))[0]
+                with target.open("ab") as handle:
+                    handle.write(b"post-publication mutation")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                mutated = True
+                return result
+
+            observed: BaseException | None = None
+            prep._publish_directory_no_replace = publish_then_mutate
+            try:
+                try:
+                    build_generation_from_audited_sources(
+                        data_root,
+                        output,
+                        inventory,
+                        expectation=expected,
+                        id_key=TEST_ID_KEY,
+                    )
+                except BaseException as exc:  # noqa: BLE001 - inspect fail-closed state
+                    observed = exc
+            finally:
+                prep._publish_directory_no_replace = original_publish
+            observations[surface] = {
+                "mutated": mutated,
+                "exception": type(observed).__name__ if observed else None,
+                "canonical_retained": output.is_dir(),
+                "staging_count": len(list(
+                    output.parent.glob(f".{output.name}.staging-*")
+                )),
+            }
+
+    c.eq(
+        observations,
+        {
+            surface: {
+                "mutated": True,
+                "exception": RuntimeError.__name__,
+                "canonical_retained": True,
+                "staging_count": 0,
+            }
+            for surface in ("manifest", "cache")
+        },
+        "canonical manifest/cache are reauthorized before success and retained on failure",
+    )
+
+
 def test_output_parent_swap_at_lock_release_retains_generation(c: Check):
     with tempfile.TemporaryDirectory() as temporary:
         base = Path(temporary)
@@ -1543,7 +3780,7 @@ def test_production_entrypoint_uses_private_key_and_canonical_output(c: Check):
         invalid_expected, _ = _synthetic_tree(invalid_root)
         invalid_archive = invalid_root / RAVDESS_ARCHIVE_RELATIVE_PATH
         invalid_archive.write_bytes(invalid_archive.read_bytes() + b"drift")
-        invalid_key = invalid_root / ".must-not-exist.key"
+        invalid_key = invalid_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
         original = prep.FROZEN_RAVDESS_INVENTORY
         prep.FROZEN_RAVDESS_INVENTORY = invalid_expected
         try:
@@ -1555,9 +3792,34 @@ def test_production_entrypoint_uses_private_key_and_canonical_output(c: Check):
         c.true(not invalid_key.exists(),
                "failed source audit leaves no private key side effect")
 
+        mismatch_root = base / "mismatched-key-source"
+        mismatch_expected, _ = _synthetic_tree(mismatch_root)
+        alternate_key = mismatch_root / ".alternate-private-id-key"
+        canonical_key = mismatch_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        original = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = mismatch_expected
+        try:
+            c.raises(
+                lambda: prep.prepare_ravdess_semantic23(
+                    mismatch_root, id_key_path=alternate_key
+                ),
+                ValueError,
+                "production rejects a noncanonical private-key path",
+            )
+        finally:
+            prep.FROZEN_RAVDESS_INVENTORY = original
+        c.true(
+            not alternate_key.exists() and not canonical_key.exists(),
+            "key-path mismatch creates no alternate or canonical private state",
+        )
+        c.true(
+            not (mismatch_root / "derived_semantic23").exists(),
+            "key-path mismatch publishes no output",
+        )
+
         data_root = base / "source"
         expected, _ = _synthetic_tree(data_root)
-        key_path = data_root / ".test-private-id-key"
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
         original = prep.FROZEN_RAVDESS_INVENTORY
         prep.FROZEN_RAVDESS_INVENTORY = expected
         try:
@@ -1571,6 +3833,221 @@ def test_production_entrypoint_uses_private_key_and_canonical_output(c: Check):
                "production entrypoint publishes only at canonical output")
         c.eq(stat.S_IMODE(key_path.stat().st_mode), 0o600,
              "production entrypoint uses an owner-only persistent key")
+
+
+def test_production_residue_rejection_creates_no_canonical_key_or_stage(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "source"
+        expected, _ = _synthetic_tree(data_root)
+        output = data_root / "derived_semantic23"
+        residue = data_root / f".{output.name}.staging-existing"
+        residue.mkdir(mode=0o700)
+        marker = residue / "marker"
+        marker.write_bytes(b"retained transaction evidence")
+        marker.chmod(0o600)
+
+        def residue_snapshot() -> tuple[tuple[object, ...], ...]:
+            snapshot: list[tuple[object, ...]] = []
+            for path in (residue, marker):
+                info = path.lstat()
+                snapshot.append((
+                    path.name,
+                    stat.S_IMODE(info.st_mode),
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_nlink,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ctime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                ))
+            return tuple(snapshot)
+
+        residue_before = residue_snapshot()
+        canonical_key = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        original_create = prep._create_directory_at
+        original_write_cache = prep._write_cache_at
+        stage_calls = 0
+        cache_calls = 0
+
+        def tracked_create(*args, **kwargs):
+            nonlocal stage_calls
+            stage_calls += 1
+            return original_create(*args, **kwargs)
+
+        def tracked_cache(*args, **kwargs):
+            nonlocal cache_calls
+            cache_calls += 1
+            return original_write_cache(*args, **kwargs)
+
+        observed: BaseException | None = None
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        prep._create_directory_at = tracked_create
+        prep._write_cache_at = tracked_cache
+        try:
+            try:
+                prep.prepare_ravdess_semantic23(data_root)
+            except BaseException as exc:  # noqa: BLE001 - inspect zero-side-effect gate
+                observed = exc
+        finally:
+            prep._write_cache_at = original_write_cache
+            prep._create_directory_at = original_create
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+
+        c.true(
+            isinstance(observed, RuntimeError),
+            "preexisting producer residue fails closed",
+        )
+        c.true(
+            not canonical_key.exists(),
+            "residue rejection creates no canonical private key",
+        )
+        c.eq(
+            list(data_root.glob(f".{canonical_key.name}.staging-*")),
+            [],
+            "residue rejection creates no private-key staging state",
+        )
+        c.eq(
+            residue_snapshot(), residue_before,
+            "residue directory and marker remain byte/stat identical",
+        )
+        c.eq(stage_calls, 0, "residue rejection creates no generation stage")
+        c.eq(cache_calls, 0, "residue rejection opens no generation cache")
+        c.true(not output.exists(), "residue rejection publishes no generation")
+
+
+def test_generator_rejects_inventory_integer_type_aliases_before_key_or_stage(
+    c: Check,
+):
+    integer_fields = (
+        "archive_size",
+        "csv_files",
+        "actors",
+        "frames",
+        "unique_archive_member_names",
+        "unique_source_content_sha256s",
+        "duplicate_content_groups",
+        "members_beyond_unique_content",
+        "max_content_multiplicity",
+        "cross_actor_duplicate_content_groups",
+        "empty_trials",
+        "repeated_headers",
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "source"
+        expected, _ = _synthetic_tree(data_root)
+        audited = audit_ravdess_inventory(data_root, expectation=expected)
+        output = data_root / "derived_semantic23"
+        canonical_key = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        original_audit = prep.audit_ravdess_inventory
+        original_key_loader = prep.load_or_create_private_id_key
+        original_create = prep._create_directory_at
+        original_write_cache = prep._write_cache_at
+        key_calls = stage_calls = cache_calls = 0
+
+        def unexpected_key_loader(*args, **kwargs):
+            nonlocal key_calls
+            key_calls += 1
+            raise AssertionError("private-key loader reached after inventory type drift")
+
+        def tracked_create(*args, **kwargs):
+            nonlocal stage_calls
+            stage_calls += 1
+            return original_create(*args, **kwargs)
+
+        def tracked_cache(*args, **kwargs):
+            nonlocal cache_calls
+            cache_calls += 1
+            return original_write_cache(*args, **kwargs)
+
+        mutations: list[tuple[str, object]] = []
+        for field in integer_fields:
+            value = getattr(audited, field)
+            mutations.append((field, float(value)))
+            if value in {0, 1}:
+                mutations.append((field, bool(value)))
+
+        observations: list[tuple[str, str, str]] = []
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        prep.load_or_create_private_id_key = unexpected_key_loader
+        prep._create_directory_at = tracked_create
+        prep._write_cache_at = tracked_cache
+        try:
+            for field, alias in mutations:
+                mutated = replace(audited, **{field: alias})
+                prep.audit_ravdess_inventory = (
+                    lambda *_args, mutated=mutated, **_kwargs: mutated
+                )
+                observed: BaseException | None = None
+                try:
+                    prep.prepare_ravdess_semantic23(data_root)
+                except BaseException as exc:  # noqa: BLE001 - inspect fail-closed type gate
+                    observed = exc
+                observations.append((
+                    field,
+                    type(alias).__name__,
+                    type(observed).__name__ if observed else "none",
+                ))
+        finally:
+            prep._write_cache_at = original_write_cache
+            prep._create_directory_at = original_create
+            prep.load_or_create_private_id_key = original_key_loader
+            prep.audit_ravdess_inventory = original_audit
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+
+        c.eq(
+            len(observations),
+            len(mutations),
+            "every frozen integer field exercises each equal-valued type alias",
+        )
+        c.true(
+            all(kind == ValueError.__name__ for _, _, kind in observations),
+            "generator rejects all float and bool inventory aliases type-exactly",
+        )
+        c.eq(key_calls, 0, "inventory type drift fails before key load/create")
+        c.eq(stage_calls, 0, "inventory type drift creates no generation stage")
+        c.eq(cache_calls, 0, "inventory type drift opens no cache")
+        c.true(not canonical_key.exists(), "inventory type drift creates no key")
+        c.true(not output.exists(), "inventory type drift publishes no generation")
+
+
+def test_production_rechecks_canonical_key_before_return(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "source"
+        expected, _ = _synthetic_tree(data_root)
+        output = data_root / "derived_semantic23"
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        original_publish = prep._publish_directory_no_replace
+        mutated = False
+
+        def publish_then_mutate_key(*args, **kwargs):
+            nonlocal mutated
+            result = original_publish(*args, **kwargs)
+            key_path.write_bytes(b"z" * prep.PRIVATE_ID_KEY_BYTES)
+            key_path.chmod(0o600)
+            mutated = True
+            return result
+
+        observed: BaseException | None = None
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        prep._publish_directory_no_replace = publish_then_mutate_key
+        try:
+            try:
+                prep.prepare_ravdess_semantic23(data_root)
+            except BaseException as exc:  # noqa: BLE001 - inspect retained state
+                observed = exc
+        finally:
+            prep._publish_directory_no_replace = original_publish
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.true(mutated, "canonical private key is mutated after publication")
+        c.true(
+            isinstance(observed, RuntimeError),
+            "post-publication canonical key mutation blocks success",
+        )
+        c.true(output.is_dir(), "failed post-publication key check retains output")
 
 
 def test_inventory_and_transactional_generation_fail_closed(c: Check):
@@ -1625,7 +4102,9 @@ def test_inventory_and_transactional_generation_fail_closed(c: Check):
         c.eq(len(list((output / "trials").glob("*.npz"))), 2,
              "one cache per trial")
         two_frame_trial_id = opaque_trial_id(
-            inventory.member_sha256[files[0].name], key=TEST_ID_KEY
+            files[0].name,
+            inventory.member_sha256[files[0].name],
+            key=TEST_ID_KEY,
         )
         two_frame_record = next(item for item in manifest["trials"]
                                 if item["trial_id"] == two_frame_trial_id)
@@ -1726,6 +4205,61 @@ def test_failed_ravdess_generation_retains_residue_without_delete_and_blocks_ret
         c.true(residues[0].is_dir(), "retry never mutates retained evidence")
 
 
+def test_retained_generation_preserves_primary_and_cleanup_failures(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "source"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        output = data_root / "derived_semantic23"
+        original_scan = prep._scan_staged_ravdess_caches_for_private_provenance
+        original_release = prep._release_output_lock
+        release_calls = 0
+
+        def fail_primary(*args, **kwargs):
+            original_scan(*args, **kwargs)
+            raise ValueError("synthetic primary generation validation failure")
+
+        def fail_cleanup(*args, **kwargs):
+            nonlocal release_calls
+            release_calls += 1
+            original_release(*args, **kwargs)
+            raise OSError("synthetic generation cleanup failure")
+
+        prep._scan_staged_ravdess_caches_for_private_provenance = fail_primary
+        prep._release_output_lock = fail_cleanup
+        observed: BaseException | None = None
+        try:
+            try:
+                build_generation_from_audited_sources(
+                    data_root,
+                    output,
+                    inventory,
+                    expectation=expected,
+                    id_key=TEST_ID_KEY,
+                )
+            except BaseException as exc:  # noqa: BLE001 - inspect combined graph
+                observed = exc
+        finally:
+            prep._release_output_lock = original_release
+            prep._scan_staged_ravdess_caches_for_private_provenance = original_scan
+
+        graph = _exception_chain_bytes(observed)
+        c.true(
+            isinstance(observed, RuntimeError)
+            and b"RAVDESS generation storage is retained as indeterminate" in graph,
+            "retained-storage wrapper remains the top-level failure",
+        )
+        c.true(
+            b"synthetic primary generation validation failure" in graph,
+            "retained-storage graph preserves the primary validation failure",
+        )
+        c.true(
+            b"synthetic generation cleanup failure" in graph,
+            "retained-storage graph preserves the cleanup failure",
+        )
+        c.eq(release_calls, 1, "cleanup release is attempted exactly once")
+
+
 def test_committed_ravdess_generation_exposes_narrow_read_only_authorizer(c: Check):
     c.true(
         hasattr(prep, "authorize_committed_ravdess_semantic23"),
@@ -1734,6 +4268,119 @@ def test_committed_ravdess_generation_exposes_narrow_read_only_authorizer(c: Che
     c.true(
         "authorize_committed_ravdess_semantic23" in prep.__all__,
         "the committed-generation authorizer is part of the explicit public API",
+    )
+
+
+def test_generator_rejects_staged_aggregate_resources_before_publication_and_numpy(
+    c: Check,
+):
+    observations: list[tuple[str, str, bool, int, int]] = []
+    for mode in ("declared_frames", "expanded_bytes", "regular_payload"):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "ravdess"
+            expected, _ = _synthetic_tree(data_root)
+            inventory = audit_ravdess_inventory(data_root, expectation=expected)
+            output = data_root / "derived_semantic23"
+            original_write = prep._write_cache_at
+            original_load = prep.np.load
+            original_regular_limit = (
+                prep._MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES
+            )
+            injected = 0
+            load_calls = 0
+
+            def fault_injected_write(
+                parent_descriptor: int,
+                cache_name: str,
+                trial: prep.SemanticTrial,
+            ) -> str:
+                nonlocal injected
+                written_trial = trial
+                if mode == "declared_frames" and injected == 0:
+                    written_trial = prep.SemanticTrial(
+                        frame_indices=np.concatenate((
+                            trial.frame_indices,
+                            np.asarray([int(trial.frame_indices[-1]) + 1], dtype=np.int64),
+                        )),
+                        timestamps=np.concatenate((
+                            trial.timestamps,
+                            np.asarray([float(trial.timestamps[-1]) + 0.033], dtype=np.float64),
+                        )),
+                        detector_confidence=np.concatenate((
+                            trial.detector_confidence,
+                            trial.detector_confidence[-1:],
+                        )),
+                        features=np.concatenate((trial.features, trial.features[-1:]), axis=0),
+                        valid_mask=np.concatenate((trial.valid_mask, trial.valid_mask[-1:])),
+                        source_sha256=trial.source_sha256,
+                    )
+                cache_sha256 = original_write(
+                    parent_descriptor, cache_name, written_trial
+                )
+                if mode == "expanded_bytes" and injected == 0:
+                    descriptor = os.open(
+                        cache_name,
+                        os.O_RDWR | os.O_NOFOLLOW,
+                        dir_fd=parent_descriptor,
+                    )
+                    try:
+                        with os.fdopen(descriptor, "r+b", closefd=False) as handle:
+                            rewritten = _pad_first_npy_header(handle.read())
+                            handle.seek(0)
+                            handle.truncate(0)
+                            handle.write(rewritten)
+                            handle.flush()
+                            os.fsync(descriptor)
+                        cache_sha256 = hashlib.sha256(rewritten).hexdigest()
+                    finally:
+                        os.close(descriptor)
+                injected += 1
+                return cache_sha256
+
+            def materialized_before_staged_aggregate_gate(*args, **kwargs):
+                nonlocal load_calls
+                load_calls += 1
+                raise AssertionError(
+                    "np.load reached before staged aggregate resource gate"
+                )
+
+            if mode == "regular_payload":
+                prep._MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES = 1
+            prep._write_cache_at = fault_injected_write
+            prep.np.load = materialized_before_staged_aggregate_gate
+            observed: BaseException | None = None
+            try:
+                try:
+                    build_generation_from_audited_sources(
+                        data_root,
+                        output,
+                        inventory,
+                        expectation=expected,
+                        id_key=TEST_ID_KEY,
+                    )
+                except BaseException as exc:  # noqa: BLE001 - inspect gate ordering
+                    observed = exc
+            finally:
+                prep.np.load = original_load
+                prep._write_cache_at = original_write
+                prep._MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES = (
+                    original_regular_limit
+                )
+            observations.append((
+                mode,
+                type(observed).__name__ if observed else "none",
+                output.exists(),
+                injected,
+                load_calls,
+            ))
+
+    c.eq(
+        observations,
+        [
+            (mode, RuntimeError.__name__, False, 2, 0)
+            for mode in ("declared_frames", "expanded_bytes", "regular_payload")
+        ],
+        "staged aggregate frame/expanded/regular budgets fail before publication and NumPy",
     )
 
 
@@ -1764,6 +4411,194 @@ def test_ravdess_npz_resource_metadata_is_rejected_before_numpy_load(c: Check):
             )
     finally:
         prep.np.load = original_load
+
+
+def test_authorizer_rejects_cumulative_cache_budget_before_numpy_load(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        inflated_payload = _ravdess_cache_bytes()
+        for row in manifest["trials"]:
+            cache_path = output / "trials" / f"{row['trial_id']}.npz"
+            cache_path.write_bytes(inflated_payload)
+            cache_path.chmod(0o600)
+            cache_sha256 = hashlib.sha256(inflated_payload).hexdigest()
+            row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+                cache_sha256,
+                trial_id=row["trial_id"],
+                actor_id=row["actor_id"],
+                key=TEST_ID_KEY,
+            )
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True), encoding="utf-8"
+        )
+        manifest_path.chmod(0o600)
+
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        original_load = prep.np.load
+        load_calls = 0
+
+        def materialized_before_aggregate_gate(*args, **kwargs):
+            nonlocal load_calls
+            load_calls += 1
+            raise AssertionError("np.load reached before cumulative cache gate")
+
+        observed: BaseException | None = None
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        prep.np.load = materialized_before_aggregate_gate
+        try:
+            try:
+                prep.authorize_committed_ravdess_semantic23(data_root)
+            except BaseException as exc:  # noqa: BLE001 - inspect gate ordering
+                observed = exc
+        finally:
+            prep.np.load = original_load
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.true(
+            isinstance(observed, ValueError),
+            "coordinated valid-HMAC cumulative frame inflation fails closed",
+        )
+        c.eq(load_calls, 0, "aggregate frames/bytes are bounded before np.load")
+
+
+def test_authorizer_rejects_cumulative_expanded_bytes_before_numpy_load(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        row = manifest["trials"][0]
+        cache_path = output / "trials" / f"{row['trial_id']}.npz"
+        padded = _pad_first_npy_header(cache_path.read_bytes())
+        cache_path.write_bytes(padded)
+        cache_path.chmod(0o600)
+        cache_sha256 = hashlib.sha256(padded).hexdigest()
+        row["cache_integrity_id"] = prep._opaque_cache_integrity_id(
+            cache_sha256,
+            trial_id=row["trial_id"],
+            actor_id=row["actor_id"],
+            key=TEST_ID_KEY,
+        )
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True), encoding="utf-8"
+        )
+        manifest_path.chmod(0o600)
+
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        original_load = prep.np.load
+        load_calls = 0
+
+        def materialized_before_byte_gate(*args, **kwargs):
+            nonlocal load_calls
+            load_calls += 1
+            raise AssertionError("np.load reached before cumulative byte gate")
+
+        observed: BaseException | None = None
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        prep.np.load = materialized_before_byte_gate
+        try:
+            try:
+                prep.authorize_committed_ravdess_semantic23(data_root)
+            except BaseException as exc:  # noqa: BLE001 - inspect gate ordering
+                observed = exc
+        finally:
+            prep.np.load = original_load
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.true(
+            isinstance(observed, ValueError),
+            "valid-HMAC cumulative NPY header padding fails closed",
+        )
+        c.eq(load_calls, 0, "aggregate expanded bytes are bounded before np.load")
+
+
+def test_authorizer_rejects_cumulative_regular_payload_before_numpy_load(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        cache_paths = sorted((output / "trials").glob("*.npz"))
+        manifest_path = output / "manifest.json"
+        total_regular_payload = (
+            manifest_path.stat().st_size
+            + sum(path.stat().st_size for path in cache_paths)
+        )
+        limit_name = "_MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES"
+        original_limit = getattr(prep, limit_name, None)
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        original_load = prep.np.load
+        load_calls = 0
+
+        def materialized_before_raw_gate(*args, **kwargs):
+            nonlocal load_calls
+            load_calls += 1
+            raise AssertionError("np.load reached before cumulative raw-byte gate")
+
+        setattr(prep, limit_name, total_regular_payload - 1)
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        prep.np.load = materialized_before_raw_gate
+        observed: BaseException | None = None
+        try:
+            try:
+                prep.authorize_committed_ravdess_semantic23(data_root)
+            except BaseException as exc:  # noqa: BLE001 - inspect gate ordering
+                observed = exc
+        finally:
+            prep.np.load = original_load
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+            if original_limit is None:
+                delattr(prep, limit_name)
+            else:
+                setattr(prep, limit_name, original_limit)
+        c.true(
+            isinstance(observed, ValueError),
+            "coordinated cumulative regular-file payload overflow fails closed",
+        )
+        c.eq(
+            load_calls, 0,
+            "manifest plus cache payload bytes are bounded before np.load",
+        )
+        c.eq(
+            original_limit,
+            128 * 1024 * 1024,
+            "production aggregate regular-file payload contract is exactly 128 MiB",
+        )
 
 
 def test_ravdess_actual_central_record_count_is_bounded_before_zipfile(c: Check):
@@ -2244,6 +5079,75 @@ def test_committed_ravdess_manifest_rejects_bool_int_type_aliases(c: Check):
             manifest_path.write_bytes(original_bytes)
             manifest_path.chmod(0o600)
             prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+
+
+def test_all_v2_inventory_topology_fields_are_individually_exact(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        key_path = data_root / prep.RAVDESS_ID_KEY_RELATIVE_PATH
+        key_path.write_bytes(TEST_ID_KEY)
+        key_path.chmod(0o600)
+        output = data_root / "derived_semantic23"
+        build_generation_from_audited_sources(
+            data_root,
+            output,
+            inventory,
+            expectation=expected,
+            id_key=TEST_ID_KEY,
+        )
+        manifest_path = output / "manifest.json"
+        original_bytes = manifest_path.read_bytes()
+        observations: list[tuple[str, str, str]] = []
+        original_expectation = prep.FROZEN_RAVDESS_INVENTORY
+        prep.FROZEN_RAVDESS_INVENTORY = expected
+        try:
+            for field in RAVDESS_TOPOLOGY_FIELDS:
+                original = json.loads(original_bytes.decode("utf-8"))
+                expected_value = original["inventory"][field]
+                for mutation in (
+                    "missing", "extra", "bool", "wrong_type", "value_drift"
+                ):
+                    manifest = json.loads(original_bytes.decode("utf-8"))
+                    topology = manifest["inventory"]
+                    if mutation == "missing":
+                        topology.pop(field)
+                    elif mutation == "extra":
+                        topology[f"unexpected_{field}"] = expected_value
+                    elif mutation == "bool":
+                        topology[field] = True
+                    elif mutation == "wrong_type":
+                        topology[field] = str(expected_value)
+                    else:
+                        topology[field] = expected_value + 1
+                    manifest_path.write_text(
+                        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+                    )
+                    manifest_path.chmod(0o600)
+                    observed, _ = _capture_failure(
+                        lambda: prep.authorize_committed_ravdess_semantic23(
+                            data_root
+                        )
+                    )
+                    observations.append((
+                        field,
+                        mutation,
+                        type(observed).__name__ if observed else "none",
+                    ))
+        finally:
+            manifest_path.write_bytes(original_bytes)
+            manifest_path.chmod(0o600)
+            prep.FROZEN_RAVDESS_INVENTORY = original_expectation
+        c.eq(
+            len(observations),
+            len(RAVDESS_TOPOLOGY_FIELDS) * 5,
+            "all six topology keys run every exactness mutation",
+        )
+        c.true(
+            all(kind == ValueError.__name__ for _, _, kind in observations),
+            "every missing/extra/bool/type/value topology mutation is rejected",
+        )
 
 
 def test_committed_ravdess_authorizer_rebuilds_exact_archive_actor_join(c: Check):

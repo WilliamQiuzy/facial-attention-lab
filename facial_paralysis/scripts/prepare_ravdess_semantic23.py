@@ -53,11 +53,13 @@ RAVDESS_ID_KEY_RELATIVE_PATH = Path(".semantic23_private_id_key")
 DEFAULT_CONFIDENCE_THRESHOLD = 0.80
 PRIVATE_ID_KEY_BYTES = 32
 _MAX_RAVDESS_CACHE_RAW_BYTES = 16 * 1024 * 1024
+_MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES = 128 * 1024 * 1024
 _MAX_RAVDESS_NPZ_COMPRESSED_BYTES = 16 * 1024 * 1024
 _MAX_RAVDESS_NPZ_EXPANDED_BYTES = 64 * 1024 * 1024
 _MAX_RAVDESS_NPZ_CENTRAL_BYTES = 4096
 _MAX_RAVDESS_MANIFEST_BYTES = 4 * 1024 * 1024
 _MAX_NPY_HEADER_BYTES = 4096
+_CANONICAL_NPY_MEMBER_HEADER_BYTES = 128
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,12 @@ class RavdessInventoryExpectation:
     actors: int
     frames: int
     header_sha256: str
+    unique_archive_member_names: int
+    unique_source_content_sha256s: int
+    duplicate_content_groups: int
+    members_beyond_unique_content: int
+    max_content_multiplicity: int
+    cross_actor_duplicate_content_groups: int
     empty_trials: int = 0
     repeated_headers: int = 0
 
@@ -82,6 +90,12 @@ class RavdessInventory:
     header_sha256: str
     empty_trials: int
     repeated_headers: int
+    unique_archive_member_names: int
+    unique_source_content_sha256s: int
+    duplicate_content_groups: int
+    members_beyond_unique_content: int
+    max_content_multiplicity: int
+    cross_actor_duplicate_content_groups: int
     archive_device: int
     archive_inode: int
     archive_mtime_ns: int
@@ -96,6 +110,12 @@ FROZEN_RAVDESS_INVENTORY = RavdessInventoryExpectation(
     actors=24,
     frames=299_854,
     header_sha256="d89e2164e4c4e8d60393f88365ef0e87a10bef227dc90dc1d431117a74991b4e",
+    unique_archive_member_names=2_452,
+    unique_source_content_sha256s=2_451,
+    duplicate_content_groups=1,
+    members_beyond_unique_content=1,
+    max_content_multiplicity=2,
+    cross_actor_duplicate_content_groups=0,
     empty_trials=0,
     repeated_headers=0,
 )
@@ -257,6 +277,28 @@ def _archive_csv_infos(archive: zipfile.ZipFile) -> tuple[zipfile.ZipInfo, ...]:
     return tuple(sorted(files, key=lambda item: item.filename))
 
 
+def _read_ravdess_member_bytes(
+    archive: zipfile.ZipFile, member: zipfile.ZipInfo,
+) -> bytes:
+    """Read one source member without exposing archive diagnostics."""
+    read_failed = False
+    member_bytes: bytes | None = None
+    try:
+        member_bytes = archive.read(member)
+    except (
+        OSError,
+        EOFError,
+        KeyError,
+        RuntimeError,
+        ValueError,
+        zipfile.BadZipFile,
+    ):
+        read_failed = True
+    if read_failed or not isinstance(member_bytes, bytes):
+        raise ValueError("RAVDESS archive member could not be read safely")
+    return member_bytes
+
+
 def _actor_token_from_name(path: Path) -> str:
     fields = path.stem.split("-")
     if len(fields) != 7 or any(len(field) != 2 or not field.isdigit()
@@ -288,14 +330,17 @@ def audit_ravdess_inventory(
     empty_trials = 0
     frames = 0
     actors: set[str] = set()
+    actor_token_by_member_name: dict[str, str] = {}
 
     with _open_verified_archive(archive, expectation) as (archive_file, snapshot):
         with zipfile.ZipFile(archive_file, "r") as source_zip:
             members = _archive_csv_infos(source_zip)
             for member in members:
                 path = Path(member.filename)
-                actors.add(_actor_token_from_name(path))
-                member_bytes = source_zip.read(member)
+                actor_token = _actor_token_from_name(path)
+                actors.add(actor_token)
+                actor_token_by_member_name[member.filename] = actor_token
+                member_bytes = _read_ravdess_member_bytes(source_zip, member)
                 member_sha256[member.filename] = hashlib.sha256(member_bytes).hexdigest()
                 lines = member_bytes.splitlines()
                 header = lines[0] if lines else b""
@@ -323,6 +368,12 @@ def audit_ravdess_inventory(
             "RAVDESS actor-token drift; generation is blocked: "
             f"expected {sorted(expected_actor_tokens)}, observed {sorted(actors)}"
         )
+    members_by_content: dict[str, list[str]] = {}
+    for member_name, source_content_sha256 in member_sha256.items():
+        members_by_content.setdefault(source_content_sha256, []).append(member_name)
+    content_multiplicities = tuple(
+        len(member_names) for member_names in members_by_content.values()
+    )
     inventory = RavdessInventory(
         archive_size=snapshot.size,
         archive_md5=snapshot.md5,
@@ -332,6 +383,23 @@ def audit_ravdess_inventory(
         header_sha256=next(iter(header_hashes)),
         empty_trials=empty_trials,
         repeated_headers=repeated_headers,
+        unique_archive_member_names=len(member_sha256),
+        unique_source_content_sha256s=len(members_by_content),
+        duplicate_content_groups=sum(
+            multiplicity > 1 for multiplicity in content_multiplicities
+        ),
+        members_beyond_unique_content=(
+            len(member_sha256) - len(members_by_content)
+        ),
+        max_content_multiplicity=max(content_multiplicities, default=0),
+        cross_actor_duplicate_content_groups=sum(
+            len({
+                actor_token_by_member_name[member_name]
+                for member_name in member_names
+            }) > 1
+            for member_names in members_by_content.values()
+            if len(member_names) > 1
+        ),
         archive_device=snapshot.device,
         archive_inode=snapshot.inode,
         archive_mtime_ns=snapshot.mtime_ns,
@@ -350,7 +418,7 @@ def audit_ravdess_inventory(
     return inventory
 
 
-def parse_openface_csv_bytes(
+def _parse_openface_csv_bytes_impl(
     source_bytes: bytes,
     *,
     source_name: str,
@@ -387,12 +455,15 @@ def parse_openface_csv_bytes(
             raise ValueError(f"OpenFace CSV is missing required columns: {missing[:8]}")
 
         for row_number, row in enumerate(reader, start=2):
+            metadata_failed = False
             try:
                 frame = int(row["frame"])
                 timestamp = float(row["timestamp"])
                 confidence = float(row["confidence"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid frame metadata at CSV row {row_number}") from exc
+            except (TypeError, ValueError):
+                metadata_failed = True
+            if metadata_failed:
+                raise ValueError(f"invalid frame metadata at CSV row {row_number}")
             if not np.isfinite(timestamp) or not np.isfinite(confidence):
                 raise ValueError(f"non-finite frame metadata at CSV row {row_number}")
             if not 0.0 <= confidence <= 1.0:
@@ -434,6 +505,43 @@ def parse_openface_csv_bytes(
         valid_mask=np.asarray(valid, dtype=np.bool_),
         source_sha256=source_sha256,
     )
+
+
+def parse_openface_csv_bytes(
+    source_bytes: bytes,
+    *,
+    source_name: str,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+) -> SemanticTrial:
+    """Parse one immutable CSV snapshot with sanitized decoder failures."""
+    decoding_failed = False
+    try:
+        trial = _parse_openface_csv_bytes_impl(
+            source_bytes,
+            source_name=source_name,
+            confidence_threshold=confidence_threshold,
+        )
+    except (UnicodeError, csv.Error):
+        decoding_failed = True
+    if decoding_failed:
+        raise ValueError("OpenFace CSV is not valid UTF-8 CSV")
+    return trial
+
+
+def _parse_ravdess_member_csv(
+    source_bytes: bytes, *, source_name: str,
+) -> SemanticTrial:
+    """Parse one source member without exposing parser diagnostics."""
+    parse_failed = False
+    try:
+        trial = parse_openface_csv_bytes(
+            source_bytes, source_name=source_name
+        )
+    except (csv.Error, UnicodeError, KeyError, TypeError, ValueError):
+        parse_failed = True
+    if parse_failed:
+        raise ValueError("RAVDESS CSV could not be parsed safely")
+    return trial
 
 
 def parse_openface_csv(
@@ -735,9 +843,47 @@ def opaque_actor_id(actor_token: str, *, key: bytes) -> str:
     return _opaque_id("actor", actor_token, "actor", key=key)
 
 
-def opaque_trial_id(source_sha256: str, *, key: bytes) -> str:
-    """Stable private-key pseudonym for one source-content digest."""
-    return _opaque_id("trial", source_sha256, "trial", key=key)
+def opaque_trial_id(
+    archive_member_name: str,
+    source_content_sha256: str,
+    *,
+    key: bytes,
+) -> str:
+    """Stable v2 pseudonym binding one exact member name and byte digest."""
+    if (
+        type(archive_member_name) is not str
+        or re.fullmatch(
+            r"[0-9]{2}(?:-[0-9]{2}){6}\.csv",
+            archive_member_name,
+            flags=re.ASCII,
+        ) is None
+    ):
+        raise ValueError("RAVDESS archive member name is noncanonical")
+    if (
+        type(source_content_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", source_content_sha256, flags=re.ASCII)
+        is None
+    ):
+        raise ValueError("RAVDESS source-content digest is noncanonical")
+    if type(key) is not bytes or len(key) != PRIVATE_ID_KEY_BYTES:
+        raise ValueError("RAVDESS trial-ID key must be exactly 32 bytes")
+    binding = json.dumps(
+        {
+            "archive_member_name": archive_member_name,
+            "source_content_sha256": source_content_sha256,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    digest = hmac.new(
+        key,
+        b"ravdess-semantic23-trial-id-v2\0" + binding,
+        hashlib.sha256,
+    ).digest()
+    token = base64.b32encode(digest).decode("ascii").lower().rstrip("=")[:16]
+    return f"trial_{token}"
 
 
 def _opaque_cache_integrity_id(
@@ -771,7 +917,179 @@ def _manifest_inventory(inventory: RavdessInventory) -> dict[str, Any]:
         "header_sha256": inventory.header_sha256,
         "empty_trials": inventory.empty_trials,
         "repeated_headers": inventory.repeated_headers,
+        "unique_archive_member_names": inventory.unique_archive_member_names,
+        "unique_source_content_sha256s": inventory.unique_source_content_sha256s,
+        "duplicate_content_groups": inventory.duplicate_content_groups,
+        "members_beyond_unique_content": inventory.members_beyond_unique_content,
+        "max_content_multiplicity": inventory.max_content_multiplicity,
+        "cross_actor_duplicate_content_groups": (
+            inventory.cross_actor_duplicate_content_groups
+        ),
     }
+
+
+def _private_provenance_representations(
+    *,
+    source_paths: Sequence[Path],
+    raw_source_sha256s: set[str] | frozenset[str],
+    raw_cache_sha256s: set[str] | frozenset[str] = frozenset(),
+) -> frozenset[bytes]:
+    representations: set[bytes] = set()
+    for path in source_paths:
+        name = path.name.encode("utf-8")
+        if not name:
+            raise ValueError("source filename privacy input is empty")
+        representations.update({
+            name,
+            name.hex().encode("ascii"),
+            name.hex().upper().encode("ascii"),
+            base64.b64encode(name),
+        })
+    for digest in raw_source_sha256s | set(raw_cache_sha256s):
+        if (
+            type(digest) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", digest, flags=re.ASCII) is None
+        ):
+            raise ValueError("source digest privacy input is noncanonical")
+        digest_text = digest.encode("ascii")
+        digest_bytes = bytes.fromhex(digest)
+        representations.update({
+            digest_text,
+            digest_text.upper(),
+            digest_text.hex().encode("ascii"),
+            digest_text.hex().upper().encode("ascii"),
+            base64.b64encode(digest_text),
+            digest_bytes,
+            digest_bytes.hex().encode("ascii"),
+            digest_bytes.hex().upper().encode("ascii"),
+            base64.b64encode(digest_bytes),
+        })
+    for representation in tuple(representations):
+        try:
+            text = representation.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        representations.update({
+            text.encode("utf-16-le"),
+            text.encode("utf-16-be"),
+            text.encode("utf-32-le"),
+            text.encode("utf-32-be"),
+        })
+    return frozenset(representations)
+
+
+_PRIVATE_PATTERN_HASH_BASE = 257
+_PRIVATE_PATTERN_HASH_MASK = (1 << 64) - 1
+_PRIVATE_PATTERN_SCAN_CHUNK_BYTES = 1024 * 1024
+_PrivatePatternIndex = tuple[
+    tuple[int, frozenset[bytes], np.ndarray], ...
+]
+
+
+def _private_pattern_hash(pattern: bytes) -> int:
+    value = 0
+    factor = 1
+    for byte in pattern:
+        value = (
+            value + int(byte) * factor
+        ) & _PRIVATE_PATTERN_HASH_MASK
+        factor = (
+            factor * _PRIVATE_PATTERN_HASH_BASE
+        ) & _PRIVATE_PATTERN_HASH_MASK
+    return value
+
+
+def _compile_private_pattern_index(
+    representations: set[bytes] | frozenset[bytes],
+) -> _PrivatePatternIndex:
+    grouped: dict[int, set[bytes]] = {}
+    for representation in representations:
+        if representation:
+            grouped.setdefault(len(representation), set()).add(representation)
+    compiled: list[tuple[int, frozenset[bytes], np.ndarray]] = []
+    for length, patterns in sorted(grouped.items()):
+        hashes = np.asarray(
+            sorted({_private_pattern_hash(pattern) for pattern in patterns}),
+            dtype=np.uint64,
+        )
+        hashes.setflags(write=False)
+        compiled.append((length, frozenset(patterns), hashes))
+    return tuple(compiled)
+
+
+def _contains_indexed_private_pattern(
+    blobs: Sequence[bytes],
+    *indexes: _PrivatePatternIndex,
+) -> bool:
+    """Exact chunked multi-pattern scan with bounded vectorized workspaces."""
+    grouped: dict[int, list[tuple[frozenset[bytes], np.ndarray]]] = {}
+    for index in indexes:
+        for length, patterns, hashes in index:
+            grouped.setdefault(length, []).append((patterns, hashes))
+    if not grouped:
+        return False
+    max_pattern_length = max(grouped)
+    inverse_base = pow(_PRIVATE_PATTERN_HASH_BASE, -1, 1 << 64)
+
+    for blob in blobs:
+        if not blob:
+            continue
+        for chunk_start in range(
+            0, len(blob), _PRIVATE_PATTERN_SCAN_CHUNK_BYTES
+        ):
+            assigned_starts = min(
+                _PRIVATE_PATTERN_SCAN_CHUNK_BYTES,
+                len(blob) - chunk_start,
+            )
+            chunk_end = min(
+                len(blob),
+                chunk_start + assigned_starts + max_pattern_length - 1,
+            )
+            chunk = blob[chunk_start:chunk_end]
+            size = len(chunk)
+            byte_values = np.frombuffer(chunk, dtype=np.uint8).astype(
+                np.uint64, copy=False
+            )
+            powers = np.empty(size, dtype=np.uint64)
+            inverse_powers = np.empty(size, dtype=np.uint64)
+            powers[0] = np.uint64(1)
+            inverse_powers[0] = np.uint64(1)
+            if size > 1:
+                powers[1:] = np.uint64(_PRIVATE_PATTERN_HASH_BASE)
+                np.multiply.accumulate(powers[1:], out=powers[1:])
+                inverse_powers[1:] = np.uint64(inverse_base)
+                np.multiply.accumulate(
+                    inverse_powers[1:], out=inverse_powers[1:]
+                )
+            weighted = byte_values * powers
+            prefix = np.empty(size + 1, dtype=np.uint64)
+            prefix[0] = np.uint64(0)
+            np.cumsum(weighted, dtype=np.uint64, out=prefix[1:])
+
+            for length, pattern_groups in grouped.items():
+                if length > size:
+                    continue
+                raw_hashes = prefix[length:] - prefix[:-length]
+                window_hashes = (
+                    raw_hashes * inverse_powers[:size - length + 1]
+                )
+                for patterns, pattern_hashes in pattern_groups:
+                    indices = np.searchsorted(pattern_hashes, window_hashes)
+                    possible = np.flatnonzero(
+                        indices < len(pattern_hashes)
+                    )
+                    possible = possible[possible < assigned_starts]
+                    if possible.size == 0:
+                        continue
+                    matching = possible[
+                        pattern_hashes[indices[possible]]
+                        == window_hashes[possible]
+                    ]
+                    for position_value in matching:
+                        position = int(position_value)
+                        if chunk[position:position + length] in patterns:
+                            return True
+    return False
 
 
 def _assert_manifest_deidentified(
@@ -782,15 +1100,20 @@ def _assert_manifest_deidentified(
     raw_source_sha256s: set[str],
     raw_cache_sha256s: set[str] | frozenset[str] = frozenset(),
 ) -> None:
+    manifest_bytes = manifest_text.encode("utf-8")
     if str(source_root) in manifest_text:
         raise ValueError("aggregate manifest contains the raw source root")
-    leaked = [path.name for path in source_paths if path.name in manifest_text]
-    if leaked:
-        raise ValueError("aggregate manifest contains raw source filenames")
-    leaked_digests = [digest for digest in raw_source_sha256s | set(raw_cache_sha256s)
-                      if digest in manifest_text]
-    if leaked_digests:
-        raise ValueError("aggregate manifest contains raw source or cache digests")
+    representations = _private_provenance_representations(
+        source_paths=source_paths,
+        raw_source_sha256s=raw_source_sha256s,
+        raw_cache_sha256s=raw_cache_sha256s,
+    )
+    if _contains_indexed_private_pattern(
+        (manifest_bytes,), _compile_private_pattern_index(representations)
+    ):
+        raise ValueError(
+            "aggregate manifest contains raw or reversibly encoded provenance"
+        )
 
 
 _AUTHORIZED_MANIFEST_FIELDS = frozenset({
@@ -955,10 +1278,13 @@ def _load_unique_json_object(payload: bytes, field: str) -> dict[str, Any]:
             result[key] = value
         return result
 
+    decoding_failed = False
     try:
         value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{field} is not valid UTF-8 JSON") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        decoding_failed = True
+    if decoding_failed:
+        raise ValueError(f"{field} is not valid UTF-8 JSON")
     if not isinstance(value, dict):
         raise ValueError(f"{field} must contain an object")
     return value
@@ -1002,19 +1328,21 @@ def _npy_header(
     *,
     field: str,
 ) -> tuple[np.dtype, tuple[int, ...], bool]:
+    header_failure: str | None = None
     try:
         with archive.open(info, "r") as member:
             version = np.lib.format.read_magic(member)
             if version not in {(1, 0), (2, 0), (3, 0)}:
-                raise ValueError(f"{field} has an unsupported NPY version")
-            shape, fortran_order, dtype = np.lib.format._read_array_header(
-                member, version, max_header_size=_MAX_NPY_HEADER_BYTES
-            )
-            header_bytes = member.tell()
-    except (OSError, EOFError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
-        if isinstance(exc, ValueError) and str(exc).startswith(field):
-            raise
-        raise ValueError(f"{field} has an invalid bounded NPY header") from exc
+                header_failure = f"{field} has an unsupported NPY version"
+            else:
+                shape, fortran_order, dtype = np.lib.format._read_array_header(
+                    member, version, max_header_size=_MAX_NPY_HEADER_BYTES
+                )
+                header_bytes = member.tell()
+    except (OSError, EOFError, UnicodeError, ValueError, zipfile.BadZipFile):
+        header_failure = f"{field} has an invalid bounded NPY header"
+    if header_failure is not None:
+        raise ValueError(header_failure)
     if (
         not isinstance(shape, tuple)
         or any(not isinstance(item, int) or isinstance(item, bool) or item < 0
@@ -1115,7 +1443,7 @@ def _require_exact_zip_eocd(payload: bytes, *, member_count: int, field: str) ->
         raise ValueError(f"{field} central directory member count is not exact")
 
 
-def _require_ravdess_npz_headers(payload: bytes) -> None:
+def _require_ravdess_npz_headers(payload: bytes) -> tuple[int, int]:
     """Bound the ZIP and validate every NPY header before array materialization."""
     if len(payload) > _MAX_RAVDESS_CACHE_RAW_BYTES:
         raise ValueError("RAVDESS cache exceeds its raw byte limit")
@@ -1123,6 +1451,7 @@ def _require_ravdess_npz_headers(payload: bytes) -> None:
     _require_exact_zip_eocd(
         payload, member_count=len(expected_names), field="RAVDESS cache"
     )
+    validation_failure: str | None = None
     try:
         with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
             infos = tuple(archive.infolist())
@@ -1146,9 +1475,8 @@ def _require_ravdess_npz_headers(payload: bytes) -> None:
                 _MAX_RAVDESS_NPZ_COMPRESSED_BYTES
             ):
                 raise ValueError("RAVDESS cache exceeds its compressed byte limit")
-            if sum(int(info.file_size) for info in infos) > (
-                _MAX_RAVDESS_NPZ_EXPANDED_BYTES
-            ):
+            expanded_bytes = sum(int(info.file_size) for info in infos)
+            if expanded_bytes > _MAX_RAVDESS_NPZ_EXPANDED_BYTES:
                 raise ValueError("RAVDESS cache exceeds its expanded byte limit")
             headers = {
                 info.filename[:-4]: _npy_header(
@@ -1158,8 +1486,11 @@ def _require_ravdess_npz_headers(payload: bytes) -> None:
             }
     except (OSError, EOFError, ValueError, zipfile.BadZipFile) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("RAVDESS cache"):
-            raise
-        raise ValueError("RAVDESS cache is not a bounded exact NPZ") from exc
+            validation_failure = str(exc)
+        else:
+            validation_failure = "RAVDESS cache is not a bounded exact NPZ"
+    if validation_failure is not None:
+        raise ValueError(validation_failure)
 
     features_dtype, features_shape, _ = headers["features"]
     if (
@@ -1193,6 +1524,154 @@ def _require_ravdess_npz_headers(payload: bytes) -> None:
         dtype, shape, fortran_order = headers[name]
         if dtype != expected_dtype or shape != expected_shape or fortran_order:
             raise ValueError(f"RAVDESS cache {name} NPY header is noncanonical")
+    return length, expanded_bytes
+
+
+def _ravdess_aggregate_expanded_budget(
+    expectation: RavdessInventoryExpectation,
+) -> int:
+    per_frame_bytes = (
+        23 * np.dtype(np.float32).itemsize
+        + np.dtype(np.bool_).itemsize
+        + np.dtype(np.float64).itemsize
+        + np.dtype(np.int64).itemsize
+        + np.dtype(np.float32).itemsize
+    )
+    fixed_payload_bytes = sum(
+        int(value.nbytes)
+        for value in (
+            np.asarray(SEMANTIC23_FEATURE_NAMES),
+            np.asarray(SEMANTIC23_SCHEMA),
+            np.asarray(OPENFACE68_ADAPTER_METADATA["adapter_name"]),
+            np.asarray(OPENFACE68_ADAPTER_METADATA["scale_normalization"]),
+            np.asarray(DEFAULT_CONFIDENCE_THRESHOLD, dtype=np.float32),
+        )
+    )
+    max_header_bytes = (
+        len(_AUTHORIZED_CACHE_FIELDS) * _CANONICAL_NPY_MEMBER_HEADER_BYTES
+    )
+    return (
+        expectation.frames * per_frame_bytes
+        + expectation.csv_files * (fixed_payload_bytes + max_header_bytes)
+    )
+
+
+def _assert_ravdess_cache_deidentified(
+    payload: bytes,
+    *,
+    cache_name: str,
+    source_pattern_index: _PrivatePatternIndex,
+    raw_cache_sha256: str,
+) -> tuple[int, int]:
+    """Scan one exact cache and its expanded NPZ members for private inputs."""
+    cache_pattern_index = _compile_private_pattern_index(
+        _private_provenance_representations(
+            source_paths=(),
+            raw_source_sha256s=set(),
+            raw_cache_sha256s={raw_cache_sha256},
+        )
+    )
+    if _contains_indexed_private_pattern(
+        (cache_name.encode("utf-8"), payload),
+        source_pattern_index,
+        cache_pattern_index,
+    ):
+        raise ValueError("RAVDESS cache contains private provenance")
+    declared_frames, expanded_bytes = _require_ravdess_npz_headers(payload)
+    blobs: list[bytes] = []
+    privacy_scan_failed = False
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            blobs.append(archive.comment)
+            for info in archive.infolist():
+                blobs.extend((
+                    info.filename.encode("utf-8"),
+                    info.comment,
+                    info.extra,
+                    archive.read(info),
+                ))
+    except (OSError, EOFError, ValueError, zipfile.BadZipFile):
+        privacy_scan_failed = True
+    if privacy_scan_failed:
+        raise ValueError("RAVDESS cache privacy scan failed")
+    if _contains_indexed_private_pattern(
+        blobs, source_pattern_index, cache_pattern_index
+    ):
+        raise ValueError("RAVDESS cache contains private provenance")
+    return declared_frames, expanded_bytes
+
+
+def _source_private_pattern_index(
+    member_sha256: dict[str, str],
+) -> _PrivatePatternIndex:
+    return _compile_private_pattern_index(
+        _private_provenance_representations(
+            source_paths=tuple(Path(name) for name in member_sha256),
+            raw_source_sha256s=set(member_sha256.values()),
+        )
+    )
+
+
+def _scan_staged_ravdess_caches_for_private_provenance(
+    parent_descriptor: int,
+    cache_sha256_by_name: dict[str, str],
+    source_pattern_index: _PrivatePatternIndex,
+    *,
+    expectation: RavdessInventoryExpectation,
+) -> tuple[tuple[int, ...], dict[str, tuple[int, ...]], int, int, int]:
+    """Scan exact staged cache bytes and expanded NPZ members before publish."""
+    if not source_pattern_index:
+        raise ValueError("staged RAVDESS source privacy index is empty")
+    expected_names = tuple(sorted(cache_sha256_by_name))
+    tree_identity, cache_names = _snapshot_exact_owner_directory(
+        parent_descriptor,
+        expected_names,
+        "staged RAVDESS trial cache",
+    )
+    identities: dict[str, tuple[int, ...]] = {}
+    aggregate_regular_payload_bytes = 0
+    aggregate_declared_frames = 0
+    aggregate_expanded_bytes = 0
+    aggregate_expanded_budget = _ravdess_aggregate_expanded_budget(expectation)
+    for cache_name in cache_names:
+        payload, observed_sha256, identity = _read_owner_only_regular(
+            Path(cache_name),
+            "staged RAVDESS semantic23 cache",
+            max_bytes=_MAX_RAVDESS_CACHE_RAW_BYTES,
+            parent_descriptor=parent_descriptor,
+        )
+        if not hmac.compare_digest(
+            observed_sha256, cache_sha256_by_name[cache_name]
+        ):
+            raise ValueError("staged RAVDESS cache integrity changed")
+        declared_frames, expanded_bytes = _assert_ravdess_cache_deidentified(
+            payload,
+            cache_name=cache_name,
+            source_pattern_index=source_pattern_index,
+            raw_cache_sha256=observed_sha256,
+        )
+        aggregate_regular_payload_bytes += len(payload)
+        aggregate_declared_frames += declared_frames
+        aggregate_expanded_bytes += expanded_bytes
+        if (
+            aggregate_regular_payload_bytes
+            > _MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES
+            or aggregate_declared_frames > expectation.frames
+            or aggregate_expanded_bytes > aggregate_expanded_budget
+        ):
+            raise ValueError(
+                "staged RAVDESS cumulative cache resource budget is exceeded"
+            )
+        identities[cache_name] = identity
+    if aggregate_declared_frames != expectation.frames:
+        raise ValueError("staged RAVDESS declared frame count is not exact")
+    return (
+        tree_identity,
+        identities,
+        aggregate_regular_payload_bytes,
+        aggregate_declared_frames,
+        aggregate_expanded_bytes,
+    )
 
 
 def _validate_authorized_ravdess_cache(
@@ -1204,6 +1683,7 @@ def _validate_authorized_ravdess_cache(
     cache_sha256: str,
 ) -> AuthorizedRavdessTrial:
     _require_ravdess_npz_headers(payload)
+    validation_failure: str | None = None
     try:
         with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
             if tuple(cached.files) != _AUTHORIZED_CACHE_FIELDS:
@@ -1252,8 +1732,11 @@ def _validate_authorized_ravdess_cache(
                 raise ValueError("RAVDESS cache confidence threshold is noncanonical")
     except (OSError, EOFError, KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, ValueError) and str(exc).startswith("RAVDESS cache"):
-            raise
-        raise ValueError("RAVDESS cache is not a safe exact NPZ") from exc
+            validation_failure = str(exc)
+        else:
+            validation_failure = "RAVDESS cache is not a safe exact NPZ"
+    if validation_failure is not None:
+        raise ValueError(validation_failure)
     return AuthorizedRavdessTrial(
         trial_id=trial_id,
         actor_id=actor_id,
@@ -1319,9 +1802,14 @@ def authorize_committed_ravdess_semantic23(
         live_inventory = audit_ravdess_inventory(
             root, expectation=FROZEN_RAVDESS_INVENTORY
         )
+        source_pattern_index = _source_private_pattern_index(
+            live_inventory.member_sha256
+        )
         expected_actor_by_trial: dict[str, str] = {}
         for member_name, source_sha256 in live_inventory.member_sha256.items():
-            trial_id = opaque_trial_id(source_sha256, key=private_key)
+            trial_id = opaque_trial_id(
+                member_name, source_sha256, key=private_key
+            )
             actor_id = opaque_actor_id(
                 _actor_token_from_name(Path(member_name)), key=private_key
             )
@@ -1341,21 +1829,20 @@ def authorize_committed_ravdess_semantic23(
             manifest_identity, "RAVDESS manifest",
         ))
         manifest = _load_unique_json_object(manifest_bytes, "RAVDESS manifest")
+        _assert_manifest_deidentified(
+            manifest_bytes.decode("utf-8"),
+            source_root=root,
+            source_paths=[
+                Path(name) for name in live_inventory.member_sha256
+            ],
+            raw_source_sha256s=set(live_inventory.member_sha256.values()),
+        )
         if set(manifest) != _AUTHORIZED_MANIFEST_FIELDS:
             raise ValueError("RAVDESS manifest field schema is not exact")
         expectation = FROZEN_RAVDESS_INVENTORY
-        expected_inventory = {
-            "archive_size_bytes": expectation.archive_size,
-            "archive_md5": expectation.archive_md5,
-            "csv_trials": expectation.csv_files,
-            "actors": expectation.actors,
-            "source_frames": expectation.frames,
-            "header_sha256": expectation.header_sha256,
-            "empty_trials": expectation.empty_trials,
-            "repeated_headers": expectation.repeated_headers,
-        }
+        expected_inventory = _manifest_inventory(live_inventory)
         exact_values = {
-            "format_version": 1,
+            "format_version": 2,
             "schema": SEMANTIC23_SCHEMA,
             "feature_names": list(SEMANTIC23_FEATURE_NAMES),
             "feature_definitions": [asdict(item) for item in SEMANTIC23_DEFINITIONS],
@@ -1378,12 +1865,18 @@ def authorize_committed_ravdess_semantic23(
             },
             "provenance_policy": {
                 "actor_id": "private_hmac_sha256_base32",
-                "trial_id": "private_hmac_source_content_sha256_base32",
+                "trial_id": (
+                    "private_hmac_archive_member_name_"
+                    "source_content_sha256_base32_v2"
+                ),
                 "cache_integrity_id": (
                     "private_hmac_trial_id_actor_id_cache_sha256_base32"
                 ),
-                "source_binding": "verified_archive_member_bytes_single_read",
+                "source_binding": (
+                    "verified_archive_member_name_and_bytes_single_read"
+                ),
                 "raw_paths_or_filenames_in_manifest": False,
+                "raw_source_content_sha256_in_manifest": False,
             },
             "inventory": expected_inventory,
         }
@@ -1438,6 +1931,57 @@ def authorize_committed_ravdess_semantic23(
         closure_rows: list[dict[str, object]] = []
         source_frames = valid_frames = 0
         rows_by_trial = {row["trial_id"]: row for row in rows}
+        aggregate_declared_frames = 0
+        aggregate_regular_payload_bytes = len(manifest_bytes)
+        aggregate_expanded_bytes = 0
+        aggregate_expanded_budget = _ravdess_aggregate_expanded_budget(
+            expectation
+        )
+        preflight_cache_snapshots: dict[
+            str, tuple[str, tuple[int, ...]]
+        ] = {}
+        for name in cache_names:
+            row = rows_by_trial[Path(name).stem]
+            cache_bytes, cache_sha256, cache_identity = _read_owner_only_regular(
+                Path(name),
+                "RAVDESS semantic23 cache preflight",
+                max_bytes=_MAX_RAVDESS_CACHE_RAW_BYTES,
+                parent_descriptor=trials_descriptor,
+            )
+            expected_cache_id = _opaque_cache_integrity_id(
+                cache_sha256,
+                trial_id=row["trial_id"],
+                actor_id=row["actor_id"],
+                key=private_key,
+            )
+            if not hmac.compare_digest(
+                expected_cache_id, row["cache_integrity_id"]
+            ):
+                raise ValueError(
+                    "RAVDESS cache integrity ID does not bind cache bytes"
+                )
+            declared_frames, expanded_bytes = _require_ravdess_npz_headers(
+                cache_bytes
+            )
+            aggregate_declared_frames += declared_frames
+            aggregate_regular_payload_bytes += len(cache_bytes)
+            aggregate_expanded_bytes += expanded_bytes
+            if (
+                aggregate_declared_frames > expectation.frames
+                or aggregate_regular_payload_bytes
+                > _MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES
+                or aggregate_expanded_bytes > aggregate_expanded_budget
+            ):
+                raise ValueError(
+                    "RAVDESS cumulative cache resource budget is exceeded"
+                )
+            preflight_cache_snapshots[name] = (
+                cache_sha256, cache_identity
+            )
+        if aggregate_declared_frames != expectation.frames:
+            raise ValueError(
+                "RAVDESS cumulative declared frame count is not exact"
+            )
         for name in cache_names:
             path = trials_root / name
             row = rows_by_trial[path.stem]
@@ -1446,6 +1990,16 @@ def authorize_committed_ravdess_semantic23(
                 max_bytes=_MAX_RAVDESS_CACHE_RAW_BYTES,
                 parent_descriptor=trials_descriptor,
             )
+            preflight_sha256, preflight_identity = (
+                preflight_cache_snapshots[name]
+            )
+            if (
+                not hmac.compare_digest(cache_sha256, preflight_sha256)
+                or cache_identity != preflight_identity
+            ):
+                raise ValueError(
+                    "RAVDESS cache changed after resource preflight"
+                )
             snapshots.append((
                 trials_descriptor, name, path, cache_identity,
                 "RAVDESS semantic23 cache",
@@ -1458,6 +2012,12 @@ def authorize_committed_ravdess_semantic23(
             )
             if not hmac.compare_digest(expected_cache_id, row["cache_integrity_id"]):
                 raise ValueError("RAVDESS cache integrity ID does not bind cache bytes")
+            _assert_ravdess_cache_deidentified(
+                cache_bytes,
+                cache_name=name,
+                source_pattern_index=source_pattern_index,
+                raw_cache_sha256=cache_sha256,
+            )
             trial = _validate_authorized_ravdess_cache(
                 cache_bytes,
                 trial_id=row["trial_id"], actor_id=row["actor_id"],
@@ -2044,7 +2604,8 @@ def build_generation_from_audited_sources(
     inventory: RavdessInventory,
     *,
     expectation: RavdessInventoryExpectation = FROZEN_RAVDESS_INVENTORY,
-    id_key: bytes,
+    id_key: bytes | None = None,
+    canonical_key_path: Path | None = None,
 ) -> dict[str, Any]:
     """Build a staged generation bound to one previously audited inventory.
 
@@ -2057,7 +2618,24 @@ def build_generation_from_audited_sources(
     output = _output_path_preserving_descendants(
         data_root, source_root, output_root
     )
-    private_key = _private_id_key(id_key)
+    if (id_key is None) == (canonical_key_path is None):
+        raise ValueError(
+            "generation requires exactly one private-key input mode"
+        )
+    private_key: bytes | None = None
+    canonical_key_identity: tuple[int, ...] | None = None
+    if canonical_key_path is None:
+        private_key = _private_id_key(id_key)
+    else:
+        expected_key_path = source_root / RAVDESS_ID_KEY_RELATIVE_PATH
+        requested_key_path = _output_path_preserving_descendants(
+            data_root, source_root, canonical_key_path
+        )
+        if requested_key_path != expected_key_path:
+            raise ValueError(
+                "generation requires the canonical private-key path"
+            )
+        canonical_key_path = expected_key_path
     _assert_output_path_safe_under_root(source_root, output)
     parent_descriptor, parent_identity = _open_output_parent(output.parent)
     descriptors = ExitStack()
@@ -2086,12 +2664,33 @@ def build_generation_from_audited_sources(
         if _entry_stat(parent_descriptor, output.name) is not None:
             raise FileExistsError(f"derived semantic23 output already exists: {output}")
         _assert_no_unresolved_ravdess_state(parent_descriptor, output.name)
-        archive_path = source_root / RAVDESS_ARCHIVE_RELATIVE_PATH
         expected_inventory = asdict(expectation)
         observed_inventory = _inventory_values(inventory)
-        if any(observed_inventory[name] != value
-               for name, value in expected_inventory.items()):
+        if any(
+            name not in observed_inventory
+            or not _json_exact_equal(observed_inventory[name], value)
+            for name, value in expected_inventory.items()
+        ):
             raise ValueError("audited inventory does not match the required archive")
+        if canonical_key_path is not None:
+            private_key = load_or_create_private_id_key(canonical_key_path)
+            canonical_key_identity = _private_key_stat_identity(
+                os.stat(canonical_key_path, follow_symlinks=False)
+            )
+        if private_key is None:
+            raise RuntimeError("private-key mode did not produce key bytes")
+        archive_path = source_root / RAVDESS_ARCHIVE_RELATIVE_PATH
+        trial_id_by_member = {
+            member_name: opaque_trial_id(
+                member_name, source_sha256, key=private_key
+            )
+            for member_name, source_sha256 in inventory.member_sha256.items()
+        }
+        if len(set(trial_id_by_member.values())) != len(trial_id_by_member):
+            raise ValueError("opaque trial ID collision detected")
+        source_pattern_index = _source_private_pattern_index(
+            inventory.member_sha256
+        )
         inventory_snapshot = (
             inventory.archive_device, inventory.archive_inode,
             inventory.archive_size, inventory.archive_mtime_ns,
@@ -2115,6 +2714,7 @@ def build_generation_from_audited_sources(
 
         records: list[dict[str, Any]] = []
         raw_cache_sha256s: set[str] = set()
+        cache_sha256_by_name: dict[str, str] = {}
         total_source_frames = 0
         total_valid_frames = 0
         with _open_verified_archive(
@@ -2134,21 +2734,26 @@ def build_generation_from_audited_sources(
                 if member_names != list(inventory.member_sha256):
                     raise ValueError("RAVDESS member names changed after inventory audit")
                 for member in members:
-                    member_bytes = source_zip.read(member)
+                    member_bytes = _read_ravdess_member_bytes(
+                        source_zip, member
+                    )
                     observed_member_sha256 = hashlib.sha256(member_bytes).hexdigest()
                     if observed_member_sha256 != inventory.member_sha256[member.filename]:
                         raise ValueError(
-                            "RAVDESS member bytes changed after inventory audit: "
-                            f"{member.filename}"
+                            "RAVDESS member bytes changed after inventory audit"
                         )
-                    trial = parse_openface_csv_bytes(
+                    trial = _parse_ravdess_member_csv(
                         member_bytes, source_name=member.filename
                     )
                     source_path = Path(member.filename)
                     actor_id = opaque_actor_id(
                         _actor_token_from_name(source_path), key=private_key
                     )
-                    trial_id = opaque_trial_id(trial.source_sha256, key=private_key)
+                    trial_id = opaque_trial_id(
+                        member.filename, observed_member_sha256, key=private_key
+                    )
+                    if trial_id != trial_id_by_member[member.filename]:
+                        raise ValueError("opaque trial ID changed after preflight")
                     trial_source_frames = int(trial.features.shape[0])
                     trial_valid_frames = int(trial.valid_mask.sum())
                     total_source_frames += trial_source_frames
@@ -2161,6 +2766,7 @@ def build_generation_from_audited_sources(
                     except FileExistsError as exc:
                         raise ValueError("opaque trial ID collision detected") from exc
                     raw_cache_sha256s.add(cache_sha256)
+                    cache_sha256_by_name[cache_name] = cache_sha256
                     records.append({
                         "trial_id": trial_id,
                         "actor_id": actor_id,
@@ -2172,6 +2778,18 @@ def build_generation_from_audited_sources(
                         ),
                     })
         os.fsync(trials_descriptor)
+        (
+            staged_trials_identity,
+            staged_cache_identities,
+            staged_cache_regular_payload_bytes,
+            _,
+            _,
+        ) = _scan_staged_ravdess_caches_for_private_provenance(
+            trials_descriptor,
+            cache_sha256_by_name,
+            source_pattern_index,
+            expectation=expectation,
+        )
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
         )
@@ -2182,7 +2800,7 @@ def build_generation_from_audited_sources(
             raise ValueError("parsed frame count drifted after the frozen inventory audit")
         records.sort(key=lambda item: str(item["trial_id"]))
         manifest: dict[str, Any] = {
-            "format_version": 1,
+            "format_version": 2,
             "schema": SEMANTIC23_SCHEMA,
             "feature_names": list(SEMANTIC23_FEATURE_NAMES),
             "feature_definitions": [asdict(item) for item in SEMANTIC23_DEFINITIONS],
@@ -2205,12 +2823,18 @@ def build_generation_from_audited_sources(
             },
             "provenance_policy": {
                 "actor_id": "private_hmac_sha256_base32",
-                "trial_id": "private_hmac_source_content_sha256_base32",
+                "trial_id": (
+                    "private_hmac_archive_member_name_"
+                    "source_content_sha256_base32_v2"
+                ),
                 "cache_integrity_id": (
                     "private_hmac_trial_id_actor_id_cache_sha256_base32"
                 ),
-                "source_binding": "verified_archive_member_bytes_single_read",
+                "source_binding": (
+                    "verified_archive_member_name_and_bytes_single_read"
+                ),
                 "raw_paths_or_filenames_in_manifest": False,
+                "raw_source_content_sha256_in_manifest": False,
             },
             "inventory": _manifest_inventory(inventory),
             "quality_control": {
@@ -2233,19 +2857,285 @@ def build_generation_from_audited_sources(
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
         )
-        _write_bytes_at(
-            stage_descriptor, "manifest.json", manifest_text.encode("utf-8")
-        )
+        manifest_payload = manifest_text.encode("utf-8")
+        if (
+            len(manifest_payload) + staged_cache_regular_payload_bytes
+            > _MAX_RAVDESS_AGGREGATE_REGULAR_PAYLOAD_BYTES
+        ):
+            raise ValueError(
+                "staged RAVDESS aggregate regular payload budget is exceeded"
+            )
+        _write_bytes_at(stage_descriptor, "manifest.json", manifest_payload)
         os.fsync(stage_descriptor)
+        (
+            staged_manifest_payload,
+            _,
+            staged_manifest_identity,
+        ) = _read_owner_only_regular(
+            Path("manifest.json"),
+            "staged RAVDESS manifest",
+            max_bytes=_MAX_RAVDESS_MANIFEST_BYTES,
+            parent_descriptor=stage_descriptor,
+        )
+        if not hmac.compare_digest(staged_manifest_payload, manifest_payload):
+            raise ValueError("staged RAVDESS manifest changed after write")
+        _assert_manifest_deidentified(
+            staged_manifest_payload.decode("utf-8"),
+            source_root=source_root,
+            source_paths=source_paths,
+            raw_source_sha256s=set(inventory.member_sha256.values()),
+            raw_cache_sha256s=raw_cache_sha256s,
+        )
+        staged_output_identity, _ = _snapshot_exact_owner_directory(
+            stage_descriptor,
+            ("manifest.json", "trials"),
+            "staged RAVDESS generation",
+        )
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
         )
+        current_trials_identity, _ = _snapshot_exact_owner_directory(
+            trials_descriptor,
+            tuple(sorted(cache_sha256_by_name)),
+            "staged RAVDESS trial cache",
+        )
+        if current_trials_identity != staged_trials_identity:
+            raise ValueError("staged RAVDESS trial cache changed before publication")
+        for cache_name, cache_identity in staged_cache_identities.items():
+            _assert_owner_snapshot_at(
+                trials_descriptor,
+                cache_name,
+                cache_identity,
+                "staged RAVDESS semantic23 cache",
+            )
+        _assert_owner_snapshot_at(
+            stage_descriptor,
+            "manifest.json",
+            staged_manifest_identity,
+            "staged RAVDESS manifest",
+        )
+        current_output_identity, _ = _snapshot_exact_owner_directory(
+            stage_descriptor,
+            ("manifest.json", "trials"),
+            "staged RAVDESS generation",
+        )
+        if current_output_identity != staged_output_identity:
+            raise ValueError("staged RAVDESS generation changed before publication")
         _publish_directory_no_replace(
             parent_descriptor, stage_name, output.name, stage_identity
         )
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
         )
+        canonical_output_descriptor = _open_directory_at(
+            parent_descriptor,
+            output.name,
+            "published RAVDESS generation",
+        )
+        descriptors.callback(os.close, canonical_output_descriptor)
+        if (
+            _directory_identity(os.fstat(canonical_output_descriptor))
+            != stage_identity
+            or _directory_identity(os.fstat(stage_descriptor))
+            != stage_identity
+        ):
+            raise ValueError(
+                "published RAVDESS generation is not the held staging inode"
+            )
+        canonical_trials_descriptor = _open_directory_at(
+            canonical_output_descriptor,
+            "trials",
+            "published RAVDESS trial cache",
+        )
+        descriptors.callback(os.close, canonical_trials_descriptor)
+        if _directory_identity(os.fstat(canonical_trials_descriptor)) != (
+            _directory_identity(os.fstat(trials_descriptor))
+        ):
+            raise ValueError(
+                "published RAVDESS trial cache is not the held staging inode"
+            )
+
+        held_output_identity, _ = _snapshot_exact_owner_directory(
+            stage_descriptor,
+            ("manifest.json", "trials"),
+            "held published RAVDESS generation",
+        )
+        canonical_output_identity, _ = _snapshot_exact_owner_directory(
+            canonical_output_descriptor,
+            ("manifest.json", "trials"),
+            "published RAVDESS generation",
+        )
+        if held_output_identity != canonical_output_identity:
+            raise ValueError("published RAVDESS generation tree changed")
+        postpublish_output_identity = held_output_identity
+        expected_cache_names = tuple(sorted(cache_sha256_by_name))
+        held_trials_identity, _ = _snapshot_exact_owner_directory(
+            trials_descriptor,
+            expected_cache_names,
+            "held published RAVDESS trial cache",
+        )
+        canonical_trials_identity, _ = _snapshot_exact_owner_directory(
+            canonical_trials_descriptor,
+            expected_cache_names,
+            "published RAVDESS trial cache",
+        )
+        if (
+            held_trials_identity != staged_trials_identity
+            or canonical_trials_identity != staged_trials_identity
+        ):
+            raise ValueError("published RAVDESS trial cache tree changed")
+
+        held_manifest, _, held_manifest_identity = _read_owner_only_regular(
+            Path("manifest.json"),
+            "held published RAVDESS manifest",
+            max_bytes=_MAX_RAVDESS_MANIFEST_BYTES,
+            parent_descriptor=stage_descriptor,
+        )
+        canonical_manifest, _, canonical_manifest_identity = (
+            _read_owner_only_regular(
+                Path("manifest.json"),
+                "published RAVDESS manifest",
+                max_bytes=_MAX_RAVDESS_MANIFEST_BYTES,
+                parent_descriptor=canonical_output_descriptor,
+            )
+        )
+        if (
+            not hmac.compare_digest(held_manifest, manifest_payload)
+            or not hmac.compare_digest(canonical_manifest, manifest_payload)
+            or held_manifest_identity != staged_manifest_identity
+            or canonical_manifest_identity != staged_manifest_identity
+        ):
+            raise ValueError("published RAVDESS manifest changed")
+        canonical_manifest_object = _load_unique_json_object(
+            canonical_manifest, "published RAVDESS manifest"
+        )
+        if not _json_exact_equal(canonical_manifest_object, manifest):
+            raise ValueError("published RAVDESS manifest schema changed")
+        _assert_manifest_deidentified(
+            canonical_manifest.decode("utf-8"),
+            source_root=source_root,
+            source_paths=source_paths,
+            raw_source_sha256s=set(inventory.member_sha256.values()),
+            raw_cache_sha256s=raw_cache_sha256s,
+        )
+
+        rows_by_cache = {
+            f"{row['trial_id']}.npz": row for row in records
+        }
+        for cache_name in expected_cache_names:
+            held_cache, held_sha256, held_identity = _read_owner_only_regular(
+                Path(cache_name),
+                "held published RAVDESS semantic23 cache",
+                max_bytes=_MAX_RAVDESS_CACHE_RAW_BYTES,
+                parent_descriptor=trials_descriptor,
+            )
+            canonical_cache, canonical_sha256, canonical_identity = (
+                _read_owner_only_regular(
+                    Path(cache_name),
+                    "published RAVDESS semantic23 cache",
+                    max_bytes=_MAX_RAVDESS_CACHE_RAW_BYTES,
+                    parent_descriptor=canonical_trials_descriptor,
+                )
+            )
+            expected_sha256 = cache_sha256_by_name[cache_name]
+            expected_identity = staged_cache_identities[cache_name]
+            if (
+                not hmac.compare_digest(held_cache, canonical_cache)
+                or not hmac.compare_digest(held_sha256, expected_sha256)
+                or not hmac.compare_digest(canonical_sha256, expected_sha256)
+                or held_identity != expected_identity
+                or canonical_identity != expected_identity
+            ):
+                raise ValueError("published RAVDESS semantic23 cache changed")
+            row = rows_by_cache[cache_name]
+            expected_cache_id = _opaque_cache_integrity_id(
+                canonical_sha256,
+                trial_id=str(row["trial_id"]),
+                actor_id=str(row["actor_id"]),
+                key=private_key,
+            )
+            if not hmac.compare_digest(
+                expected_cache_id, str(row["cache_integrity_id"])
+            ):
+                raise ValueError(
+                    "published RAVDESS cache integrity ID changed"
+                )
+            _assert_ravdess_cache_deidentified(
+                canonical_cache,
+                cache_name=cache_name,
+                source_pattern_index=source_pattern_index,
+                raw_cache_sha256=canonical_sha256,
+            )
+            _validate_authorized_ravdess_cache(
+                canonical_cache,
+                trial_id=str(row["trial_id"]),
+                actor_id=str(row["actor_id"]),
+                cache_integrity_id=str(row["cache_integrity_id"]),
+                cache_sha256=canonical_sha256,
+            )
+
+        repeated_inventory = audit_ravdess_inventory(
+            source_root, expectation=expectation
+        )
+        if repeated_inventory != inventory:
+            raise ValueError(
+                "RAVDESS source inventory changed after publication"
+            )
+        if canonical_key_path is not None:
+            final_key = _load_private_id_key(canonical_key_path)
+            final_key_identity = _private_key_stat_identity(
+                os.stat(canonical_key_path, follow_symlinks=False)
+            )
+            if (
+                not hmac.compare_digest(final_key, private_key)
+                or final_key_identity != canonical_key_identity
+            ):
+                raise ValueError(
+                    "canonical private key changed after publication"
+                )
+        _assert_output_parent_identity(
+            output.parent, parent_descriptor, parent_identity
+        )
+        opened_lock = os.fstat(lock_descriptor)
+        current_lock = os.stat(
+            lock_name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(opened_lock.st_mode)
+            or not stat.S_ISREG(current_lock.st_mode)
+            or _directory_identity(opened_lock) != lock_identity
+            or _directory_identity(current_lock) != lock_identity
+        ):
+            raise ValueError("output lock changed during publication validation")
+        final_held_trials_identity, _ = _snapshot_exact_owner_directory(
+            trials_descriptor,
+            expected_cache_names,
+            "held published RAVDESS trial cache",
+        )
+        final_canonical_trials_identity, _ = _snapshot_exact_owner_directory(
+            canonical_trials_descriptor,
+            expected_cache_names,
+            "published RAVDESS trial cache",
+        )
+        final_held_output_identity, _ = _snapshot_exact_owner_directory(
+            stage_descriptor,
+            ("manifest.json", "trials"),
+            "held published RAVDESS generation",
+        )
+        final_canonical_output_identity, _ = _snapshot_exact_owner_directory(
+            canonical_output_descriptor,
+            ("manifest.json", "trials"),
+            "published RAVDESS generation",
+        )
+        if (
+            final_held_trials_identity != staged_trials_identity
+            or final_canonical_trials_identity != staged_trials_identity
+            or final_held_output_identity != postpublish_output_identity
+            or final_canonical_output_identity != postpublish_output_identity
+        ):
+            raise ValueError(
+                "published RAVDESS generation changed during validation"
+            )
         try:
             _release_output_lock(
                 output.parent,
@@ -2287,9 +3177,17 @@ def build_generation_from_audited_sources(
             if cleanup_error is None:
                 cleanup_error = caught
         if pending_error is not None and stage_identity is not None and not committed:
+            retained_cause = pending_error
+            if cleanup_error is not None:
+                combined = RuntimeError(
+                    "RAVDESS generation validation and cleanup both failed"
+                )
+                combined.__cause__ = pending_error
+                combined.__context__ = cleanup_error
+                retained_cause = combined
             raise RuntimeError(
                 "RAVDESS generation storage is retained as indeterminate"
-            ) from pending_error
+            ) from retained_cause
         if pending_error is not None and cleanup_error is not None:
             raise pending_error from cleanup_error
         if pending_error is None and cleanup_error is not None:
@@ -2305,6 +3203,15 @@ def prepare_ravdess_semantic23(
     """Production entry point pinned to the frozen RAVDESS inventory."""
     root = Path(data_root).expanduser().resolve()
     output = root / "derived_semantic23"
+    key_path = root / RAVDESS_ID_KEY_RELATIVE_PATH
+    if id_key_path is not None:
+        requested_key = _output_path_preserving_descendants(
+            data_root, root, id_key_path
+        )
+        if requested_key != key_path:
+            raise ValueError(
+                "production RAVDESS requires the canonical private key"
+            )
     if output_root is not None:
         requested_output = _output_path_preserving_descendants(
             data_root, root, output_root
@@ -2316,15 +3223,9 @@ def prepare_ravdess_semantic23(
             )
     _assert_output_path_safe_under_root(root, output)
     inventory = audit_ravdess_inventory(root, expectation=FROZEN_RAVDESS_INVENTORY)
-    key_path = (
-        Path(id_key_path).expanduser()
-        if id_key_path is not None
-        else root / RAVDESS_ID_KEY_RELATIVE_PATH
-    )
-    private_key = load_or_create_private_id_key(key_path)
     return build_generation_from_audited_sources(
         root, output, inventory, expectation=FROZEN_RAVDESS_INVENTORY,
-        id_key=private_key,
+        canonical_key_path=key_path,
     )
 
 
@@ -2353,7 +3254,9 @@ def main() -> int:
             "source_frames": manifest["inventory"]["source_frames"],
         }, sort_keys=True))
     else:
-        inventory = audit_ravdess_inventory(args.data_root)
+        inventory = audit_ravdess_inventory(
+            args.data_root, expectation=FROZEN_RAVDESS_INVENTORY
+        )
         print(json.dumps({
             "status": "audit_ok",
             **_manifest_inventory(inventory),
@@ -2361,8 +3264,22 @@ def main() -> int:
     return 0
 
 
+def _run_cli() -> int:
+    try:
+        return main()
+    except Exception:  # noqa: BLE001 - public CLI emits one fixed safe failure
+        print(
+            json.dumps(
+                {"error": "RAVDESS command failed", "status": "error"},
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_run_cli())
 
 
 __all__ = [
