@@ -382,7 +382,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
     facial_paralysis/scripts/build_mayo_ssl_cache.py
   git diff --check
   test -z "$(git status --porcelain)"
-  PLAN_COMMIT="$(git log -1 --format=%H --grep='^docs(ssl): freeze bridge execution plan$')"
+  PLAN_COMMIT="$(git log -1 --format=%H --extended-regexp --grep='^docs\(ssl\): (freeze|harden) bridge execution plan$')"
   test -n "$PLAN_COMMIT"
   git merge-base --is-ancestor "$PLAN_COMMIT" HEAD
   git diff --quiet "$PLAN_COMMIT" HEAD -- \
