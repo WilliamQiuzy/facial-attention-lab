@@ -2346,6 +2346,138 @@ def test_transaction_journal_recovers_simulated_process_interruptions(c: Check):
                    "successful recovery removes transaction staging/backups")
 
 
+def test_committed_key_drift_downgrade_write_failure_preserves_indeterminate_evidence(
+    c: Check,
+):
+    original_salt = b"committed-key-drift-original-012"
+    replacement_salt = b"committed-key-drift-replace-0123"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        (output / "old-generation-sentinel").write_text("old-cache")
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-key-drift", original_salt,
+        )
+        key = (
+            root / "outputs" / "dynamic_landmark" / "pretraining"
+            / ".mayo_ssl_hmac.key"
+        )
+        key.parent.mkdir(parents=True)
+        (root / "outputs" / "dynamic_landmark").chmod(0o700)
+        key.parent.chmod(0o700)
+        key.write_bytes(original_salt)
+        key.chmod(0o600)
+
+        real_write_journal = builder._write_transaction_journal
+        committed_was_durable = False
+
+        def fail_only_downgrade(path, payload):
+            nonlocal committed_was_durable
+            if (
+                committed_was_durable
+                and payload["phase"] == "new_exposure_installed"
+            ):
+                raise OSError("forced journal downgrade write failure")
+            real_write_journal(path, payload)
+            if payload["phase"] == "committed":
+                committed_was_durable = True
+
+        def drift_key_after_committed(phase):
+            if phase != "committed":
+                return
+            replacement = key.parent / ".replacement-mayo-key"
+            replacement.write_bytes(replacement_salt)
+            replacement.chmod(0o600)
+            os.replace(replacement, key)
+
+        caught: BaseException | None = None
+        builder._write_transaction_journal = fail_only_downgrade
+        try:
+            try:
+                with builder._hold_canonical_mayo_key(
+                    key, project_root=root,
+                ) as held_key, builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        salt=held_key.key_bytes,
+                        phase_hook=drift_key_after_committed,
+                        continuity_validator=held_key.assert_unchanged,
+                    )
+            except BaseException as exc:  # inspect the complete chained failure
+                caught = exc
+        finally:
+            builder._write_transaction_journal = real_write_journal
+
+        journal_path = root / ".cache.transaction.json"
+        c.true(
+            journal_path.is_file(),
+            "a failed committed-journal downgrade preserves the durable journal",
+        )
+        journal = json.loads(journal_path.read_text())
+        token = journal["token"]
+        output_backup = root / f".cache.backup-{token}"
+        exposure_backup = root / f".mayo_exposure_manifest.json.backup-{token}"
+        c.eq(journal["phase"], "committed",
+             "the last durable phase remains explicit and indeterminate")
+        c.true(
+            output.is_dir()
+            and not (output / "old-generation-sentinel").exists()
+            and (output / "collection_manifest.json").is_file(),
+            "the newly installed canonical generation remains as evidence",
+        )
+        c.eq(
+            (output_backup / "old-generation-sentinel").read_text(),
+            "old-cache",
+            "the previous cache generation backup remains recoverable",
+        )
+        c.eq(
+            exposure_backup.read_text(),
+            "old-exposure",
+            "the previous exposure backup remains recoverable",
+        )
+        c.true(
+            exposure.read_text() != "old-exposure",
+            "the newly installed canonical exposure remains as evidence",
+        )
+        c.true(
+            isinstance(caught, ValueError)
+            and _exception_chain_contains(
+                caught, ValueError, "HMAC salt must have exactly one hard link"
+            ),
+            "key drift remains the primary publication failure",
+        )
+        c.true(
+            caught is not None and _exception_chain_contains(
+                caught, OSError, "forced journal downgrade write failure"
+            ),
+            "the journal downgrade storage failure remains in the exception chain",
+        )
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output,
+                    exposure_manifest_path=exposure,
+                    salt=replacement_salt,
+                ),
+                ValueError,
+                "retry with the drifted key fails closed",
+            )
+        c.true(
+            journal_path.is_file()
+            and output_backup.is_dir()
+            and exposure_backup.is_file(),
+            "a failed retry preserves all indeterminate transaction evidence",
+        )
+
+
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
@@ -2656,6 +2788,315 @@ def test_run_builder_uses_pinned_homogeneous_sources_and_exact_runtime(c: Check)
                "ignored generation JSON contains no raw source/cache digest or salt")
 
 
+def _assert_key_fault_blocks_publication(
+    c: Check,
+    root: Path,
+    fault: str,
+    injection_point: str = "extraction",
+    *,
+    with_existing_generation: bool = False,
+) -> None:
+    class OneFrameCapture:
+        def __init__(self):
+            self.read_count = 0
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {
+                cv2.CAP_PROP_FPS: 60.0,
+                cv2.CAP_PROP_FRAME_COUNT: 1.0,
+                cv2.CAP_PROP_FRAME_WIDTH: 5.0,
+                cv2.CAP_PROP_FRAME_HEIGHT: 4.0,
+            }.get(prop, 0.0)
+
+        def read(self):
+            if self.read_count:
+                return False, None
+            self.read_count += 1
+            return True, np.zeros((4, 5, 3), np.uint8)
+
+        def release(self):
+            return None
+
+    data = root / "data" / "livelinkface_data"
+    exports = root / "data" / "mediapipe_out"
+    session = data / "PHI_session"
+    session.mkdir(parents=True)
+    exports.mkdir(parents=True)
+    source = session / "private.mov"
+    source.write_bytes(b"one-frame-video")
+    asset = builder.VideoAsset(
+        session,
+        source,
+        builder.VideoMetadata(1, 60.0, 5, 4),
+        _sha(source.read_bytes()),
+        None,
+    )
+    counts = {
+        "total_sessions": 1, "video_bearing_sessions": 1,
+        "without_video_sessions": 0, "exact_duplicate_copies_excluded": 0,
+        "short_qc_clips_excluded": 0, "long_unique_videos": 1,
+        "existing_complete_v2_exports": 0, "remaining_long_videos": 1,
+        "remaining_long_video_frames": 1, "arkit_only_sessions": 0,
+        "arkit_trajectories": 0, "arkit_rows": 0,
+        "arkit_timecode_gaps": 0, "metadata_only_sessions": 0,
+    }
+    inventory = builder.MayoInventory(
+        data, exports, counts, (asset,), (asset,), (), (asset,), (), (), (), (), (),
+    )
+    model = root / "face_landmarker.task"
+    model.write_bytes(b"model")
+    expected_python = root / "isolated" / "bin" / "python"
+    expected_python.parent.mkdir(parents=True)
+    expected_python.write_bytes(b"python-runtime")
+    output = (
+        root / "outputs" / "dynamic_landmark" / "pretraining"
+        / "mayo_ssl_cache"
+    )
+    exposure = (
+        root / "outputs" / "dynamic_landmark"
+        / "mayo_exposure_manifest.json"
+    )
+    key = output.parent / ".mayo_ssl_hmac.key"
+    key.parent.mkdir(parents=True)
+    (root / "outputs" / "dynamic_landmark").chmod(0o700)
+    key.parent.chmod(0o700)
+    key.write_bytes(b"k" * 32)
+    key.chmod(0o600)
+    if with_existing_generation:
+        output.mkdir(mode=0o700)
+        (output / "old-generation-sentinel").write_text("old-cache")
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+
+    dependency_specs = (
+        ("mediapipe", "mediapipe", "mediapipe==0.10.35"),
+        ("numpy", "numpy", "numpy==1.26.4"),
+        ("opencv", "opencv-python", "opencv-python==4.11.0"),
+        ("python", "python", "python==3.10.2"),
+    )
+    dependency_files = tuple(
+        builder.DependencyFileSnapshot(
+            logical_name=logical_name,
+            distribution=distribution,
+            record_name=f"{distribution}/fixture.py",
+            path=model,
+            sha256=str(index + 1) * 64,
+            device=1,
+            inode=index + 1,
+            size=1,
+            mtime_ns=1,
+        )
+        for index, (logical_name, distribution, _requirement)
+        in enumerate(dependency_specs)
+    )
+    fake_provenance = builder.ProvenanceSnapshot(
+        source_files=((source, asset.source_sha256),),
+        model_file=(model, _sha(model.read_bytes())),
+        producer_files=tuple(
+            (name, SCRIPT, str(index + 5) * 64)
+            for index, name in enumerate((
+                "builder", "action_bundle", "clinical_landmarks",
+                "dynamic_landmark_schema", "feature_registry",
+            ))
+        ),
+        dependencies={
+            logical_name: requirement
+            for logical_name, _distribution, requirement in dependency_specs
+        },
+        dependency_distributions={
+            logical_name: distribution
+            for logical_name, distribution, _requirement in dependency_specs
+        },
+        dependency_files=dependency_files,
+        dependency_aggregate_sha256="a" * 64,
+        producer_aggregate_sha256="b" * 64,
+        source_aggregate_sha256="c" * 64,
+    )
+    fault_injected = False
+
+    def inject_fault() -> None:
+        nonlocal fault_injected
+        if fault_injected:
+            return
+        fault_injected = True
+        if fault == "replacement":
+            replacement = key.parent / ".replacement-mayo-key"
+            replacement.write_bytes(b"k" * 32)
+            replacement.chmod(0o600)
+            os.replace(replacement, key)
+        elif fault == "chmod":
+            key.chmod(0o640)
+        elif fault == "bytes":
+            key.write_bytes(b"x" * 32)
+            key.chmod(0o600)
+        elif fault == "hardlink":
+            os.link(key, key.parent / ".hardlinked-mayo-key")
+        elif fault == "symlink":
+            target = key.parent / ".symlink-target-mayo-key"
+            target.write_bytes(b"k" * 32)
+            target.chmod(0o600)
+            key.unlink()
+            key.symlink_to(target.name)
+        elif fault == "short":
+            key.write_bytes(b"s" * 31)
+            key.chmod(0o600)
+        elif fault == "long":
+            key.write_bytes(b"l" * 33)
+            key.chmod(0o600)
+        else:
+            raise AssertionError(f"unknown key fault {fault!r}")
+
+    class FaultInjectingExtractor:
+        feature_schema = DYNAMIC_FEATURE_SCHEMA
+        feature_names = list(DYNAMIC_FEATURE_NAMES)
+
+        def extract_video_frame(self, _frame, _timestamp_ms):
+            if injection_point == "extraction":
+                inject_fault()
+            return (
+                np.ones(95, dtype=np.float32),
+                None,
+                np.eye(4, dtype=np.float32),
+            )
+
+        def close(self):
+            return None
+
+    original_snapshot = builder.snapshot_provenance
+    original_assert = builder.assert_provenance_unchanged
+    original_promote = builder.promote_generation
+
+    def promote_with_boundary_fault(*args, **kwargs):
+        existing_hook = kwargs.get("phase_hook")
+
+        def phase_hook(phase):
+            if existing_hook is not None:
+                existing_hook(phase)
+            if phase == injection_point:
+                inject_fault()
+
+        kwargs["phase_hook"] = phase_hook
+        return original_promote(*args, **kwargs)
+
+    builder.snapshot_provenance = lambda *_args, **_kwargs: fake_provenance
+    builder.assert_provenance_unchanged = lambda *_args, **_kwargs: None
+    if injection_point != "extraction":
+        builder.promote_generation = promote_with_boundary_fault
+    rejected = False
+    try:
+        try:
+            builder._run_builder_impl(
+                data,
+                exports,
+                model,
+                key,
+                output,
+                exposure,
+                extractor_factory=lambda **_kwargs: FaultInjectingExtractor(),
+                capture_factory=lambda _path: OneFrameCapture(),
+                inventory_factory=lambda *_args, **_kwargs: inventory,
+                project_root=root,
+                current_executable=expected_python,
+                expected_executable=expected_python,
+                provenance_python_executable=expected_python,
+            )
+        except ValueError:
+            rejected = True
+    finally:
+        builder.snapshot_provenance = original_snapshot
+        builder.assert_provenance_unchanged = original_assert
+        builder.promote_generation = original_promote
+        if key.exists():
+            key.chmod(0o600)
+    c.true(
+        fault_injected,
+        f"{fault} fault occurs at {injection_point}",
+    )
+    c.true(rejected, f"{fault} of the canonical key fails the build closed")
+    if with_existing_generation:
+        c.eq(
+            (output / "old-generation-sentinel").read_text(),
+            "old-cache",
+            f"{fault} restores the prior canonical Mayo cache",
+        )
+        c.eq(
+            exposure.read_text(),
+            "old-exposure",
+            f"{fault} restores the prior canonical Mayo exposure",
+        )
+    else:
+        c.true(
+            not output.exists() and not exposure.exists(),
+            f"{fault} cannot publish either canonical Mayo artifact",
+        )
+    c.true(
+        not any(output.parent.glob(f".{output.name}.staging-*")),
+        f"{fault} rejection cleans the uncommitted private staging generation",
+    )
+
+
+def test_extraction_time_mayo_key_replacement_blocks_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(
+            c, Path(td), "replacement",
+        )
+
+
+def test_extraction_time_mayo_key_chmod_blocks_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(c, Path(td), "chmod")
+
+
+def test_extraction_time_mayo_key_byte_mutation_blocks_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(c, Path(td), "bytes")
+
+
+def test_new_exposure_install_key_mutation_rolls_back_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(
+            c, Path(td), "bytes", "new_exposure_installed",
+        )
+
+
+def test_commit_boundary_mayo_key_replacement_rolls_back_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(
+            c, Path(td), "replacement", "committed",
+        )
+
+
+def test_commit_boundary_mayo_key_chmod_rolls_back_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(
+            c, Path(td), "chmod", "committed",
+        )
+
+
+def test_commit_boundary_mayo_key_byte_mutation_rolls_back_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        _assert_key_fault_blocks_publication(
+            c, Path(td), "bytes", "committed",
+        )
+
+
+def test_commit_boundary_key_storage_fault_matrix_restores_existing_generation(
+    c: Check,
+):
+    for fault in ("hardlink", "symlink", "short", "long"):
+        with tempfile.TemporaryDirectory() as td:
+            _assert_key_fault_blocks_publication(
+                c,
+                Path(td),
+                fault,
+                "committed",
+                with_existing_generation=True,
+            )
+
+
 def test_public_builder_cannot_override_frozen_security_dependencies(c: Check):
     parameters = tuple(inspect.signature(builder.run_builder).parameters)
     c.eq(parameters, (
@@ -2752,6 +3193,26 @@ def test_canonical_salt_permissions_runtime_and_inventory_only_cli(c: Check):
         c.raises(lambda: builder.validate_extraction_runtime(
             other_python, expected_executable=expected_python,
         ), RuntimeError, "cache extraction fails outside the pinned isolated runtime")
+
+
+def test_canonical_mayo_key_requires_exactly_32_bytes(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        key = (
+            root / "outputs" / "dynamic_landmark" / "pretraining"
+            / ".mayo_ssl_hmac.key"
+        )
+        key.parent.mkdir(parents=True)
+        (root / "outputs" / "dynamic_landmark").chmod(0o700)
+        key.parent.chmod(0o700)
+        for length in (33, 31, 4096):
+            key.write_bytes(b"k" * length)
+            key.chmod(0o600)
+            c.raises(
+                lambda: builder.read_canonical_salt(key, project_root=root),
+                ValueError,
+                f"canonical Mayo key length {length} is rejected",
+            )
 
 
 def test_committed_mayo_generation_exposes_narrow_read_only_authorizer(c: Check):

@@ -10,6 +10,7 @@ import importlib.util
 import inspect
 import io
 import json
+import logging
 import os
 import stat
 import sys
@@ -993,6 +994,34 @@ def _captured_cli_call(cli, arguments: list[str]):
     return result, stdout.getvalue(), stderr.getvalue()
 
 
+def _captured_cli_native_call(cli, arguments: list[str]):
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    saved_stdout = os.dup(1)
+    saved_stderr = os.dup(2)
+    observed: object = None
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as native_stdout, \
+                tempfile.TemporaryFile(mode="w+b") as native_stderr:
+            os.dup2(native_stdout.fileno(), 1)
+            os.dup2(native_stderr.fileno(), 2)
+            try:
+                with contextlib.redirect_stdout(stdout), \
+                        contextlib.redirect_stderr(stderr):
+                    observed = _caught(lambda: cli.main(arguments))
+            finally:
+                os.dup2(saved_stdout, 1)
+                os.dup2(saved_stderr, 2)
+            native_stdout.seek(0)
+            native_stderr.seek(0)
+            stdout.write(native_stdout.read().decode("utf-8", "replace"))
+            stderr.write(native_stderr.read().decode("utf-8", "replace"))
+    finally:
+        os.close(saved_stdout)
+        os.close(saved_stderr)
+    return observed, stdout.getvalue(), stderr.getvalue()
+
+
 def _private_root_representations(path: Path) -> tuple[str, ...]:
     absolute = os.path.abspath(os.fspath(path))
     return tuple(dict.fromkeys((
@@ -1071,6 +1100,380 @@ def test_cli_has_exact_subcommands_and_live_mayo_roots_are_preoutput_required(c:
         ]), ValueError, "wrong key target fails before canonical private output creation")
         c.true(not absent_root.exists(),
                "rejected key location causes no canonical-directory side effect")
+
+
+def test_all_mayo_cli_commands_capture_native_and_logger_root_leaks(c: Check):
+    ravdess, mayo = _synthetic_authorizations()
+    producer = "f" * 64
+    for command in (
+        "inventory", "build-bundles", "freeze-stage", "verify-determinism",
+    ):
+        cli = _load_cli()
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            pretraining = parent / "pretraining"
+            pretraining.mkdir(mode=0o700)
+            cli.PRETRAINING_ROOT = pretraining
+            cli.CANONICAL_MAYO_KEY = pretraining / ".mayo_ssl_hmac.key"
+            cli._producer_sha256 = lambda: producer
+            common, mayo_root, legacy_root = _cli_common_args(parent)
+            representations = (
+                *_private_root_representations(mayo_root),
+                *_private_root_representations(legacy_root),
+            )
+            logger = logging.getLogger(f"mayo-root-leak-{command}")
+            logger.propagate = False
+            handler = logging.StreamHandler()
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+
+            def authorize_ravdess():
+                return ravdess
+
+            def authorize_mayo():
+                os.write(1, (representations[0] + "\n").encode("utf-8"))
+                os.write(2, (representations[1] + "\n").encode("utf-8"))
+                os.write(1, (representations[6] + "\n").encode("utf-8"))
+                os.write(2, (representations[7] + "\n").encode("utf-8"))
+                logger.error("native-path=%s", representations[3])
+                logger.error("encoded-path=%s", representations[4])
+                logger.error("relative-path=%s", representations[2])
+                logger.error("legacy-encoded-path=%s", representations[10])
+                return mayo
+
+            setattr(authorize_ravdess, "captured_authorizations", (ravdess,))
+            setattr(authorize_mayo, "captured_authorizations", (mayo,))
+            cli._authorization_factories = lambda _args: (
+                authorize_ravdess, authorize_mayo,
+            )
+            cli._live_privacy_inventories = lambda _args: (
+                SimpleNamespace(member_sha256={"opaque.csv": "7" * 64}),
+                SimpleNamespace(),
+            )
+            cli._scan_private_trees = lambda *_args, **_kwargs: (True, True, 0)
+
+            def fake_build(_output, *, ravdess_authorizer,
+                           mayo_authorizer, producer_sha256):
+                c.eq(producer_sha256, producer)
+                ravdess_authorizer()
+                mayo_authorizer()
+                return {
+                    "ravdess": {"sample_count": 2},
+                    "mayo": {"sample_count": 32},
+                }
+
+            def fake_freeze(_run, _bridge, *, mode, ravdess_authorizer,
+                            mayo_authorizer, producer_sha256):
+                c.eq(producer_sha256, producer)
+                ravdess_authorizer()
+                mayo_authorizer()
+                return {"mode": mode, "sample_count": 34, "stage_count": 2}
+
+            def fake_verify(_bridge, *, ravdess_authorizer, mayo_authorizer,
+                            producer_sha256, before_authorization,
+                            finalize_locked):
+                c.eq(producer_sha256, producer)
+                before_authorization()
+                ravdess_authorizer()
+                mayo_authorizer()
+                finalize_locked()
+                return {
+                    "bundle_count": 2,
+                    "bundle_total_bytes": 1,
+                    "deterministic": True,
+                    "size_ok": True,
+                }
+
+            cli.build_bridge_bundles = fake_build
+            cli.freeze_bridge_stage = fake_freeze
+            cli.verify_bridge_generation = fake_verify
+            bridge = pretraining / "bridge"
+            tails = {
+                "inventory": [],
+                "build-bundles": ["--output-root", str(bridge)],
+                "freeze-stage": [
+                    "--bridge-root", str(bridge), "--mode", "smoke",
+                    "--run-id", "fd-privacy",
+                ],
+                "verify-determinism": ["--bridge-root", str(bridge)],
+            }
+            try:
+                observed, stdout, stderr = _captured_cli_native_call(
+                    cli, [command, *common, *tails[command]],
+                )
+            finally:
+                logger.removeHandler(handler)
+                handler.close()
+            c.true(isinstance(observed, ValueError),
+                   f"{command} turns captured Mayo-root output into failure")
+            c.eq(str(observed), "private Mayo command failed",
+                 f"{command} exposes only one generic failure")
+            emitted = stdout + stderr + str(observed)
+            c.true(all(value not in emitted for value in representations),
+                   f"{command} emits no Mayo-root representation")
+
+
+def test_mayo_cli_capture_starts_before_private_root_resolution(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        mayo_root = parent / "mayo-private-symlink-loop"
+        mayo_root.symlink_to(mayo_root)
+        args = SimpleNamespace(
+            mayo_data_root=mayo_root,
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            observed = _caught(lambda: cli._run_mayo_cli_captured(
+                args, lambda: {"ok": True},
+            ))
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+        emitted = stdout.getvalue() + stderr.getvalue() + str(observed)
+        c.true(mayo_root.name not in emitted,
+               "root-resolution setup failures expose no private basename")
+
+
+def test_mayo_cli_capture_closes_dup_when_fdopen_construction_fails(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        args = SimpleNamespace(
+            mayo_data_root=parent / "mayo-private-live",
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        original_fdopen = cli.os.fdopen
+        duplicated_for_stream: list[int] = []
+
+        def fail_fdopen(descriptor, *_positional, **_keywords):
+            duplicated_for_stream.append(descriptor)
+            raise OSError("synthetic fdopen construction failure")
+
+        cli.os.fdopen = fail_fdopen
+        try:
+            observed = _caught(lambda: cli._run_mayo_cli_captured(
+                args, lambda: {"ok": True},
+            ))
+        finally:
+            cli.os.fdopen = original_fdopen
+        still_open: list[int] = []
+        for descriptor in duplicated_for_stream:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            still_open.append(descriptor)
+            os.close(descriptor)
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+        c.true(bool(duplicated_for_stream), "fault reaches duplicated text descriptor")
+        c.eq(still_open, [], "fdopen construction failure leaks no duplicated FD")
+
+
+def test_mayo_cli_capture_closes_pipe_when_drain_thread_start_fails(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        args = SimpleNamespace(
+            mayo_data_root=parent / "mayo-private-live",
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        original_pipe = cli.os.pipe
+        original_thread = cli.threading.Thread
+        created_descriptors: list[int] = []
+
+        def tracked_pipe():
+            descriptors = original_pipe()
+            created_descriptors.extend(descriptors)
+            return descriptors
+
+        class StartFailureThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                raise RuntimeError("synthetic drain thread start failure")
+
+        cli.os.pipe = tracked_pipe
+        cli.threading.Thread = StartFailureThread
+        try:
+            observed = _caught(lambda: cli._run_mayo_cli_captured(
+                args, lambda: {"ok": True},
+            ))
+        finally:
+            cli.threading.Thread = original_thread
+            cli.os.pipe = original_pipe
+        still_open: list[int] = []
+        for descriptor in created_descriptors:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            still_open.append(descriptor)
+            os.close(descriptor)
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+        c.true(bool(created_descriptors), "fault occurs after pipe creation")
+        c.eq(still_open, [], "drain start failure leaks no pipe descriptor")
+
+
+def test_mayo_cli_native_capture_has_a_hard_storage_bound(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        args = SimpleNamespace(
+            mayo_data_root=parent / "mayo-private-live",
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        original_temporary_file = cli.tempfile.TemporaryFile
+        tracked: list[object] = []
+
+        class TrackedTemporaryFile:
+            def __init__(self, resource):
+                self.resource = resource
+                self.maximum_size = 0
+
+            @property
+            def closed(self):
+                return self.resource.closed
+
+            def close(self):
+                if not self.resource.closed:
+                    self.maximum_size = max(
+                        self.maximum_size,
+                        int(os.fstat(self.resource.fileno()).st_size),
+                    )
+                return self.resource.close()
+
+            def __getattr__(self, name):
+                return getattr(self.resource, name)
+
+        def tracking_temporary_file(*positional, **keywords):
+            wrapper = TrackedTemporaryFile(
+                original_temporary_file(*positional, **keywords),
+            )
+            tracked.append(wrapper)
+            return wrapper
+
+        payload = b"x" * (64 * 1024)
+
+        def exceed_native_stdout_bound():
+            remaining = cli._MAX_MAYO_CLI_CAPTURE_BYTES + len(payload)
+            while remaining:
+                chunk = payload[:min(len(payload), remaining)]
+                written = os.write(1, chunk)
+                c.true(written > 0, "native capture writer makes progress")
+                remaining -= written
+            return {"ok": True}
+
+        cli.tempfile.TemporaryFile = tracking_temporary_file
+        try:
+            observed = _caught(lambda: cli._run_mayo_cli_captured(
+                args, exceed_native_stdout_bound,
+            ))
+        finally:
+            cli.tempfile.TemporaryFile = original_temporary_file
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+        c.eq(len(tracked), 2, "stdout and stderr use two bounded capture sinks")
+        c.true(all(item.closed for item in tracked),
+               "overflow cleanup closes every capture sink")
+        c.true(all(
+            item.maximum_size <= cli._MAX_MAYO_CLI_CAPTURE_BYTES
+            for item in tracked
+        ), "no capture storage exceeds the fixed byte bound")
+
+
+def test_mayo_cli_capture_recovers_fd_restoration_before_generic_failure(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        args = SimpleNamespace(
+            mayo_data_root=parent / "mayo-private-live",
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        original_dup2 = cli.os.dup2
+        original_close = cli.os.close
+        safety_stdout = cli.os.dup(1)
+        safety_stderr = cli.os.dup(2)
+        destinations: list[int] = []
+
+        def fail_first_stderr_restore(source, destination, *positional,
+                                      **keywords):
+            destinations.append(destination)
+            if destinations == [1, 2, 2]:
+                raise OSError("synthetic first stderr restoration failure")
+            return original_dup2(source, destination, *positional, **keywords)
+
+        cli.os.dup2 = fail_first_stderr_restore
+        try:
+            observed = _caught(lambda: cli._run_mayo_cli_captured(
+                args, lambda: {"ok": True},
+            ))
+        finally:
+            cli.os.dup2 = original_dup2
+            original_dup2(safety_stderr, 2)
+            original_dup2(safety_stdout, 1)
+            original_close(safety_stderr)
+            original_close(safety_stdout)
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+        c.true(destinations.count(2) >= 3,
+               "a failed restoration is retried before descriptor cleanup")
+
+
+def test_mayo_cli_capture_retries_failed_close_and_attempts_every_fd(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        args = SimpleNamespace(
+            mayo_data_root=parent / "mayo-private-live",
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        original_dup = cli.os.dup
+        original_close = cli.os.close
+        duplicated: list[int] = []
+        close_calls: list[int] = []
+
+        def tracked_dup(descriptor):
+            duplicate = original_dup(descriptor)
+            duplicated.append(duplicate)
+            return duplicate
+
+        def fail_first_close(descriptor):
+            close_calls.append(descriptor)
+            if (
+                len(duplicated) >= 2
+                and descriptor == duplicated[1]
+                and close_calls.count(descriptor) == 1
+            ):
+                raise OSError("synthetic first saved-FD close failure")
+            return original_close(descriptor)
+
+        cli.os.dup = tracked_dup
+        cli.os.close = fail_first_close
+        try:
+            observed = _caught(lambda: cli._run_mayo_cli_captured(
+                args, lambda: {"ok": True},
+            ))
+        finally:
+            cli.os.close = original_close
+            cli.os.dup = original_dup
+        still_open: list[int] = []
+        for descriptor in duplicated:
+            try:
+                os.fstat(descriptor)
+            except OSError:
+                continue
+            still_open.append(descriptor)
+            original_close(descriptor)
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+        c.eq(still_open, [], "all duplicated descriptors are closed after one fault")
+        c.true(len(duplicated) >= 4 and close_calls.count(duplicated[1]) >= 2,
+               "failed saved-FD close is retried while later closes are attempted")
 
 
 def test_cli_synthetic_five_command_flow_is_private_and_deterministic(c: Check):
@@ -4981,9 +5384,7 @@ def test_concurrent_bridge_and_freeze_transactions_serialize_before_authorizatio
         c.eq(stat.S_IMODE(bridge_lock.stat().st_mode), 0o600)
 
         run_parent = root / "smoke"
-        run_parent.mkdir(mode=0o700)
         run = run_parent / "concurrent"
-        run.mkdir(mode=0o700)
         run_pair(
             lambda authorize: bridge_core.freeze_bridge_stage(
                 run,
@@ -5001,6 +5402,8 @@ def test_concurrent_bridge_and_freeze_transactions_serialize_before_authorizatio
         inputs_lock = run / ".inputs.lock"
         c.true(inputs_lock.is_file())
         c.eq(stat.S_IMODE(inputs_lock.stat().st_mode), 0o600)
+        c.eq(tuple(run_parent.glob(".*.inputs.lock")), (),
+             "first-use serialization adds no sibling lock contract")
 
 
 def test_frozen_verifier_rejects_sibling_staging_residue(c: Check):

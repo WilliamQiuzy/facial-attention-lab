@@ -18,9 +18,11 @@ import os
 import re
 import stat
 import sys
+import tempfile
+import threading
 import unicodedata
 import zipfile
-from contextlib import ExitStack
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from types import CodeType, ModuleType
@@ -81,6 +83,7 @@ _MAX_LIVE_SEMANTIC_TOTAL_BYTES = 32 * 1024 * 1024
 _LIVE_CALL_RESULT_SEGMENT = "\0dynamic-landmark-call-result\0"
 _LIVE_EXTERNAL_BEHAVIOR_SEGMENT = "\0dynamic-landmark-external-behavior\0"
 _EMPTY_CODE_TEMPLATE = (lambda: None).__code__
+_MAX_MAYO_CLI_CAPTURE_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -2670,36 +2673,370 @@ def _live_privacy_inventories(args: argparse.Namespace) -> tuple[object, object]
         raise ValueError("live privacy inventory authorization failed") from None
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
-    if args.command == "initialize-mayo-key":
-        requested_lexical = Path(os.path.abspath(os.path.expanduser(
-            os.fspath(args.key_path)
-        )))
-        expected_lexical = Path(os.path.abspath(os.path.expanduser(
-            os.fspath(CANONICAL_MAYO_KEY)
-        )))
-        if requested_lexical != expected_lexical:
-            raise ValueError("Mayo key path is not the canonical private location")
-        created = initialize_owner_only_key(expected_lexical)
-        _json_line({"created": created, "key_bytes": 32, "mode": "0600"})
-        return 0
+def _mayo_cli_root_forbidden(args: argparse.Namespace) -> _PrivacyForbidden:
+    tokens: set[bytes] = set()
+    for root in (args.mayo_data_root, args.mayo_existing_export_root):
+        for representation in _root_text_representations(Path(root)):
+            _add_text_variants(tokens, representation)
+    total = sum(len(token) for token in tokens)
+    if not tokens or len(tokens) > 1024 or total > 1024 * 1024:
+        raise ValueError("private Mayo command failed")
+    return _PrivacyForbidden(tokens=tuple(sorted(tokens)))
 
+
+def _capture_contains_forbidden(
+    capture: object,
+    forbidden: _PrivacyForbidden,
+) -> bool:
+    descriptor = capture.fileno()
+    size = int(os.fstat(descriptor).st_size)
+    if size < 0 or size > _MAX_MAYO_CLI_CAPTURE_BYTES:
+        raise ValueError("captured command output exceeds its fixed bound")
+    capture.seek(0)
+    matcher = _ByteMatcher(forbidden.tokens)
+    state = 0
+    remaining = size
+    while remaining:
+        chunk = capture.read(min(1024 * 1024, remaining))
+        if type(chunk) is not bytes or not chunk:
+            raise ValueError("captured command output is truncated")
+        remaining -= len(chunk)
+        state, matched = matcher.feed(chunk, state)
+        if matched:
+            return True
+    if capture.read(1) != b"":
+        raise ValueError("captured command output changed during scanning")
+    return False
+
+
+def _record_cleanup_error(
+    errors: list[BaseException],
+    action: Callable[[], object],
+) -> None:
+    try:
+        action()
+    except BaseException as exc:  # fail closed while attempting later cleanup
+        errors.append(exc)
+
+
+def _restore_captured_descriptor(source: int, destination: int) -> None:
+    try:
+        os.dup2(source, destination)
+    except BaseException as first:
+        try:
+            os.dup2(source, destination)
+        except BaseException as second:
+            raise RuntimeError("captured descriptor restoration failed") from second
+        raise first
+
+
+def _close_captured_descriptor(descriptor: int) -> None:
+    try:
+        os.close(descriptor)
+    except BaseException as first:
+        try:
+            os.fstat(descriptor)
+        except BaseException:
+            raise first
+        try:
+            os.close(descriptor)
+        except BaseException as second:
+            raise RuntimeError("captured descriptor close failed") from second
+        raise first
+
+
+def _close_captured_resource(resource: object) -> None:
+    try:
+        resource.close()
+    except BaseException as first:
+        if bool(getattr(resource, "closed", False)):
+            raise first
+        try:
+            resource.close()
+        except BaseException as second:
+            raise RuntimeError("captured resource close failed") from second
+        raise first
+
+
+@dataclass
+class _BoundedCaptureDrain:
+    sink: object = dataclass_field(repr=False)
+    read_descriptor: int = dataclass_field(repr=False)
+    stop: threading.Event = dataclass_field(
+        default_factory=threading.Event, repr=False,
+    )
+    thread: threading.Thread | None = dataclass_field(default=None, repr=False)
+    started: bool = False
+    overflowed: bool = False
+    stored_bytes: int = 0
+    errors: list[BaseException] = dataclass_field(default_factory=list, repr=False)
+
+
+def _write_bounded_capture_prefix(
+    drain: _BoundedCaptureDrain,
+    payload: bytes,
+) -> None:
+    remaining = _MAX_MAYO_CLI_CAPTURE_BYTES - drain.stored_bytes
+    if len(payload) > remaining:
+        drain.overflowed = True
+    if remaining <= 0:
+        return
+    view = memoryview(payload)[:remaining]
+    while view:
+        written = drain.sink.write(view)
+        if type(written) is not int or written <= 0 or written > len(view):
+            raise OSError("bounded capture sink write failed")
+        drain.stored_bytes += written
+        view = view[written:]
+
+
+def _drain_bounded_capture(drain: _BoundedCaptureDrain) -> None:
+    sink_failed = False
+    try:
+        os.set_blocking(drain.read_descriptor, False)
+        while True:
+            try:
+                payload = os.read(drain.read_descriptor, 64 * 1024)
+            except BlockingIOError:
+                if drain.stop.is_set():
+                    break
+                drain.stop.wait(0.01)
+                continue
+            except InterruptedError:
+                continue
+            if not payload:
+                break
+            if not sink_failed:
+                try:
+                    _write_bounded_capture_prefix(drain, payload)
+                except BaseException as exc:
+                    drain.errors.append(exc)
+                    sink_failed = True
+    except BaseException as exc:
+        drain.errors.append(exc)
+    finally:
+        try:
+            _close_captured_descriptor(drain.read_descriptor)
+        except BaseException as exc:
+            drain.errors.append(exc)
+
+
+def _start_bounded_capture_drain(
+    sink: object,
+    read_descriptor: int,
+) -> _BoundedCaptureDrain:
+    drain = _BoundedCaptureDrain(
+        sink=sink,
+        read_descriptor=read_descriptor,
+    )
+    try:
+        drain.thread = threading.Thread(
+            target=_drain_bounded_capture,
+            args=(drain,),
+            name="mayo-cli-output-drain",
+            daemon=True,
+        )
+        drain.thread.start()
+    except BaseException as primary:
+        try:
+            _close_captured_descriptor(read_descriptor)
+        except BaseException as cleanup:
+            raise primary from cleanup
+        raise
+    drain.started = True
+    return drain
+
+
+def _finish_bounded_capture_drain(
+    drain: _BoundedCaptureDrain,
+    errors: list[BaseException],
+) -> None:
+    drain.stop.set()
+    if drain.started and drain.thread is not None:
+        try:
+            drain.thread.join(timeout=5.0)
+            if drain.thread.is_alive():
+                raise RuntimeError("bounded capture drain did not terminate")
+        except BaseException as exc:
+            errors.append(exc)
+    else:
+        _record_cleanup_error(
+            errors,
+            lambda: _close_captured_descriptor(drain.read_descriptor),
+        )
+    errors.extend(drain.errors)
+
+
+def _run_mayo_cli_captured(
+    args: argparse.Namespace,
+    operation: Callable[[], object],
+) -> object:
+    """Run one Mayo-consuming command with Python and FD output quarantined."""
+    forbidden: _PrivacyForbidden | None = None
+    stdout_capture = None
+    stderr_capture = None
+    stdout_pipe_write: int | None = None
+    stderr_pipe_write: int | None = None
+    stdout_drain: _BoundedCaptureDrain | None = None
+    stderr_drain: _BoundedCaptureDrain | None = None
+    saved_stdout: int | None = None
+    saved_stderr: int | None = None
+    text_stdout_descriptor: int | None = None
+    text_stderr_descriptor: int | None = None
+    text_stdout = None
+    text_stderr = None
+    stdout_redirected = False
+    stderr_redirected = False
+    primary: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
+    result: object = None
+    leaked = False
+    try:
+        try:
+            stdout_capture = tempfile.TemporaryFile(mode="w+b")
+            stderr_capture = tempfile.TemporaryFile(mode="w+b")
+            stdout_pipe_read, stdout_pipe_write = os.pipe()
+            stdout_drain = _start_bounded_capture_drain(
+                stdout_capture, stdout_pipe_read,
+            )
+            stderr_pipe_read, stderr_pipe_write = os.pipe()
+            stderr_drain = _start_bounded_capture_drain(
+                stderr_capture, stderr_pipe_read,
+            )
+            sys.stdout.flush()
+            sys.stderr.flush()
+            saved_stdout = os.dup(1)
+            saved_stderr = os.dup(2)
+            os.dup2(stdout_pipe_write, 1)
+            stdout_redirected = True
+            os.dup2(stderr_pipe_write, 2)
+            stderr_redirected = True
+            text_stdout_descriptor = os.dup(stdout_pipe_write)
+            text_stdout = os.fdopen(
+                text_stdout_descriptor,
+                "w",
+                encoding="utf-8",
+                errors="backslashreplace",
+                buffering=1,
+            )
+            text_stdout_descriptor = None
+            text_stderr_descriptor = os.dup(stderr_pipe_write)
+            text_stderr = os.fdopen(
+                text_stderr_descriptor,
+                "w",
+                encoding="utf-8",
+                errors="backslashreplace",
+                buffering=1,
+            )
+            text_stderr_descriptor = None
+            with redirect_stdout(text_stdout), redirect_stderr(text_stderr):
+                forbidden = _mayo_cli_root_forbidden(args)
+                result = operation()
+        except BaseException as exc:
+            primary = exc
+    finally:
+        for stream in (text_stderr, text_stdout):
+            if stream is not None:
+                _record_cleanup_error(cleanup_errors, stream.flush)
+        if stderr_redirected:
+            if saved_stderr is None:
+                cleanup_errors.append(RuntimeError("stderr restoration is unavailable"))
+            else:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda: _restore_captured_descriptor(saved_stderr, 2),
+                )
+        if stdout_redirected:
+            if saved_stdout is None:
+                cleanup_errors.append(RuntimeError("stdout restoration is unavailable"))
+            else:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda: _restore_captured_descriptor(saved_stdout, 1),
+                )
+        for stream in (text_stderr, text_stdout):
+            if stream is not None:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda stream=stream: _close_captured_resource(stream),
+                )
+
+        for descriptor in (text_stderr_descriptor, text_stdout_descriptor):
+            if descriptor is not None:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda descriptor=descriptor: _close_captured_descriptor(
+                        descriptor
+                    ),
+                )
+        for descriptor in (stderr_pipe_write, stdout_pipe_write):
+            if descriptor is not None:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda descriptor=descriptor: _close_captured_descriptor(
+                        descriptor
+                    ),
+                )
+
+        for drain in (stdout_drain, stderr_drain):
+            if drain is not None:
+                _finish_bounded_capture_drain(drain, cleanup_errors)
+
+        for capture in (stdout_capture, stderr_capture):
+            if capture is not None:
+                _record_cleanup_error(cleanup_errors, capture.flush)
+
+        for capture in (stdout_capture, stderr_capture):
+            if capture is not None and forbidden is not None:
+                try:
+                    leaked = (
+                        _capture_contains_forbidden(capture, forbidden) or leaked
+                    )
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+
+        if any(
+            drain is not None and drain.overflowed
+            for drain in (stdout_drain, stderr_drain)
+        ):
+            cleanup_errors.append(
+                ValueError("captured command output exceeds its fixed bound")
+            )
+
+        for descriptor in (saved_stderr, saved_stdout):
+            if descriptor is not None:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda descriptor=descriptor: _close_captured_descriptor(
+                        descriptor
+                    ),
+                )
+        for capture in (stderr_capture, stdout_capture):
+            if capture is not None:
+                _record_cleanup_error(
+                    cleanup_errors,
+                    lambda capture=capture: _close_captured_resource(capture),
+                )
+
+    if primary is not None or cleanup_errors or leaked:
+        raise ValueError("private Mayo command failed") from None
+    return result
+
+
+def _run_mayo_cli_operation(args: argparse.Namespace) -> object:
     ravdess_authorizer, mayo_authorizer = _authorization_factories(args)
     producer = _producer_sha256()
     if args.command == "inventory":
         ravdess = ravdess_authorizer()
         mayo = mayo_authorizer()
-        _json_line({
+        return {
             "ravdess_trials": int(getattr(ravdess, "trial_count")),
             "ravdess_actors": int(getattr(ravdess, "actor_count")),
             "mayo_recordings": int(getattr(mayo, "recording_count")),
             "mayo_source_units": len({
                 getattr(item, "recording_id") for item in getattr(mayo, "recordings")
             }),
-        })
-        return 0
+        }
 
     canonical_bridge = PRETRAINING_ROOT / "bridge"
     if args.command == "build-bundles":
@@ -2712,19 +3049,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             mayo_authorizer=mayo_authorizer,
             producer_sha256=producer,
         )
-        _json_line({
+        return {
             "bundle_count": 2,
             "mayo_samples": int(stages["mayo"]["sample_count"]),
             "ravdess_samples": int(stages["ravdess"]["sample_count"]),
-        })
-        return 0
+        }
 
     bridge = _require_exact_path(
         args.bridge_root, canonical_bridge, "bridge root",
     )
     if args.command == "freeze-stage":
         run_root = _run_root(args.mode, args.run_id)
-        result = freeze_bridge_stage(
+        return freeze_bridge_stage(
             run_root,
             bridge,
             mode=args.mode,
@@ -2732,8 +3068,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             mayo_authorizer=mayo_authorizer,
             producer_sha256=producer,
         )
-        _json_line(result)
-        return 0
 
     if args.command == "verify-determinism":
         roots = [bridge]
@@ -2810,9 +3144,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             "deterministic", "modes_ok", "privacy_ok", "size_ok",
         )):
             raise ValueError("determinism verification did not satisfy all claims")
-        _json_line(result)
-        return 0
+        return result
     raise RuntimeError("unreachable bridge CLI command")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command == "initialize-mayo-key":
+        requested_lexical = Path(os.path.abspath(os.path.expanduser(
+            os.fspath(args.key_path)
+        )))
+        expected_lexical = Path(os.path.abspath(os.path.expanduser(
+            os.fspath(CANONICAL_MAYO_KEY)
+        )))
+        if requested_lexical != expected_lexical:
+            raise ValueError("Mayo key path is not the canonical private location")
+        created = initialize_owner_only_key(expected_lexical)
+        _json_line({"created": created, "key_bytes": 32, "mode": "0600"})
+        return 0
+
+    result = _run_mayo_cli_captured(
+        args, lambda: _run_mayo_cli_operation(args),
+    )
+    _json_line(result)
+    return 0
 
 
 if __name__ == "__main__":

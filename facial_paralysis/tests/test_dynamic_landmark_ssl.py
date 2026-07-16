@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -1315,6 +1316,150 @@ def test_mayo_prior_checkpoint_storage_mutations_precede_optimizer(c: Check):
                     0,
                     f"prior checkpoint {operation} fails before Mayo AdamW",
                 )
+
+
+def test_mayo_rejects_persisted_ravdess_then_mayo_prior_at_every_gate(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            ravdess_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            ravdess_result = ssl_core.train_ssl_stage(
+                stage_evidence=ravdess_evidence, seed=0,
+            )
+            ravdess_payload = build_ssl_checkpoint_payload(ravdess_result)
+            checkpoint_root = root / "lineage-replay"
+            checkpoint_root.mkdir(mode=0o700)
+            ravdess_path = checkpoint_root / "ravdess_seed0.pt"
+            ravdess_receipt = save_ssl_checkpoint(
+                ravdess_path,
+                ravdess_payload,
+                stage_evidence=ravdess_evidence,
+            )
+            persisted_ravdess = load_ssl_checkpoint(
+                ravdess_path,
+                receipt=ravdess_receipt,
+                stage_evidence=ravdess_evidence,
+            )
+            mayo_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                prior_ravdess_checkpoint=persisted_ravdess,
+                prior_ravdess_evidence=ravdess_evidence,
+                **frozen,
+            )
+            mayo_result = ssl_core.train_ssl_stage(
+                stage_evidence=mayo_evidence,
+                seed=0,
+                prior_ravdess_checkpoint=persisted_ravdess,
+                prior_stage_evidence=ravdess_evidence,
+            )
+            mayo_payload = build_ssl_checkpoint_payload(mayo_result)
+            mayo_path = checkpoint_root / "mayo_seed0.pt"
+            mayo_receipt = save_ssl_checkpoint(
+                mayo_path,
+                mayo_payload,
+                stage_evidence=mayo_evidence,
+            )
+            persisted_mayo = load_ssl_checkpoint(
+                mayo_path,
+                receipt=mayo_receipt,
+                stage_evidence=mayo_evidence,
+            )
+            c.eq(persisted_mayo["checkpoint_type"], CHECKPOINT_RAVDESS_MAYO)
+            c.eq(persisted_mayo["metadata"]["seed"], 0)
+            c.eq(mayo_evidence.mode, ravdess_evidence.mode)
+
+            initial_authorization_rejected = False
+            try:
+                ssl_core.authorize_frozen_ssl_stage(
+                    stage="mayo",
+                    prior_ravdess_checkpoint=persisted_mayo,
+                    prior_ravdess_evidence=mayo_evidence,
+                    **frozen,
+                )
+            except ValueError:
+                initial_authorization_rejected = True
+
+            target_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                prior_ravdess_checkpoint=persisted_ravdess,
+                prior_ravdess_evidence=ravdess_evidence,
+                **frozen,
+            )
+            replay_values = target_evidence.to_dict()
+            replay_values["prior_checkpoint_sha256"] = (
+                ssl_core.ssl_checkpoint_fingerprint(persisted_mayo)
+            )
+            replay_unsigned = dict(replay_values)
+            replay_unsigned.pop("evidence_sha256")
+            replay_values["evidence_sha256"] = ssl_core._canonical_sha256(
+                replay_unsigned
+            )
+            replay_evidence = ssl_core.SSLStageEvidence(**replay_values)
+            replay_authorization = replace(
+                target_evidence._runtime_authorization,
+                evidence_sha256=replay_evidence.evidence_sha256,
+                prior_ravdess_checkpoint=persisted_mayo,
+                prior_ravdess_evidence=mayo_evidence,
+            )
+            object.__setattr__(
+                replay_evidence,
+                "_runtime_authorization",
+                replay_authorization,
+            )
+
+            reauthorization_rejected = False
+            try:
+                ssl_core._require_authorized_stage_evidence(replay_evidence)
+            except ValueError:
+                reauthorization_rejected = True
+
+            optimizer_calls = 0
+            original_adamw = torch.optim.AdamW
+            original_require_stage = ssl_core._require_authorized_stage_evidence
+
+            def counted_adamw(*args, **kwargs):
+                nonlocal optimizer_calls
+                optimizer_calls += 1
+                return original_adamw(*args, **kwargs)
+
+            training_rejected = False
+            torch.optim.AdamW = counted_adamw
+            ssl_core._require_authorized_stage_evidence = lambda _evidence: None
+            try:
+                try:
+                    ssl_core._train_ssl_stage_impl(
+                        stage_evidence=replay_evidence,
+                        seed=0,
+                        prior_ravdess_checkpoint=persisted_mayo,
+                        prior_stage_evidence=mayo_evidence,
+                    )
+                except ValueError:
+                    training_rejected = True
+            finally:
+                ssl_core._require_authorized_stage_evidence = (
+                    original_require_stage
+                )
+                torch.optim.AdamW = original_adamw
+
+            c.true(
+                initial_authorization_rejected,
+                "initial Mayo authorization rejects a persisted ravdess_then_mayo prior",
+            )
+            c.true(
+                reauthorization_rejected,
+                "every Mayo reauthorization rejects a persisted ravdess_then_mayo prior",
+            )
+            c.true(
+                training_rejected,
+                "Mayo training independently rejects a persisted ravdess_then_mayo prior",
+            )
+            c.eq(
+                optimizer_calls,
+                0,
+                "replayed Mayo lineage fails before AdamW construction",
+            )
 
 
 def test_receipt_bound_scaler_uses_unique_source_unit_canonical_frames(c: Check):

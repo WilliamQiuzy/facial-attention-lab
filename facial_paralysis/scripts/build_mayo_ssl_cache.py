@@ -2473,6 +2473,7 @@ def promote_generation(
     exposure_manifest_path: str | Path | None = None,
     replace_func: Callable[[str | Path, str | Path], None] = os.replace,
     phase_hook: Callable[[str], None] | None = None,
+    continuity_validator: Callable[[], None] | None = None,
     salt: bytes | None = None,
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
@@ -2490,6 +2491,7 @@ def promote_generation(
             _lexical_absolute(exposure_manifest_path),
             replace_func=replace_func,
             phase_hook=phase_hook,
+            continuity_validator=continuity_validator,
             salt=salt,
             expected_inventory_counts=expected_inventory_counts,
             expected_collection_classification_integrity_id=(
@@ -2502,14 +2504,23 @@ def promote_generation(
         return
     backup = output.parent / f".{output.name}.backup-{secrets.token_hex(8)}"
     old_moved = False
+    new_installed = False
     try:
+        if continuity_validator is not None:
+            continuity_validator()
         if output.exists():
             _require_directory(output, "previous output generation")
             replace_func(output, backup)
             old_moved = True
         try:
             replace_func(staging, output)
+            new_installed = True
+            if continuity_validator is not None:
+                continuity_validator()
         except BaseException:
+            if new_installed and (output.exists() or _is_symlink(output)):
+                _remove_real_tree(output)
+                new_installed = False
             if old_moved:
                 if output.exists() or _is_symlink(output):
                     raise RuntimeError("cannot restore previous output generation")
@@ -2531,6 +2542,7 @@ def _promote_generation_with_exposure(
     *,
     replace_func: Callable[[str | Path, str | Path], None],
     phase_hook: Callable[[str], None] | None,
+    continuity_validator: Callable[[], None] | None,
     salt: bytes | None,
     expected_inventory_counts: Mapping[str, object] | None,
     expected_collection_classification_integrity_id: str | None,
@@ -2585,6 +2597,9 @@ def _promote_generation_with_exposure(
         if phase_hook is not None:
             phase_hook(phase)
 
+    rollback_is_durable = True
+    if continuity_validator is not None:
+        continuity_validator()
     set_phase("prepared")
     try:
         temporary_descriptor = _open_exclusive_private_file(
@@ -2612,7 +2627,8 @@ def _promote_generation_with_exposure(
         replace_func(exposure_temporary, exposure)
         _fsync_directory(exposure.parent)
         set_phase("new_exposure_installed")
-        set_phase("committed")
+        if continuity_validator is not None:
+            continuity_validator()
         _assert_committed_generation(
             output, exposure, generation_commitment,
             salt=salt,
@@ -2624,18 +2640,41 @@ def _promote_generation_with_exposure(
                 expected_classification_integrity_id
             ),
         )
+        if continuity_validator is not None:
+            continuity_validator()
+        set_phase("committed")
+        if continuity_validator is not None:
+            try:
+                continuity_validator()
+            except Exception as primary_error:
+                # The committed phase hook runs after its durable journal write.
+                # If it exposed key drift, make the journal noncommitted again
+                # before the common recovery path so the just-installed cache
+                # and exposure are rolled back instead of accepted.
+                journal["phase"] = "new_exposure_installed"
+                try:
+                    _write_transaction_journal(journal_path, journal)
+                except Exception as downgrade_error:
+                    # A failed atomic write or parent-directory fsync means the
+                    # downgrade is not durably established.  Recovery must not
+                    # interpret the last known committed journal and destroy
+                    # either side of this indeterminate transaction.
+                    rollback_is_durable = False
+                    raise primary_error from downgrade_error
+                raise
     except Exception:
-        _recover_cache_exposure_transaction(
-            output, exposure,
-            salt=salt,
-            expected_inventory_counts=expected_inventory_counts,
-            expected_collection_classification_integrity_id=(
-                expected_collection_classification_integrity_id
-            ),
-            expected_classification_integrity_id=(
-                expected_classification_integrity_id
-            ),
-        )
+        if rollback_is_durable:
+            _recover_cache_exposure_transaction(
+                output, exposure,
+                salt=salt,
+                expected_inventory_counts=expected_inventory_counts,
+                expected_collection_classification_integrity_id=(
+                    expected_collection_classification_integrity_id
+                ),
+                expected_classification_integrity_id=(
+                    expected_classification_integrity_id
+                ),
+            )
         raise
     _remove_real_tree(output_backup)
     _unlink_regular_if_present(exposure_backup, "committed exposure backup")
@@ -4712,12 +4751,23 @@ def validate_source_output_separation(
             raise ValueError("derived cache/exposure paths must not overlap source roots")
 
 
-def read_canonical_salt(
+@dataclass(frozen=True)
+class _HeldCanonicalMayoKey:
+    path: Path
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+    key_bytes: bytes = dataclass_field(repr=False)
+    owner_uid: int
+
+    def assert_unchanged(self) -> None:
+        _assert_canonical_mayo_key_unchanged(self)
+
+
+def _canonical_mayo_key_path(
     salt_file: str | Path,
     *,
-    project_root: str | Path = PROJECT_ROOT,
-    owner_uid: int | None = None,
-) -> bytes:
+    project_root: str | Path,
+) -> Path:
     root = _assert_no_symlink_components(project_root)
     expected = (
         root / "outputs" / "dynamic_landmark" / "pretraining" / ".mayo_ssl_hmac.key"
@@ -4733,37 +4783,140 @@ def read_canonical_salt(
         root / "outputs" / "dynamic_landmark" / "pretraining",
         "pretraining output directory",
     )
-    expected_owner = os.geteuid() if owner_uid is None else owner_uid
-    descriptor = os.open(
+    return path
+
+
+def _open_canonical_mayo_key(path: Path) -> int:
+    return os.open(
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_CLOEXEC", 0)
     )
+
+
+def _require_canonical_mayo_key_stat(
+    info: os.stat_result,
+    *,
+    owner_uid: int,
+) -> None:
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("HMAC salt must be a regular file")
+    if int(info.st_uid) != owner_uid:
+        raise ValueError("HMAC salt must be owned by the current user")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise ValueError("HMAC salt must have exact mode 0600")
+    if int(info.st_nlink) != 1:
+        raise ValueError("HMAC salt must have exactly one hard link")
+    if int(info.st_size) != 32:
+        raise ValueError("canonical Mayo HMAC key must contain exactly 32 bytes")
+
+
+def _read_canonical_mayo_key_descriptor(
+    descriptor: int,
+    *,
+    path: Path,
+    owner_uid: int,
+) -> tuple[bytes, tuple[int, ...]]:
+    before = os.fstat(descriptor)
+    linked_before = os.stat(path, follow_symlinks=False)
+    _require_canonical_mayo_key_stat(before, owner_uid=owner_uid)
+    _require_canonical_mayo_key_stat(linked_before, owner_uid=owner_uid)
+    identity = _regular_snapshot(before)
+    if _regular_snapshot(linked_before) != identity:
+        raise ValueError("canonical Mayo HMAC key path changed while it was opened")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    payload = bytearray()
+    while len(payload) <= 32:
+        block = os.read(descriptor, 33 - len(payload))
+        if not block:
+            break
+        payload.extend(block)
+    after = os.fstat(descriptor)
+    linked_after = os.stat(path, follow_symlinks=False)
+    _require_canonical_mayo_key_stat(after, owner_uid=owner_uid)
+    _require_canonical_mayo_key_stat(linked_after, owner_uid=owner_uid)
+    if (
+        _regular_snapshot(after) != identity
+        or _regular_snapshot(linked_after) != identity
+    ):
+        raise ValueError("canonical Mayo HMAC key changed while it was read")
+    if len(payload) != 32:
+        raise ValueError("canonical Mayo HMAC key must contain exactly 32 bytes")
+    return bytes(payload), identity
+
+
+def _assert_canonical_mayo_key_unchanged(
+    held: _HeldCanonicalMayoKey,
+) -> None:
+    payload, identity = _read_canonical_mayo_key_descriptor(
+        held.descriptor,
+        path=held.path,
+        owner_uid=held.owner_uid,
+    )
+    if (
+        identity != held.identity
+        or not hmac.compare_digest(payload, held.key_bytes)
+    ):
+        raise ValueError("canonical Mayo HMAC key changed while held")
+    reopened = _open_canonical_mayo_key(held.path)
     try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise ValueError("HMAC salt must be a regular file")
-        if before.st_uid != expected_owner:
-            raise ValueError("HMAC salt must be owned by the current user")
-        if stat.S_IMODE(before.st_mode) != 0o600:
-            raise ValueError("HMAC salt must have exact mode 0600")
-        if before.st_nlink != 1:
-            raise ValueError("HMAC salt must have exactly one hard link")
-        with os.fdopen(descriptor, "rb", closefd=False) as handle:
-            salt = handle.read(4097)
-        after = os.fstat(descriptor)
-        current = os.stat(path, follow_symlinks=False)
-        identity = lambda info: (
-            info.st_dev, info.st_ino, info.st_mode, info.st_uid,
-            info.st_gid, info.st_nlink, info.st_size,
-            info.st_mtime_ns, info.st_ctime_ns,
+        reopened_payload, reopened_identity = _read_canonical_mayo_key_descriptor(
+            reopened,
+            path=held.path,
+            owner_uid=held.owner_uid,
         )
-        if identity(before) != identity(after) or identity(after) != identity(current):
-            raise ValueError("HMAC salt identity or stat changed while reading")
-        if len(salt) > 4096:
-            raise ValueError("HMAC salt file is unexpectedly large")
-        return _require_salt(salt)
     finally:
-        os.close(descriptor)
+        os.close(reopened)
+    if (
+        reopened_identity != held.identity
+        or not hmac.compare_digest(reopened_payload, held.key_bytes)
+    ):
+        raise ValueError("canonical Mayo HMAC key changed at its live path")
+
+
+@contextmanager
+def _hold_canonical_mayo_key(
+    salt_file: str | Path,
+    *,
+    project_root: str | Path = PROJECT_ROOT,
+    owner_uid: int | None = None,
+):
+    path = _canonical_mayo_key_path(salt_file, project_root=project_root)
+    expected_owner = os.geteuid() if owner_uid is None else owner_uid
+    descriptors = ExitStack()
+    try:
+        descriptor = _open_canonical_mayo_key(path)
+        descriptors.callback(os.close, descriptor)
+        key_bytes, identity = _read_canonical_mayo_key_descriptor(
+            descriptor,
+            path=path,
+            owner_uid=expected_owner,
+        )
+        held = _HeldCanonicalMayoKey(
+            path=path,
+            descriptor=descriptor,
+            identity=identity,
+            key_bytes=key_bytes,
+            owner_uid=expected_owner,
+        )
+        held.assert_unchanged()
+        yield held
+        held.assert_unchanged()
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
+def read_canonical_salt(
+    salt_file: str | Path,
+    *,
+    project_root: str | Path = PROJECT_ROOT,
+    owner_uid: int | None = None,
+) -> bytes:
+    with _hold_canonical_mayo_key(
+        salt_file,
+        project_root=project_root,
+        owner_uid=owner_uid,
+    ) as held:
+        return held.key_bytes
 
 
 def validate_extraction_runtime(
@@ -4805,6 +4958,7 @@ def _run_builder_impl(
         [str], tuple[str | Path, str | Path]
     ] = _default_dependency_artifact_resolver,
     provenance_python_executable: str | Path | None = None,
+    _key_guard: _HeldCanonicalMayoKey | None = None,
 ) -> dict[str, object]:
     """Build and atomically promote one complete cache generation."""
     validate_extraction_runtime(
@@ -4813,7 +4967,30 @@ def _run_builder_impl(
     data = _require_directory(data_root, "Mayo data root")
     exports = _require_directory(existing_export_root, "existing MediaPipe export root")
     model = _require_regular_file(model_path, "MediaPipe model")
-    salt = read_canonical_salt(salt_file, project_root=project_root)
+    if _key_guard is None:
+        with _hold_canonical_mayo_key(
+            salt_file, project_root=project_root,
+        ) as held_key:
+            return _run_builder_impl(
+                data_root,
+                existing_export_root,
+                model_path,
+                salt_file,
+                output_root,
+                exposure_manifest,
+                extractor_factory=extractor_factory,
+                capture_factory=capture_factory,
+                inventory_factory=inventory_factory,
+                project_root=project_root,
+                current_executable=current_executable,
+                expected_executable=expected_executable,
+                version_resolver=version_resolver,
+                dependency_artifact_resolver=dependency_artifact_resolver,
+                provenance_python_executable=provenance_python_executable,
+                _key_guard=held_key,
+            )
+    _key_guard.assert_unchanged()
+    salt = _key_guard.key_bytes
     output, exposure_path = validate_output_locations(
         output_root, exposure_manifest, project_root=project_root
     )
@@ -4999,6 +5176,7 @@ def _run_builder_impl(
                     else provenance_python_executable
                 ),
             )
+            _key_guard.assert_unchanged()
             _remove_real_tree(snapshot_dir)
             _validate_staging(
                 staging, len(inventory.long_unique_videos),
@@ -5024,7 +5202,9 @@ def _run_builder_impl(
                 expected_classification_integrity_id=(
                     expected_classification_integrity_id
                 ),
+                continuity_validator=_key_guard.assert_unchanged,
             )
+            _key_guard.assert_unchanged()
         finally:
             if staging.exists():
                 _remove_real_tree(staging)

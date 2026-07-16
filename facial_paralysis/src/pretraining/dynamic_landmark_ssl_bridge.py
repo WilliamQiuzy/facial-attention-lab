@@ -3310,12 +3310,26 @@ def _prepare_private_run_path(value: str | Path) -> Path:
                 )
             existing = _entry_stat_at(grandparent_anchor.descriptor, parent_name)
             if existing is None:
-                descriptor, _ = _mkdir_private_directory_at(
-                    grandparent_anchor.descriptor,
-                    parent_name,
-                    "run namespace parent",
-                )
-                os.close(descriptor)
+                try:
+                    descriptor, parent_stat = _mkdir_private_directory_at(
+                        grandparent_anchor.descriptor,
+                        parent_name,
+                        "run namespace parent",
+                    )
+                except FileExistsError:
+                    descriptor, parent_stat = _open_private_directory_at(
+                        grandparent_anchor.descriptor,
+                        parent_name,
+                        "run namespace parent",
+                    )
+                try:
+                    if (
+                        parent_stat.st_uid != os.geteuid()
+                        or stat.S_IMODE(parent_stat.st_mode) != 0o700
+                    ):
+                        raise ValueError("run namespace parent is unsafe")
+                finally:
+                    os.close(descriptor)
                 _fsync_directory_fd(grandparent_anchor.descriptor)
             elif (
                 not stat.S_ISDIR(existing.st_mode)
@@ -3385,9 +3399,14 @@ def freeze_bridge_stage(
         run_parent = _open_directory_anchor(run.parent, "run root parent")
         run_stat = _entry_stat_at(run_parent.descriptor, run.name)
         if run_stat is None:
-            run_fd, run_stat = _mkdir_private_directory_at(
-                run_parent.descriptor, run.name, "run root",
-            )
+            try:
+                run_fd, run_stat = _mkdir_private_directory_at(
+                    run_parent.descriptor, run.name, "run root",
+                )
+            except FileExistsError:
+                run_fd, run_stat = _open_private_directory_at(
+                    run_parent.descriptor, run.name, "run root",
+                )
             run_anchor = _DirectoryAnchor(
                 path=run,
                 descriptor=run_fd,

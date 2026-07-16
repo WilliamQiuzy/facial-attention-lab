@@ -2132,10 +2132,11 @@ def _require_receipt_bound_stage_authorization(
         return
     if prior_payload is None or prior_evidence is None:
         raise ValueError("Mayo receipt-bound authority lacks prior RAVDESS state")
-    if prior_evidence.mode != evidence.mode:
-        raise ValueError("Mayo and prior RAVDESS evidence modes differ")
-    _require_authorized_checkpoint_payload(
-        prior_payload, prior_evidence, require_persisted=True,
+    _require_exact_ravdess_only_prior(
+        prior_payload,
+        prior_evidence,
+        expected_mode=evidence.mode,
+        require_persisted=True,
     )
     if ssl_checkpoint_fingerprint(prior_payload) != evidence.prior_checkpoint_sha256:
         raise ValueError("Mayo prior checkpoint changed after authorization")
@@ -2528,11 +2529,10 @@ def authorize_frozen_ssl_stage(
     else:
         if prior_ravdess_checkpoint is None or prior_ravdess_evidence is None:
             raise ValueError("Mayo receipt-bound evidence requires prior RAVDESS state")
-        if prior_ravdess_evidence.mode != mode:
-            raise ValueError("Mayo cannot consume a checkpoint from another run mode")
-        _require_authorized_checkpoint_payload(
+        _require_exact_ravdess_only_prior(
             prior_ravdess_checkpoint,
             prior_ravdess_evidence,
+            expected_mode=mode,
             require_persisted=True,
         )
         prior_sha256 = ssl_checkpoint_fingerprint(prior_ravdess_checkpoint)
@@ -2776,9 +2776,10 @@ def _initialize_mayo_ssl_model_impl(
     prior_stage_evidence: SSLStageEvidence,
 ) -> DynamicLandmarkSSLModel:
     """Load and mark the exact authorized RAVDESS state used to start Mayo SSL."""
-    _require_authorized_checkpoint_payload(
+    _require_exact_ravdess_only_prior(
         prior_checkpoint,
         prior_stage_evidence,
+        expected_mode=prior_stage_evidence.mode,
         require_persisted=prior_stage_evidence.mode is not None,
     )
     fingerprint = ssl_checkpoint_fingerprint(prior_checkpoint)
@@ -3016,6 +3017,37 @@ def _require_seed_matched_prior_checkpoint(
         raise ValueError("Mayo training requires a seed-matched RAVDESS checkpoint")
 
 
+def _require_exact_ravdess_only_prior(
+    prior_ravdess_checkpoint: Mapping[str, object],
+    prior_stage_evidence: SSLStageEvidence,
+    *,
+    expected_mode: str | None,
+    require_persisted: bool,
+    seed: int | None = None,
+) -> None:
+    if (
+        not isinstance(prior_stage_evidence, SSLStageEvidence)
+        or prior_stage_evidence.stage != RAVDESS_STAGE
+        or prior_stage_evidence.mode != expected_mode
+    ):
+        raise ValueError(
+            "Mayo prior evidence must be exact same-mode RAVDESS evidence"
+        )
+    if (
+        not isinstance(prior_ravdess_checkpoint, SSLCheckpointPayload)
+        or prior_ravdess_checkpoint.get("checkpoint_type")
+        != CHECKPOINT_RAVDESS_ONLY
+    ):
+        raise ValueError("Mayo prior checkpoint must be ravdess_only")
+    _require_authorized_checkpoint_payload(
+        prior_ravdess_checkpoint,
+        prior_stage_evidence,
+        require_persisted=require_persisted,
+    )
+    if seed is not None:
+        _require_seed_matched_prior_checkpoint(prior_ravdess_checkpoint, seed)
+
+
 def _train_ssl_stage_impl(
     *,
     stage_evidence: SSLStageEvidence,
@@ -3067,15 +3099,12 @@ def _train_ssl_stage_impl(
         else:
             if prior_ravdess_checkpoint is None or prior_stage_evidence is None:
                 raise ValueError("Mayo training requires its exact authorized RAVDESS checkpoint")
-            _require_authorized_checkpoint_payload(
+            _require_exact_ravdess_only_prior(
                 prior_ravdess_checkpoint,
                 prior_stage_evidence,
+                expected_mode=stage_evidence.mode,
                 require_persisted=stage_evidence.mode is not None,
-            )
-            if prior_stage_evidence.mode != stage_evidence.mode:
-                raise ValueError("Mayo and RAVDESS stages must use the same run mode")
-            _require_seed_matched_prior_checkpoint(
-                prior_ravdess_checkpoint, seed,
+                seed=seed,
             )
             prior_checkpoint_sha256 = ssl_checkpoint_fingerprint(
                 prior_ravdess_checkpoint
