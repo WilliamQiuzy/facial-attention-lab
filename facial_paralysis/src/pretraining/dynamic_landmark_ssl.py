@@ -7,6 +7,7 @@ training loop and no outer-test path.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import io
 import json
 import math
@@ -14,10 +15,12 @@ import os
 import re
 import secrets
 import stat
+import sys
 import weakref
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 import torch
@@ -32,18 +35,27 @@ CHECKPOINT_RAVDESS_MAYO = "ravdess_then_mayo"
 CHECKPOINT_TYPES = (CHECKPOINT_RAVDESS_ONLY, CHECKPOINT_RAVDESS_MAYO)
 SSL_CHECKPOINT_SCHEMA = "dynamic_landmark_ssl_v1"
 SSL_CHECKPOINT_RECEIPT_SCHEMA = "dynamic_landmark_ssl_checkpoint_receipt_v1"
-SSL_STAGE_EVIDENCE_SCHEMA = "dynamic_landmark_ssl_stage_evidence_v1"
+SSL_CHECKPOINT_RECEIPT_V2_SCHEMA = "dynamic_landmark_ssl_checkpoint_receipt_v2"
+SSL_STAGE_EVIDENCE_V1_SCHEMA = "dynamic_landmark_ssl_stage_evidence_v1"
+SSL_STAGE_EVIDENCE_SCHEMA = "dynamic_landmark_ssl_stage_evidence_v2"
 SSL_TRAINING_RECEIPT_SCHEMA = "dynamic_landmark_ssl_training_receipt_v1"
 SSL_SEEDS = (0, 1, 2)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 RAVDESS_STAGE = "ravdess"
-MAYO_DEVELOPMENT_STAGE = "mayo_development"
-RAVDESS_SOURCE = "ravdess_semantic23_v1"
-MAYO_SOURCE = "mayo_mediapipe_v2"
+MAYO_DEVELOPMENT_STAGE = "mayo"
+RAVDESS_SOURCE = "ravdess_openface_semantic23"
+MAYO_SOURCE = "mayo_mediapipe_clinical23_development_only"
 SSL_MANIFEST_SCHEMA = "dynamic_landmark_ssl_manifest_v1"
 SSL_CONFIG_SCHEMA = "dynamic_landmark_ssl_config_v1"
 SSL_SPLIT_SCHEMA = "dynamic_landmark_ssl_split_v1"
 SSL_SCALER_SCHEMA = "dynamic_landmark_ssl_scaler_v1"
+SSL_MANIFEST_V2_SCHEMA = "dynamic_landmark_ssl_manifest_v2"
+SSL_CONFIG_V2_SCHEMA = "dynamic_landmark_ssl_config_v2"
+SSL_SPLIT_V2_SCHEMA = "dynamic_landmark_ssl_split_v2"
+SSL_SCALER_V2_SCHEMA = "dynamic_landmark_ssl_scaler_v2"
+BRIDGE_RECEIPT_SCHEMA = "dynamic_landmark_bridge_receipt_v1"
+_MAX_FROZEN_JSON_BYTES = 64 * 1024 * 1024
+_MAX_FROZEN_BUNDLE_BYTES = 100 * 1024 * 1024
 _AUTHORIZATION_MARKER = object()
 
 
@@ -135,6 +147,29 @@ class SSLStageEvidence:
     development_only: bool
     prior_checkpoint_sha256: str | None
     evidence_sha256: str
+    mode: str | None = None
+    bridge_receipt_sha256: str | None = None
+    receipt_hmac: str | None = None
+    receipt_file_identity_sha256: str | None = None
+    canonical_key_identity_sha256: str | None = None
+    sample_ids_sha256: str | None = None
+    source_unit_ids_sha256: str | None = None
+    cache_integrity_ids_sha256: str | None = None
+    original_mapping_sha256: str | None = None
+    bundle_sha256: str | None = None
+    bundle_size_bytes: int | None = None
+    bundle_file_count: int | None = None
+    sample_count: int | None = None
+    source_unit_count: int | None = None
+    unique_group_count: int | None = None
+    upstream_cache_count: int | None = None
+    feature_names_sha256: str | None = None
+    adapter_sha256: str | None = None
+    temporal_policy_sha256: str | None = None
+    bridge_generation_sha256: str | None = None
+    upstream_manifest_commitments_sha256: str | None = None
+    upstream_generation_closure_hmac: str | None = None
+    source_schema: str | None = None
     _runtime_authorization: object | None = field(
         default=None, init=False, repr=False, compare=False,
     )
@@ -164,6 +199,7 @@ class _SSLStageAuthorization:
     cache_count: int
     prior_ravdess_checkpoint: Mapping[str, object] | None
     prior_ravdess_evidence: SSLStageEvidence | None
+    frozen_stage: _FrozenSSLStageAuthorization | None = None
 
 
 @dataclass(frozen=True)
@@ -181,9 +217,38 @@ class _SSLCacheArtifactAuthorization:
 class _RegularFileIdentity:
     device: int
     inode: int
+    mode: int
+    uid: int
+    gid: int
+    links: int
     size: int
     mtime_ns: int
     ctime_ns: int
+
+
+@dataclass(frozen=True)
+class _FrozenStageSnapshot:
+    stage: str
+    mode: str
+    files: Mapping[str, _SSLCacheArtifactAuthorization]
+    receipt: Mapping[str, object]
+    manifest: Mapping[str, object]
+    config: Mapping[str, object]
+    split: Mapping[str, object]
+    scaler: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class _FrozenSSLStageAuthorization:
+    marker: object
+    stage: str
+    mode: str
+    inputs_root: Path
+    bridge_root: Path
+    ravdess_authorizer: Callable[[], object]
+    mayo_authorizer: Callable[[], object]
+    producer_sha256: str
+    snapshot: _FrozenStageSnapshot
 
 
 @dataclass(frozen=True)
@@ -276,6 +341,8 @@ class _SSLCheckpointPayloadAuthorization:
     payload_reference: weakref.ReferenceType[SSLCheckpointPayload]
     checkpoint_fingerprint: str
     stage_evidence_sha256: str
+    checkpoint_path: Path | None = None
+    receipt_reference: weakref.ReferenceType[SSLCheckpointReceipt] | None = None
 
 
 @dataclass(frozen=True)
@@ -285,8 +352,11 @@ class SSLCheckpointReceipt:
     checkpoint_type: str
     checkpoint_fingerprint: str
     checkpoint_file_sha256: str
+    checkpoint_file_identity_sha256: str
+    receipt_file_identity_sha256: str
     stage_evidence_sha256: str
     receipt_sha256: str
+    stage_authority_hmac: str | None = None
     _runtime_authorization: object | None = field(
         default=None, init=False, repr=False, compare=False,
     )
@@ -306,6 +376,8 @@ class _SSLCheckpointReceiptAuthorization:
     checkpoint_path: Path
     receipt_path: Path
     receipt_file_sha256: str
+    checkpoint_identity: _RegularFileIdentity
+    receipt_identity: _RegularFileIdentity
     stage_evidence_sha256: str
 
 
@@ -769,6 +841,10 @@ def _identity_from_stat(status: os.stat_result) -> _RegularFileIdentity:
     return _RegularFileIdentity(
         device=int(status.st_dev),
         inode=int(status.st_ino),
+        mode=int(stat.S_IMODE(status.st_mode)),
+        uid=int(status.st_uid),
+        gid=int(status.st_gid),
+        links=int(status.st_nlink),
         size=int(status.st_size),
         mtime_ns=int(status.st_mtime_ns),
         ctime_ns=int(status.st_ctime_ns),
@@ -778,6 +854,8 @@ def _identity_from_stat(status: os.stat_result) -> _RegularFileIdentity:
 def _regular_file_snapshot_with_identity(
     path: str | Path,
     name: str,
+    *,
+    max_bytes: int | None = None,
 ) -> tuple[Path, bytes, str, _RegularFileIdentity]:
     source = Path(path)
     try:
@@ -786,6 +864,16 @@ def _regular_file_snapshot_with_identity(
         raise ValueError(f"{name} must be a readable regular file") from exc
     if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise ValueError(f"{name} must be a nonempty regular file")
+    if (
+        max_bytes is not None
+        and (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes < 1
+            or before.st_size > max_bytes
+        )
+    ):
+        raise ValueError(f"{name} exceeds its byte bound")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(source, flags)
@@ -824,6 +912,22 @@ def _regular_file_snapshot_with_identity(
     except OSError as exc:
         raise ValueError(f"{name} cannot be resolved") from exc
     return resolved, payload, hashlib.sha256(payload).hexdigest(), identity
+
+
+def _private_regular_file_snapshot(
+    path: str | Path,
+    name: str,
+) -> tuple[Path, bytes, str, _RegularFileIdentity]:
+    resolved, payload, digest, identity = _regular_file_snapshot_with_identity(
+        path, name,
+    )
+    if (
+        identity.uid != os.geteuid()
+        or identity.mode != 0o600
+        or identity.links != 1
+    ):
+        raise ValueError(f"{name} must be an owner-only single-link file")
+    return resolved, payload, digest, identity
 
 
 def _authorize_cache_artifact(path: str | Path) -> _SSLCacheArtifactAuthorization:
@@ -996,6 +1100,521 @@ def _read_json_artifact(
     if type(value) is not dict:
         raise ValueError(f"{name} must be one exact JSON object")
     return resolved, value, digest
+
+
+def _canonical_json_bytes(value: Mapping[str, object]) -> bytes:
+    try:
+        return json.dumps(
+            dict(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise ValueError("frozen SSL metadata is not canonical JSON") from exc
+
+
+def _strict_json_mapping(payload: bytes, name: str) -> dict[str, object]:
+    def exact_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if type(key) is not str or key in result:
+                raise ValueError(f"{name} contains a duplicate or non-string key")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(payload.decode("ascii"), object_pairs_hook=exact_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{name} must be one exact ASCII JSON object") from exc
+    if type(value) is not dict or _canonical_json_bytes(value) != payload:
+        raise ValueError(f"{name} is not exact canonical JSON")
+    return value
+
+
+def _private_file_snapshot(
+    path: Path,
+    name: str,
+    *,
+    max_bytes: int,
+) -> tuple[_SSLCacheArtifactAuthorization, bytes]:
+    resolved, payload, digest, identity = _regular_file_snapshot_with_identity(
+        path, name, max_bytes=max_bytes,
+    )
+    if (
+        identity.mode != 0o600
+        or identity.uid != os.geteuid()
+        or identity.links != 1
+    ):
+        raise ValueError(f"{name} must be singly-linked owner-only mode 0600")
+    return (
+        _SSLCacheArtifactAuthorization(
+            path=resolved,
+            sha256=digest,
+            identity=identity,
+        ),
+        payload,
+    )
+
+
+def _file_identity_sha256(identity: _RegularFileIdentity) -> str:
+    return hashlib.sha256(
+        b"dynamic-landmark-ssl-file-identity-v1\0"
+        + _canonical_json_bytes({
+            "device": identity.device,
+            "inode": identity.inode,
+            "mode": identity.mode,
+            "uid": identity.uid,
+            "gid": identity.gid,
+            "links": identity.links,
+            "size": identity.size,
+            "mtime_ns": identity.mtime_ns,
+            "ctime_ns": identity.ctime_ns,
+        })
+    ).hexdigest()
+
+
+def _stable_storage_identity_sha256(identity: _RegularFileIdentity) -> str:
+    return hashlib.sha256(
+        b"dynamic-landmark-ssl-stable-storage-identity-v1\0"
+        + _canonical_json_bytes({
+            "device": identity.device,
+            "inode": identity.inode,
+            "mode": identity.mode,
+            "uid": identity.uid,
+            "gid": identity.gid,
+            "links": identity.links,
+        })
+    ).hexdigest()
+
+
+_BRIDGE_RECEIPT_FIELDS = {
+    "schema", "stage", "mode", "producer_sha256", "source_schema",
+    "upstream_manifest_commitments", "upstream_generation_closure_hmac",
+    "sample_ids", "source_unit_ids", "group_ids", "cache_integrity_ids",
+    "window_starts", "original_mapping_sha256", "feature_names_sha256",
+    "adapter_sha256", "bundle_file_count", "sample_count",
+    "source_unit_count", "unique_group_count", "upstream_cache_count",
+    "packet_policy", "overlap_pair_count", "covered_canonical_position_count",
+    "exclusion_count", "bundle_sha256", "bundle_size_bytes",
+    "bridge_stage_closure_hmac", "bridge_generation_sha256",
+    "artifact_core_sha256", "canonical_key_identity_sha256",
+    "original_canonical_frame_indices", "original_source_frame_indices",
+    "original_timestamps", "receipt_hmac",
+}
+_V2_MANIFEST_FIELDS = {
+    "schema_version", "stage", "mode", "source", "source_schema",
+    "sample_ids", "source_unit_ids", "group_ids", "sample_count",
+    "source_unit_count", "unique_group_count", "upstream_cache_count",
+    "bundle_file_count", "bundle_sha256", "bundle_size_bytes",
+    "feature_names_sha256", "adapter_sha256", "temporal_policy_sha256",
+    "bridge_generation_sha256", "upstream_manifest_commitments",
+    "upstream_generation_closure_hmac", "bridge_receipt_sha256",
+    "receipt_hmac",
+}
+_V2_CONFIG_FIELDS = {
+    "schema_version", "stage", "mode", "source", "objective",
+    "sample_rate_hz", "seeds", "development_only", "optimizer",
+    "learning_rate", "weight_decay", "epochs", "batch_policy",
+    "span_length", "spans_per_window", "device",
+    "bridge_receipt_sha256", "receipt_hmac",
+}
+_V2_SPLIT_FIELDS = {
+    "schema_version", "stage", "mode", "source", "split_seed",
+    "heldout_fraction", "unit", "claim_unit", "train_group_ids",
+    "heldout_group_ids", "train_indices", "heldout_indices",
+    "bridge_receipt_sha256", "receipt_hmac",
+}
+_V2_SCALER_FIELDS = {
+    "schema_version", "stage", "mode", "source", "fit_indices",
+    "fit_source_unit_ids", "unique_frame_key", "fit_unique_frame_count",
+    "mean", "scale", "bridge_receipt_sha256", "receipt_hmac",
+}
+
+
+def _require_sha256(value: object, name: str) -> str:
+    if type(value) is not str or _SHA256.fullmatch(value) is None:
+        raise ValueError(f"{name} must be an exact lowercase SHA-256 digest")
+    return value
+
+
+def _exact_string_list(value: object, name: str) -> tuple[str, ...]:
+    if (
+        type(value) is not list
+        or not value
+        or any(type(item) is not str or not item for item in value)
+    ):
+        raise ValueError(f"{name} must be a nonempty ordered string list")
+    return tuple(value)
+
+
+def _validate_v2_training_config(
+    value: Mapping[str, object],
+    *,
+    stage: str,
+    mode: str,
+    source: str,
+) -> dict[str, object]:
+    if type(value) is not dict or set(value) != _V2_CONFIG_FIELDS:
+        raise ValueError("receipt-bound training config schema is not exact")
+    expected = {
+        "schema_version": SSL_CONFIG_V2_SCHEMA,
+        "stage": stage,
+        "mode": mode,
+        "source": source,
+        "objective": "masked_span_smooth_l1_only",
+        "sample_rate_hz": 30.0,
+        "seeds": [0] if mode == "smoke" else [0, 1, 2],
+        "development_only": stage == "mayo",
+        "optimizer": "adamw",
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "epochs": 1 if mode == "smoke" else 30,
+        "batch_policy": "full_train_partition",
+        "span_length": 4,
+        "spans_per_window": 2,
+        "device": "cpu",
+    }
+    if any(not _exact_json_value(value[name], expected_item)
+           for name, expected_item in expected.items()):
+        raise ValueError("receipt-bound training config is not mode-exact")
+    return dict(value)
+
+
+def _fit_receipt_bound_source_scaler(
+    features: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    source: str,
+    train_indices: np.ndarray,
+    heldout_indices: np.ndarray,
+    source_unit_ids: tuple[str, ...],
+    original_canonical_frame_indices: object,
+) -> tuple[SourceScaler, int, tuple[str, ...]]:
+    fit = _index_array(train_indices, features.shape[0], "fit_indices")
+    heldout = _index_array(
+        heldout_indices, features.shape[0], "heldout_indices"
+    )
+    if set(fit.tolist()).intersection(heldout.tolist()):
+        raise ValueError("heldout samples cannot enter receipt-bound scaler state")
+    if set(fit.tolist()).union(heldout.tolist()) != set(range(features.shape[0])):
+        raise ValueError("receipt-bound scaler partition must cover every packet")
+    if len(source_unit_ids) != features.shape[0]:
+        raise ValueError("receipt source-unit order does not align with bundle packets")
+    canonical = np.asarray(original_canonical_frame_indices)
+    if canonical.dtype.kind not in {"i", "u"} or canonical.shape != valid_mask.shape:
+        raise ValueError("receipt original canonical mapping is noncanonical")
+    values = features.detach().cpu().numpy()
+    masks = valid_mask.detach().cpu().numpy()
+    observations: list[np.ndarray] = []
+    seen: dict[tuple[str, int], tuple[bool, np.ndarray]] = {}
+    fit_sources: list[str] = []
+    fit_source_set: set[str] = set()
+    for sample_index in fit.tolist():
+        source_unit = source_unit_ids[sample_index]
+        if source_unit not in fit_source_set:
+            fit_source_set.add(source_unit)
+            fit_sources.append(source_unit)
+        for window_index in range(4):
+            for frame_index in range(32):
+                key = (
+                    source_unit,
+                    int(canonical[sample_index, window_index, frame_index]),
+                )
+                present = bool(masks[sample_index, window_index, frame_index])
+                row = values[sample_index, window_index, frame_index]
+                prior = seen.get(key)
+                if prior is not None:
+                    if prior[0] is not present or not np.array_equal(prior[1], row):
+                        raise ValueError(
+                            "repeated canonical frame has conflicting bundle values"
+                        )
+                    continue
+                seen[key] = (present, row.copy())
+                if present:
+                    observations.append(row.astype(np.float64, copy=True))
+    if not observations:
+        raise ValueError("receipt-bound train scaler has no unique valid frames")
+    stacked = np.stack(observations, axis=0)
+    mean = stacked.mean(axis=0, dtype=np.float64)
+    scale = stacked.std(axis=0, dtype=np.float64)
+    scale[scale < np.finfo(np.float32).eps] = 1.0
+    if not np.isfinite(mean).all() or not np.isfinite(scale).all() or np.any(scale <= 0):
+        raise ValueError("receipt-bound train scaler is nonfinite")
+    return (
+        SourceScaler(
+            source=source,
+            mean=torch.from_numpy(mean.copy()),
+            scale=torch.from_numpy(scale.copy()),
+            fit_indices=tuple(int(index) for index in fit.tolist()),
+        ),
+        len(observations),
+        tuple(fit_sources),
+    )
+
+
+def _snapshot_frozen_ssl_stage(
+    *,
+    stage: str,
+    mode: str,
+    inputs_root: Path,
+    bridge_root: Path,
+    live_authorization: object,
+) -> _FrozenStageSnapshot:
+    if stage not in {"ravdess", "mayo"} or mode not in {"smoke", "formal"}:
+        raise ValueError("frozen SSL stage or mode is unsupported")
+    source = (
+        "ravdess_openface_semantic23"
+        if stage == "ravdess"
+        else "mayo_mediapipe_clinical23_development_only"
+    )
+    paths = {
+        "receipt": inputs_root / "receipts" / f"{stage}.json",
+        "manifest": inputs_root / "artifacts" / stage / "manifest.json",
+        "config": inputs_root / "artifacts" / stage / "config.json",
+        "split": inputs_root / "artifacts" / stage / "split.json",
+        "scaler": inputs_root / "artifacts" / stage / "scaler.json",
+        "bundle": bridge_root / "bundles" / f"{stage}_bundle.npz",
+    }
+    files: dict[str, _SSLCacheArtifactAuthorization] = {}
+    payloads: dict[str, bytes] = {}
+    for name, path in paths.items():
+        file_authorization, payload = _private_file_snapshot(
+            path,
+            f"frozen {stage} {name}",
+            max_bytes=(
+                _MAX_FROZEN_BUNDLE_BYTES
+                if name == "bundle"
+                else _MAX_FROZEN_JSON_BYTES
+            ),
+        )
+        files[name] = file_authorization
+        payloads[name] = payload
+
+    receipt = _strict_json_mapping(payloads["receipt"], f"{stage} bridge receipt")
+    if set(receipt) != _BRIDGE_RECEIPT_FIELDS:
+        raise ValueError(f"{stage} bridge receipt schema is not exact")
+    if (
+        receipt.get("schema") != BRIDGE_RECEIPT_SCHEMA
+        or receipt.get("stage") != stage
+        or receipt.get("mode") != mode
+    ):
+        raise ValueError(f"{stage} bridge receipt contradicts its stage or mode")
+    private_key = getattr(live_authorization, "private_key", None)
+    key_identity = getattr(
+        live_authorization, "key_file_identity_sha256", None
+    )
+    if type(private_key) is not bytes or len(private_key) != 32:
+        raise ValueError(f"{stage} live authorization lacks its canonical key")
+    key_identity = _require_sha256(
+        key_identity, f"{stage} canonical key identity"
+    )
+    if receipt.get("canonical_key_identity_sha256") != key_identity:
+        raise ValueError(f"{stage} receipt names a different canonical key")
+    unsigned_receipt = dict(receipt)
+    observed_hmac = unsigned_receipt.pop("receipt_hmac", None)
+    expected_hmac = hmac.new(
+        private_key,
+        b"dynamic-landmark-bridge-receipt-v1\0"
+        + _canonical_json_bytes(unsigned_receipt),
+        hashlib.sha256,
+    ).hexdigest()
+    if type(observed_hmac) is not str or not hmac.compare_digest(
+        observed_hmac, expected_hmac
+    ):
+        raise ValueError(f"{stage} bridge receipt HMAC is invalid")
+    receipt_sha256 = hashlib.sha256(payloads["receipt"]).hexdigest()
+
+    artifacts: dict[str, dict[str, object]] = {}
+    field_sets = {
+        "manifest": _V2_MANIFEST_FIELDS,
+        "config": _V2_CONFIG_FIELDS,
+        "split": _V2_SPLIT_FIELDS,
+        "scaler": _V2_SCALER_FIELDS,
+    }
+    schemas = {
+        "manifest": SSL_MANIFEST_V2_SCHEMA,
+        "config": SSL_CONFIG_V2_SCHEMA,
+        "split": SSL_SPLIT_V2_SCHEMA,
+        "scaler": SSL_SCALER_V2_SCHEMA,
+    }
+    core_digests = receipt.get("artifact_core_sha256")
+    if type(core_digests) is not dict or set(core_digests) != set(field_sets):
+        raise ValueError(f"{stage} receipt artifact digest set is not exact")
+    for name, expected_fields in field_sets.items():
+        value = _strict_json_mapping(
+            payloads[name], f"{stage} {name} artifact"
+        )
+        if set(value) != expected_fields:
+            raise ValueError(f"{stage} {name} artifact schema is not exact")
+        if (
+            value.get("schema_version") != schemas[name]
+            or value.get("stage") != stage
+            or value.get("mode") != mode
+            or value.get("source") != source
+            or value.get("bridge_receipt_sha256") != receipt_sha256
+            or value.get("receipt_hmac") != observed_hmac
+        ):
+            raise ValueError(f"{stage} {name} artifact cross-link is invalid")
+        core = dict(value)
+        core.pop("bridge_receipt_sha256")
+        core.pop("receipt_hmac")
+        expected_core_sha256 = _require_sha256(
+            core_digests.get(name), f"{stage} {name} artifact core"
+        )
+        if hashlib.sha256(_canonical_json_bytes(core)).hexdigest() != expected_core_sha256:
+            raise ValueError(f"{stage} {name} artifact core digest is invalid")
+        artifacts[name] = value
+
+    manifest = artifacts["manifest"]
+    config = artifacts["config"]
+    split_value = artifacts["split"]
+    scaler_value = artifacts["scaler"]
+    _validate_v2_training_config(
+        config, stage=stage, mode=mode, source=source,
+    )
+    sample_ids = _exact_string_list(receipt.get("sample_ids"), "sample IDs")
+    source_unit_ids = _exact_string_list(
+        receipt.get("source_unit_ids"), "source-unit IDs"
+    )
+    group_ids = _exact_string_list(receipt.get("group_ids"), "group IDs")
+    cache_integrity_ids = _exact_string_list(
+        receipt.get("cache_integrity_ids"), "cache-integrity IDs"
+    )
+    sample_count = _positive_integer(receipt.get("sample_count"), "sample count")
+    source_unit_count = _positive_integer(
+        receipt.get("source_unit_count"), "source-unit count"
+    )
+    unique_group_count = _positive_integer(
+        receipt.get("unique_group_count"), "unique-group count"
+    )
+    upstream_cache_count = _positive_integer(
+        receipt.get("upstream_cache_count"), "upstream-cache count"
+    )
+    if (
+        len(sample_ids) != sample_count
+        or len(set(sample_ids)) != sample_count
+        or len(source_unit_ids) != sample_count
+        or len(group_ids) != sample_count
+        or len(cache_integrity_ids) != sample_count
+        or len(set(source_unit_ids)) != source_unit_count
+        or len(set(group_ids)) != unique_group_count
+        or len(set(cache_integrity_ids)) != upstream_cache_count
+        or receipt.get("bundle_file_count") != 1
+        or receipt.get("exclusion_count") != 0
+    ):
+        raise ValueError(f"{stage} receipt aggregate counts are inconsistent")
+    common_claims = {
+        "source_schema", "sample_ids", "source_unit_ids", "group_ids",
+        "sample_count", "source_unit_count", "unique_group_count",
+        "upstream_cache_count", "bundle_file_count", "bundle_sha256",
+        "bundle_size_bytes", "feature_names_sha256", "adapter_sha256",
+        "bridge_generation_sha256", "upstream_manifest_commitments",
+        "upstream_generation_closure_hmac",
+    }
+    if any(
+        not _exact_json_value(manifest.get(name), receipt.get(name))
+        for name in common_claims
+    ):
+        raise ValueError(f"{stage} manifest contradicts its bridge receipt")
+    expected_temporal = hashlib.sha256(
+        _canonical_json_bytes(receipt.get("packet_policy"))  # type: ignore[arg-type]
+    ).hexdigest() if type(receipt.get("packet_policy")) is dict else None
+    if manifest.get("temporal_policy_sha256") != expected_temporal:
+        raise ValueError(f"{stage} temporal policy digest is invalid")
+    bundle_sha256 = _require_sha256(
+        receipt.get("bundle_sha256"), f"{stage} bundle"
+    )
+    if (
+        files["bundle"].sha256 != bundle_sha256
+        or files["bundle"].identity.size != receipt.get("bundle_size_bytes")
+    ):
+        raise ValueError(f"{stage} bundle bytes contradict the receipt")
+    parse_stage = RAVDESS_STAGE if stage == "ravdess" else MAYO_DEVELOPMENT_STAGE
+    _parse_training_cache_payloads(
+        (payloads["bundle"],), stage=parse_stage, group_ids=group_ids,
+    )
+    return _FrozenStageSnapshot(
+        stage=stage,
+        mode=mode,
+        files=files,
+        receipt=receipt,
+        manifest=manifest,
+        config=config,
+        split=split_value,
+        scaler=scaler_value,
+    )
+
+
+def _capture_frozen_ssl_stage(
+    *,
+    stage: str,
+    mode: str,
+    inputs_root: Path,
+    bridge_root: Path,
+    ravdess_authorizer: Callable[[], object],
+    mayo_authorizer: Callable[[], object],
+    producer_sha256: str,
+) -> _FrozenStageSnapshot:
+    from .dynamic_landmark_ssl_bridge import verify_frozen_bridge_stage
+
+    captured: dict[str, list[object]] = {"ravdess": [], "mayo": []}
+    snapshots: list[_FrozenStageSnapshot] = []
+
+    def capture_ravdess() -> object:
+        value = ravdess_authorizer()
+        captured["ravdess"].append(value)
+        return value
+
+    def capture_mayo() -> object:
+        value = mayo_authorizer()
+        captured["mayo"].append(value)
+        return value
+
+    def finalize_locked() -> None:
+        if not captured[stage]:
+            raise ValueError(f"{stage} live authorization was not captured")
+        snapshots.append(_snapshot_frozen_ssl_stage(
+            stage=stage,
+            mode=mode,
+            inputs_root=inputs_root,
+            bridge_root=bridge_root,
+            live_authorization=captured[stage][-1],
+        ))
+
+    verify_frozen_bridge_stage(
+        inputs_root,
+        bridge_root,
+        mode=mode,
+        ravdess_authorizer=capture_ravdess,
+        mayo_authorizer=capture_mayo,
+        producer_sha256=producer_sha256,
+        finalize_locked=finalize_locked,
+    )
+    if len(snapshots) != 1:
+        raise RuntimeError("frozen SSL verifier did not finalize exactly once")
+    return snapshots[0]
+
+
+def _snapshot_semantic_facts(snapshot: _FrozenStageSnapshot) -> dict[str, object]:
+    return {
+        "stage": snapshot.stage,
+        "mode": snapshot.mode,
+        "files": {
+            name: {
+                "path": str(item.path),
+                "sha256": item.sha256,
+                "identity": item.identity,
+            }
+            for name, item in snapshot.files.items()
+        },
+        "receipt": dict(snapshot.receipt),
+        "manifest": dict(snapshot.manifest),
+        "config": dict(snapshot.config),
+        "split": dict(snapshot.split),
+        "scaler": dict(snapshot.scaler),
+    }
 
 
 def _validate_split_partition(
@@ -1172,6 +1791,19 @@ def _validate_training_config(
     source: str,
     development_only: bool,
 ) -> dict[str, object]:
+    if (
+        type(value) is dict
+        and value.get("schema_version") == SSL_CONFIG_V2_SCHEMA
+    ):
+        mode = value.get("mode")
+        if type(mode) is not str or mode not in {"smoke", "formal"}:
+            raise ValueError("receipt-bound training config mode is invalid")
+        validated = _validate_v2_training_config(
+            value, stage=stage, mode=mode, source=source,
+        )
+        if validated["development_only"] is not development_only:
+            raise ValueError("receipt-bound config development claim is invalid")
+        return validated
     expected_fields = {
         "schema_version", "stage", "source", "objective", "sample_rate_hz",
         "seeds", "development_only", "optimizer", "learning_rate",
@@ -1269,13 +1901,32 @@ def _validate_stage_artifact_files(
 def _stage_evidence_without_digest(evidence: SSLStageEvidence) -> dict[str, object]:
     value = evidence.to_dict()
     value.pop("evidence_sha256")
+    if evidence.mode is None:
+        value = {
+            name: item for name, item in value.items()
+            if name in {
+                "schema_version", "stage", "source", "manifest_sha256",
+                "cache_commitment_sha256", "cache_count", "config_sha256",
+                "split_unit", "claim_unit", "patient_held_out",
+                "train_indices_sha256", "heldout_indices_sha256",
+                "group_ids_sha256", "scaler_sha256",
+                "split_artifact_sha256", "scaler_artifact_sha256",
+                "train_count", "heldout_count", "development_only",
+                "prior_checkpoint_sha256",
+            }
+        }
     return value
 
 
 def _validate_stage_evidence(evidence: SSLStageEvidence) -> None:
     if not isinstance(evidence, SSLStageEvidence):
         raise ValueError("checkpoint stage evidence has the wrong type")
-    if evidence.schema_version != SSL_STAGE_EVIDENCE_SCHEMA:
+    expected_schema = (
+        SSL_STAGE_EVIDENCE_V1_SCHEMA
+        if evidence.mode is None
+        else SSL_STAGE_EVIDENCE_SCHEMA
+    )
+    if evidence.schema_version != expected_schema:
         raise ValueError("checkpoint stage evidence schema is unsupported")
     for name in (
         "manifest_sha256", "cache_commitment_sha256", "config_sha256",
@@ -1301,6 +1952,63 @@ def _validate_stage_evidence(evidence: SSLStageEvidence) -> None:
         raise ValueError("checkpoint stage evidence split counts are invalid")
     if evidence.patient_held_out is not False:
         raise ValueError("unlabeled SSL evidence cannot claim patient-held-out validation")
+    if evidence.mode is not None:
+        if evidence.mode not in {"smoke", "formal"}:
+            raise ValueError("receipt-bound evidence mode is unsupported")
+        for name in (
+            "bridge_receipt_sha256", "receipt_hmac",
+            "receipt_file_identity_sha256", "canonical_key_identity_sha256",
+            "sample_ids_sha256", "source_unit_ids_sha256",
+            "cache_integrity_ids_sha256", "original_mapping_sha256",
+            "bundle_sha256", "feature_names_sha256", "adapter_sha256",
+            "temporal_policy_sha256", "bridge_generation_sha256",
+            "upstream_manifest_commitments_sha256",
+            "upstream_generation_closure_hmac",
+        ):
+            _require_sha256(getattr(evidence, name), f"stage evidence {name}")
+        for name in (
+            "bundle_size_bytes", "bundle_file_count", "sample_count",
+            "source_unit_count", "unique_group_count", "upstream_cache_count",
+        ):
+            _positive_integer(getattr(evidence, name), f"stage evidence {name}")
+        if evidence.bundle_file_count != 1 or evidence.cache_count != 1:
+            raise ValueError("receipt-bound evidence requires one exact bundle")
+        expected_source = (
+            "ravdess_openface_semantic23"
+            if evidence.stage == "ravdess"
+            else "mayo_mediapipe_clinical23_development_only"
+            if evidence.stage == "mayo"
+            else None
+        )
+        expected_unit = "actor" if evidence.stage == "ravdess" else "recording"
+        expected_claim = (
+            "actor_held_out"
+            if evidence.stage == "ravdess"
+            else "recording_held_out_not_patient_held_out"
+        )
+        if (
+            expected_source is None
+            or evidence.source != expected_source
+            or evidence.split_unit != expected_unit
+            or evidence.claim_unit != expected_claim
+            or evidence.development_only is not (evidence.stage == "mayo")
+            or type(evidence.source_schema) is not str
+            or not evidence.source_schema
+        ):
+            raise ValueError("receipt-bound stage evidence contradicts its stage")
+        if evidence.stage == "ravdess":
+            if evidence.prior_checkpoint_sha256 is not None:
+                raise ValueError("RAVDESS receipt-bound evidence cannot name prior state")
+        else:
+            _require_sha256(
+                evidence.prior_checkpoint_sha256,
+                "Mayo prior checkpoint fingerprint",
+            )
+        if evidence.evidence_sha256 != _canonical_sha256(
+            _stage_evidence_without_digest(evidence)
+        ):
+            raise ValueError("receipt-bound stage evidence digest is invalid")
+        return
     if evidence.stage == RAVDESS_STAGE:
         expected = (
             RAVDESS_SOURCE, "actor", "actor_held_out", False,
@@ -1348,6 +2056,91 @@ def _stage_evidence_from_mapping(value: object) -> SSLStageEvidence:
     return evidence
 
 
+def _require_receipt_bound_stage_authorization(
+    evidence: SSLStageEvidence,
+    authorization: _SSLStageAuthorization,
+) -> None:
+    frozen = authorization.frozen_stage
+    if (
+        not isinstance(frozen, _FrozenSSLStageAuthorization)
+        or frozen.marker is not _AUTHORIZATION_MARKER
+        or frozen.stage != evidence.stage
+        or frozen.mode != evidence.mode
+    ):
+        raise ValueError("receipt-bound evidence lacks its frozen-input authority")
+    current = _capture_frozen_ssl_stage(
+        stage=frozen.stage,
+        mode=frozen.mode,
+        inputs_root=frozen.inputs_root,
+        bridge_root=frozen.bridge_root,
+        ravdess_authorizer=frozen.ravdess_authorizer,
+        mayo_authorizer=frozen.mayo_authorizer,
+        producer_sha256=frozen.producer_sha256,
+    )
+    if _snapshot_semantic_facts(current) != _snapshot_semantic_facts(
+        frozen.snapshot
+    ):
+        raise ValueError("frozen receipt-bound inputs changed after authorization")
+    train, heldout, groups = _validate_split_partition(
+        authorization.split, authorization.group_ids
+    )
+    bundle_payload = _reopen_authorized_cache_artifacts(
+        authorization.cache_artifacts
+    )
+    if len(bundle_payload) != 1:
+        raise ValueError("receipt-bound evidence requires one exact bundle file")
+    cache_commitment = _cache_commitment_sha256(groups, bundle_payload)
+    if (
+        cache_commitment != evidence.cache_commitment_sha256
+        or cache_commitment != authorization.cache_commitment_sha256
+        or authorization.cache_count != 1
+    ):
+        raise ValueError("receipt-bound bundle commitment changed")
+    parse_stage = (
+        RAVDESS_STAGE if evidence.stage == "ravdess" else MAYO_DEVELOPMENT_STAGE
+    )
+    features, valid_mask, _, _ = _parse_training_cache_payloads(
+        bundle_payload, stage=parse_stage, group_ids=groups,
+    )
+    source_units = tuple(
+        str(value) for value in current.receipt["source_unit_ids"]
+    )
+    recomputed, unique_count, fit_sources = _fit_receipt_bound_source_scaler(
+        features,
+        valid_mask,
+        source=evidence.source,
+        train_indices=train,
+        heldout_indices=heldout,
+        source_unit_ids=source_units,
+        original_canonical_frame_indices=current.receipt[
+            "original_canonical_frame_indices"
+        ],
+    )
+    scaler_value = current.scaler
+    if (
+        _scaler_sha256(recomputed) != evidence.scaler_sha256
+        or _scaler_sha256(recomputed) != _scaler_sha256(authorization.scaler)
+        or scaler_value.get("fit_unique_frame_count") != unique_count
+        or scaler_value.get("fit_source_unit_ids") != list(fit_sources)
+    ):
+        raise ValueError("receipt-bound scaler changed after authorization")
+    prior_payload = authorization.prior_ravdess_checkpoint
+    prior_evidence = authorization.prior_ravdess_evidence
+    if evidence.stage == "ravdess":
+        if prior_payload is not None or prior_evidence is not None:
+            raise ValueError("RAVDESS receipt-bound authority carries prior state")
+        return
+    if prior_payload is None or prior_evidence is None:
+        raise ValueError("Mayo receipt-bound authority lacks prior RAVDESS state")
+    if prior_evidence.mode != evidence.mode:
+        raise ValueError("Mayo and prior RAVDESS evidence modes differ")
+    _require_authorized_checkpoint_payload(
+        prior_payload, prior_evidence, require_persisted=True,
+    )
+    if ssl_checkpoint_fingerprint(prior_payload) != evidence.prior_checkpoint_sha256:
+        raise ValueError("Mayo prior checkpoint changed after authorization")
+
+
 def _require_authorized_stage_evidence(evidence: SSLStageEvidence) -> None:
     """Revalidate private artifact provenance immediately before a gated action."""
     _validate_stage_evidence(evidence)
@@ -1360,6 +2153,9 @@ def _require_authorized_stage_evidence(evidence: SSLStageEvidence) -> None:
         raise ValueError(
             "stage evidence lacks live authorization from actual artifact files"
         )
+    if evidence.mode is not None:
+        _require_receipt_bound_stage_authorization(evidence, authorization)
+        return
     train, heldout, groups = _validate_split_partition(
         authorization.split, authorization.group_ids
     )
@@ -1446,7 +2242,22 @@ def _require_authorized_stage_evidence(evidence: SSLStageEvidence) -> None:
         raise ValueError("the prior RAVDESS checkpoint changed after Mayo authorization")
 
 
-def build_ssl_stage_evidence(
+def _require_public_receipt_bound_stage(evidence: SSLStageEvidence) -> None:
+    _require_authorized_stage_evidence(evidence)
+    authorization = evidence._runtime_authorization
+    if (
+        evidence.mode not in {"smoke", "formal"}
+        or not isinstance(authorization, _SSLStageAuthorization)
+        or not isinstance(
+            authorization.frozen_stage, _FrozenSSLStageAuthorization,
+        )
+    ):
+        raise PretrainingLockedError(
+            "production SSL actions require receipt-bound frozen v2 authority"
+        )
+
+
+def _build_synthetic_ssl_stage_evidence_v1(
     *,
     stage: str,
     manifest_path: str | Path,
@@ -1460,7 +2271,7 @@ def build_ssl_stage_evidence(
     prior_ravdess_checkpoint: Mapping[str, object] | None = None,
     prior_ravdess_evidence: SSLStageEvidence | None = None,
 ) -> SSLStageEvidence:
-    """Bind one stage to actual files, a group split, and its train-only scaler."""
+    """Test-only compatibility constructor for the retired v1 evidence schema."""
     if isinstance(cache_paths, (str, bytes, Path)):
         raise ValueError("cache_paths must be an ordered sequence of regular files")
     cache_artifacts = tuple(
@@ -1493,11 +2304,12 @@ def build_ssl_stage_evidence(
                 "Mayo development evidence requires recording split and authorized prior RAVDESS checkpoint"
             )
         _require_authorized_checkpoint_payload(
-            prior_ravdess_checkpoint, prior_ravdess_evidence
+            prior_ravdess_checkpoint,
+            prior_ravdess_evidence,
         )
         prior_sha256 = ssl_checkpoint_fingerprint(prior_ravdess_checkpoint)
     else:
-        raise ValueError("stage must be ravdess or mayo_development")
+        raise ValueError("stage must be ravdess or mayo")
     _, config_value, _ = _read_json_artifact(config_path, "config artifact")
     training_config = _validate_training_config(
         config_value,
@@ -1541,7 +2353,7 @@ def build_ssl_stage_evidence(
         training_config=training_config,
     )
     values: dict[str, object] = {
-        "schema_version": SSL_STAGE_EVIDENCE_SCHEMA,
+        "schema_version": SSL_STAGE_EVIDENCE_V1_SCHEMA,
         "stage": stage,
         "source": source,
         "manifest_sha256": artifacts["manifest"][1],
@@ -1581,6 +2393,235 @@ def build_ssl_stage_evidence(
         cache_count=cache_count,
         prior_ravdess_checkpoint=prior_ravdess_checkpoint,
         prior_ravdess_evidence=prior_ravdess_evidence,
+    )
+    object.__setattr__(evidence, "_runtime_authorization", authorization)
+    _require_authorized_stage_evidence(evidence)
+    return evidence
+
+
+def build_ssl_stage_evidence(*_args: object, **_kwargs: object) -> SSLStageEvidence:
+    """Reject the retired public v1 evidence-minting path."""
+    raise PretrainingLockedError(
+        "public v1 SSL evidence is retired; authorize a frozen receipt-bound "
+        "Task 2 stage instead"
+    )
+
+
+def authorize_frozen_ssl_stage(
+    *,
+    stage: str,
+    mode: str,
+    inputs_root: str | Path,
+    bridge_root: str | Path,
+    ravdess_authorizer: Callable[[], object],
+    mayo_authorizer: Callable[[], object],
+    producer_sha256: str,
+    prior_ravdess_checkpoint: Mapping[str, object] | None = None,
+    prior_ravdess_evidence: SSLStageEvidence | None = None,
+) -> SSLStageEvidence:
+    """Authorize one Task 2 frozen stage as receipt-bound v2 evidence."""
+    if stage not in {"ravdess", "mayo"} or mode not in {"smoke", "formal"}:
+        raise ValueError("frozen SSL stage and mode must be exact")
+    if not callable(ravdess_authorizer) or not callable(mayo_authorizer):
+        raise ValueError("frozen SSL live authorizers must be callable")
+    producer_sha256 = _require_sha256(producer_sha256, "bridge producer")
+    inputs = Path(inputs_root).resolve(strict=True)
+    bridge = Path(bridge_root).resolve(strict=True)
+    snapshot = _capture_frozen_ssl_stage(
+        stage=stage,
+        mode=mode,
+        inputs_root=inputs,
+        bridge_root=bridge,
+        ravdess_authorizer=ravdess_authorizer,
+        mayo_authorizer=mayo_authorizer,
+        producer_sha256=producer_sha256,
+    )
+    receipt = snapshot.receipt
+    manifest = snapshot.manifest
+    split_value = snapshot.split
+    scaler_value = snapshot.scaler
+    source = str(manifest["source"])
+    group_ids = tuple(str(value) for value in manifest["group_ids"])
+    source_unit_ids = tuple(str(value) for value in manifest["source_unit_ids"])
+    sample_ids = tuple(str(value) for value in manifest["sample_ids"])
+    train = _index_array(
+        split_value.get("train_indices"), len(group_ids), "train indices"
+    )
+    heldout = _index_array(
+        split_value.get("heldout_indices"), len(group_ids), "heldout indices"
+    )
+    unit = "actor" if stage == "ravdess" else "recording"
+    claim_unit = (
+        "actor_held_out"
+        if stage == "ravdess"
+        else "recording_held_out_not_patient_held_out"
+    )
+    if (
+        split_value.get("schema_version") != SSL_SPLIT_V2_SCHEMA
+        or split_value.get("stage") != stage
+        or split_value.get("mode") != mode
+        or split_value.get("source") != source
+        or split_value.get("split_seed") != 0
+        or not _exact_json_value(split_value.get("heldout_fraction"), 0.20)
+        or split_value.get("unit") != unit
+        or split_value.get("claim_unit") != claim_unit
+    ):
+        raise ValueError("receipt-bound split is not exact")
+    split = SSLGroupSplit(
+        train_indices=train,
+        heldout_indices=heldout,
+        unit=unit,
+        claim_unit=claim_unit,
+        patient_held_out=False,
+    )
+    train, heldout, group_ids = _validate_split_partition(split, group_ids)
+
+    def ordered_unique(indices: np.ndarray) -> list[str]:
+        return list(dict.fromkeys(group_ids[int(index)] for index in indices))
+
+    if (
+        split_value.get("train_group_ids") != ordered_unique(train)
+        or split_value.get("heldout_group_ids") != ordered_unique(heldout)
+    ):
+        raise ValueError("receipt-bound split group order is inconsistent")
+    bundle_payload = _reopen_authorized_cache_artifacts(
+        (snapshot.files["bundle"],)
+    )[0]
+    parse_stage = RAVDESS_STAGE if stage == "ravdess" else MAYO_DEVELOPMENT_STAGE
+    features, valid_mask, _, _ = _parse_training_cache_payloads(
+        (bundle_payload,), stage=parse_stage, group_ids=group_ids,
+    )
+    scaler, unique_frame_count, fit_source_units = (
+        _fit_receipt_bound_source_scaler(
+            features,
+            valid_mask,
+            source=source,
+            train_indices=train,
+            heldout_indices=heldout,
+            source_unit_ids=source_unit_ids,
+            original_canonical_frame_indices=receipt.get(
+                "original_canonical_frame_indices"
+            ),
+        )
+    )
+    if (
+        scaler_value.get("schema_version") != SSL_SCALER_V2_SCHEMA
+        or scaler_value.get("stage") != stage
+        or scaler_value.get("mode") != mode
+        or scaler_value.get("source") != source
+        or scaler_value.get("fit_indices") != train.tolist()
+        or scaler_value.get("fit_source_unit_ids") != list(fit_source_units)
+        or scaler_value.get("unique_frame_key")
+        != "source_unit_id_plus_original_canonical_30hz_index"
+        or scaler_value.get("fit_unique_frame_count") != unique_frame_count
+        or not _exact_json_value(scaler_value.get("mean"), scaler.mean.tolist())
+        or not _exact_json_value(scaler_value.get("scale"), scaler.scale.tolist())
+    ):
+        raise ValueError(
+            "receipt-bound scaler does not match unique train-frame recomputation"
+        )
+    cache_commitment = _cache_commitment_sha256(group_ids, (bundle_payload,))
+    if stage == "ravdess":
+        if prior_ravdess_checkpoint is not None or prior_ravdess_evidence is not None:
+            raise ValueError("RAVDESS receipt-bound evidence cannot carry prior state")
+        prior_sha256 = None
+    else:
+        if prior_ravdess_checkpoint is None or prior_ravdess_evidence is None:
+            raise ValueError("Mayo receipt-bound evidence requires prior RAVDESS state")
+        if prior_ravdess_evidence.mode != mode:
+            raise ValueError("Mayo cannot consume a checkpoint from another run mode")
+        _require_authorized_checkpoint_payload(
+            prior_ravdess_checkpoint,
+            prior_ravdess_evidence,
+            require_persisted=True,
+        )
+        prior_sha256 = ssl_checkpoint_fingerprint(prior_ravdess_checkpoint)
+    files = snapshot.files
+    values: dict[str, object] = {
+        "schema_version": SSL_STAGE_EVIDENCE_SCHEMA,
+        "stage": stage,
+        "source": source,
+        "manifest_sha256": files["manifest"].sha256,
+        "cache_commitment_sha256": cache_commitment,
+        "cache_count": 1,
+        "config_sha256": files["config"].sha256,
+        "split_unit": split.unit,
+        "claim_unit": split.claim_unit,
+        "patient_held_out": False,
+        "train_indices_sha256": _canonical_sha256(train.tolist()),
+        "heldout_indices_sha256": _canonical_sha256(heldout.tolist()),
+        "group_ids_sha256": _canonical_sha256(list(group_ids)),
+        "scaler_sha256": _scaler_sha256(scaler),
+        "split_artifact_sha256": files["split"].sha256,
+        "scaler_artifact_sha256": files["scaler"].sha256,
+        "train_count": int(train.size),
+        "heldout_count": int(heldout.size),
+        "development_only": stage == "mayo",
+        "prior_checkpoint_sha256": prior_sha256,
+        "mode": mode,
+        "bridge_receipt_sha256": files["receipt"].sha256,
+        "receipt_hmac": receipt["receipt_hmac"],
+        "receipt_file_identity_sha256": _file_identity_sha256(
+            files["receipt"].identity
+        ),
+        "canonical_key_identity_sha256": receipt[
+            "canonical_key_identity_sha256"
+        ],
+        "sample_ids_sha256": _canonical_sha256(list(sample_ids)),
+        "source_unit_ids_sha256": _canonical_sha256(list(source_unit_ids)),
+        "cache_integrity_ids_sha256": _canonical_sha256(
+            receipt["cache_integrity_ids"]
+        ),
+        "original_mapping_sha256": receipt["original_mapping_sha256"],
+        "bundle_sha256": receipt["bundle_sha256"],
+        "bundle_size_bytes": receipt["bundle_size_bytes"],
+        "bundle_file_count": receipt["bundle_file_count"],
+        "sample_count": receipt["sample_count"],
+        "source_unit_count": receipt["source_unit_count"],
+        "unique_group_count": receipt["unique_group_count"],
+        "upstream_cache_count": receipt["upstream_cache_count"],
+        "feature_names_sha256": receipt["feature_names_sha256"],
+        "adapter_sha256": receipt["adapter_sha256"],
+        "temporal_policy_sha256": manifest["temporal_policy_sha256"],
+        "bridge_generation_sha256": receipt["bridge_generation_sha256"],
+        "upstream_manifest_commitments_sha256": _canonical_sha256(
+            receipt["upstream_manifest_commitments"]
+        ),
+        "upstream_generation_closure_hmac": receipt[
+            "upstream_generation_closure_hmac"
+        ],
+        "source_schema": receipt["source_schema"],
+    }
+    values["evidence_sha256"] = _canonical_sha256(values)
+    evidence = SSLStageEvidence(**values)
+    frozen_stage = _FrozenSSLStageAuthorization(
+        marker=_AUTHORIZATION_MARKER,
+        stage=stage,
+        mode=mode,
+        inputs_root=inputs,
+        bridge_root=bridge,
+        ravdess_authorizer=ravdess_authorizer,
+        mayo_authorizer=mayo_authorizer,
+        producer_sha256=producer_sha256,
+        snapshot=snapshot,
+    )
+    authorization = _SSLStageAuthorization(
+        marker=_AUTHORIZATION_MARKER,
+        evidence_sha256=evidence.evidence_sha256,
+        manifest_path=files["manifest"].path,
+        config_path=files["config"].path,
+        split_artifact_path=files["split"].path,
+        scaler_artifact_path=files["scaler"].path,
+        split=split,
+        scaler=scaler,
+        group_ids=group_ids,
+        training_config=dict(snapshot.config),
+        cache_artifacts=(files["bundle"],),
+        cache_commitment_sha256=cache_commitment,
+        cache_count=1,
+        prior_ravdess_checkpoint=prior_ravdess_checkpoint,
+        prior_ravdess_evidence=prior_ravdess_evidence,
+        frozen_stage=frozen_stage,
     )
     object.__setattr__(evidence, "_runtime_authorization", authorization)
     _require_authorized_stage_evidence(evidence)
@@ -1729,14 +2770,16 @@ class DynamicLandmarkSSLModel(nn.Module):
         return reconstruction
 
 
-def initialize_mayo_ssl_model(
+def _initialize_mayo_ssl_model_impl(
     prior_checkpoint: Mapping[str, object],
     *,
     prior_stage_evidence: SSLStageEvidence,
 ) -> DynamicLandmarkSSLModel:
     """Load and mark the exact authorized RAVDESS state used to start Mayo SSL."""
     _require_authorized_checkpoint_payload(
-        prior_checkpoint, prior_stage_evidence
+        prior_checkpoint,
+        prior_stage_evidence,
+        require_persisted=prior_stage_evidence.mode is not None,
     )
     fingerprint = ssl_checkpoint_fingerprint(prior_checkpoint)
     with torch.random.fork_rng(devices=[]):
@@ -1748,6 +2791,18 @@ def initialize_mayo_ssl_model(
         prior_checkpoint_sha256=fingerprint,
     )
     return model
+
+
+def initialize_mayo_ssl_model(
+    prior_checkpoint: Mapping[str, object],
+    *,
+    prior_stage_evidence: SSLStageEvidence,
+) -> DynamicLandmarkSSLModel:
+    _require_public_receipt_bound_stage(prior_stage_evidence)
+    return _initialize_mayo_ssl_model_impl(
+        prior_checkpoint,
+        prior_stage_evidence=prior_stage_evidence,
+    )
 
 
 def reconstruction_report(
@@ -1918,7 +2973,50 @@ def _training_receipt_from_mapping(value: object) -> SSLTrainingReceipt:
     return receipt
 
 
-def train_ssl_stage(
+def _trainable_parameter_names(
+    model: DynamicLandmarkSSLModel,
+    stage: str,
+) -> tuple[str, ...]:
+    if not isinstance(model, DynamicLandmarkSSLModel):
+        raise ValueError("source parameter allowlist requires the frozen SSL model")
+    prefixes = (
+        (
+            "ravdess_proj_x.", "ravdess_proj_dx.", "temporal.",
+            "attention_score.", "pool_projection.", "ravdess_decoder.",
+        )
+        if stage == "ravdess"
+        else (
+            "proj_bs_x.", "proj_bs_dx.", "proj_lm_x.", "proj_lm_dx.",
+            "temporal.", "attention_score.", "pool_projection.",
+            "mayo_decoder.",
+        )
+        if stage == "mayo"
+        else ()
+    )
+    if not prefixes:
+        raise ValueError("source parameter allowlist stage is unsupported")
+    named = tuple(name for name, _parameter in model.named_parameters())
+    selected = tuple(name for name in named if name.startswith(prefixes))
+    if not selected or len(selected) == len(named) or len(set(selected)) != len(selected):
+        raise RuntimeError("source parameter allowlist is malformed")
+    return selected
+
+
+def _require_seed_matched_prior_checkpoint(
+    prior_ravdess_checkpoint: Mapping[str, object],
+    seed: int,
+) -> None:
+    metadata = prior_ravdess_checkpoint.get("metadata")
+    prior_seed = metadata.get("seed") if type(metadata) is dict else None
+    if (
+        isinstance(prior_seed, (bool, np.bool_))
+        or not isinstance(prior_seed, (int, np.integer))
+        or int(prior_seed) != seed
+    ):
+        raise ValueError("Mayo training requires a seed-matched RAVDESS checkpoint")
+
+
+def _train_ssl_stage_impl(
     *,
     stage_evidence: SSLStageEvidence,
     seed: int,
@@ -1955,6 +3053,8 @@ def train_ssl_stage(
     epochs = int(training_config["epochs"])
     span_length = int(training_config["span_length"])
     spans_per_window = int(training_config["spans_per_window"])
+    if seed not in tuple(training_config["seeds"]):
+        raise ValueError("training seed is not registered for this frozen run mode")
 
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
@@ -1968,7 +3068,14 @@ def train_ssl_stage(
             if prior_ravdess_checkpoint is None or prior_stage_evidence is None:
                 raise ValueError("Mayo training requires its exact authorized RAVDESS checkpoint")
             _require_authorized_checkpoint_payload(
-                prior_ravdess_checkpoint, prior_stage_evidence
+                prior_ravdess_checkpoint,
+                prior_stage_evidence,
+                require_persisted=stage_evidence.mode is not None,
+            )
+            if prior_stage_evidence.mode != stage_evidence.mode:
+                raise ValueError("Mayo and RAVDESS stages must use the same run mode")
+            _require_seed_matched_prior_checkpoint(
+                prior_ravdess_checkpoint, seed,
             )
             prior_checkpoint_sha256 = ssl_checkpoint_fingerprint(
                 prior_ravdess_checkpoint
@@ -1994,8 +3101,14 @@ def train_ssl_stage(
         train_scaled = authorization.scaler.transform(
             train_features, train_valid, source=stage_evidence.source
         )
+        parameter_by_name = dict(model.named_parameters())
+        trainable_names = _trainable_parameter_names(
+            model, stage_evidence.stage
+        )
         optimizer = torch.optim.AdamW(
-            model.parameters(), lr=learning_rate, weight_decay=weight_decay
+            [parameter_by_name[name] for name in trainable_names],
+            lr=learning_rate,
+            weight_decay=weight_decay,
         )
         train_trace: list[dict[str, object]] = []
         train_mask_schedule: list[dict[str, object]] = []
@@ -2045,93 +3158,110 @@ def train_ssl_stage(
         post_state_sha256 = _model_state_sha256(post_state)
         if post_state_sha256 == pre_state_sha256:
             raise RuntimeError("authorized optimizer step produced no state update")
-        baseline_model = DynamicLandmarkSSLModel().to("cpu")
-        baseline_model.load_state_dict(baseline_state, strict=True)
-        baseline_model.eval()
-        fresh_untrained_model = DynamicLandmarkSSLModel().to("cpu")
-        fresh_untrained_model.load_state_dict(
-            fresh_untrained_state, strict=True
-        )
-        fresh_untrained_model.eval()
-        heldout_tensor_indices = torch.as_tensor(heldout_indices, dtype=torch.int64)
-        heldout_features = features.index_select(0, heldout_tensor_indices)
-        heldout_valid = valid_mask.index_select(0, heldout_tensor_indices)
-        heldout_times = timestamps.index_select(0, heldout_tensor_indices)
-        heldout_source_indices = source_indices.index_select(
-            0, heldout_tensor_indices
-        )
-        heldout_scaled = authorization.scaler.transform(
-            heldout_features, heldout_valid, source=stage_evidence.source
-        )
-        heldout_mask = make_contiguous_span_mask(
-            heldout_valid,
-            heldout_times,
-            heldout_source_indices,
-            expected_source_step=expected_source_step,
-            span_length=span_length,
-            spans_per_window=spans_per_window,
-            seed=10_000 + seed,
-        )
-        heldout_mask_sha256 = _mask_sha256(heldout_mask)
-        with torch.no_grad():
-            trained_heldout = model(
-                heldout_scaled,
-                heldout_valid,
-                heldout_times,
-                heldout_source_indices,
-                reconstruction_mask=heldout_mask,
-                source=source_key,
-            )
-            baseline_heldout = baseline_model(
-                heldout_scaled,
-                heldout_valid,
-                heldout_times,
-                heldout_source_indices,
-                reconstruction_mask=heldout_mask,
-                source=source_key,
-            )
-            fresh_untrained_heldout = fresh_untrained_model(
-                heldout_scaled,
-                heldout_valid,
-                heldout_times,
-                heldout_source_indices,
-                reconstruction_mask=heldout_mask,
-                source=source_key,
-            )
-        report = reconstruction_report(
-            trained_heldout,
-            baseline_heldout,
-            heldout_scaled,
-            heldout_mask,
-            baseline=authorization.scaler,
-            split=authorization.split,
-            evaluated_indices=heldout_indices,
-            group_ids=groups,
-            source=stage_evidence.source,
-        )
-        if stage_evidence.stage == MAYO_DEVELOPMENT_STAGE:
-            report["prior_ravdess"] = report.pop("untrained")
-            report["fresh_untrained"] = float(masked_smooth_l1(
-                fresh_untrained_heldout, heldout_scaled, heldout_mask
-            ).item())
-            initialization_baseline_metric = "prior_ravdess"
+        if stage_evidence.mode == "smoke":
+            heldout_mask_sha256 = _canonical_sha256([])
+            report = {
+                "mode": "smoke",
+                "heldout_evaluation_computed": False,
+                "train_loss": float(train_trace[-1]["loss"]),
+                "optimizer_steps": epochs,
+                "stage_evidence_sha256": stage_evidence.evidence_sha256,
+                "cache_binding_sha256": cache_binding,
+                "post_state_sha256": post_state_sha256,
+                "fresh_untrained_state_sha256": fresh_untrained_state_sha256,
+                "train_trace_sha256": train_trace_sha256,
+                "medical_generalization": False,
+                "objective": "masked_span_reconstruction_only",
+                "next_step_objective": False,
+            }
         else:
-            initialization_baseline_metric = "untrained"
-        report.update({
-            "seed": seed,
-            "stage_evidence_sha256": stage_evidence.evidence_sha256,
-            "cache_binding_sha256": cache_binding,
-            "post_state_sha256": post_state_sha256,
-            "baseline_state_sha256": baseline_state_sha256,
-            "fresh_untrained_state_sha256": fresh_untrained_state_sha256,
-            "heldout_mask_schedule_sha256": heldout_mask_sha256,
-            "initialization_baseline_metric": initialization_baseline_metric,
-            "baseline_initialization": (
-                "same_seed_fresh_ravdess"
-                if stage_evidence.stage == RAVDESS_STAGE
-                else "exact_prior_ravdess_checkpoint"
-            ),
-        })
+            baseline_model = DynamicLandmarkSSLModel().to("cpu")
+            baseline_model.load_state_dict(baseline_state, strict=True)
+            baseline_model.eval()
+            fresh_untrained_model = DynamicLandmarkSSLModel().to("cpu")
+            fresh_untrained_model.load_state_dict(
+                fresh_untrained_state, strict=True
+            )
+            fresh_untrained_model.eval()
+            heldout_tensor_indices = torch.as_tensor(heldout_indices, dtype=torch.int64)
+            heldout_features = features.index_select(0, heldout_tensor_indices)
+            heldout_valid = valid_mask.index_select(0, heldout_tensor_indices)
+            heldout_times = timestamps.index_select(0, heldout_tensor_indices)
+            heldout_source_indices = source_indices.index_select(
+                0, heldout_tensor_indices
+            )
+            heldout_scaled = authorization.scaler.transform(
+                heldout_features, heldout_valid, source=stage_evidence.source
+            )
+            heldout_mask = make_contiguous_span_mask(
+                heldout_valid,
+                heldout_times,
+                heldout_source_indices,
+                expected_source_step=expected_source_step,
+                span_length=span_length,
+                spans_per_window=spans_per_window,
+                seed=10_000 + seed,
+            )
+            heldout_mask_sha256 = _mask_sha256(heldout_mask)
+            with torch.no_grad():
+                trained_heldout = model(
+                    heldout_scaled,
+                    heldout_valid,
+                    heldout_times,
+                    heldout_source_indices,
+                    reconstruction_mask=heldout_mask,
+                    source=source_key,
+                )
+                baseline_heldout = baseline_model(
+                    heldout_scaled,
+                    heldout_valid,
+                    heldout_times,
+                    heldout_source_indices,
+                    reconstruction_mask=heldout_mask,
+                    source=source_key,
+                )
+                fresh_untrained_heldout = fresh_untrained_model(
+                    heldout_scaled,
+                    heldout_valid,
+                    heldout_times,
+                    heldout_source_indices,
+                    reconstruction_mask=heldout_mask,
+                    source=source_key,
+                )
+            report = reconstruction_report(
+                trained_heldout,
+                baseline_heldout,
+                heldout_scaled,
+                heldout_mask,
+                baseline=authorization.scaler,
+                split=authorization.split,
+                evaluated_indices=heldout_indices,
+                group_ids=groups,
+                source=stage_evidence.source,
+            )
+            if stage_evidence.stage == MAYO_DEVELOPMENT_STAGE:
+                report["prior_ravdess"] = report.pop("untrained")
+                report["fresh_untrained"] = float(masked_smooth_l1(
+                    fresh_untrained_heldout, heldout_scaled, heldout_mask
+                ).item())
+                initialization_baseline_metric = "prior_ravdess"
+            else:
+                initialization_baseline_metric = "untrained"
+            report.update({
+                "seed": seed,
+                "stage_evidence_sha256": stage_evidence.evidence_sha256,
+                "cache_binding_sha256": cache_binding,
+                "post_state_sha256": post_state_sha256,
+                "baseline_state_sha256": baseline_state_sha256,
+                "fresh_untrained_state_sha256": fresh_untrained_state_sha256,
+                "heldout_mask_schedule_sha256": heldout_mask_sha256,
+                "initialization_baseline_metric": initialization_baseline_metric,
+                "baseline_initialization": (
+                    "same_seed_fresh_ravdess"
+                    if stage_evidence.stage == RAVDESS_STAGE
+                    else "exact_prior_ravdess_checkpoint"
+                ),
+            })
         heldout_report_sha256 = _canonical_sha256(report)
         receipt_values: dict[str, object] = {
             "schema_version": SSL_TRAINING_RECEIPT_SCHEMA,
@@ -2192,6 +3322,22 @@ def train_ssl_stage(
         object.__setattr__(result, "_runtime_authorization", authorization_result)
     _require_authorized_training_result(result)
     return result
+
+
+def train_ssl_stage(
+    *,
+    stage_evidence: SSLStageEvidence,
+    seed: int,
+    prior_ravdess_checkpoint: Mapping[str, object] | None = None,
+    prior_stage_evidence: SSLStageEvidence | None = None,
+) -> SSLTrainingResult:
+    _require_public_receipt_bound_stage(stage_evidence)
+    return _train_ssl_stage_impl(
+        stage_evidence=stage_evidence,
+        seed=seed,
+        prior_ravdess_checkpoint=prior_ravdess_checkpoint,
+        prior_stage_evidence=prior_stage_evidence,
+    )
 
 
 def _require_authorized_training_result(result: SSLTrainingResult) -> None:
@@ -2279,14 +3425,24 @@ def _checkpoint_metadata(
 ) -> dict[str, object]:
     checkpoint_type = _checkpoint_type_for_evidence(evidence)
     mayo = checkpoint_type == CHECKPOINT_RAVDESS_MAYO
+    smoke = evidence.mode == "smoke"
     return {
         "objective": "masked_span_smooth_l1_only",
         "next_step_objective": False,
         "seed": receipt.seed,
         "config_sha256": evidence.config_sha256,
-        "source_stages": ["ravdess", "mayo_development"] if mayo else ["ravdess"],
-        "ravdess_claim": "actor_held_out_reconstruction",
-        "mayo_claim": "recording_held_out_not_patient_held_out" if mayo else None,
+        "source_stages": ["ravdess", "mayo"] if mayo else ["ravdess"],
+        "ravdess_claim": (
+            "train_only_smoke_no_heldout_metric"
+            if smoke else "actor_held_out_reconstruction"
+        ),
+        "mayo_claim": (
+            "train_only_smoke_no_heldout_metric"
+            if smoke and mayo
+            else "recording_held_out_not_patient_held_out"
+            if mayo
+            else None
+        ),
         "mayo_development_only": mayo,
         "palsynet_scaler_transfer_permitted": False,
         "stage_evidence": evidence.to_dict(),
@@ -2295,7 +3451,7 @@ def _checkpoint_metadata(
     }
 
 
-def build_ssl_checkpoint_payload(
+def _build_ssl_checkpoint_payload_impl(
     training_result: SSLTrainingResult,
 ) -> SSLCheckpointPayload:
     _require_authorized_training_result(training_result)
@@ -2323,6 +3479,15 @@ def build_ssl_checkpoint_payload(
         stage_evidence_sha256=stage_evidence.evidence_sha256,
     )
     return payload
+
+
+def build_ssl_checkpoint_payload(
+    training_result: SSLTrainingResult,
+) -> SSLCheckpointPayload:
+    if not isinstance(training_result, SSLTrainingResult):
+        raise ValueError("checkpoint construction requires SSLTrainingResult")
+    _require_public_receipt_bound_stage(training_result.stage_evidence)
+    return _build_ssl_checkpoint_payload_impl(training_result)
 
 
 def validate_ssl_checkpoint_payload(payload: Mapping[str, object]) -> None:
@@ -2400,6 +3565,36 @@ def validate_ssl_checkpoint_payload(payload: Mapping[str, object]) -> None:
         for name, value in evidence_receipt_values.items()
     ):
         raise ValueError("SSL checkpoint receipt contradicts state, report, or stage")
+    if evidence.mode == "smoke":
+        expected_smoke_fields = {
+            "mode", "heldout_evaluation_computed", "train_loss",
+            "optimizer_steps", "stage_evidence_sha256",
+            "cache_binding_sha256", "post_state_sha256",
+            "fresh_untrained_state_sha256", "train_trace_sha256",
+            "medical_generalization", "objective", "next_step_objective",
+        }
+        train_loss = report.get("train_loss")
+        if (
+            set(report) != expected_smoke_fields
+            or report.get("mode") != "smoke"
+            or report.get("heldout_evaluation_computed") is not False
+            or isinstance(train_loss, (bool, np.bool_))
+            or not isinstance(train_loss, (int, float, np.number))
+            or not math.isfinite(float(train_loss))
+            or report.get("optimizer_steps") != receipt.optimizer_steps
+            or report.get("stage_evidence_sha256") != evidence.evidence_sha256
+            or report.get("cache_binding_sha256") != receipt.cache_binding_sha256
+            or report.get("post_state_sha256") != receipt.post_state_sha256
+            or report.get("fresh_untrained_state_sha256")
+            != receipt.fresh_untrained_state_sha256
+            or report.get("train_trace_sha256") != receipt.train_trace_sha256
+            or report.get("medical_generalization") is not False
+            or report.get("objective") != "masked_span_reconstruction_only"
+            or report.get("next_step_objective") is not False
+            or receipt.heldout_mask_schedule_sha256 != _canonical_sha256([])
+        ):
+            raise ValueError("smoke checkpoint report is not exact train-only evidence")
+        return
     report_expected = {
         "target_space": "source_train_standardized",
         "seed": seed,
@@ -2466,7 +3661,11 @@ def ssl_checkpoint_fingerprint(payload: Mapping[str, object]) -> str:
 def _require_authorized_checkpoint_payload(
     payload: Mapping[str, object],
     stage_evidence: SSLStageEvidence,
+    *,
+    require_persisted: bool = False,
 ) -> None:
+    if type(require_persisted) is not bool:
+        raise ValueError("checkpoint persistence requirement must be boolean")
     _require_authorized_stage_evidence(stage_evidence)
     if not isinstance(payload, SSLCheckpointPayload):
         raise ValueError("checkpoint payload lacks exact-state runtime authorization")
@@ -2486,12 +3685,68 @@ def _require_authorized_checkpoint_payload(
         != authorization.checkpoint_fingerprint
     ):
         raise ValueError("checkpoint payload changed after exact-state authorization")
+    if authorization.receipt_reference is not None:
+        receipt = authorization.receipt_reference()
+        if receipt is None or authorization.checkpoint_path is None:
+            raise ValueError("persisted checkpoint authority expired")
+        _require_authorized_checkpoint_receipt(
+            receipt, stage_evidence, authorization.checkpoint_path
+        )
+        if receipt.checkpoint_fingerprint != authorization.checkpoint_fingerprint:
+            raise ValueError("persisted checkpoint receipt fingerprint changed")
+    elif require_persisted:
+        raise ValueError("checkpoint must be reloaded from its keyed private receipt")
+
+
+def _stage_receipt_authority_key(
+    stage_evidence: SSLStageEvidence,
+) -> bytes | None:
+    if stage_evidence.mode is None:
+        return None
+    _require_authorized_stage_evidence(stage_evidence)
+    authorization = stage_evidence._runtime_authorization
+    if not isinstance(authorization, _SSLStageAuthorization):
+        raise ValueError("receipt-bound stage authority is unavailable")
+    frozen = authorization.frozen_stage
+    if not isinstance(frozen, _FrozenSSLStageAuthorization):
+        raise ValueError("receipt-bound frozen authority is unavailable")
+    live = (
+        frozen.ravdess_authorizer()
+        if stage_evidence.stage == "ravdess"
+        else frozen.mayo_authorizer()
+    )
+    key = getattr(live, "private_key", None)
+    key_identity = getattr(live, "key_file_identity_sha256", None)
+    if (
+        type(key) is not bytes
+        or len(key) != 32
+        or key_identity != stage_evidence.canonical_key_identity_sha256
+    ):
+        raise ValueError("live canonical key contradicts stage evidence")
+    _require_authorized_stage_evidence(stage_evidence)
+    return key
+
+
+def _checkpoint_receipt_authority_hmac(
+    values: Mapping[str, object],
+    key: bytes,
+) -> str:
+    if "receipt_sha256" in values or "stage_authority_hmac" in values:
+        raise ValueError("checkpoint receipt HMAC core contains derived fields")
+    return hmac.new(
+        key,
+        b"dynamic-landmark-ssl-checkpoint-receipt-v2\0"
+        + _canonical_json_bytes(values),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _validate_checkpoint_receipt(receipt: SSLCheckpointReceipt) -> None:
     if not isinstance(receipt, SSLCheckpointReceipt):
         raise ValueError("checkpoint receipt has the wrong type")
-    if receipt.schema_version != SSL_CHECKPOINT_RECEIPT_SCHEMA:
+    if receipt.schema_version not in {
+        SSL_CHECKPOINT_RECEIPT_SCHEMA, SSL_CHECKPOINT_RECEIPT_V2_SCHEMA,
+    }:
         raise ValueError("checkpoint receipt schema is unsupported")
     if (
         not isinstance(receipt.checkpoint_name, str)
@@ -2503,6 +3758,8 @@ def _validate_checkpoint_receipt(receipt: SSLCheckpointReceipt) -> None:
         raise ValueError("checkpoint receipt type is unsupported")
     for name in (
         "checkpoint_fingerprint", "checkpoint_file_sha256",
+        "checkpoint_file_identity_sha256",
+        "receipt_file_identity_sha256",
         "stage_evidence_sha256", "receipt_sha256",
     ):
         value = getattr(receipt, name)
@@ -2512,6 +3769,13 @@ def _validate_checkpoint_receipt(receipt: SSLCheckpointReceipt) -> None:
     values.pop("receipt_sha256")
     if receipt.receipt_sha256 != _canonical_sha256(values):
         raise ValueError("checkpoint receipt digest does not match its claims")
+    if receipt.schema_version == SSL_CHECKPOINT_RECEIPT_V2_SCHEMA:
+        _require_sha256(
+            receipt.stage_authority_hmac,
+            "checkpoint receipt stage authority HMAC",
+        )
+    elif receipt.stage_authority_hmac is not None:
+        raise ValueError("legacy checkpoint receipt cannot carry a keyed HMAC")
 
 
 def _require_authorized_checkpoint_receipt(
@@ -2521,6 +3785,17 @@ def _require_authorized_checkpoint_receipt(
 ) -> bytes:
     _require_authorized_stage_evidence(stage_evidence)
     _validate_checkpoint_receipt(receipt)
+    if stage_evidence.mode is not None:
+        if receipt.schema_version != SSL_CHECKPOINT_RECEIPT_V2_SCHEMA:
+            raise ValueError("receipt-bound checkpoint requires a keyed v2 receipt")
+        key = _stage_receipt_authority_key(stage_evidence)
+        assert key is not None
+        hmac_values = receipt.to_dict()
+        hmac_values.pop("receipt_sha256")
+        observed_hmac = hmac_values.pop("stage_authority_hmac")
+        expected_hmac = _checkpoint_receipt_authority_hmac(hmac_values, key)
+        if not hmac.compare_digest(str(observed_hmac), expected_hmac):
+            raise ValueError("checkpoint receipt stage authority HMAC is invalid")
     authorization = receipt._runtime_authorization
     if (
         not isinstance(authorization, _SSLCheckpointReceiptAuthorization)
@@ -2530,33 +3805,48 @@ def _require_authorized_checkpoint_receipt(
         or receipt.stage_evidence_sha256 != stage_evidence.evidence_sha256
     ):
         raise ValueError("checkpoint receipt lacks trusted runtime authorization")
-    receipt_resolved, receipt_bytes, receipt_file_sha256 = _regular_file_snapshot(
+    (
+        receipt_resolved,
+        receipt_bytes,
+        receipt_file_sha256,
+        receipt_identity,
+    ) = _private_regular_file_snapshot(
         authorization.receipt_path, "checkpoint receipt"
     )
     if (
         receipt_resolved != authorization.receipt_path
         or receipt_file_sha256 != authorization.receipt_file_sha256
+        or receipt_identity != authorization.receipt_identity
+        or _stable_storage_identity_sha256(receipt_identity)
+        != receipt.receipt_file_identity_sha256
     ):
         raise ValueError("checkpoint receipt file changed after authorization")
-    try:
-        receipt_file_value = json.loads(receipt_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("checkpoint receipt file is not valid JSON") from exc
+    receipt_file_value = _strict_json_mapping(
+        receipt_bytes, "checkpoint receipt",
+    )
     if not _exact_json_value(receipt_file_value, receipt.to_dict()):
         raise ValueError("checkpoint receipt object does not match its file")
-    checkpoint_resolved, checkpoint_bytes, checkpoint_file_sha256 = (
-        _regular_file_snapshot(checkpoint_path, "SSL checkpoint")
+    (
+        checkpoint_resolved,
+        checkpoint_bytes,
+        checkpoint_file_sha256,
+        checkpoint_identity,
+    ) = _private_regular_file_snapshot(
+        checkpoint_path, "SSL checkpoint"
     )
     if (
         checkpoint_resolved != authorization.checkpoint_path
         or checkpoint_resolved.name != receipt.checkpoint_name
         or checkpoint_file_sha256 != receipt.checkpoint_file_sha256
+        or checkpoint_identity != authorization.checkpoint_identity
+        or _stable_storage_identity_sha256(checkpoint_identity)
+        != receipt.checkpoint_file_identity_sha256
     ):
         raise ValueError("SSL checkpoint file does not match its trusted receipt")
     return checkpoint_bytes
 
 
-def authorize_ssl_checkpoint_receipt(
+def _authorize_ssl_checkpoint_receipt_impl(
     receipt_path: str | Path,
     checkpoint_path: str | Path,
     *,
@@ -2570,13 +3860,15 @@ def authorize_ssl_checkpoint_receipt(
         or _SHA256.fullmatch(trusted_expected_receipt_sha256) is None
     ):
         raise ValueError("trusted expected receipt digest must be exact SHA-256")
-    receipt_resolved, receipt_bytes, receipt_file_sha256 = _regular_file_snapshot(
+    (
+        receipt_resolved,
+        receipt_bytes,
+        receipt_file_sha256,
+        receipt_identity,
+    ) = _private_regular_file_snapshot(
         receipt_path, "checkpoint receipt"
     )
-    try:
-        value = json.loads(receipt_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("checkpoint receipt file is not valid JSON") from exc
+    value = _strict_json_mapping(receipt_bytes, "checkpoint receipt")
     fields = {
         name for name in SSLCheckpointReceipt.__dataclass_fields__
         if not name.startswith("_")
@@ -2593,14 +3885,23 @@ def authorize_ssl_checkpoint_receipt(
     if (
         receipt.stage_evidence_sha256 != stage_evidence.evidence_sha256
         or receipt.checkpoint_type != _checkpoint_type_for_evidence(stage_evidence)
+        or _stable_storage_identity_sha256(receipt_identity)
+        != receipt.receipt_file_identity_sha256
     ):
         raise ValueError("checkpoint receipt contradicts the live stage evidence")
-    checkpoint_resolved, _, checkpoint_file_sha256 = _regular_file_snapshot(
+    (
+        checkpoint_resolved,
+        _,
+        checkpoint_file_sha256,
+        checkpoint_identity,
+    ) = _private_regular_file_snapshot(
         checkpoint_path, "SSL checkpoint"
     )
     if (
         checkpoint_resolved.name != receipt.checkpoint_name
         or checkpoint_file_sha256 != receipt.checkpoint_file_sha256
+        or _stable_storage_identity_sha256(checkpoint_identity)
+        != receipt.checkpoint_file_identity_sha256
     ):
         raise ValueError("SSL checkpoint file does not match the registered receipt")
     authorization = _SSLCheckpointReceiptAuthorization(
@@ -2609,6 +3910,8 @@ def authorize_ssl_checkpoint_receipt(
         checkpoint_path=checkpoint_resolved,
         receipt_path=receipt_resolved,
         receipt_file_sha256=receipt_file_sha256,
+        checkpoint_identity=checkpoint_identity,
+        receipt_identity=receipt_identity,
         stage_evidence_sha256=stage_evidence.evidence_sha256,
     )
     object.__setattr__(receipt, "_runtime_authorization", authorization)
@@ -2618,27 +3921,301 @@ def authorize_ssl_checkpoint_receipt(
     return receipt
 
 
-def save_ssl_checkpoint(
+def authorize_ssl_checkpoint_receipt(
+    receipt_path: str | Path,
+    checkpoint_path: str | Path,
+    *,
+    trusted_expected_receipt_sha256: str,
+    stage_evidence: SSLStageEvidence,
+) -> SSLCheckpointReceipt:
+    _require_public_receipt_bound_stage(stage_evidence)
+    return _authorize_ssl_checkpoint_receipt_impl(
+        receipt_path,
+        checkpoint_path,
+        trusted_expected_receipt_sha256=trusted_expected_receipt_sha256,
+        stage_evidence=stage_evidence,
+    )
+
+
+def _checkpoint_parent_identity(status: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(status.st_dev), int(status.st_ino), int(status.st_mode),
+        int(status.st_uid), int(status.st_gid),
+    )
+
+
+def _canonical_checkpoint_parent(
+    path: Path,
+) -> tuple[Path, Path, tuple[int, ...]]:
+    lexical = path.absolute()
+    try:
+        resolved = lexical.resolve(strict=True)
+        status = lexical.lstat()
+    except OSError as exc:
+        raise ValueError("SSL checkpoint parent is unavailable") from exc
+    canonical = resolved == lexical
+    if not canonical and sys.platform == "darwin":
+        for source, destination in (
+            (Path("/var"), Path("/private/var")),
+            (Path("/tmp"), Path("/private/tmp")),
+        ):
+            try:
+                relative = lexical.relative_to(source)
+            except ValueError:
+                continue
+            if resolved == destination / relative:
+                canonical = True
+                break
+    if not canonical or not stat.S_ISDIR(status.st_mode):
+        raise ValueError("SSL checkpoint parent must be canonical storage")
+    return lexical, resolved, _checkpoint_parent_identity(status)
+
+
+def _assert_private_checkpoint_parent(
+    descriptor: int,
+    lexical: Path,
+    expected_identity: tuple[int, ...],
+) -> None:
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(lexical, follow_symlinks=False)
+    except OSError as exc:
+        raise ValueError("SSL checkpoint parent changed") from exc
+    if (
+        _checkpoint_parent_identity(opened) != expected_identity
+        or _checkpoint_parent_identity(current) != expected_identity
+        or not stat.S_ISDIR(opened.st_mode)
+        or opened.st_uid != os.geteuid()
+        or stat.S_IMODE(opened.st_mode) != 0o700
+    ):
+        raise ValueError("SSL checkpoint parent changed or is not owner-only")
+
+
+def _close_ssl_descriptors(descriptors: tuple[int, ...]) -> None:
+    closer = ExitStack()
+    for descriptor in descriptors:
+        closer.callback(os.close, descriptor)
+    closer.__exit__(*sys.exc_info())
+
+
+def _open_private_checkpoint_parent(
+    path: Path,
+) -> tuple[Path, Path, int, tuple[int, ...]]:
+    lexical, resolved, initial_identity = _canonical_checkpoint_parent(path)
+    descriptor = os.open(
+        lexical,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        identity = _checkpoint_parent_identity(os.fstat(descriptor))
+        if identity != initial_identity:
+            raise ValueError("SSL checkpoint parent changed while opening")
+        _assert_private_checkpoint_parent(descriptor, lexical, identity)
+        return lexical, resolved, descriptor, identity
+    except BaseException:
+        _close_ssl_descriptors((descriptor,))
+        raise
+
+
+def _private_entry_status(
+    parent_descriptor: int,
+    name: str,
+) -> os.stat_result | None:
+    try:
+        return os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+
+
+def _create_held_private_regular(
+    parent_descriptor: int,
+    name: str,
+    label: str,
+) -> tuple[int, tuple[int, int]]:
+    if name in {"", ".", ".."} or Path(name).name != name:
+        raise ValueError(f"{label} name is unsafe")
+    descriptor = os.open(
+        name,
+        os.O_RDWR | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+        dir_fd=parent_descriptor,
+    )
+    try:
+        created = os.fstat(descriptor)
+        created_mode = stat.S_IMODE(created.st_mode)
+        if (
+            not stat.S_ISREG(created.st_mode)
+            or created.st_uid != os.geteuid()
+            or created.st_nlink != 1
+            or created_mode & 0o077
+        ):
+            raise ValueError(f"{label} was not created as private storage")
+        os.fchmod(descriptor, 0o600)
+        opened = os.fstat(descriptor)
+        current = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False,
+        )
+        inode = (int(opened.st_dev), int(opened.st_ino))
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+            or (int(current.st_dev), int(current.st_ino)) != inode
+        ):
+            raise ValueError(f"{label} storage changed during creation")
+        return descriptor, inode
+    except BaseException:
+        _close_ssl_descriptors((descriptor,))
+        raise
+
+
+def _snapshot_held_private_regular(
+    parent_descriptor: int,
+    name: str,
+    descriptor: int,
+    inode: tuple[int, int],
+    label: str,
+) -> tuple[bytes, str, _RegularFileIdentity]:
+    before = os.fstat(descriptor)
+    current = os.stat(
+        name, dir_fd=parent_descriptor, follow_symlinks=False,
+    )
+    identity = _identity_from_stat(before)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or identity.uid != os.geteuid()
+        or identity.mode != 0o600
+        or identity.links != 1
+        or (identity.device, identity.inode) != inode
+        or (int(current.st_dev), int(current.st_ino)) != inode
+    ):
+        raise ValueError(f"{label} is not held private storage")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while chunk := os.read(descriptor, 1024 * 1024):
+        chunks.append(chunk)
+    payload = b"".join(chunks)
+    after = os.fstat(descriptor)
+    linked = os.stat(
+        name, dir_fd=parent_descriptor, follow_symlinks=False,
+    )
+    if (
+        _identity_from_stat(after) != identity
+        or (int(linked.st_dev), int(linked.st_ino)) != inode
+        or len(payload) != identity.size
+        or not payload
+    ):
+        raise ValueError(f"{label} changed during held verification")
+    return payload, hashlib.sha256(payload).hexdigest(), identity
+
+
+def _publish_held_private_regular(
+    parent_descriptor: int,
+    temporary_name: str,
+    destination_name: str,
+    descriptor: int,
+    inode: tuple[int, int],
+    label: str,
+) -> None:
+    current = _private_entry_status(parent_descriptor, temporary_name)
+    if (
+        current is None
+        or (int(current.st_dev), int(current.st_ino)) != inode
+        or (int(os.fstat(descriptor).st_dev), int(os.fstat(descriptor).st_ino))
+        != inode
+    ):
+        raise ValueError(f"{label} staging identity changed")
+    from .dynamic_landmark_ssl_bridge import (
+        _atomic_publish_directory_no_replace_at,
+    )
+
+    publish_error: BaseException | None = None
+    try:
+        _atomic_publish_directory_no_replace_at(
+            parent_descriptor, temporary_name, destination_name,
+        )
+    except BaseException as caught:
+        publish_error = caught
+    source = _private_entry_status(parent_descriptor, temporary_name)
+    destination = _private_entry_status(parent_descriptor, destination_name)
+    source_inode = None if source is None else (
+        int(source.st_dev), int(source.st_ino)
+    )
+    destination_inode = None if destination is None else (
+        int(destination.st_dev), int(destination.st_ino)
+    )
+    if source_inode == inode and destination_inode is None:
+        if publish_error is not None:
+            raise publish_error
+        raise RuntimeError(f"{label} publication did not commit")
+    if source_inode is not None or destination_inode != inode:
+        raise RuntimeError(
+            f"{label} publication outcome is indeterminate"
+        ) from publish_error
+    if publish_error is not None:
+        raise RuntimeError(
+            f"{label} is retained after a publication return fault"
+        ) from publish_error
+
+
+def _save_ssl_checkpoint_impl(
     path: str | Path,
     payload: Mapping[str, object],
     *,
     stage_evidence: SSLStageEvidence,
 ) -> SSLCheckpointReceipt:
     _require_authorized_checkpoint_payload(payload, stage_evidence)
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.parent / f".{destination.name}.tmp-{secrets.token_hex(8)}"
-    receipt_destination = destination.parent / f"{destination.name}.receipt.json"
-    receipt_temporary = receipt_destination.parent / (
-        f".{receipt_destination.name}.tmp-{secrets.token_hex(8)}"
+    destination = Path(path).absolute()
+    if destination.name in {"", ".", ".."}:
+        raise ValueError("SSL checkpoint destination name is unsafe")
+    receipt_name = f"{destination.name}.receipt.json"
+    parent_lexical, parent_resolved, parent_descriptor, parent_identity = (
+        _open_private_checkpoint_parent(destination.parent)
     )
+    checkpoint_descriptor: int | None = None
+    receipt_descriptor: int | None = None
     try:
-        with temporary.open("xb") as handle:
-            torch.save(dict(payload), handle)
+        _assert_private_checkpoint_parent(
+            parent_descriptor, parent_lexical, parent_identity,
+        )
+        if (
+            _private_entry_status(parent_descriptor, destination.name) is not None
+            or _private_entry_status(parent_descriptor, receipt_name) is not None
+        ):
+            raise FileExistsError("SSL checkpoint destination already exists")
+        checkpoint_temporary_name = (
+            f".{destination.name}.tmp-{secrets.token_hex(8)}"
+        )
+        checkpoint_descriptor, checkpoint_inode = (
+            _create_held_private_regular(
+                parent_descriptor,
+                checkpoint_temporary_name,
+                "temporary SSL checkpoint",
+            )
+        )
+        with os.fdopen(
+            checkpoint_descriptor, "wb", closefd=False,
+        ) as handle:
+            torch.save(
+                dict(payload),
+                handle,
+                _use_new_zipfile_serialization=False,
+            )
             handle.flush()
-            os.fsync(handle.fileno())
-        _, temporary_bytes, _ = _regular_file_snapshot(
-            temporary, "temporary SSL checkpoint"
+            os.fsync(checkpoint_descriptor)
+        temporary_bytes, temporary_checkpoint_sha256, _ = (
+            _snapshot_held_private_regular(
+            parent_descriptor,
+            checkpoint_temporary_name,
+            checkpoint_descriptor,
+            checkpoint_inode,
+            "temporary SSL checkpoint",
+            )
         )
         try:
             reread = torch.load(
@@ -2650,56 +4227,200 @@ def save_ssl_checkpoint(
         checkpoint_fingerprint = ssl_checkpoint_fingerprint(payload)
         if ssl_checkpoint_fingerprint(reread) != checkpoint_fingerprint:
             raise ValueError("checkpoint reread changed its exact state")
-        os.replace(temporary, destination)
-        checkpoint_path, _, checkpoint_file_sha256 = _regular_file_snapshot(
-            destination, "SSL checkpoint"
+        _assert_private_checkpoint_parent(
+            parent_descriptor, parent_lexical, parent_identity,
+        )
+        prepublish_bytes, prepublish_sha256, _ = (
+            _snapshot_held_private_regular(
+                parent_descriptor,
+                checkpoint_temporary_name,
+                checkpoint_descriptor,
+                checkpoint_inode,
+                "temporary SSL checkpoint",
+            )
+        )
+        if (
+            prepublish_bytes != temporary_bytes
+            or prepublish_sha256 != temporary_checkpoint_sha256
+        ):
+            raise ValueError("SSL checkpoint changed before publication")
+        _publish_held_private_regular(
+            parent_descriptor,
+            checkpoint_temporary_name,
+            destination.name,
+            checkpoint_descriptor,
+            checkpoint_inode,
+            "SSL checkpoint",
+        )
+        os.fsync(parent_descriptor)
+        _assert_private_checkpoint_parent(
+            parent_descriptor, parent_lexical, parent_identity,
+        )
+        (
+            checkpoint_bytes,
+            checkpoint_file_sha256,
+            checkpoint_identity,
+        ) = _snapshot_held_private_regular(
+            parent_descriptor,
+            destination.name,
+            checkpoint_descriptor,
+            checkpoint_inode,
+            "SSL checkpoint",
+        )
+        if (
+            checkpoint_bytes != temporary_bytes
+            or checkpoint_file_sha256 != temporary_checkpoint_sha256
+        ):
+            raise ValueError("SSL checkpoint changed during publication")
+        checkpoint_path = parent_resolved / destination.name
+        authority_key = _stage_receipt_authority_key(stage_evidence)
+        receipt_temporary_name = (
+            f".{receipt_name}.tmp-{secrets.token_hex(8)}"
+        )
+        receipt_descriptor, receipt_inode = _create_held_private_regular(
+            parent_descriptor,
+            receipt_temporary_name,
+            "temporary checkpoint receipt",
+        )
+        receipt_prewrite_identity = _identity_from_stat(
+            os.fstat(receipt_descriptor)
         )
         receipt_values: dict[str, object] = {
-            "schema_version": SSL_CHECKPOINT_RECEIPT_SCHEMA,
+            "schema_version": (
+                SSL_CHECKPOINT_RECEIPT_V2_SCHEMA
+                if authority_key is not None
+                else SSL_CHECKPOINT_RECEIPT_SCHEMA
+            ),
             "checkpoint_name": destination.name,
             "checkpoint_type": payload["checkpoint_type"],
             "checkpoint_fingerprint": checkpoint_fingerprint,
             "checkpoint_file_sha256": checkpoint_file_sha256,
+            "checkpoint_file_identity_sha256": (
+                _stable_storage_identity_sha256(checkpoint_identity)
+            ),
+            "receipt_file_identity_sha256": (
+                _stable_storage_identity_sha256(receipt_prewrite_identity)
+            ),
             "stage_evidence_sha256": stage_evidence.evidence_sha256,
         }
-        receipt_values["receipt_sha256"] = _canonical_sha256(receipt_values)
+        receipt_values["stage_authority_hmac"] = (
+            _checkpoint_receipt_authority_hmac(
+                receipt_values, authority_key
+            )
+            if authority_key is not None
+            else None
+        )
+        receipt_values["receipt_sha256"] = _canonical_sha256(
+            receipt_values
+        )
         receipt = SSLCheckpointReceipt(**receipt_values)
         _validate_checkpoint_receipt(receipt)
-        encoded_receipt = (
-            json.dumps(
-                receipt.to_dict(), sort_keys=True, separators=(",", ":"),
-                ensure_ascii=True,
-            ) + "\n"
+        encoded_receipt = json.dumps(
+            receipt.to_dict(), sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True,
         ).encode("utf-8")
-        with receipt_temporary.open("xb") as handle:
-            handle.write(encoded_receipt)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(receipt_temporary, receipt_destination)
-        receipt_path, _, receipt_file_sha256 = _regular_file_snapshot(
-            receipt_destination, "checkpoint receipt"
+        os.lseek(receipt_descriptor, 0, os.SEEK_SET)
+        offset = 0
+        while offset < len(encoded_receipt):
+            written = os.write(receipt_descriptor, encoded_receipt[offset:])
+            if written < 1:
+                raise OSError("checkpoint receipt write made no progress")
+            offset += written
+        os.fsync(receipt_descriptor)
+        receipt_staged_bytes, _, _ = _snapshot_held_private_regular(
+            parent_descriptor,
+            receipt_temporary_name,
+            receipt_descriptor,
+            receipt_inode,
+            "temporary checkpoint receipt",
         )
+        if (
+            receipt_staged_bytes != encoded_receipt
+            or not _exact_json_value(
+                _strict_json_mapping(
+                    receipt_staged_bytes, "checkpoint receipt",
+                ),
+                receipt.to_dict(),
+            )
+        ):
+            raise ValueError("checkpoint receipt changed after writing")
+        _assert_private_checkpoint_parent(
+            parent_descriptor, parent_lexical, parent_identity,
+        )
+        _publish_held_private_regular(
+            parent_descriptor,
+            receipt_temporary_name,
+            receipt_name,
+            receipt_descriptor,
+            receipt_inode,
+            "checkpoint receipt",
+        )
+        os.fsync(parent_descriptor)
+        _assert_private_checkpoint_parent(
+            parent_descriptor, parent_lexical, parent_identity,
+        )
+        (
+            receipt_final_bytes,
+            receipt_file_sha256,
+            receipt_identity,
+        ) = _snapshot_held_private_regular(
+            parent_descriptor,
+            receipt_name,
+            receipt_descriptor,
+            receipt_inode,
+            "checkpoint receipt",
+        )
+        if receipt_final_bytes != encoded_receipt:
+            raise ValueError("published checkpoint receipt changed")
+        receipt_path = parent_resolved / receipt_name
         authorization = _SSLCheckpointReceiptAuthorization(
             marker=_AUTHORIZATION_MARKER,
             receipt_reference=weakref.ref(receipt),
             checkpoint_path=checkpoint_path,
             receipt_path=receipt_path,
             receipt_file_sha256=receipt_file_sha256,
+            checkpoint_identity=checkpoint_identity,
+            receipt_identity=receipt_identity,
             stage_evidence_sha256=stage_evidence.evidence_sha256,
         )
         object.__setattr__(receipt, "_runtime_authorization", authorization)
         _require_authorized_checkpoint_receipt(
             receipt, stage_evidence, checkpoint_path
         )
+        _assert_private_checkpoint_parent(
+            parent_descriptor, parent_lexical, parent_identity,
+        )
         return receipt
     finally:
-        if temporary.exists():
-            temporary.unlink()
-        if receipt_temporary.exists():
-            receipt_temporary.unlink()
+        descriptors = (
+            (parent_descriptor,)
+            + (
+                (checkpoint_descriptor,)
+                if checkpoint_descriptor is not None else ()
+            )
+            + (
+                (receipt_descriptor,)
+                if receipt_descriptor is not None else ()
+            )
+        )
+        # No pathname cleanup is attempted.  A failed outer results
+        # transaction retains all private residue and blocks retry.
+        _close_ssl_descriptors(descriptors)
 
 
-def load_ssl_checkpoint(
+def save_ssl_checkpoint(
+    path: str | Path,
+    payload: Mapping[str, object],
+    *,
+    stage_evidence: SSLStageEvidence,
+) -> SSLCheckpointReceipt:
+    _require_public_receipt_bound_stage(stage_evidence)
+    return _save_ssl_checkpoint_impl(
+        path, payload, stage_evidence=stage_evidence,
+    )
+
+
+def _load_ssl_checkpoint_impl(
     path: str | Path,
     *,
     receipt: SSLCheckpointReceipt | None = None,
@@ -2731,17 +4452,34 @@ def load_ssl_checkpoint(
         payload_reference=weakref.ref(payload),
         checkpoint_fingerprint=receipt.checkpoint_fingerprint,
         stage_evidence_sha256=stage_evidence.evidence_sha256,
+        checkpoint_path=Path(path).resolve(strict=True),
+        receipt_reference=weakref.ref(receipt),
     )
     _require_authorized_checkpoint_payload(payload, stage_evidence)
     return payload
 
 
-def transfer_ssl_weights(
+def load_ssl_checkpoint(
+    path: str | Path,
+    *,
+    receipt: SSLCheckpointReceipt | None = None,
+    stage_evidence: SSLStageEvidence | None = None,
+) -> SSLCheckpointPayload:
+    if stage_evidence is None:
+        raise ValueError("loading requires live receipt-bound stage evidence")
+    _require_public_receipt_bound_stage(stage_evidence)
+    return _load_ssl_checkpoint_impl(
+        path, receipt=receipt, stage_evidence=stage_evidence,
+    )
+
+
+def _transfer_ssl_weights_impl(
     payload: Mapping[str, object],
     downstream: DynamicLandmarkModel,
     cross_detector_agreement: bool = False,
     *,
     stage_evidence: SSLStageEvidence | None = None,
+    require_persisted: bool = False,
 ) -> tuple[str, ...]:
     """Apply only the checkpoint-type-specific downstream transfer allowlist.
 
@@ -2751,7 +4489,9 @@ def transfer_ssl_weights(
     """
     if stage_evidence is None:
         raise ValueError("checkpoint transfer requires live stage-artifact authorization")
-    _require_authorized_checkpoint_payload(payload, stage_evidence)
+    _require_authorized_checkpoint_payload(
+        payload, stage_evidence, require_persisted=require_persisted,
+    )
     if not isinstance(downstream, DynamicLandmarkModel):
         raise ValueError("downstream model must use the frozen Task4 architecture")
     if not isinstance(cross_detector_agreement, bool):
@@ -2797,6 +4537,25 @@ def transfer_ssl_weights(
     return tuple(sorted(transferred))
 
 
+def transfer_ssl_weights(
+    payload: Mapping[str, object],
+    downstream: DynamicLandmarkModel,
+    cross_detector_agreement: bool = False,
+    *,
+    stage_evidence: SSLStageEvidence | None = None,
+) -> tuple[str, ...]:
+    if stage_evidence is None:
+        raise ValueError("checkpoint transfer requires live stage evidence")
+    _require_public_receipt_bound_stage(stage_evidence)
+    return _transfer_ssl_weights_impl(
+        payload,
+        downstream,
+        cross_detector_agreement,
+        stage_evidence=stage_evidence,
+        require_persisted=True,
+    )
+
+
 def require_frozen_pretraining_inputs(
     _ravdess_manifest: str | Path | None = None,
     _mayo_manifest: str | Path | None = None,
@@ -2817,6 +4576,7 @@ __all__ = [
     "make_contiguous_span_mask", "ssl_gap_safe_per_second_differences",
     "masked_smooth_l1", "deterministic_group_split", "resample_trajectory_30hz",
     "fit_source_scaler", "reconstruction_report", "build_ssl_stage_evidence",
+    "authorize_frozen_ssl_stage",
     "initialize_mayo_ssl_model", "train_ssl_stage",
     "build_ssl_checkpoint_payload", "ssl_checkpoint_fingerprint",
     "validate_ssl_checkpoint_payload", "save_ssl_checkpoint", "load_ssl_checkpoint",

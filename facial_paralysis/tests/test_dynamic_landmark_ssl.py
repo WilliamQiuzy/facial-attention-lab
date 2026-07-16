@@ -1,13 +1,16 @@
 """Synthetic-only contracts for dynamic landmark masked-span pretraining."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import stat
 import sys
 import tempfile
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 from _testlib import Check, run_all  # noqa: E402
 from src.models.dynamic_landmark import DynamicLandmarkModel  # noqa: E402
 from src.pretraining import dynamic_landmark_ssl as ssl_core  # noqa: E402
+from src.pretraining import dynamic_landmark_ssl_bridge as bridge_core  # noqa: E402
 from src.pretraining.dynamic_landmark_ssl import (  # noqa: E402
     CHECKPOINT_RAVDESS_MAYO,
     CHECKPOINT_RAVDESS_ONLY,
@@ -27,7 +31,6 @@ from src.pretraining.dynamic_landmark_ssl import (  # noqa: E402
     SourceScaler,
     authorize_ssl_checkpoint_receipt,
     build_ssl_checkpoint_payload,
-    build_ssl_stage_evidence,
     deterministic_group_split,
     fit_source_scaler,
     load_ssl_checkpoint,
@@ -40,6 +43,140 @@ from src.pretraining.dynamic_landmark_ssl import (  # noqa: E402
     transfer_ssl_weights,
     validate_ssl_checkpoint_payload,
 )
+from test_dynamic_landmark_ssl_bridge import (  # noqa: E402
+    _PRODUCTION_BRIDGE_CONTRACT,
+    _synthetic_authorizations,
+    _set_bridge_contract,
+)
+
+# Legacy v1 fixtures exercise only old synthetic invariants. Production callers
+# must use ``authorize_frozen_ssl_stage`` and cannot mint v1 evidence.
+build_ssl_stage_evidence = ssl_core._build_synthetic_ssl_stage_evidence_v1
+
+_PUBLIC_TRAIN_SSL_STAGE = ssl_core.train_ssl_stage
+_PUBLIC_INITIALIZE_MAYO_SSL_MODEL = ssl_core.initialize_mayo_ssl_model
+_PUBLIC_BUILD_SSL_CHECKPOINT_PAYLOAD = build_ssl_checkpoint_payload
+_PUBLIC_AUTHORIZE_SSL_CHECKPOINT_RECEIPT = authorize_ssl_checkpoint_receipt
+_PUBLIC_SAVE_SSL_CHECKPOINT = save_ssl_checkpoint
+_PUBLIC_LOAD_SSL_CHECKPOINT = load_ssl_checkpoint
+_PUBLIC_TRANSFER_SSL_WEIGHTS = transfer_ssl_weights
+
+
+def _test_train_ssl_stage(*, stage_evidence, **kwargs):
+    function = (
+        ssl_core._train_ssl_stage_impl
+        if stage_evidence.mode is None
+        else _PUBLIC_TRAIN_SSL_STAGE
+    )
+    return function(stage_evidence=stage_evidence, **kwargs)
+
+
+def _test_initialize_mayo_ssl_model(
+    prior_checkpoint, *, prior_stage_evidence,
+):
+    function = (
+        ssl_core._initialize_mayo_ssl_model_impl
+        if prior_stage_evidence.mode is None
+        else _PUBLIC_INITIALIZE_MAYO_SSL_MODEL
+    )
+    return function(
+        prior_checkpoint, prior_stage_evidence=prior_stage_evidence,
+    )
+
+
+def build_ssl_checkpoint_payload(training_result, *args, **kwargs):
+    evidence = getattr(training_result, "stage_evidence", None)
+    function = (
+        ssl_core._build_ssl_checkpoint_payload_impl
+        if evidence is not None and evidence.mode is None
+        else _PUBLIC_BUILD_SSL_CHECKPOINT_PAYLOAD
+    )
+    return function(training_result, *args, **kwargs)
+
+
+def authorize_ssl_checkpoint_receipt(*args, stage_evidence, **kwargs):
+    function = (
+        ssl_core._authorize_ssl_checkpoint_receipt_impl
+        if stage_evidence.mode is None
+        else _PUBLIC_AUTHORIZE_SSL_CHECKPOINT_RECEIPT
+    )
+    return function(*args, stage_evidence=stage_evidence, **kwargs)
+
+
+def save_ssl_checkpoint(*args, stage_evidence, **kwargs):
+    function = (
+        ssl_core._save_ssl_checkpoint_impl
+        if stage_evidence.mode is None
+        else _PUBLIC_SAVE_SSL_CHECKPOINT
+    )
+    return function(*args, stage_evidence=stage_evidence, **kwargs)
+
+
+def load_ssl_checkpoint(*args, stage_evidence, **kwargs):
+    function = (
+        ssl_core._load_ssl_checkpoint_impl
+        if stage_evidence.mode is None
+        else _PUBLIC_LOAD_SSL_CHECKPOINT
+    )
+    return function(*args, stage_evidence=stage_evidence, **kwargs)
+
+
+def transfer_ssl_weights(*args, stage_evidence, **kwargs):
+    if stage_evidence.mode is None:
+        return ssl_core._transfer_ssl_weights_impl(
+            *args,
+            stage_evidence=stage_evidence,
+            require_persisted=False,
+            **kwargs,
+        )
+    return _PUBLIC_TRANSFER_SSL_WEIGHTS(
+        *args, stage_evidence=stage_evidence, **kwargs,
+    )
+
+
+ssl_core.train_ssl_stage = _test_train_ssl_stage
+ssl_core.initialize_mayo_ssl_model = _test_initialize_mayo_ssl_model
+
+
+@contextmanager
+def _frozen_bridge_inputs(root: Path, *, mode: str = "smoke"):
+    saved_contract = {
+        name: getattr(bridge_core, name) for name in _PRODUCTION_BRIDGE_CONTRACT
+    }
+    try:
+        ravdess, mayo = _synthetic_authorizations()
+        producer = "f" * 64
+        bridge = root / "bridge"
+        run_root = (
+            root / "smoke" / "receipt-bound"
+            if mode == "smoke"
+            else root / "formal"
+        )
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        bridge_core.freeze_bridge_stage(
+            run_root,
+            bridge,
+            mode=mode,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        arguments = {
+            "inputs_root": run_root / "inputs",
+            "bridge_root": bridge,
+            "mode": mode,
+            "ravdess_authorizer": lambda: ravdess,
+            "mayo_authorizer": lambda: mayo,
+            "producer_sha256": producer,
+        }
+        yield arguments, ravdess, mayo
+    finally:
+        _set_bridge_contract(saved_contract)
 
 
 def _cache_commitment(groups: list[str], cache_paths: list[Path]) -> str:
@@ -55,6 +192,13 @@ def _cache_commitment(groups: list[str], cache_paths: list[Path]) -> str:
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
     return digest.hexdigest()
+
+
+def _same_byte_replace(path: Path) -> None:
+    replacement = path.parent / f".{path.name}.same-byte-replacement"
+    replacement.write_bytes(path.read_bytes())
+    replacement.chmod(0o600)
+    os.replace(replacement, path)
 
 
 def _temporal(batch: int, windows: int = 4, frames: int = 32):
@@ -76,7 +220,7 @@ def _write_stage_artifacts(
     scaler: SourceScaler,
     config_overrides: dict[str, object] | None = None,
 ) -> tuple[Path, Path, Path, Path]:
-    development_only = stage == "mayo_development"
+    development_only = stage == "mayo"
     values = {
         "manifest": {
             "schema_version": "dynamic_landmark_ssl_manifest_v1",
@@ -146,7 +290,7 @@ def _write_training_cache(
     heldout_offset: float = 0.0,
     feature_multiplier: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    width = 23 if source == "ravdess_semantic23_v1" else 95
+    width = 23 if source == "ravdess_openface_semantic23" else 95
     generator = np.random.default_rng(seed)
     features = generator.normal(
         size=(len(groups), 4, 32, width)
@@ -194,9 +338,9 @@ def _build_training_stage(
     config_overrides: dict[str, object] | None = None,
 ):
     source = (
-        "ravdess_semantic23_v1"
+        "ravdess_openface_semantic23"
         if stage == "ravdess"
-        else "mayo_mediapipe_v2"
+        else "mayo_mediapipe_clinical23_development_only"
     )
     unit = "actor" if stage == "ravdess" else "recording"
     split = deterministic_group_split(
@@ -323,14 +467,14 @@ def test_masked_only_loss_and_conservative_reports_use_exact_baselines(c: Check)
     baseline_features = torch.full((4, 1, 2, 2), 2.0)
     baseline_mask = torch.ones(4, 1, 2, dtype=torch.bool)
     baseline = fit_source_scaler(
-        baseline_features, baseline_mask, source="ravdess_semantic23_v1",
+        baseline_features, baseline_mask, source="ravdess_openface_semantic23",
         fit_indices=split.train_indices, heldout_indices=split.heldout_indices,
     )
     report = reconstruction_report(
         trained, untrained, target, positions,
         baseline=baseline, split=split,
         evaluated_indices=split.heldout_indices,
-        group_ids=groups, source="ravdess_semantic23_v1",
+        group_ids=groups, source="ravdess_openface_semantic23",
     )
     c.eq(report["metric"], "masked_smooth_l1")
     c.eq(report["target_space"], "source_train_standardized")
@@ -348,10 +492,10 @@ def test_masked_only_loss_and_conservative_reports_use_exact_baselines(c: Check)
         trained[:1], untrained[:1], target[:1], positions[:1],
         baseline=baseline, split=split,
         evaluated_indices=split.heldout_indices[:1],
-        group_ids=groups, source="ravdess_semantic23_v1",
+        group_ids=groups, source="ravdess_openface_semantic23",
     ), ValueError, "a one-row subset cannot inherit the complete actor-heldout claim")
     forged_baseline = SourceScaler(
-        source="ravdess_semantic23_v1",
+        source="ravdess_openface_semantic23",
         mean=torch.full((2,), 2.0), scale=torch.ones(2),
         fit_indices=tuple(int(index) for index in split.heldout_indices),
     )
@@ -359,7 +503,7 @@ def test_masked_only_loss_and_conservative_reports_use_exact_baselines(c: Check)
         trained, untrained, target, positions,
         baseline=forged_baseline, split=split,
         evaluated_indices=split.heldout_indices,
-        group_ids=groups, source="ravdess_semantic23_v1",
+        group_ids=groups, source="ravdess_openface_semantic23",
     ), ValueError, "the baseline must be fitted on the exact training partition")
 
 
@@ -503,25 +647,25 @@ def test_source_scaler_is_train_only_and_cannot_cross_sources(c: Check):
     features[2:] = float("nan")
     valid = torch.ones(4, 2, 4, dtype=torch.bool)
     scaler = fit_source_scaler(
-        features, valid, source="ravdess_semantic23_v1",
+        features, valid, source="ravdess_openface_semantic23",
         fit_indices=np.asarray([0, 1]), heldout_indices=np.asarray([2, 3]),
     )
     c.true(bool(torch.allclose(scaler.mean, torch.full((23,), 3.0))))
     c.eq(scaler.fit_indices, (0, 1))
     transformed = scaler.transform(
-        features[:2], valid[:2], source="ravdess_semantic23_v1"
+        features[:2], valid[:2], source="ravdess_openface_semantic23"
     )
     c.true(bool(torch.isfinite(transformed).all()))
     c.raises(lambda: scaler.transform(
-        features[:2], valid[:2], source="mayo_mediapipe_v2"
+        features[:2], valid[:2], source="mayo_mediapipe_clinical23_development_only"
     ), ValueError, "a source scaler can never cross detector/source boundaries")
     c.raises(lambda: fit_source_scaler(
-        features, valid, source="ravdess_semantic23_v1",
+        features, valid, source="ravdess_openface_semantic23",
         fit_indices=np.asarray([0, 2]), heldout_indices=np.asarray([2, 3]),
     ), ValueError, "heldout samples cannot enter source scaler state")
     scaler.mean[0] = float("nan")
     c.raises(lambda: scaler.transform(
-        features[:2], valid[:2], source="ravdess_semantic23_v1"
+        features[:2], valid[:2], source="ravdess_openface_semantic23"
     ), ValueError, "corrupt nonfinite scaler state fails closed")
 
 
@@ -701,6 +845,17 @@ def test_repository_training_is_the_only_checkpoint_minting_path(c: Check):
             groups=["actor_a", "actor_a", "actor_b", "actor_b"],
             data_seed=77,
         )
+        c.eq(
+            evidence.schema_version,
+            "dynamic_landmark_ssl_stage_evidence_v1",
+        )
+        c.raises(
+            lambda: _PUBLIC_TRAIN_SSL_STAGE(
+                stage_evidence=evidence, seed=0,
+            ),
+            PretrainingLockedError,
+            "public training rejects retired mode-null evidence before AdamW",
+        )
         result = ssl_core.train_ssl_stage(stage_evidence=evidence, seed=0)
         receipt = result.training_receipt.to_dict()
         c.eq(receipt["optimizer"], "adamw")
@@ -720,6 +875,56 @@ def test_repository_training_is_the_only_checkpoint_minting_path(c: Check):
             "RAVDESS heldout baseline is the same-seed fresh initialization",
         )
         payload = build_ssl_checkpoint_payload(result)
+        c.raises(
+            lambda: _PUBLIC_BUILD_SSL_CHECKPOINT_PAYLOAD(result),
+            PretrainingLockedError,
+            "mode-null training cannot mint a public checkpoint",
+        )
+        c.raises(
+            lambda: _PUBLIC_SAVE_SSL_CHECKPOINT(
+                root / "public-v1.pt",
+                payload,
+                stage_evidence=evidence,
+            ),
+            PretrainingLockedError,
+            "mode-null payload cannot enter public checkpoint storage",
+        )
+        c.raises(
+            lambda: _PUBLIC_INITIALIZE_MAYO_SSL_MODEL(
+                payload, prior_stage_evidence=evidence,
+            ),
+            PretrainingLockedError,
+            "mode-null payload cannot initialize public Mayo training",
+        )
+        c.raises(
+            lambda: _PUBLIC_TRANSFER_SSL_WEIGHTS(
+                payload,
+                DynamicLandmarkModel(),
+                stage_evidence=evidence,
+            ),
+            PretrainingLockedError,
+            "mode-null payload cannot enter public downstream transfer",
+        )
+        c.raises(
+            lambda: _PUBLIC_AUTHORIZE_SSL_CHECKPOINT_RECEIPT(
+                root / "missing.receipt.json",
+                root / "missing.pt",
+                trusted_expected_receipt_sha256="0" * 64,
+                stage_evidence=evidence,
+            ),
+            PretrainingLockedError,
+            "mode-null external receipts cannot enter public authorization",
+        )
+        c.raises(
+            lambda: _PUBLIC_LOAD_SSL_CHECKPOINT(
+                root / "missing.pt",
+                receipt=None,
+                stage_evidence=evidence,
+            ),
+            PretrainingLockedError,
+            "mode-null checkpoints cannot enter public loading",
+        )
+        c.true(not (root / "public-v1.pt").exists())
         c.eq(payload["metadata"]["seed"], 0)
         c.eq(
             payload["metadata"]["training_receipt"], receipt,
@@ -747,7 +952,7 @@ def test_stage_evidence_recomputes_scaler_from_authorized_train_rows(c: Check):
         cache_path = root / "ravdess_cache.npz"
         features, valid_mask, _, _ = _write_training_cache(
             cache_path,
-            source="ravdess_semantic23_v1",
+            source="ravdess_openface_semantic23",
             groups=groups,
             seed=71,
             heldout_indices=split.heldout_indices,
@@ -755,7 +960,7 @@ def test_stage_evidence_recomputes_scaler_from_authorized_train_rows(c: Check):
         )
         leaked_rows = features[valid_mask]
         leaked_scaler = SourceScaler(
-            source="ravdess_semantic23_v1",
+            source="ravdess_openface_semantic23",
             mean=leaked_rows.mean(dim=0),
             scale=leaked_rows.std(dim=0, unbiased=False),
             fit_indices=tuple(int(index) for index in split.train_indices),
@@ -764,7 +969,7 @@ def test_stage_evidence_recomputes_scaler_from_authorized_train_rows(c: Check):
             _write_stage_artifacts(
                 root,
                 stage="ravdess",
-                source="ravdess_semantic23_v1",
+                source="ravdess_openface_semantic23",
                 groups=groups,
                 cache_paths=[cache_path],
                 split=split,
@@ -789,6 +994,901 @@ def test_stage_evidence_recomputes_scaler_from_authorized_train_rows(c: Check):
             raise AssertionError("MINTED_WITH_HELDOUT_SCALER")
 
 
+def test_receipt_bound_v2_stage_authorizes_exact_single_bundle_and_claims(c: Check):
+    c.raises(
+        lambda: ssl_core.build_ssl_stage_evidence(),
+        PretrainingLockedError,
+        "the retired public v1 evidence constructor cannot authorize training",
+    )
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess",
+                **frozen,
+            )
+            c.eq(evidence.schema_version, "dynamic_landmark_ssl_stage_evidence_v2")
+            c.eq(evidence.stage, "ravdess")
+            c.eq(evidence.mode, "smoke")
+            c.eq(evidence.source, "ravdess_openface_semantic23")
+            c.eq(evidence.bundle_file_count, 1)
+            c.eq(evidence.sample_count, 2)
+
+
+def test_formal_receipt_freezes_three_seeds_and_thirty_epochs(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(
+            root, mode="formal",
+        ) as (frozen, _ravdess, _mayo):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            authorization = evidence._runtime_authorization
+            c.eq(evidence.mode, "formal")
+            c.eq(authorization.training_config["seeds"], [0, 1, 2])
+            c.eq(authorization.training_config["epochs"], 30)
+            c.eq(authorization.training_config["optimizer"], "adamw")
+            c.eq(authorization.training_config["learning_rate"], 0.001)
+            c.eq(authorization.training_config["weight_decay"], 0.0001)
+            c.eq(evidence.source_unit_count, 2)
+            c.eq(evidence.unique_group_count, 2)
+            c.eq(evidence.upstream_cache_count, 2)
+            c.true(bool(evidence.bridge_receipt_sha256))
+            c.true(bool(evidence.receipt_hmac))
+            c.true(bool(evidence.canonical_key_identity_sha256))
+            c.true(bool(evidence.receipt_file_identity_sha256))
+            c.true(bool(evidence.sample_ids_sha256))
+            c.true(bool(evidence.source_unit_ids_sha256))
+            c.true(bool(evidence.original_mapping_sha256))
+
+
+def test_receipt_bound_v2_revalidates_every_authority_before_optimizer(c: Check):
+    scenarios = (
+        "receipt-byte",
+        "manifest-v1",
+        "config-mode",
+        "bundle-replace",
+        "canonical-key",
+        "live-upstream",
+    )
+    for scenario in scenarios:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with _frozen_bridge_inputs(root) as (frozen, ravdess, _mayo):
+                evidence = ssl_core.authorize_frozen_ssl_stage(
+                    stage="ravdess",
+                    **frozen,
+                )
+                inputs = frozen["inputs_root"]
+                bridge = frozen["bridge_root"]
+                if scenario == "receipt-byte":
+                    path = inputs / "receipts" / "ravdess.json"
+                    payload = bytearray(path.read_bytes())
+                    payload[-2] ^= 1
+                    path.write_bytes(bytes(payload))
+                elif scenario == "manifest-v1":
+                    path = inputs / "artifacts" / "ravdess" / "manifest.json"
+                    value = json.loads(path.read_text(encoding="ascii"))
+                    value["schema_version"] = "dynamic_landmark_ssl_manifest_v1"
+                    path.write_text(
+                        json.dumps(value, sort_keys=True, separators=(",", ":")),
+                        encoding="ascii",
+                    )
+                elif scenario == "config-mode":
+                    path = inputs / "artifacts" / "ravdess" / "config.json"
+                    path.chmod(0o644)
+                elif scenario == "bundle-replace":
+                    path = bridge / "bundles" / "ravdess_bundle.npz"
+                    replacement = path.with_name("replacement.npz")
+                    replacement.write_bytes(path.read_bytes())
+                    replacement.chmod(0o600)
+                    os.replace(replacement, path)
+                elif scenario == "canonical-key":
+                    ravdess.private_key = b"x" * 32
+                else:
+                    ravdess.manifest_sha256 = "9" * 64
+
+                optimizer_calls = 0
+                original_adamw = torch.optim.AdamW
+
+                def counted_adamw(*args, **kwargs):
+                    nonlocal optimizer_calls
+                    optimizer_calls += 1
+                    return original_adamw(*args, **kwargs)
+
+                torch.optim.AdamW = counted_adamw
+                try:
+                    c.raises(
+                        lambda: ssl_core.train_ssl_stage(
+                            stage_evidence=evidence,
+                            seed=0,
+                        ),
+                        ValueError,
+                        f"{scenario} drift fails closed",
+                    )
+                finally:
+                    torch.optim.AdamW = original_adamw
+                c.eq(
+                    optimizer_calls,
+                    0,
+                    f"{scenario} fails before optimizer construction",
+                )
+
+
+def test_receipt_bound_frozen_file_storage_mutation_matrix(c: Check):
+    targets = ("receipt", "manifest", "config", "split", "scaler", "bundle")
+    operations = ("delete", "replace", "chmod", "one-byte")
+    for target_name in targets:
+        for operation in operations:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+                    evidence = ssl_core.authorize_frozen_ssl_stage(
+                        stage="ravdess", **frozen,
+                    )
+                    if target_name == "receipt":
+                        target = (
+                            Path(frozen["inputs_root"])
+                            / "receipts" / "ravdess.json"
+                        )
+                    elif target_name == "bundle":
+                        target = (
+                            Path(frozen["bridge_root"])
+                            / "bundles" / "ravdess_bundle.npz"
+                        )
+                    else:
+                        target = (
+                            Path(frozen["inputs_root"])
+                            / "artifacts" / "ravdess"
+                            / f"{target_name}.json"
+                        )
+                    if operation == "delete":
+                        target.unlink()
+                    elif operation == "replace":
+                        _same_byte_replace(target)
+                    elif operation == "chmod":
+                        target.chmod(0o644)
+                    else:
+                        payload = bytearray(target.read_bytes())
+                        payload[max(0, len(payload) // 2)] ^= 1
+                        target.write_bytes(bytes(payload))
+                    optimizer_calls = 0
+                    original_adamw = torch.optim.AdamW
+
+                    def counted_adamw(*args, **kwargs):
+                        nonlocal optimizer_calls
+                        optimizer_calls += 1
+                        return original_adamw(*args, **kwargs)
+
+                    torch.optim.AdamW = counted_adamw
+                    try:
+                        c.raises(
+                            lambda: ssl_core.train_ssl_stage(
+                                stage_evidence=evidence, seed=0,
+                            ),
+                            (OSError, ValueError),
+                            f"{target_name} {operation} fails closed",
+                        )
+                    finally:
+                        torch.optim.AdamW = original_adamw
+                    c.eq(
+                        optimizer_calls,
+                        0,
+                        f"{target_name} {operation} fails before AdamW",
+                    )
+
+
+def test_receipt_bound_key_and_live_generation_mutations_precede_optimizer(c: Check):
+    scenarios = (
+        ("key-delete", lambda ravdess: delattr(ravdess, "private_key")),
+        (
+            "key-same-byte-replace",
+            lambda ravdess: setattr(
+                ravdess, "key_file_identity_sha256", "3" * 64,
+            ),
+        ),
+        (
+            "key-mode-change",
+            lambda ravdess: setattr(
+                ravdess, "key_file_identity_sha256", "4" * 64,
+            ),
+        ),
+        (
+            "key-one-byte",
+            lambda ravdess: setattr(ravdess, "private_key", b"x" * 32),
+        ),
+        (
+            "generation-delete",
+            lambda ravdess: delattr(ravdess, "manifest_sha256"),
+        ),
+        (
+            "generation-replace",
+            lambda ravdess: setattr(ravdess, "manifest_sha256", "9" * 64),
+        ),
+        (
+            "generation-mode-change",
+            lambda ravdess: setattr(
+                ravdess, "generation_closure_hmac", "8" * 64,
+            ),
+        ),
+        (
+            "generation-one-byte",
+            lambda ravdess: setattr(ravdess, "source_frames", 184),
+        ),
+    )
+    for scenario, mutate in scenarios:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with _frozen_bridge_inputs(root) as (frozen, ravdess, _mayo):
+                evidence = ssl_core.authorize_frozen_ssl_stage(
+                    stage="ravdess", **frozen,
+                )
+                mutate(ravdess)
+                optimizer_calls = 0
+                original_adamw = torch.optim.AdamW
+
+                def counted_adamw(*args, **kwargs):
+                    nonlocal optimizer_calls
+                    optimizer_calls += 1
+                    return original_adamw(*args, **kwargs)
+
+                torch.optim.AdamW = counted_adamw
+                try:
+                    c.raises(
+                        lambda: ssl_core.train_ssl_stage(
+                            stage_evidence=evidence, seed=0,
+                        ),
+                        (AttributeError, ValueError),
+                        f"{scenario} fails closed",
+                    )
+                finally:
+                    torch.optim.AdamW = original_adamw
+                c.eq(optimizer_calls, 0)
+
+
+def test_mayo_prior_checkpoint_storage_mutations_precede_optimizer(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            ravdess_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            ravdess_result = ssl_core.train_ssl_stage(
+                stage_evidence=ravdess_evidence, seed=0,
+            )
+            ravdess_payload = build_ssl_checkpoint_payload(ravdess_result)
+            for operation in ("delete", "replace", "chmod", "one-byte"):
+                checkpoint_root = root / f"prior-{operation}"
+                checkpoint_root.mkdir(mode=0o700)
+                checkpoint = checkpoint_root / "ravdess_seed0.pt"
+                receipt = save_ssl_checkpoint(
+                    checkpoint,
+                    ravdess_payload,
+                    stage_evidence=ravdess_evidence,
+                )
+                persisted = load_ssl_checkpoint(
+                    checkpoint,
+                    receipt=receipt,
+                    stage_evidence=ravdess_evidence,
+                )
+                mayo_evidence = ssl_core.authorize_frozen_ssl_stage(
+                    stage="mayo",
+                    prior_ravdess_checkpoint=persisted,
+                    prior_ravdess_evidence=ravdess_evidence,
+                    **frozen,
+                )
+                if operation == "delete":
+                    checkpoint.unlink()
+                elif operation == "replace":
+                    _same_byte_replace(checkpoint)
+                elif operation == "chmod":
+                    checkpoint.chmod(0o644)
+                else:
+                    payload = bytearray(checkpoint.read_bytes())
+                    payload[len(payload) // 2] ^= 1
+                    checkpoint.write_bytes(bytes(payload))
+                optimizer_calls = 0
+                original_adamw = torch.optim.AdamW
+
+                def counted_adamw(*args, **kwargs):
+                    nonlocal optimizer_calls
+                    optimizer_calls += 1
+                    return original_adamw(*args, **kwargs)
+
+                torch.optim.AdamW = counted_adamw
+                try:
+                    c.raises(
+                        lambda: ssl_core.train_ssl_stage(
+                            stage_evidence=mayo_evidence,
+                            seed=0,
+                            prior_ravdess_checkpoint=persisted,
+                            prior_stage_evidence=ravdess_evidence,
+                        ),
+                        (OSError, ValueError),
+                        f"prior checkpoint {operation} fails closed",
+                    )
+                finally:
+                    torch.optim.AdamW = original_adamw
+                c.eq(
+                    optimizer_calls,
+                    0,
+                    f"prior checkpoint {operation} fails before Mayo AdamW",
+                )
+
+
+def test_receipt_bound_scaler_uses_unique_source_unit_canonical_frames(c: Check):
+    features = torch.zeros(3, 4, 32, 1, dtype=torch.float32)
+    valid = torch.zeros(3, 4, 32, dtype=torch.bool)
+    canonical = np.arange(3 * 4 * 32, dtype=np.int64).reshape(3, 4, 32)
+    valid[0, 0, :2] = True
+    features[0, 0, 0, 0] = 1.0
+    features[0, 0, 1, 0] = 3.0
+    canonical[0, 0, 0] = 10_000
+    canonical[0, 0, 1] = 10_001
+    valid[1, 0, :2] = True
+    features[1, 0, 0, 0] = 1.0
+    features[1, 0, 1, 0] = 5.0
+    canonical[1, 0, 0] = 10_000
+    canonical[1, 0, 1] = 10_002
+    valid[2, 0, 0] = True
+    features[2, 0, 0, 0] = 999.0
+    canonical[2, 0, 0] = 20_000
+
+    scaler, unique_count, fit_sources = (
+        ssl_core._fit_receipt_bound_source_scaler(
+            features,
+            valid,
+            source="mayo_mediapipe_clinical23_development_only",
+            train_indices=np.asarray([0, 1], dtype=np.int64),
+            heldout_indices=np.asarray([2], dtype=np.int64),
+            source_unit_ids=("recording_a", "recording_a", "recording_b"),
+            original_canonical_frame_indices=canonical,
+        )
+    )
+    c.eq(unique_count, 3)
+    c.eq(fit_sources, ("recording_a",))
+    c.true(torch.allclose(
+        scaler.mean, torch.tensor([3.0], dtype=torch.float64)
+    ), "overlapping packet slots contribute one unique source frame")
+    c.true(torch.allclose(
+        scaler.scale,
+        torch.tensor([np.sqrt(8.0 / 3.0)], dtype=torch.float64),
+    ), "unique-frame variance is not packet-frequency weighted")
+
+    features[2, 0, 0, 0] = -999.0
+    changed, changed_count, _ = ssl_core._fit_receipt_bound_source_scaler(
+        features,
+        valid,
+        source="mayo_mediapipe_clinical23_development_only",
+        train_indices=np.asarray([1, 0], dtype=np.int64),
+        heldout_indices=np.asarray([2], dtype=np.int64),
+        source_unit_ids=("recording_a", "recording_a", "recording_b"),
+        original_canonical_frame_indices=canonical,
+    )
+    c.eq(changed_count, unique_count)
+    c.true(torch.equal(changed.mean, scaler.mean))
+    c.true(torch.equal(changed.scale, scaler.scale))
+
+
+def test_receipt_bound_smoke_never_computes_or_emits_heldout_metrics(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root, mode="smoke") as (
+            frozen, _ravdess, _mayo,
+        ):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess",
+                **frozen,
+            )
+            original_report = ssl_core.reconstruction_report
+
+            def forbidden_report(*_args, **_kwargs):
+                raise AssertionError("SMOKE_COMPUTED_HELDOUT_REPORT")
+
+            ssl_core.reconstruction_report = forbidden_report
+            try:
+                result = ssl_core.train_ssl_stage(
+                    stage_evidence=evidence,
+                    seed=0,
+                )
+            finally:
+                ssl_core.reconstruction_report = original_report
+            report = dict(result.heldout_report)
+            c.eq(report["mode"], "smoke")
+            c.eq(report["heldout_evaluation_computed"], False)
+            c.true(np.isfinite(report["train_loss"]))
+            c.eq(report["optimizer_steps"], 1)
+            c.true(all(name not in report for name in (
+                "trained", "untrained", "prior_ravdess", "fresh_untrained",
+                "train_mean", "evaluated_indices_sha256",
+            )))
+
+
+def test_receipt_bound_stages_use_exact_source_parameter_allowlists(c: Check):
+    model = DynamicLandmarkSSLModel()
+    names = set(model.state_dict())
+    ravdess_allowed = set(ssl_core._trainable_parameter_names(model, "ravdess"))
+    mayo_allowed = set(ssl_core._trainable_parameter_names(model, "mayo"))
+    c.eq(ravdess_allowed, {
+        name for name in names if name.startswith((
+            "ravdess_proj_x.", "ravdess_proj_dx.", "temporal.",
+            "attention_score.", "pool_projection.", "ravdess_decoder.",
+        ))
+    })
+    c.eq(mayo_allowed, {
+        name for name in names if name.startswith((
+            "proj_bs_x.", "proj_bs_dx.", "proj_lm_x.", "proj_lm_dx.",
+            "temporal.", "attention_score.", "pool_projection.",
+            "mayo_decoder.",
+        ))
+    })
+    ssl_core._require_seed_matched_prior_checkpoint(
+        {"metadata": {"seed": 0}}, 0,
+    )
+    c.raises(
+        lambda: ssl_core._require_seed_matched_prior_checkpoint(
+            {"metadata": {"seed": 0}}, 1,
+        ),
+        ValueError,
+        "Mayo cannot consume a RAVDESS checkpoint from another seed",
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            ravdess_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            with torch.random.fork_rng(devices=[]):
+                torch.manual_seed(0)
+                ravdess_before = {
+                    name: value.detach().clone()
+                    for name, value in DynamicLandmarkSSLModel().state_dict().items()
+                }
+            ravdess_result = ssl_core.train_ssl_stage(
+                stage_evidence=ravdess_evidence, seed=0,
+            )
+            ravdess_after = ravdess_result.model.state_dict()
+            c.true(all(torch.equal(ravdess_before[name], ravdess_after[name])
+                       for name in names - ravdess_allowed))
+            ravdess_payload = build_ssl_checkpoint_payload(ravdess_result)
+            checkpoint_root = root / "allowlist-results"
+            checkpoint_root.mkdir(mode=0o700)
+            checkpoint_path = checkpoint_root / "ravdess_seed0.pt"
+            checkpoint_receipt = save_ssl_checkpoint(
+                checkpoint_path,
+                ravdess_payload,
+                stage_evidence=ravdess_evidence,
+            )
+            persisted_ravdess = load_ssl_checkpoint(
+                checkpoint_path,
+                receipt=checkpoint_receipt,
+                stage_evidence=ravdess_evidence,
+            )
+
+            mayo_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                prior_ravdess_checkpoint=persisted_ravdess,
+                prior_ravdess_evidence=ravdess_evidence,
+                **frozen,
+            )
+            mayo_result = ssl_core.train_ssl_stage(
+                stage_evidence=mayo_evidence,
+                seed=0,
+                prior_ravdess_checkpoint=persisted_ravdess,
+                prior_stage_evidence=ravdess_evidence,
+            )
+            mayo_after = mayo_result.model.state_dict()
+            c.true(all(torch.equal(
+                persisted_ravdess["model_state"][name], mayo_after[name]
+            ) for name in names - mayo_allowed))
+
+
+def test_checkpoint_writer_is_fd_anchored_and_private_at_creation(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            result = ssl_core.train_ssl_stage(
+                stage_evidence=evidence, seed=0,
+            )
+            payload = build_ssl_checkpoint_payload(result)
+            original_open = ssl_core.os.open
+            observed_initial_modes: list[int] = []
+
+            def observed_open(path, flags, mode=0o777, *, dir_fd=None):
+                descriptor = original_open(
+                    path, flags, mode, dir_fd=dir_fd,
+                )
+                if dir_fd is not None and ".tmp-" in os.fsdecode(path):
+                    observed_initial_modes.append(
+                        stat.S_IMODE(os.fstat(descriptor).st_mode)
+                    )
+                return descriptor
+
+            for index, hostile_umask in enumerate((0, 0o777)):
+                target = root / f"anchored-checkpoint-{index}"
+                target.mkdir(mode=0o700)
+                previous_umask = os.umask(hostile_umask)
+                ssl_core.os.open = observed_open
+                try:
+                    save_ssl_checkpoint(
+                        target / "ravdess_seed0.pt",
+                        payload,
+                        stage_evidence=evidence,
+                    )
+                finally:
+                    ssl_core.os.open = original_open
+                    os.umask(previous_umask)
+                c.eq(
+                    stat.S_IMODE((target / "ravdess_seed0.pt").stat().st_mode),
+                    0o600,
+                )
+                c.eq(
+                    stat.S_IMODE((
+                        target / "ravdess_seed0.pt.receipt.json"
+                    ).stat().st_mode),
+                    0o600,
+                )
+            c.eq(len(observed_initial_modes), 4)
+            c.true(all(mode & 0o077 == 0 for mode in observed_initial_modes))
+
+            parent = root / "checkpoint-parent-swap"
+            parent.mkdir(mode=0o700)
+            moved_parent = root / "held-checkpoint-parent"
+            original_assert = ssl_core._assert_private_checkpoint_parent
+            assertions = 0
+
+            def swap_after_anchor(descriptor, lexical, expected_identity):
+                nonlocal assertions
+                original_assert(descriptor, lexical, expected_identity)
+                assertions += 1
+                if assertions == 2:
+                    parent.rename(moved_parent)
+                    parent.mkdir(mode=0o700)
+
+            ssl_core._assert_private_checkpoint_parent = swap_after_anchor
+            try:
+                c.raises(
+                    lambda: save_ssl_checkpoint(
+                        parent / "ravdess_seed0.pt",
+                        payload,
+                        stage_evidence=evidence,
+                    ),
+                    ValueError,
+                    "a replaced checkpoint parent fails without writing there",
+                )
+            finally:
+                ssl_core._assert_private_checkpoint_parent = original_assert
+            c.eq(list(parent.iterdir()), [])
+            residues = list(moved_parent.iterdir())
+            c.eq(len(residues), 1)
+            c.true(residues[0].name.startswith(".ravdess_seed0.pt.tmp-"))
+            c.eq(stat.S_IMODE(residues[0].stat().st_mode), 0o600)
+
+
+def test_checkpoint_publication_faults_are_classified_without_cleanup(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            result = ssl_core.train_ssl_stage(
+                stage_evidence=evidence, seed=0,
+            )
+            payload = build_ssl_checkpoint_payload(result)
+
+            collision = root / "checkpoint-collision"
+            collision.mkdir(mode=0o700)
+            existing_receipt = collision / "ravdess_seed0.pt.receipt.json"
+            existing_receipt.write_bytes(b"existing")
+            existing_receipt.chmod(0o600)
+            c.raises(
+                lambda: save_ssl_checkpoint(
+                    collision / "ravdess_seed0.pt",
+                    payload,
+                    stage_evidence=evidence,
+                ),
+                FileExistsError,
+                "a preexisting final name blocks before temporary creation",
+            )
+            c.eq(list(collision.iterdir()), [existing_receipt])
+
+            original_publish = (
+                bridge_core._atomic_publish_directory_no_replace_at
+            )
+            rename_fault = root / "checkpoint-rename-return"
+            rename_fault.mkdir(mode=0o700)
+
+            def publish_then_raise(*args, **kwargs):
+                original_publish(*args, **kwargs)
+                raise OSError("synthetic checkpoint rename return fault")
+
+            bridge_core._atomic_publish_directory_no_replace_at = (
+                publish_then_raise
+            )
+            try:
+                c.raises(
+                    lambda: save_ssl_checkpoint(
+                        rename_fault / "ravdess_seed0.pt",
+                        payload,
+                        stage_evidence=evidence,
+                    ),
+                    RuntimeError,
+                    "checkpoint rename-return ambiguity cannot mint a receipt",
+                )
+            finally:
+                bridge_core._atomic_publish_directory_no_replace_at = (
+                    original_publish
+                )
+            c.true((rename_fault / "ravdess_seed0.pt").is_file())
+            c.true(not (
+                rename_fault / "ravdess_seed0.pt.receipt.json"
+            ).exists())
+
+            same_inode = root / "checkpoint-same-inode-mutation"
+            same_inode.mkdir(mode=0o700)
+
+            def publish_then_mutate(parent_fd, staging_name, output_name):
+                original_publish(parent_fd, staging_name, output_name)
+                mutated = os.open(
+                    output_name,
+                    os.O_WRONLY | os.O_TRUNC
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                try:
+                    os.write(mutated, b"same inode mutation")
+                    os.fsync(mutated)
+                finally:
+                    os.close(mutated)
+
+            bridge_core._atomic_publish_directory_no_replace_at = (
+                publish_then_mutate
+            )
+            try:
+                c.raises(
+                    lambda: save_ssl_checkpoint(
+                        same_inode / "ravdess_seed0.pt",
+                        payload,
+                        stage_evidence=evidence,
+                    ),
+                    ValueError,
+                    "same-inode publication mutation cannot mint a receipt",
+                )
+            finally:
+                bridge_core._atomic_publish_directory_no_replace_at = (
+                    original_publish
+                )
+            c.eq(
+                (same_inode / "ravdess_seed0.pt").read_bytes(),
+                b"same inode mutation",
+            )
+            c.true(not (
+                same_inode / "ravdess_seed0.pt.receipt.json"
+            ).exists())
+
+            foreign_swap = root / "checkpoint-foreign-swap"
+            foreign_swap.mkdir(mode=0o700)
+
+            def publish_foreign_inode(parent_fd, staging_name, output_name):
+                held_name = f".held-{staging_name}"
+                os.rename(
+                    staging_name,
+                    held_name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+                foreign = os.open(
+                    staging_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+                try:
+                    os.write(foreign, b"foreign checkpoint")
+                    os.fsync(foreign)
+                finally:
+                    os.close(foreign)
+                original_publish(parent_fd, staging_name, output_name)
+
+            bridge_core._atomic_publish_directory_no_replace_at = (
+                publish_foreign_inode
+            )
+            try:
+                c.raises(
+                    lambda: save_ssl_checkpoint(
+                        foreign_swap / "ravdess_seed0.pt",
+                        payload,
+                        stage_evidence=evidence,
+                    ),
+                    RuntimeError,
+                    "a foreign staging inode is indeterminate and never trusted",
+                )
+            finally:
+                bridge_core._atomic_publish_directory_no_replace_at = (
+                    original_publish
+                )
+            c.eq(
+                (foreign_swap / "ravdess_seed0.pt").read_bytes(),
+                b"foreign checkpoint",
+            )
+            c.true(any(
+                path.name.startswith(".held-.ravdess_seed0.pt.tmp-")
+                for path in foreign_swap.iterdir()
+            ))
+            c.true(not (
+                foreign_swap / "ravdess_seed0.pt.receipt.json"
+            ).exists())
+
+
+def test_receipt_bound_smoke_persists_reloads_and_chains_two_stages(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            ravdess_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            ravdess_result = ssl_core.train_ssl_stage(
+                stage_evidence=ravdess_evidence, seed=0,
+            )
+            ravdess_payload = build_ssl_checkpoint_payload(ravdess_result)
+            results = root / "results-staging"
+            results.mkdir(mode=0o700)
+            checkpoint = results / "ravdess_seed0.pt"
+            receipt = save_ssl_checkpoint(
+                checkpoint,
+                ravdess_payload,
+                stage_evidence=ravdess_evidence,
+            )
+            c.eq(checkpoint.stat().st_mode & 0o777, 0o600)
+            receipt_path = results / "ravdess_seed0.pt.receipt.json"
+            c.eq(receipt_path.stat().st_mode & 0o777, 0o600)
+            reloaded = load_ssl_checkpoint(
+                checkpoint,
+                receipt=receipt,
+                stage_evidence=ravdess_evidence,
+            )
+            c.eq(
+                ssl_core.ssl_checkpoint_fingerprint(reloaded),
+                ssl_core.ssl_checkpoint_fingerprint(ravdess_payload),
+            )
+
+            for case, target_name, mutate in (
+                (
+                    "checkpoint chmod", "checkpoint",
+                    lambda path: path.chmod(0o644),
+                ),
+                (
+                    "receipt chmod", "receipt",
+                    lambda path: path.chmod(0o644),
+                ),
+                (
+                    "checkpoint same-byte replace", "checkpoint",
+                    lambda path: _same_byte_replace(path),
+                ),
+                (
+                    "receipt same-byte replace", "receipt",
+                    lambda path: _same_byte_replace(path),
+                ),
+                (
+                    "checkpoint hard link", "checkpoint",
+                    lambda path: os.link(path, path.parent / "extra-link"),
+                ),
+            ):
+                case_root = root / case.replace(" ", "-")
+                case_root.mkdir(mode=0o700)
+                case_checkpoint = case_root / "ravdess_seed0.pt"
+                case_receipt = save_ssl_checkpoint(
+                    case_checkpoint,
+                    ravdess_payload,
+                    stage_evidence=ravdess_evidence,
+                )
+                target = (
+                    case_checkpoint
+                    if target_name == "checkpoint"
+                    else case_root / "ravdess_seed0.pt.receipt.json"
+                )
+                mutate(target)
+                c.raises(
+                    lambda checkpoint=case_checkpoint, receipt=case_receipt: (
+                        load_ssl_checkpoint(
+                            checkpoint,
+                            receipt=receipt,
+                            stage_evidence=ravdess_evidence,
+                        )
+                    ),
+                    ValueError,
+                    f"{case} invalidates persisted checkpoint authority",
+                )
+                c.raises(
+                    lambda checkpoint=case_checkpoint,
+                    receipt=case_receipt,
+                    receipt_path=case_root / "ravdess_seed0.pt.receipt.json": (
+                        authorize_ssl_checkpoint_receipt(
+                            receipt_path,
+                            checkpoint,
+                            trusted_expected_receipt_sha256=(
+                                receipt.receipt_sha256
+                            ),
+                            stage_evidence=ravdess_evidence,
+                        )
+                    ),
+                    ValueError,
+                    f"{case} cannot be trusted as a fresh external receipt",
+                )
+
+            duplicate_root = root / "duplicate-receipt-key"
+            duplicate_root.mkdir(mode=0o700)
+            duplicate_checkpoint = duplicate_root / "ravdess_seed0.pt"
+            duplicate_receipt = save_ssl_checkpoint(
+                duplicate_checkpoint,
+                ravdess_payload,
+                stage_evidence=ravdess_evidence,
+            )
+            duplicate_receipt_path = (
+                duplicate_root / "ravdess_seed0.pt.receipt.json"
+            )
+            original_receipt_bytes = duplicate_receipt_path.read_bytes()
+            duplicate_receipt_path.write_bytes(
+                b'{"checkpoint_name":"duplicate.pt",'
+                + original_receipt_bytes[1:]
+            )
+            c.raises(
+                lambda: authorize_ssl_checkpoint_receipt(
+                    duplicate_receipt_path,
+                    duplicate_checkpoint,
+                    trusted_expected_receipt_sha256=(
+                        duplicate_receipt.receipt_sha256
+                    ),
+                    stage_evidence=ravdess_evidence,
+                ),
+                ValueError,
+                "duplicate keyed receipt fields fail before first authorization",
+            )
+
+            mayo_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                prior_ravdess_checkpoint=reloaded,
+                prior_ravdess_evidence=ravdess_evidence,
+                **frozen,
+            )
+            mayo_result = ssl_core.train_ssl_stage(
+                stage_evidence=mayo_evidence,
+                seed=0,
+                prior_ravdess_checkpoint=reloaded,
+                prior_stage_evidence=ravdess_evidence,
+            )
+            c.eq(
+                mayo_result.training_receipt.prior_checkpoint_sha256,
+                ssl_core.ssl_checkpoint_fingerprint(reloaded),
+            )
+            forged = json.loads(receipt_path.read_text(encoding="utf-8"))
+            forged["stage_authority_hmac"] = "0" * 64
+            unsigned = dict(forged)
+            unsigned.pop("receipt_sha256")
+            forged["receipt_sha256"] = ssl_core._canonical_sha256(unsigned)
+            receipt_path.write_text(
+                json.dumps(forged, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            c.raises(
+                lambda: authorize_ssl_checkpoint_receipt(
+                    receipt_path,
+                    checkpoint,
+                    trusted_expected_receipt_sha256=forged["receipt_sha256"],
+                    stage_evidence=ravdess_evidence,
+                ),
+                ValueError,
+                "caller-supplied forged receipt SHA cannot replace keyed authority",
+            )
+
+
 def test_manifest_aggregate_commitment_binds_ordered_cache_bytes(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -799,7 +1899,7 @@ def test_manifest_aggregate_commitment_binds_ordered_cache_bytes(c: Check):
         first_cache = root / "first_cache.npz"
         features, valid_mask, _, _ = _write_training_cache(
             first_cache,
-            source="ravdess_semantic23_v1",
+            source="ravdess_openface_semantic23",
             groups=groups,
             seed=31,
             heldout_indices=split.heldout_indices,
@@ -807,7 +1907,7 @@ def test_manifest_aggregate_commitment_binds_ordered_cache_bytes(c: Check):
         scaler = fit_source_scaler(
             features,
             valid_mask,
-            source="ravdess_semantic23_v1",
+            source="ravdess_openface_semantic23",
             fit_indices=split.train_indices,
             heldout_indices=split.heldout_indices,
         )
@@ -815,7 +1915,7 @@ def test_manifest_aggregate_commitment_binds_ordered_cache_bytes(c: Check):
             _write_stage_artifacts(
                 root,
                 stage="ravdess",
-                source="ravdess_semantic23_v1",
+                source="ravdess_openface_semantic23",
                 groups=groups,
                 cache_paths=[first_cache],
                 split=split,
@@ -847,7 +1947,7 @@ def test_manifest_aggregate_commitment_binds_ordered_cache_bytes(c: Check):
         changed_cache = root / "changed_cache.npz"
         _write_training_cache(
             changed_cache,
-            source="ravdess_semantic23_v1",
+            source="ravdess_openface_semantic23",
             groups=groups,
             seed=31,
             heldout_indices=split.heldout_indices,
@@ -971,7 +2071,7 @@ def test_authorized_training_is_deterministic_heldout_only_and_chained(c: Check)
         mayo_root.mkdir()
         mayo_evidence, _, _ = _build_training_stage(
             mayo_root,
-            stage="mayo_development",
+            stage="mayo",
             groups=[f"recording_{index}" for index in range(4)],
             data_seed=27,
             prior_checkpoint=ravdess_payload,
@@ -1322,20 +2422,778 @@ def test_checkpoint_validation_and_transfer_do_not_advance_global_torch_rng(c: C
             )
 
 
-def test_real_pretraining_runner_is_locked_until_manifests_and_config_exist(c: Check):
+def _load_runner():
     script = ROOT / "scripts" / "pretrain_dynamic_landmarks.py"
-    spec = importlib.util.spec_from_file_location("locked_ssl_runner", script)
+    spec = importlib.util.spec_from_file_location("receipt_bound_ssl_runner", script)
     if spec is None or spec.loader is None:
         raise AssertionError("SSL runner cannot be imported")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    c.raises(lambda: module.main([]), PretrainingLockedError,
-             "real input cannot run without preregistered manifests/config")
-    c.raises(lambda: module.main([
-        "--ravdess-manifest", "fake.json", "--mayo-manifest", "fake2.json",
-        "--config", "fake3.json",
-    ]), PretrainingLockedError,
-        "mere filenames cannot bypass frozen manifest validation")
+    return module
+
+
+def _synthetic_runner_fixture(root: Path, frozen: dict[str, object]):
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    module = _load_runner()
+    module.PRETRAINING_ROOT = Path(frozen["bridge_root"]).parent.resolve()
+    module._authorization_factories = lambda _args: (
+        frozen["ravdess_authorizer"], frozen["mayo_authorizer"],
+    )
+    module._producer_sha256 = lambda: frozen["producer_sha256"]
+
+    def synthetic_privacy(args, ravdess_authorizer, mayo_authorizer):
+        from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
+
+        tokens: set[bytes] = set()
+        for private_root in (
+            args.mayo_data_root, args.mayo_existing_export_root,
+        ):
+            for representation in inputs_cli._root_text_representations(
+                private_root,
+            ):
+                inputs_cli._add_text_variants(tokens, representation)
+        for authorization in (ravdess_authorizer(), mayo_authorizer()):
+            inputs_cli._add_binary_variants(
+                tokens, authorization.private_key,
+            )
+        return inputs_cli._PrivacyForbidden(tokens=tuple(sorted(tokens)))
+
+    module._privacy_forbidden = synthetic_privacy
+    roots = {
+        "mayo": root / "raw-mayo-root-secret",
+        "legacy": root / "legacy-export-root-secret",
+        "ravdess": root / "ravdess-root",
+        "mayo_cache": root / "mayo-cache",
+    }
+    for directory in roots.values():
+        directory.mkdir(mode=0o700)
+    ravdess_key = root / "ravdess.key"
+    mayo_key = root / "mayo.key"
+    for path in (ravdess_key, mayo_key):
+        path.write_bytes(b"k" * 32)
+        path.chmod(0o600)
+    exposure = root / "mayo-exposure.json"
+    exposure.write_text("{}", encoding="ascii")
+    exposure.chmod(0o600)
+    run_root = Path(frozen["inputs_root"]).parent
+    arguments = [
+        "two-stage",
+        "--mode", str(frozen["mode"]),
+        "--run-root", str(run_root),
+        "--bridge-root", str(frozen["bridge_root"]),
+        "--ravdess-data-root", str(roots["ravdess"]),
+        "--ravdess-key", str(ravdess_key),
+        "--mayo-data-root", str(roots["mayo"]),
+        "--mayo-existing-export-root", str(roots["legacy"]),
+        "--mayo-cache-root", str(roots["mayo_cache"]),
+        "--mayo-exposure-manifest", str(exposure),
+        "--mayo-key", str(mayo_key),
+    ]
+    return module, arguments, run_root, roots
+
+
+def test_real_pretraining_runner_requires_the_exact_two_stage_command(c: Check):
+    module = _load_runner()
+    c.true(module._RUN_ID.fullmatch("preflight-seed0") is not None)
+    c.true(module._RUN_ID.fullmatch("unsafe.run") is None)
+    aggregate = module._formal_aggregates([
+        {
+            "ravdess_only": {"reconstruction": {
+                "trained": value,
+                "untrained": value + 1.0,
+                "train_mean": value + 2.0,
+            }},
+            "ravdess_then_mayo": {"reconstruction": {
+                "trained": value,
+                "prior_ravdess": value + 1.0,
+                "fresh_untrained": value + 2.0,
+                "train_mean": value + 3.0,
+            }},
+        }
+        for value in (1.0, 2.0, 3.0)
+    ])
+    c.eq(aggregate["ravdess_only"]["trained"], {
+        "mean": 2.0, "sd": 1.0,
+    })
+    formal_files = module._expected_result_files("formal", (0, 1, 2))
+    c.eq(len(formal_files), 13)
+    c.true(
+        "checkpoints/seed_2/ravdess_then_mayo.pt.receipt.json"
+        in formal_files
+    )
+    c.true("reports/formal_pretraining_results.json" in formal_files)
+    with redirect_stderr(io.StringIO()):
+        c.raises(
+            lambda: module.main([]),
+            SystemExit,
+            "runner requires the exact two-stage command and all live roots",
+        )
+        c.raises(
+            lambda: module.main(["two-stage", "--mode", "smoke"]),
+            SystemExit,
+            "mere mode selection cannot bypass frozen input authorization",
+        )
+
+
+def test_two_stage_missing_roots_and_mode_replay_fail_before_run_mutation(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            roots["mayo"].rmdir()
+            factory_calls = 0
+
+            def unexpected_factory(_args):
+                nonlocal factory_calls
+                factory_calls += 1
+                raise AssertionError("authorization factory ran before root preflight")
+
+            module._authorization_factories = unexpected_factory
+            c.raises(
+                lambda: module.main(arguments),
+                ValueError,
+                "a missing Mayo live root fails before authorization and run mutation",
+            )
+            c.eq(factory_calls, 0)
+            c.true(not (run_root / ".results.lock").exists())
+            c.true(not (run_root / "results").exists())
+            c.true(not any(
+                path.name.startswith(".results.staging-")
+                for path in run_root.iterdir()
+            ))
+
+            roots["mayo"].mkdir(mode=0o700)
+            arbitrary_parent = root / "arbitrary"
+            arbitrary_parent.mkdir(mode=0o700)
+            arbitrary_run = arbitrary_parent / "receipt-bound"
+            arbitrary_run.mkdir(mode=0o700)
+            wrong_run_arguments = list(arguments)
+            run_value = wrong_run_arguments.index("--run-root") + 1
+            wrong_run_arguments[run_value] = str(arbitrary_run)
+            c.raises(
+                lambda: module.main(wrong_run_arguments),
+                ValueError,
+                "copied inputs cannot run outside the canonical mode namespace",
+            )
+            c.true(not (arbitrary_run / ".results.lock").exists())
+
+            arbitrary_bridge = root / "arbitrary-bridge"
+            arbitrary_bridge.mkdir(mode=0o700)
+            wrong_bridge_arguments = list(arguments)
+            bridge_value = wrong_bridge_arguments.index("--bridge-root") + 1
+            wrong_bridge_arguments[bridge_value] = str(arbitrary_bridge)
+            c.raises(
+                lambda: module.main(wrong_bridge_arguments),
+                ValueError,
+                "a copied bridge cannot replace the canonical generation",
+            )
+            c.true(not (run_root / ".results.lock").exists())
+
+            module, arguments, run_root, _roots = _synthetic_runner_fixture(
+                root / "second", frozen,
+            )
+            formal_arguments = list(arguments)
+            formal_arguments[formal_arguments.index("smoke")] = "formal"
+            train_calls = 0
+
+            def unexpected_train(*_args, **_kwargs):
+                nonlocal train_calls
+                train_calls += 1
+                raise AssertionError("training ran for a cross-mode receipt")
+
+            original_train = module.ssl_core.train_ssl_stage
+            try:
+                module.ssl_core.train_ssl_stage = unexpected_train
+                c.raises(
+                    lambda: module.main(formal_arguments),
+                    ValueError,
+                    "a smoke receipt cannot authorize a formal run",
+                )
+            finally:
+                module.ssl_core.train_ssl_stage = original_train
+            c.eq(train_calls, 0)
+            c.true(not (run_root / "results").exists())
+            c.true(not any(
+                path.name.startswith(".results.staging-")
+                for path in run_root.iterdir()
+            ))
+
+
+def test_two_stage_all_live_inputs_fail_preflight_without_mutation(c: Check):
+    required = (
+        "--ravdess-data-root",
+        "--ravdess-key",
+        "--mayo-data-root",
+        "--mayo-existing-export-root",
+        "--mayo-cache-root",
+        "--mayo-exposure-manifest",
+        "--mayo-key",
+    )
+    for flag in required:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+                module, arguments, run_root, roots = _synthetic_runner_fixture(
+                    root / "live-preflight", frozen,
+                )
+                missing = Path(arguments[arguments.index(flag) + 1])
+                if missing.is_dir():
+                    missing.rmdir()
+                else:
+                    missing.unlink()
+                factory_calls = 0
+                optimizer_calls = 0
+                original_factory = module._authorization_factories
+                original_adamw = torch.optim.AdamW
+
+                def unexpected_factory(_args):
+                    nonlocal factory_calls
+                    factory_calls += 1
+                    return original_factory(_args)
+
+                def counted_adamw(*args, **kwargs):
+                    nonlocal optimizer_calls
+                    optimizer_calls += 1
+                    return original_adamw(*args, **kwargs)
+
+                module._authorization_factories = unexpected_factory
+                torch.optim.AdamW = counted_adamw
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                try:
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        c.raises(
+                            lambda: module.main(arguments),
+                            ValueError,
+                            f"missing {flag} fails before any run mutation",
+                        )
+                finally:
+                    torch.optim.AdamW = original_adamw
+                    module._authorization_factories = original_factory
+                c.eq(factory_calls, 0)
+                c.eq(optimizer_calls, 0)
+                c.eq(stdout.getvalue(), "")
+                c.eq(stderr.getvalue(), "")
+                c.true(not (run_root / ".results.lock").exists())
+                c.true(not (run_root / "results").exists())
+                c.true(not any(
+                    path.name.startswith(".results.staging-")
+                    for path in run_root.iterdir()
+                ))
+                persisted_output = (
+                    stdout.getvalue() + stderr.getvalue()
+                ).encode("utf-8")
+                for private_root in (roots["mayo"], roots["legacy"]):
+                    c.true(str(private_root).encode("utf-8") not in persisted_output)
+
+
+def test_two_stage_rejects_every_frozen_stage_file_before_optimizer(c: Check):
+    for stage in ("ravdess", "mayo"):
+        for artifact in (
+            "receipt", "manifest", "config", "split", "scaler", "bundle",
+        ):
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+                    module, arguments, run_root, _roots = (
+                        _synthetic_runner_fixture(
+                            root / f"{stage}-{artifact}", frozen,
+                        )
+                    )
+                    if artifact == "receipt":
+                        target = (
+                            Path(frozen["inputs_root"])
+                            / "receipts" / f"{stage}.json"
+                        )
+                    elif artifact == "bundle":
+                        target = (
+                            Path(frozen["bridge_root"])
+                            / "bundles" / f"{stage}_bundle.npz"
+                        )
+                    else:
+                        target = (
+                            Path(frozen["inputs_root"])
+                            / "artifacts" / stage / f"{artifact}.json"
+                        )
+                    if target.suffix == ".json":
+                        value = json.loads(target.read_text(encoding="ascii"))
+                        value["synthetic_tamper"] = True
+                        target.write_text(
+                            json.dumps(
+                                value,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                ensure_ascii=True,
+                            ),
+                            encoding="ascii",
+                        )
+                    else:
+                        payload = bytearray(target.read_bytes())
+                        payload[len(payload) // 2] ^= 1
+                        target.write_bytes(bytes(payload))
+                    target.chmod(0o600)
+                    optimizer_calls = 0
+                    original_adamw = torch.optim.AdamW
+
+                    def counted_adamw(*args, **kwargs):
+                        nonlocal optimizer_calls
+                        optimizer_calls += 1
+                        return original_adamw(*args, **kwargs)
+
+                    torch.optim.AdamW = counted_adamw
+                    try:
+                        c.raises(
+                            lambda: module.main(arguments),
+                            ValueError,
+                            f"{stage} {artifact} tamper fails closed",
+                        )
+                    finally:
+                        torch.optim.AdamW = original_adamw
+                    c.eq(
+                        optimizer_calls,
+                        0,
+                        f"{stage} {artifact} fails before optimizer",
+                    )
+                    c.true(not (run_root / "results").exists())
+                    c.true(not any(
+                        path.name.startswith(".results.staging-")
+                        for path in run_root.iterdir()
+                    ))
+
+
+def test_two_stage_never_repairs_an_unsafe_existing_results_lock(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, _roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            lock = run_root / ".results.lock"
+            lock.write_bytes(b"")
+            lock.chmod(0o644)
+            train_calls = 0
+            original_train = module.ssl_core.train_ssl_stage
+
+            def unexpected_train(*_args, **_kwargs):
+                nonlocal train_calls
+                train_calls += 1
+                raise AssertionError("training ran with an unsafe results lock")
+
+            try:
+                module.ssl_core.train_ssl_stage = unexpected_train
+                c.raises(
+                    lambda: module.main(arguments),
+                    ValueError,
+                    "an unsafe persistent lock fails closed without chmod repair",
+                )
+            finally:
+                module.ssl_core.train_ssl_stage = original_train
+            c.eq(train_calls, 0)
+            c.eq(stat.S_IMODE(lock.stat().st_mode), 0o644)
+            c.true(not (run_root / "results").exists())
+            c.true(not any(
+                path.name.startswith(".results.staging-")
+                for path in run_root.iterdir()
+            ))
+
+
+def test_results_publication_ledger_rejects_file_root_and_destination_races(c: Check):
+    module = _load_runner()
+    with tempfile.TemporaryDirectory() as td:
+        run_root = Path(td).resolve()
+        run_descriptor = os.open(
+            run_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            staging = run_root / ".results.staging-ledger"
+            reports = staging / "reports"
+            reports.mkdir(parents=True, mode=0o700)
+            staging.chmod(0o700)
+            reports.chmod(0o700)
+            report = reports / "execution_only.json"
+            report.write_bytes(b"{}")
+            report.chmod(0o600)
+            expected = {"reports/execution_only.json"}
+            with module._hold_exact_result_tree(
+                run_descriptor, staging.name, expected,
+            ) as validate:
+                _same_byte_replace(report)
+                c.raises(
+                    validate,
+                    ValueError,
+                    "same-byte result replacement contradicts the held ledger",
+                )
+
+            staging_two = run_root / ".results.staging-root-swap"
+            reports_two = staging_two / "reports"
+            reports_two.mkdir(parents=True, mode=0o700)
+            staging_two.chmod(0o700)
+            reports_two.chmod(0o700)
+            report_two = reports_two / "execution_only.json"
+            report_two.write_bytes(b"{}")
+            report_two.chmod(0o600)
+            with module._hold_exact_result_tree(
+                run_descriptor, staging_two.name, expected,
+            ) as validate:
+                moved = run_root / ".held-original"
+                os.rename(staging_two, moved)
+                replacement_reports = staging_two / "reports"
+                replacement_reports.mkdir(parents=True, mode=0o700)
+                staging_two.chmod(0o700)
+                replacement_reports.chmod(0o700)
+                replacement = replacement_reports / "execution_only.json"
+                replacement.write_bytes(b"{}")
+                replacement.chmod(0o600)
+                c.raises(
+                    validate,
+                    ValueError,
+                    "a same-name staging tree cannot replace the held root",
+                )
+
+            source = run_root / ".results.staging-collision"
+            destination = run_root / "results"
+            source.mkdir(mode=0o700)
+            destination.mkdir(mode=0o700)
+            c.raises(
+                lambda: module._rename_directory_no_replace(
+                    source.name,
+                    destination.name,
+                    parent_descriptor=run_descriptor,
+                ),
+                OSError,
+                "publication never replaces an existing results generation",
+            )
+            c.true(source.is_dir() and destination.is_dir())
+        finally:
+            os.close(run_descriptor)
+
+
+def test_results_publication_classifies_commit_faults_and_rechecks_tree(c: Check):
+    module = _load_runner()
+
+    def run_case(case: str) -> tuple[Path, Path]:
+        temporary = tempfile.TemporaryDirectory()
+        cleanups.append(temporary)
+        run_root = Path(temporary.name).resolve()
+        run_root.chmod(0o700)
+        inputs = run_root / "inputs"
+        inputs.mkdir(mode=0o700)
+        lock = run_root / ".results.lock"
+        lock.write_bytes(b"")
+        lock.chmod(0o600)
+        staging = run_root / f".results.staging-{case}"
+        reports = staging / "reports"
+        reports.mkdir(parents=True, mode=0o700)
+        staging.chmod(0o700)
+        reports.chmod(0o700)
+        report = reports / "execution_only.json"
+        report.write_bytes(b"{}")
+        report.chmod(0o600)
+        run_descriptor = os.open(
+            run_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        lock_descriptor = os.open(lock, os.O_RDWR)
+        descriptors.append((lock_descriptor, run_descriptor))
+        staged = staging.stat()
+        identity = (int(staged.st_dev), int(staged.st_ino))
+        original_scan = module._scan_private_results
+        module._scan_private_results = lambda *_args, **_kwargs: None
+        scans.append((module, original_scan))
+        with module._hold_exact_result_tree(
+            run_descriptor,
+            staging.name,
+            {"reports/execution_only.json"},
+        ) as validate:
+            module._publish_validated_results(
+                run_descriptor=run_descriptor,
+                run_root=run_root,
+                run_identity=module._anchor_identity(os.fstat(run_descriptor)),
+                results_lock=lock_descriptor,
+                lock_name=lock.name,
+                staging_name=staging.name,
+                staged_identity=identity,
+                inputs_root=inputs,
+                privacy_forbidden=object(),
+                validate_result_tree=validate,
+            )
+        return run_root, staging
+
+    cleanups: list[tempfile.TemporaryDirectory] = []
+    descriptors: list[tuple[int, int]] = []
+    scans: list[tuple[object, object]] = []
+    original_rename = module._rename_directory_no_replace
+    original_fsync = module.os.fsync
+    try:
+        def rename_then_report_fault(*args, **kwargs):
+            original_rename(*args, **kwargs)
+            raise OSError("synthetic rename return fault")
+
+        module._rename_directory_no_replace = rename_then_report_fault
+        c.raises(
+            lambda: run_case("rename-return"),
+            RuntimeError,
+            "a rename return fault retains but does not endorse the commit",
+        )
+        committed_root = Path(cleanups[-1].name)
+        committed_staging = committed_root / ".results.staging-rename-return"
+        c.true((committed_root / "results").is_dir())
+        c.true(not committed_staging.exists())
+
+        module._rename_directory_no_replace = original_rename
+
+        def rename_then_inject(*args, **kwargs):
+            original_rename(*args, **kwargs)
+            destination = Path(cleanups[-1].name) / "results" / "reports"
+            injected = destination / "late-private-root.txt"
+            injected.write_bytes(b"late private material")
+            injected.chmod(0o600)
+
+        module._rename_directory_no_replace = rename_then_inject
+        c.raises(
+            lambda: run_case("late-injection"),
+            RuntimeError,
+            "a post-rename extra file cannot be reported as a valid result",
+        )
+        injected_root = Path(cleanups[-1].name)
+        c.true((injected_root / "results").is_dir())
+        c.true((
+            injected_root / "results" / "reports" / "late-private-root.txt"
+        ).is_file())
+
+        module._rename_directory_no_replace = original_rename
+
+        def postrename_fsync_fault(descriptor):
+            if (Path(cleanups[-1].name) / "results").exists():
+                raise OSError("synthetic post-rename fsync fault")
+            return original_fsync(descriptor)
+
+        module.os.fsync = postrename_fsync_fault
+        c.raises(
+            lambda: run_case("postrename-fsync"),
+            RuntimeError,
+            "a post-rename durability fault is retained as indeterminate",
+        )
+        fsync_root = Path(cleanups[-1].name)
+        c.true((fsync_root / "results").is_dir())
+    finally:
+        module._rename_directory_no_replace = original_rename
+        module.os.fsync = original_fsync
+        for target, original_scan in scans:
+            target._scan_private_results = original_scan
+        for lock_descriptor, run_descriptor in descriptors:
+            os.close(lock_descriptor)
+            os.close(run_descriptor)
+        for temporary in cleanups:
+            temporary.cleanup()
+
+
+def test_descriptor_cleanup_attempts_every_close_and_propagates_failure(c: Check):
+    module = _load_runner()
+    original_close = module.os.close
+    for helper in (module._close_descriptor_sequence, ssl_core._close_ssl_descriptors):
+        calls: list[int] = []
+
+        def failing_close(descriptor):
+            calls.append(descriptor)
+            raise OSError(f"synthetic close failure {descriptor}")
+
+        module.os.close = failing_close
+        try:
+            c.raises(
+                lambda helper=helper: helper((101, 102, 103)),
+                OSError,
+                "descriptor cleanup errors cannot be swallowed",
+            )
+        finally:
+            module.os.close = original_close
+        c.eq(set(calls), {101, 102, 103})
+
+
+def test_receipt_bound_smoke_runner_publishes_one_private_atomic_result(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                result = module.main(arguments)
+            c.eq(stderr.getvalue(), "")
+            c.eq(result, {
+                "checkpoint_count": 2,
+                "mode": "smoke",
+                "seed_count": 1,
+                "stage_count": 2,
+            })
+            c.eq(json.loads(stdout.getvalue()), result)
+            results = run_root / "results"
+            c.true(results.is_dir())
+            expected = {
+                "checkpoints/ravdess_only.pt",
+                "checkpoints/ravdess_only.pt.receipt.json",
+                "checkpoints/ravdess_then_mayo.pt",
+                "checkpoints/ravdess_then_mayo.pt.receipt.json",
+                "reports/execution_only.json",
+            }
+            files = {
+                str(path.relative_to(results))
+                for path in results.rglob("*") if path.is_file()
+            }
+            c.eq(files, expected)
+            c.true(all(
+                path.stat().st_mode & 0o777 == 0o600
+                for path in results.rglob("*") if path.is_file()
+            ))
+            report = json.loads(
+                (results / "reports" / "execution_only.json")
+                .read_text(encoding="ascii")
+            )
+            c.eq(report["mode"], "smoke")
+            c.true("heldout" not in json.dumps(report).lower())
+            persisted = b"\n".join(
+                path.read_bytes() for path in sorted(results.rglob("*"))
+                if path.is_file()
+            ) + stdout.getvalue().encode("utf-8")
+            for private_root in (roots["mayo"], roots["legacy"]):
+                raw = str(private_root).encode("utf-8")
+                tokens = {
+                    raw,
+                    private_root.name.encode("utf-8"),
+                    raw.hex().encode("ascii"),
+                    base64.b64encode(raw),
+                    base64.urlsafe_b64encode(raw),
+                }
+                c.true(all(token not in persisted for token in tokens))
+            c.true(not any(
+                path.name.startswith(".results.staging-")
+                for path in run_root.iterdir()
+            ))
+
+
+def test_receipt_bound_formal_runner_publishes_three_seed_contract(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(
+            root, mode="formal",
+        ) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, roots = _synthetic_runner_fixture(
+                root / "formal-runner", frozen,
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                result = module.main(arguments)
+            c.eq(result, {
+                "checkpoint_count": 6,
+                "mode": "formal",
+                "seed_count": 3,
+                "stage_count": 2,
+            })
+            c.eq(stderr.getvalue(), "")
+            c.eq(json.loads(stdout.getvalue()), result)
+            results = run_root / "results"
+            files = {
+                str(path.relative_to(results))
+                for path in results.rglob("*") if path.is_file()
+            }
+            c.eq(
+                files,
+                module._expected_result_files("formal", (0, 1, 2)),
+            )
+            report = json.loads((
+                results / "reports" / "formal_pretraining_results.json"
+            ).read_text(encoding="ascii"))
+            c.eq(report["seed_count"], 3)
+            c.eq(len(report["runs"]), 3)
+            c.eq({run["seed"] for run in report["runs"]}, {0, 1, 2})
+            for run in report["runs"]:
+                c.eq(run["ravdess_only"]["optimizer_steps"], 30)
+                c.eq(run["ravdess_then_mayo"]["optimizer_steps"], 30)
+                c.eq(
+                    run["ravdess_then_mayo"][
+                        "prior_checkpoint_fingerprint"
+                    ],
+                    run["ravdess_only"]["checkpoint_fingerprint"],
+                )
+            c.eq(set(report["aggregate"]), {
+                "ravdess_only", "ravdess_then_mayo",
+            })
+            persisted = b"\n".join(
+                path.read_bytes() for path in sorted(results.rglob("*"))
+                if path.is_file()
+            ) + stdout.getvalue().encode("utf-8")
+            for private_root in (roots["mayo"], roots["legacy"]):
+                raw = str(private_root).encode("utf-8")
+                c.true(raw not in persisted)
+                c.true(raw.hex().encode("ascii") not in persisted)
+                c.true(base64.b64encode(raw) not in persisted)
+                c.true(base64.urlsafe_b64encode(raw) not in persisted)
+            c.true(not any(
+                path.name.startswith(".results.staging-")
+                for path in run_root.iterdir()
+            ))
+
+
+def test_two_stage_failure_retains_private_staging_and_blocks_retry(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, _roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            original_train = module.ssl_core.train_ssl_stage
+            stages: list[str] = []
+
+            def fail_at_mayo(*args, **kwargs):
+                evidence = kwargs["stage_evidence"]
+                stages.append(evidence.stage)
+                if evidence.stage == "mayo":
+                    raise RuntimeError("synthetic fault after persisted RAVDESS")
+                return original_train(*args, **kwargs)
+
+            try:
+                module.ssl_core.train_ssl_stage = fail_at_mayo
+                c.raises(
+                    lambda: module.main(arguments),
+                    RuntimeError,
+                    "a Mayo-stage fault cannot publish partial results",
+                )
+            finally:
+                module.ssl_core.train_ssl_stage = original_train
+            c.eq(stages, ["ravdess", "mayo"])
+            c.true(not (run_root / "results").exists())
+            residues = [
+                path for path in run_root.iterdir()
+                if path.name.startswith(".results.staging-")
+            ]
+            c.eq(len(residues), 1)
+            c.eq(stat.S_IMODE(residues[0].stat().st_mode), 0o700)
+            c.true((residues[0] / "checkpoints" / "ravdess_only.pt").is_file())
+
+            retry_train_calls = 0
+
+            def unexpected_retry(*_args, **_kwargs):
+                nonlocal retry_train_calls
+                retry_train_calls += 1
+                raise AssertionError("retry trained despite retained staging")
+
+            try:
+                module.ssl_core.train_ssl_stage = unexpected_retry
+                c.raises(
+                    lambda: module.main(arguments),
+                    ValueError,
+                    "retained indeterminate staging blocks the next run",
+                )
+            finally:
+                module.ssl_core.train_ssl_stage = original_train
+            c.eq(retry_train_calls, 0)
+            c.true(not (run_root / "results").exists())
 
 
 if __name__ == "__main__":
