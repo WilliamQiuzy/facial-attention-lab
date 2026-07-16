@@ -2932,6 +2932,18 @@ def _run_mayo_cli_captured(
             with redirect_stdout(text_stdout), redirect_stderr(text_stderr):
                 forbidden = _mayo_cli_root_forbidden(args)
                 result = operation()
+                result_payload = json.dumps(
+                    result,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                    allow_nan=False,
+                ).encode("ascii")
+                if len(result_payload) > _MAX_MAYO_CLI_CAPTURE_BYTES:
+                    raise ValueError("captured command result exceeds its fixed bound")
+                result_matcher = _ByteMatcher(forbidden.tokens)
+                _state, result_leaked = result_matcher.feed(result_payload)
+                leaked = leaked or result_leaked
         except BaseException as exc:
             primary = exc
     finally:

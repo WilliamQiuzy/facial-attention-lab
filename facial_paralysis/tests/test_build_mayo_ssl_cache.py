@@ -1120,6 +1120,9 @@ def test_extractor_lifecycle_lock_and_transaction_are_fail_closed(c: Check):
 
         exposure = root / "mayo_exposure_manifest.json"
         exposure.write_text("old-exposure")
+        output.chmod(0o700)
+        (output / "sentinel").chmod(0o600)
+        exposure.chmod(0o600)
         staging3 = _canonical_transaction_staging(
             root, ".cache.staging-exposure-failure",
             b"failed-exposure-salt-012345678901",
@@ -2307,7 +2310,9 @@ def test_transaction_journal_recovers_simulated_process_interruptions(c: Check):
             root.chmod(0o700)
             output = root / "cache"
             output.mkdir()
+            output.chmod(0o700)
             (output / "sentinel").write_text("old-cache")
+            (output / "sentinel").chmod(0o600)
             exposure = root / "mayo_exposure_manifest.json"
             exposure.write_text("old-exposure")
             exposure.chmod(0o600)
@@ -2357,6 +2362,7 @@ def test_committed_key_drift_downgrade_write_failure_preserves_indeterminate_evi
         output = root / "cache"
         output.mkdir(mode=0o700)
         (output / "old-generation-sentinel").write_text("old-cache")
+        (output / "old-generation-sentinel").chmod(0o600)
         exposure = root / "mayo_exposure_manifest.json"
         exposure.write_text("old-exposure")
         exposure.chmod(0o600)
@@ -2476,6 +2482,158 @@ def test_committed_key_drift_downgrade_write_failure_preserves_indeterminate_evi
             and exposure_backup.is_file(),
             "a failed retry preserves all indeterminate transaction evidence",
         )
+
+
+def test_committed_key_drift_downgrade_fsync_ambiguity_blocks_recovery(c: Check):
+    original_salt = b"committed-key-drift-original-012"
+    replacement_salt = b"committed-key-drift-replace-0123"
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-key-drift-fsync", original_salt,
+        )
+        key = (
+            root / "outputs" / "dynamic_landmark" / "pretraining"
+            / ".mayo_ssl_hmac.key"
+        )
+        key.parent.mkdir(parents=True)
+        (root / "outputs" / "dynamic_landmark").chmod(0o700)
+        key.parent.chmod(0o700)
+        key.write_bytes(original_salt)
+        key.chmod(0o600)
+        journal_path = root / ".cache.transaction.json"
+        original_fsync_directory = builder._fsync_directory
+        committed_seen = False
+        fsync_faulted = False
+
+        def drift_key_after_committed(phase):
+            nonlocal committed_seen
+            if phase != "committed":
+                return
+            committed_seen = True
+            replacement = key.parent / ".replacement-mayo-key"
+            replacement.write_bytes(replacement_salt)
+            replacement.chmod(0o600)
+            os.replace(replacement, key)
+
+        def fail_after_downgrade_replace(path):
+            nonlocal fsync_faulted
+            if committed_seen and Path(path) == root and journal_path.is_file():
+                live = json.loads(journal_path.read_text())
+                if live.get("phase") == "new_exposure_installed":
+                    fsync_faulted = True
+                    raise OSError("forced post-replace journal fsync failure")
+            return original_fsync_directory(path)
+
+        caught: BaseException | None = None
+        builder._fsync_directory = fail_after_downgrade_replace
+        try:
+            try:
+                with builder._hold_canonical_mayo_key(
+                    key, project_root=root,
+                ) as held_key, builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        salt=held_key.key_bytes,
+                        phase_hook=drift_key_after_committed,
+                        continuity_validator=held_key.assert_unchanged,
+                    )
+            except BaseException as exc:
+                caught = exc
+        finally:
+            builder._fsync_directory = original_fsync_directory
+
+        c.true(fsync_faulted, "fault occurs after downgrade rename")
+        c.true(
+            caught is not None and _exception_chain_contains(
+                caught, OSError, "forced post-replace journal fsync failure"
+            ),
+            "downgrade fsync ambiguity remains in the exception chain",
+        )
+        live = json.loads(journal_path.read_text())
+        token = live["token"]
+        output_backup = root / f".cache.backup-{token}"
+        exposure_backup = root / f".mayo_exposure_manifest.json.backup-{token}"
+        c.true(live.get("indeterminate") is True,
+               "ambiguous downgrade is durably marked indeterminate")
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output,
+                    exposure_manifest_path=exposure,
+                    salt=replacement_salt,
+                ),
+                RuntimeError,
+                "automatic recovery refuses ambiguous downgrade evidence",
+            )
+        c.true(
+            journal_path.is_file()
+            and output.is_dir()
+            and exposure.is_file()
+            and output_backup.is_dir()
+            and exposure_backup.is_file(),
+            "retry preserves both canonical and prior-generation evidence",
+        )
+
+
+def test_coupled_promotion_rejects_unsafe_existing_storage(c: Check):
+    for scenario in (
+        "output-mode", "nested-file-mode", "nested-file-hardlink",
+        "exposure-mode", "exposure-hardlink",
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            root.chmod(0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root, ".cache.staging-unsafe-existing",
+                b"unsafe-existing-storage-salt-012",
+            )
+            alias: Path | None = None
+            if scenario == "output-mode":
+                output.chmod(0o777)
+            elif scenario == "nested-file-mode":
+                sentinel.chmod(0o666)
+            elif scenario == "nested-file-hardlink":
+                alias = root / ".old-cache-hardlink"
+                os.link(sentinel, alias)
+            elif scenario == "exposure-mode":
+                exposure.chmod(0o666)
+            else:
+                alias = root / ".exposure-hardlink"
+                os.link(exposure, alias)
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging, output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    f"{scenario} is rejected rather than replaced",
+                )
+            c.true(staging.is_dir(), f"{scenario} leaves staging untouched")
+            c.eq(sentinel.read_text(), "old-cache")
+            c.eq(exposure.read_text(), "old-exposure")
+            c.true(not (root / ".cache.transaction.json").exists())
+            if alias is not None:
+                alias.unlink()
 
 
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
@@ -2868,6 +3026,7 @@ def _assert_key_fault_blocks_publication(
     if with_existing_generation:
         output.mkdir(mode=0o700)
         (output / "old-generation-sentinel").write_text("old-cache")
+        (output / "old-generation-sentinel").chmod(0o600)
         exposure.write_text("old-exposure")
         exposure.chmod(0o600)
 
@@ -3296,13 +3455,14 @@ def test_mayo_transaction_journal_and_nested_commitment_reject_duplicate_keys(c:
         "exposure_classification_integrity_id": "agg_" + "7" * 64,
     }
     journal = {
-        "schema": "mayo_cache_exposure_transaction_v1",
+        "schema": "mayo_cache_exposure_transaction_v2",
         "token": "0123456789abcdef",
         "staging_name": ".cache.staging-0123456789abcdef",
         "exposure_name": "mayo_exposure_manifest.json",
         "had_output": False,
         "had_exposure": False,
         "phase": "prepared",
+        "indeterminate": False,
         "generation_commitment": commitment,
     }
     serialized = json.dumps(journal, sort_keys=True, separators=(",", ":"))
@@ -3597,6 +3757,36 @@ def test_committed_mayo_authorizer_gates_all_live_manifest_sizes_before_read(c: 
                     [],
                     f"{target.name} oversized bytes are never read",
                 )
+
+
+def test_committed_mayo_generation_aggregate_budget_precedes_cache_read(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            cache = next((fixture.output / "mediapipe").glob("*.npz"))
+            with cache.open("r+b") as handle:
+                handle.truncate(128 * 1024 * 1024 + 1)
+            cache.chmod(0o600)
+            original_read = builder._read_regular_descriptor
+            cache_reads: list[str] = []
+
+            def reject_cache_read(*args, **kwargs):
+                field = str(kwargs.get("field", ""))
+                if "cache" in field.lower():
+                    cache_reads.append(field)
+                    raise AssertionError("aggregate-overflow cache bytes were read")
+                return original_read(*args, **kwargs)
+
+            builder._read_regular_descriptor = reject_cache_read
+            try:
+                c.raises(
+                    fixture.authorize,
+                    ValueError,
+                    "shared 128 MiB generation budget fails before cache reads",
+                )
+            finally:
+                builder._read_regular_descriptor = original_read
+            c.eq(cache_reads, [], "aggregate overflow reaches no cache read")
 
 
 def test_nonheld_mayo_manifests_are_size_gated_before_read(c: Check):

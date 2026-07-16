@@ -1386,6 +1386,24 @@ def test_mayo_cli_native_capture_has_a_hard_storage_bound(c: Check):
         ), "no capture storage exceeds the fixed byte bound")
 
 
+def test_mayo_cli_rejects_private_root_in_operation_result(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        mayo_root = parent / "mayo-private-live"
+        legacy_root = parent / "mayo-private-legacy"
+        args = SimpleNamespace(
+            mayo_data_root=mayo_root,
+            mayo_existing_export_root=legacy_root,
+        )
+        observed = _caught(lambda: cli._run_mayo_cli_captured(
+            args,
+            lambda: {"unexpected_private_value": str(mayo_root)},
+        ))
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+
+
 def test_mayo_cli_capture_recovers_fd_restoration_before_generic_failure(c: Check):
     cli = _load_cli()
     with tempfile.TemporaryDirectory() as temporary:

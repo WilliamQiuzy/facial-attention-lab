@@ -162,6 +162,7 @@ _MAX_MAYO_CACHE_RAW_BYTES = 256 * 1024 * 1024
 _MAX_MAYO_NPZ_COMPRESSED_BYTES = 256 * 1024 * 1024
 _MAX_MAYO_NPZ_EXPANDED_BYTES = 512 * 1024 * 1024
 _MAX_MAYO_CACHE_ROWS = 1_000_000
+_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = 128 * 1024 * 1024
 _MAX_NPY_HEADER_BYTES = 4096
 _MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES = 1024
 _MAX_MAYO_MANIFEST_BYTES = 4 * 1024 * 1024
@@ -537,6 +538,36 @@ def _require_private_directory(path: str | Path, field: str) -> Path:
     checked = _require_directory(path, field)
     _require_private_directory_stat(os.lstat(checked), field)
     return checked
+
+
+def _require_private_generation_storage_tree(
+    path: str | Path,
+    field: str,
+) -> Path:
+    root = _require_private_directory(path, field)
+    entries = 0
+    total_bytes = 0
+    pending: list[tuple[Path, int]] = [(root, 0)]
+    while pending:
+        directory, depth = pending.pop()
+        for child in sorted(directory.iterdir(), key=lambda item: item.name):
+            entries += 1
+            if entries > 64 or depth + 1 > 4:
+                raise ValueError(f"{field} exceeds its exact structural budget")
+            info = os.lstat(child)
+            if stat.S_ISDIR(info.st_mode):
+                _require_private_directory_stat(info, field)
+                pending.append((child, depth + 1))
+            elif stat.S_ISREG(info.st_mode):
+                _require_private_regular_stat(info, field)
+                total_bytes += int(info.st_size)
+                if total_bytes > _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES:
+                    raise ValueError(
+                        f"{field} exceeds its exact regular-payload budget"
+                    )
+            else:
+                raise ValueError(f"{field} contains unsafe storage")
+    return root
 
 
 def _require_owned_nonwritable_directory(path: str | Path, field: str) -> Path:
@@ -2320,17 +2351,19 @@ def _load_transaction_journal(path: Path) -> dict[str, object]:
     required = {
         "schema", "token", "staging_name", "exposure_name",
         "had_output", "had_exposure", "phase", "generation_commitment",
+        "indeterminate",
     }
     if not isinstance(payload, dict) or set(payload) != required:
         raise ValueError("Mayo transaction journal has a noncanonical schema")
     if (
-        payload["schema"] != "mayo_cache_exposure_transaction_v1"
+        payload["schema"] != "mayo_cache_exposure_transaction_v2"
         or not isinstance(payload["token"], str)
         or re.fullmatch(r"[0-9a-f]{16}", payload["token"]) is None
         or not isinstance(payload["staging_name"], str)
         or not isinstance(payload["exposure_name"], str)
         or not isinstance(payload["had_output"], bool)
         or not isinstance(payload["had_exposure"], bool)
+        or not isinstance(payload["indeterminate"], bool)
         or payload["phase"] not in {
             "prepared", "old_output_moved", "old_exposure_moved",
             "new_output_installed", "new_exposure_installed", "committed",
@@ -2356,11 +2389,18 @@ def _recover_cache_exposure_transaction(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    allow_indeterminate: bool = False,
 ) -> None:
+    if type(allow_indeterminate) is not bool:
+        raise ValueError("indeterminate recovery authority must be boolean")
     journal_path = _journal_path(output)
     if not journal_path.exists() and not _is_symlink(journal_path):
         return
     journal = _load_transaction_journal(journal_path)
+    if bool(journal["indeterminate"]) and not allow_indeterminate:
+        raise RuntimeError(
+            "Mayo transaction is retained for explicit offline review"
+        )
     if journal["exposure_name"] != exposure.name:
         raise ValueError("transaction journal targets a different exposure manifest")
     staging_name = str(journal["staging_name"])
@@ -2570,8 +2610,17 @@ def _promote_generation_with_exposure(
         raise ValueError("external exposure manifest must not live inside output generation")
     _require_private_directory(exposure.parent, "external exposure parent")
     _assert_no_symlink_components(exposure.parent)
+    if output.exists() or _is_symlink(output):
+        _require_private_generation_storage_tree(
+            output, "previous output generation",
+        )
     if exposure.exists() or _is_symlink(exposure):
-        _require_regular_file(exposure, "previous exposure manifest")
+        checked_exposure = _require_regular_file(
+            exposure, "previous exposure manifest",
+        )
+        _require_private_regular_stat(
+            os.lstat(checked_exposure), "previous exposure manifest",
+        )
 
     journal_path = _journal_path(output)
     if journal_path.exists() or _is_symlink(journal_path):
@@ -2581,7 +2630,7 @@ def _promote_generation_with_exposure(
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
     journal: dict[str, object] = {
-        "schema": "mayo_cache_exposure_transaction_v1",
+        "schema": "mayo_cache_exposure_transaction_v2",
         "token": token,
         "staging_name": staging.name,
         "exposure_name": exposure.name,
@@ -2589,6 +2638,7 @@ def _promote_generation_with_exposure(
         "had_exposure": exposure.exists(),
         "generation_commitment": generation_commitment,
         "phase": "prepared",
+        "indeterminate": False,
     }
 
     def set_phase(phase: str) -> None:
@@ -2598,6 +2648,7 @@ def _promote_generation_with_exposure(
             phase_hook(phase)
 
     rollback_is_durable = True
+    allow_indeterminate_recovery = False
     if continuity_validator is not None:
         continuity_validator()
     set_phase("prepared")
@@ -2613,11 +2664,16 @@ def _promote_generation_with_exposure(
             os.fsync(target.fileno())
         _fsync_directory(exposure.parent)
         if output.exists():
-            _require_directory(output, "previous output generation")
+            _require_private_generation_storage_tree(
+                output, "previous output generation",
+            )
             replace_func(output, output_backup)
             _fsync_directory(output.parent)
             set_phase("old_output_moved")
         if exposure.exists():
+            _require_private_regular_stat(
+                os.lstat(exposure), "previous exposure manifest",
+            )
             replace_func(exposure, exposure_backup)
             _fsync_directory(exposure.parent)
             set_phase("old_exposure_moved")
@@ -2652,6 +2708,7 @@ def _promote_generation_with_exposure(
                 # before the common recovery path so the just-installed cache
                 # and exposure are rolled back instead of accepted.
                 journal["phase"] = "new_exposure_installed"
+                journal["indeterminate"] = True
                 try:
                     _write_transaction_journal(journal_path, journal)
                 except Exception as downgrade_error:
@@ -2661,6 +2718,7 @@ def _promote_generation_with_exposure(
                     # either side of this indeterminate transaction.
                     rollback_is_durable = False
                     raise primary_error from downgrade_error
+                allow_indeterminate_recovery = True
                 raise
     except Exception:
         if rollback_is_durable:
@@ -2674,6 +2732,7 @@ def _promote_generation_with_exposure(
                 expected_classification_integrity_id=(
                     expected_classification_integrity_id
                 ),
+                allow_indeterminate=allow_indeterminate_recovery,
             )
         raise
     _remove_real_tree(output_backup)
@@ -3799,6 +3858,21 @@ def _hold_committed_mayo_generation(
             "committed external exposure manifest",
         )
         descriptors.callback(os.close, external_exposure_descriptor)
+        regular_identities = (
+            collection_identity,
+            internal_exposure_identity,
+            *(item.identity for item in media_files),
+            *(item.identity for item in arkit_files),
+            external_exposure_identity,
+        )
+        if (
+            len(regular_identities) + 2 > 64
+            or sum(int(identity[6]) for identity in regular_identities)
+            > _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
+        ):
+            raise ValueError(
+                "committed Mayo generation exceeds its exact-tree budget"
+            )
         held = _HeldCommittedMayoGeneration(
             output=output,
             exposure=exposure,

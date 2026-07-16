@@ -29,6 +29,9 @@ from src.pretraining import dynamic_landmark_ssl as ssl_core  # noqa: E402
 
 
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_MAX_EXACT_RESULT_TREE_ENTRIES = 64
+_MAX_EXACT_RESULT_TREE_DEPTH = 4
+_MAX_EXACT_RESULT_TREE_REGULAR_BYTES = 128 * 1024 * 1024
 
 
 def _authorization_factories(
@@ -451,6 +454,14 @@ def _hold_exact_result_tree(
         for parts in file_parts:
             for size in range(1, len(parts)):
                 directory_parts.add(parts[:size])
+        if (
+            not file_parts
+            or 1 + len(directory_parts) + len(file_parts)
+            > _MAX_EXACT_RESULT_TREE_ENTRIES
+            or max(len(parts) for parts in file_parts)
+            > _MAX_EXACT_RESULT_TREE_DEPTH
+        ):
+            raise ValueError("result tree exceeds its exact structural budget")
         for parts in sorted(directory_parts, key=lambda value: (len(value), value)):
             parent = parts[:-1]
             expected_children.setdefault(parent, set()).add(parts[-1])
@@ -485,7 +496,15 @@ def _hold_exact_result_tree(
             ):
                 raise ValueError("result file is not private regular storage")
             identities[parts] = _ledger_identity(status)
-            digests[parts] = _hash_held_file(descriptor, int(status.st_size))
+        total_regular_bytes = sum(
+            int(identity[6]) for identity in identities.values()
+        )
+        if total_regular_bytes > _MAX_EXACT_RESULT_TREE_REGULAR_BYTES:
+            raise ValueError("result tree exceeds its regular-payload budget")
+        for parts, descriptor in file_descriptors.items():
+            digests[parts] = _hash_held_file(
+                descriptor, int(identities[parts][6]),
+            )
         for parts, descriptor in directory_descriptors.items():
             identities[parts] = _directory_ledger_identity(
                 os.fstat(descriptor)
@@ -960,7 +979,11 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
     args = _parser().parse_args(argv)
     if args.command != "two-stage":
         raise ValueError("unsupported pretraining command")
-    result = _run_two_stage(args)
+    from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
+
+    result = inputs_cli._run_mayo_cli_captured(
+        args, lambda: _run_two_stage(args),
+    )
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return result
 

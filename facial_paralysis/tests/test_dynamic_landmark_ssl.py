@@ -2680,6 +2680,51 @@ def test_real_pretraining_runner_requires_the_exact_two_stage_command(c: Check):
         )
 
 
+def test_pretraining_runner_captures_native_mayo_root_output(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, _run_root, roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+
+            def leaking_run(_args):
+                os.write(1, (str(roots["mayo"]) + "\n").encode("utf-8"))
+                os.write(2, (str(roots["legacy"]) + "\n").encode("utf-8"))
+                return {
+                    "checkpoint_count": 2,
+                    "mode": "smoke",
+                    "seed_count": 1,
+                    "stage_count": 2,
+                }
+
+            module._run_two_stage = leaking_run
+            saved_stdout = os.dup(1)
+            saved_stderr = os.dup(2)
+            caught: BaseException | None = None
+            with tempfile.TemporaryFile(mode="w+b") as native_stdout, \
+                    tempfile.TemporaryFile(mode="w+b") as native_stderr:
+                try:
+                    os.dup2(native_stdout.fileno(), 1)
+                    os.dup2(native_stderr.fileno(), 2)
+                    try:
+                        module.main(arguments)
+                    except BaseException as exc:
+                        caught = exc
+                finally:
+                    os.dup2(saved_stderr, 2)
+                    os.dup2(saved_stdout, 1)
+                    os.close(saved_stderr)
+                    os.close(saved_stdout)
+                native_stdout.seek(0)
+                native_stderr.seek(0)
+                emitted = native_stdout.read() + native_stderr.read()
+            c.true(isinstance(caught, ValueError))
+            c.eq(str(caught), "private Mayo command failed")
+            c.true(str(roots["mayo"]).encode("utf-8") not in emitted)
+            c.true(str(roots["legacy"]).encode("utf-8") not in emitted)
+
+
 def test_two_stage_missing_roots_and_mode_replay_fail_before_run_mutation(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -3016,6 +3061,49 @@ def test_results_publication_ledger_rejects_file_root_and_destination_races(c: C
             os.close(run_descriptor)
 
 
+def test_result_tree_aggregate_budget_precedes_file_hash(c: Check):
+    module = _load_runner()
+    with tempfile.TemporaryDirectory() as td:
+        run_root = Path(td).resolve()
+        run_root.chmod(0o700)
+        staging = run_root / ".results.staging-aggregate-limit"
+        reports = staging / "reports"
+        reports.mkdir(parents=True, mode=0o700)
+        staging.chmod(0o700)
+        reports.chmod(0o700)
+        report = reports / "execution_only.json"
+        with report.open("wb") as handle:
+            handle.truncate(128 * 1024 * 1024 + 1)
+        report.chmod(0o600)
+        run_descriptor = os.open(
+            run_root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        original_hash = module._hash_held_file
+        hash_calls = 0
+
+        def unexpected_hash(*_args, **_kwargs):
+            nonlocal hash_calls
+            hash_calls += 1
+            raise AssertionError("aggregate-overflow result reached hashing")
+
+        module._hash_held_file = unexpected_hash
+        try:
+            c.raises(
+                lambda: module._hold_exact_result_tree(
+                    run_descriptor,
+                    staging.name,
+                    {"reports/execution_only.json"},
+                ).__enter__(),
+                ValueError,
+                "shared 128 MiB result budget fails before hashing",
+            )
+        finally:
+            module._hash_held_file = original_hash
+            os.close(run_descriptor)
+        c.eq(hash_calls, 0, "aggregate overflow reaches no file hash")
+
+
 def test_results_publication_classifies_commit_faults_and_rechecks_tree(c: Check):
     module = _load_runner()
 
@@ -3306,7 +3394,7 @@ def test_two_stage_failure_retains_private_staging_and_blocks_retry(c: Check):
                 module.ssl_core.train_ssl_stage = fail_at_mayo
                 c.raises(
                     lambda: module.main(arguments),
-                    RuntimeError,
+                    ValueError,
                     "a Mayo-stage fault cannot publish partial results",
                 )
             finally:
