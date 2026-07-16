@@ -10,6 +10,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -2857,6 +2858,167 @@ def test_recovery_rejects_old_backup_polluted_after_process_interruption(c: Chec
         c.eq(stat.S_IMODE(retained_sentinel.stat().st_mode), 0o666)
         c.true(journal.is_file() and backup.is_dir())
         c.eq(exposure.read_text(), "old-exposure")
+
+
+def test_late_phase_recovery_requires_every_declared_old_backup(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    scenarios = (
+        ("new_output_installed", "output"),
+        ("new_exposure_installed", "output"),
+        ("new_exposure_installed", "exposure"),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for phase_to_interrupt, missing_backup in scenarios:
+            root = outer / f"{phase_to_interrupt}-{missing_backup}"
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-{phase_to_interrupt}-{missing_backup}",
+                b"late-phase-backup-topology-salt-012",
+            )
+
+            def interrupt(phase):
+                if phase == phase_to_interrupt:
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not stop at the requested phase")
+
+            journal = root / ".cache.transaction.json"
+            retained = json.loads(journal.read_text())
+            token = retained["token"]
+            output_backup = root / f".cache.backup-{token}"
+            exposure_backup = root / (
+                f".mayo_exposure_manifest.json.backup-{token}"
+            )
+            if missing_backup == "output":
+                shutil.rmtree(output_backup)
+            else:
+                exposure_backup.unlink()
+            before = {
+                "output": output.exists(),
+                "exposure": exposure.exists(),
+                "output_backup": output_backup.exists(),
+                "exposure_backup": exposure_backup.exists(),
+            }
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "late recovery refuses a missing declared old backup",
+                )
+            after = {
+                "output": output.exists(),
+                "exposure": exposure.exists(),
+                "output_backup": output_backup.exists(),
+                "exposure_backup": exposure_backup.exists(),
+            }
+            c.eq(after, before, "topology failure performs zero recovery mutation")
+            c.true(journal.is_file(), "topology failure retains its journal")
+
+
+def test_recovery_rechecks_backup_after_restore_hook_mutation(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-restore-hook-{target}",
+                b"restore-hook-mutation-salt-0123456",
+            )
+            stop_phase = (
+                "old_output_moved" if target == "output"
+                else "old_exposure_moved"
+            )
+
+            def interrupt(phase):
+                if phase == stop_phase:
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not stop before recovery")
+
+            journal = root / ".cache.transaction.json"
+            retained = json.loads(journal.read_text())
+            token = retained["token"]
+            output_backup = root / f".cache.backup-{token}"
+            exposure_backup = root / (
+                f".mayo_exposure_manifest.json.backup-{token}"
+            )
+            real_replace = builder.os.replace
+
+            def mutate_inside_restore(source, destination):
+                if target == "output" and Path(source) == output_backup:
+                    (output_backup / sentinel.name).chmod(0o666)
+                if target == "exposure" and Path(source) == exposure_backup:
+                    exposure_backup.chmod(0o666)
+                return real_replace(source, destination)
+
+            builder.os.replace = mutate_inside_restore
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.recover_interrupted_generations(
+                            output, exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "post-preflight restore mutation fails closed",
+                    )
+            finally:
+                builder.os.replace = real_replace
+            c.true(journal.is_file(), "restore drift retains its journal")
+            if target == "output":
+                c.eq(stat.S_IMODE((output / sentinel.name).stat().st_mode), 0o666)
+                c.true(not output_backup.exists())
+            else:
+                c.eq(stat.S_IMODE(exposure.stat().st_mode), 0o666)
+                c.true(not exposure_backup.exists())
 
 
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):

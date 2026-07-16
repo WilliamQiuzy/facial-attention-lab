@@ -2440,6 +2440,56 @@ def _recover_cache_exposure_transaction(
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
     committed = journal["phase"] == "committed"
 
+    def present(path: Path) -> bool:
+        return path.exists() or _is_symlink(path)
+
+    def private_regular_snapshot(
+        path: Path,
+        field: str,
+    ) -> tuple[tuple[int, ...], tuple[int, ...], str]:
+        checked = _require_regular_file(path, field)
+        before = os.lstat(checked)
+        _require_private_regular_stat(before, field)
+        _payload, digest, _size = _read_regular_bytes(
+            checked, field, max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+        after = os.lstat(checked)
+        _require_private_regular_stat(after, field)
+        if _regular_snapshot(before) != _regular_snapshot(after):
+            raise ValueError(f"{field} changed while it was snapshotted")
+        return (
+            _regular_snapshot(after),
+            _movement_stable_regular_snapshot(after),
+            digest,
+        )
+
+    def require_private_tree_snapshot(
+        path: Path,
+        expected: tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+        field: str,
+    ) -> None:
+        _root, observed = _private_generation_storage_ledger(path, field)
+        if observed != expected:
+            raise ValueError(f"{field} changed after recovery preflight")
+
+    def require_private_regular_snapshot(
+        path: Path,
+        expected_stable: tuple[int, ...],
+        expected_digest: str,
+        field: str,
+        *,
+        require_full: tuple[int, ...] | None = None,
+    ) -> None:
+        observed_full, observed_stable, observed_digest = (
+            private_regular_snapshot(path, field)
+        )
+        if (
+            observed_stable != expected_stable
+            or not hmac.compare_digest(observed_digest, expected_digest)
+            or (require_full is not None and observed_full != require_full)
+        ):
+            raise ValueError(f"{field} changed after recovery preflight")
+
     if committed:
         _require_directory(output, "committed output generation")
         _require_regular_file(exposure, "committed exposure manifest")
@@ -2457,59 +2507,134 @@ def _recover_cache_exposure_transaction(
         _remove_real_tree(output_backup)
         _unlink_regular_if_present(exposure_backup, "committed exposure backup")
     else:
-        if bool(journal["had_output"]):
-            if output_backup.exists() or _is_symlink(output_backup):
-                _require_private_generation_storage_tree(
-                    output_backup, "interrupted output backup",
-                )
-            else:
-                _require_private_generation_storage_tree(
-                    output, "unmoved previous output generation",
-                )
-        if bool(journal["had_exposure"]):
-            if exposure_backup.exists() or _is_symlink(exposure_backup):
-                checked_exposure_backup = _require_regular_file(
-                    exposure_backup, "interrupted exposure backup",
-                )
-                _require_private_regular_stat(
-                    os.lstat(checked_exposure_backup),
-                    "interrupted exposure backup",
-                )
-            else:
-                checked_exposure = _require_regular_file(
-                    exposure, "unmoved previous exposure manifest",
-                )
-                _require_private_regular_stat(
-                    os.lstat(checked_exposure),
-                    "unmoved previous exposure manifest",
+        phase = str(journal["phase"])
+        had_output = bool(journal["had_output"])
+        had_exposure = bool(journal["had_exposure"])
+        if phase == "prepared":
+            expected = (
+                had_output, False, had_exposure, False, True,
+            )
+        elif phase == "old_output_moved" and had_output:
+            expected = (False, True, had_exposure, False, True)
+        elif phase == "old_exposure_moved" and had_exposure:
+            expected = (False, had_output, False, True, True)
+        elif phase == "new_output_installed":
+            expected = (True, had_output, False, had_exposure, False)
+        elif phase == "new_exposure_installed":
+            expected = (True, had_output, True, had_exposure, False)
+        else:
+            raise ValueError("transaction journal phase is inconsistent with history")
+        observed = (
+            present(output), present(output_backup),
+            present(exposure), present(exposure_backup), present(staging),
+        )
+        if observed != expected:
+            raise ValueError("transaction storage topology does not match its journal")
+        if phase != "prepared":
+            expected_temporary = phase in {
+                "old_output_moved", "old_exposure_moved",
+                "new_output_installed",
+            }
+            if present(exposure_temporary) != expected_temporary:
+                raise ValueError(
+                    "transaction exposure topology does not match its journal"
                 )
 
-        if bool(journal["had_output"]):
-            if output_backup.exists() or _is_symlink(output_backup):
+        output_source = output_backup if present(output_backup) else output
+        exposure_source = (
+            exposure_backup if present(exposure_backup) else exposure
+        )
+        output_ledger = None
+        if had_output:
+            _output_source, output_ledger = _private_generation_storage_ledger(
+                output_source, "recoverable previous output generation",
+            )
+        exposure_full = None
+        exposure_stable = None
+        exposure_digest = None
+        if had_exposure:
+            exposure_full, exposure_stable, exposure_digest = (
+                private_regular_snapshot(
+                    exposure_source, "recoverable previous exposure manifest",
+                )
+            )
+
+        if output_ledger is not None:
+            require_private_tree_snapshot(
+                output_source, output_ledger,
+                "recoverable previous output generation",
+            )
+        if exposure_stable is not None and exposure_digest is not None:
+            require_private_regular_snapshot(
+                exposure_source, exposure_stable, exposure_digest,
+                "recoverable previous exposure manifest",
+                require_full=exposure_full,
+            )
+
+        if had_output:
+            if present(output_backup):
                 _require_directory(output_backup, "interrupted output backup")
-                if output.exists() or _is_symlink(output):
+                if present(output):
                     _remove_real_tree(output)
                 os.replace(output_backup, output)
             else:
                 _require_directory(output, "unmoved previous output generation")
-        elif output.exists() or _is_symlink(output):
+            require_private_tree_snapshot(
+                output, output_ledger,
+                "restored previous output generation",
+            )
+        elif present(output):
             _remove_real_tree(output)
 
-        if bool(journal["had_exposure"]):
-            if exposure_backup.exists() or _is_symlink(exposure_backup):
+        if had_exposure:
+            if present(exposure_backup):
                 _require_regular_file(exposure_backup, "interrupted exposure backup")
                 _unlink_regular_if_present(exposure, "interrupted new exposure")
                 os.replace(exposure_backup, exposure)
             else:
                 _require_regular_file(exposure, "unmoved previous exposure manifest")
+            require_private_regular_snapshot(
+                exposure, exposure_stable, exposure_digest,
+                "restored previous exposure manifest",
+            )
         else:
             _unlink_regular_if_present(exposure, "interrupted new exposure")
+
+        if output_ledger is not None:
+            require_private_tree_snapshot(
+                output, output_ledger,
+                "restored previous output generation",
+            )
+        elif present(output):
+            raise ValueError("recovery created an unexpected output generation")
+        if exposure_stable is not None and exposure_digest is not None:
+            require_private_regular_snapshot(
+                exposure, exposure_stable, exposure_digest,
+                "restored previous exposure manifest",
+            )
+        elif present(exposure):
+            raise ValueError("recovery created an unexpected exposure manifest")
 
     _unlink_regular_if_present(exposure_temporary, "interrupted exposure temporary")
     if staging.exists() or _is_symlink(staging):
         _remove_real_tree(staging)
     _remove_real_tree(output_backup)
     _unlink_regular_if_present(exposure_backup, "stale exposure backup")
+    if not committed:
+        if output_ledger is not None:
+            require_private_tree_snapshot(
+                output, output_ledger,
+                "final recovered output generation",
+            )
+        elif present(output):
+            raise ValueError("recovery retained an unexpected output generation")
+        if exposure_stable is not None and exposure_digest is not None:
+            require_private_regular_snapshot(
+                exposure, exposure_stable, exposure_digest,
+                "final recovered exposure manifest",
+            )
+        elif present(exposure):
+            raise ValueError("recovery retained an unexpected exposure manifest")
     _require_regular_file(journal_path, "completed transaction journal").unlink()
     _fsync_directory(output.parent)
     if exposure.parent != output.parent:
