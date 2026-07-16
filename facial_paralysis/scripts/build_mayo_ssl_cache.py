@@ -27,8 +27,9 @@ import shutil
 import stat
 import sys
 import tempfile
-from contextlib import contextmanager
-from dataclasses import dataclass
+import zipfile
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field as dataclass_field
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping, Sequence
@@ -157,6 +158,13 @@ _ARKIT_CACHE_FIELDS = frozenset({
     "source_integrity_id", "source_fingerprint", "cache_schema",
     "development_only", "patient_identity", "split_unit",
 })
+_MAX_MAYO_CACHE_RAW_BYTES = 256 * 1024 * 1024
+_MAX_MAYO_NPZ_COMPRESSED_BYTES = 256 * 1024 * 1024
+_MAX_MAYO_NPZ_EXPANDED_BYTES = 512 * 1024 * 1024
+_MAX_MAYO_CACHE_ROWS = 1_000_000
+_MAX_NPY_HEADER_BYTES = 4096
+_MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES = 1024
+_MAX_MAYO_MANIFEST_BYTES = 4 * 1024 * 1024
 
 
 class InventoryDriftError(ValueError):
@@ -266,6 +274,38 @@ class ARKitSSLView:
 class CompactCacheSummary:
     source_rows: int
     missing_source_frames: int
+
+
+@dataclass(frozen=True)
+class AuthorizedMayoRecording:
+    """One retained MediaPipe cache parsed from its authorized byte snapshot."""
+
+    recording_id: str
+    group_id: str
+    cache_integrity_id: str
+    cache_sha256: str
+    cache_size_bytes: int
+    features_30hz: np.ndarray
+    valid_mask_30hz: np.ndarray
+    timestamps_30hz: np.ndarray
+    source_frame_indices_30hz: np.ndarray
+    target_frame_indices_30hz: np.ndarray
+
+
+@dataclass(frozen=True)
+class AuthorizedMayoGeneration:
+    """Private live authorization of the coupled cache/exposure generation."""
+
+    schema: str
+    collection_manifest_sha256: str
+    exposure_manifest_sha256: str
+    generation_closure_hmac: str
+    recording_count: int
+    arkit_count: int
+    expected_recording_count: int
+    commitment: dict[str, object]
+    recordings: tuple[AuthorizedMayoRecording, ...]
+    private_key: bytes = dataclass_field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -470,6 +510,69 @@ def _require_regular_file(path: str | Path, field: str) -> Path:
     if not stat.S_ISREG(info.st_mode):
         raise ValueError(f"{field} must be a regular file")
     return checked
+
+
+def _require_private_directory_stat(info: os.stat_result, field: str) -> None:
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or int(info.st_uid) != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise ValueError(f"{field} must be a current-owner mode-0700 directory")
+
+
+def _require_private_regular_stat(info: os.stat_result, field: str) -> None:
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or int(info.st_uid) != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or int(info.st_nlink) != 1
+    ):
+        raise ValueError(
+            f"{field} must be a singly-linked current-owner mode-0600 regular file"
+        )
+
+
+def _require_private_directory(path: str | Path, field: str) -> Path:
+    checked = _require_directory(path, field)
+    _require_private_directory_stat(os.lstat(checked), field)
+    return checked
+
+
+def _require_owned_nonwritable_directory(path: str | Path, field: str) -> Path:
+    checked = _require_directory(path, field)
+    info = os.lstat(checked)
+    if int(info.st_uid) != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
+        raise ValueError(
+            f"{field} must be current-owner and not group/world writable"
+        )
+    return checked
+
+
+def _make_private_directory(path: Path, field: str) -> Path:
+    os.mkdir(path, 0o700)
+    os.chmod(path, 0o700, follow_symlinks=False)
+    return _require_private_directory(path, field)
+
+
+def _open_exclusive_private_file(path: Path, field: str) -> int:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        opened = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+        _require_private_regular_stat(opened, field)
+        if _regular_snapshot(opened) != _regular_snapshot(current):
+            raise ValueError(f"{field} changed identity during creation")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def sha256_file(path: str | Path) -> str:
@@ -1426,11 +1529,14 @@ def _require_cache_identity(
 
 def _write_npz_atomic(path: Path, payload: Mapping[str, np.ndarray]) -> None:
     path = _lexical_absolute(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _require_private_directory(path.parent, "compact cache parent")
     _assert_no_symlink_components(path.parent)
     temporary = path.parent / f".{path.stem}.tmp-{secrets.token_hex(8)}.npz"
     try:
-        with temporary.open("xb") as handle:
+        descriptor = _open_exclusive_private_file(
+            temporary, "temporary compact cache",
+        )
+        with os.fdopen(descriptor, "wb") as handle:
             np.savez_compressed(handle, **payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -1438,6 +1544,9 @@ def _write_npz_atomic(path: Path, payload: Mapping[str, np.ndarray]) -> None:
             if set(loaded.files) != set(payload):
                 raise ValueError("reread compact cache has a different field set")
         os.replace(temporary, path)
+        _require_private_regular_stat(
+            os.stat(path, follow_symlinks=False), "committed compact cache",
+        )
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -2006,33 +2115,115 @@ def managed_extractor(
 
 
 @contextmanager
-def output_parent_lock(output_root: str | Path):
+def output_parent_lock(
+    output_root: str | Path,
+    *,
+    create_if_missing: bool = True,
+):
     output = _lexical_absolute(output_root)
-    parent = _assert_no_symlink_components(output.parent)
-    if not parent.is_dir():
-        raise ValueError("output parent must exist before locking")
+    parent = _require_private_directory(
+        _assert_no_symlink_components(output.parent), "output parent",
+    )
+    parent_info = os.lstat(parent)
+    parent_identity = (
+        int(parent_info.st_dev), int(parent_info.st_ino), int(parent_info.st_mode),
+        int(parent_info.st_uid), int(parent_info.st_gid),
+    )
     lock_path = parent / f".{output.name}.lock"
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    base_flags = (
+        os.O_RDWR if create_if_missing else os.O_RDONLY
+    ) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    created = False
+    if create_if_missing:
+        try:
+            fd = os.open(lock_path, base_flags | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            fd = os.open(lock_path, base_flags)
+    else:
+        try:
+            fd = os.open(lock_path, base_flags)
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "committed authorization requires the existing output lock"
+            ) from exc
     acquired = registered = False
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("output lock must be a regular file")
+        if created:
+            os.fchmod(fd, 0o600)
+        info = os.fstat(fd)
+        _require_private_regular_stat(info, "output lock")
+        current = os.stat(lock_path, follow_symlinks=False)
+        lock_identity = (
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+            info.st_nlink,
+        )
+        if lock_identity != (
+            current.st_dev, current.st_ino, current.st_mode, current.st_uid,
+            current.st_nlink,
+        ):
+            raise ValueError("output lock path identity changed during open")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError("another Mayo SSL builder holds the output lock") from exc
         acquired = True
+        after_acquire = os.fstat(fd)
+        linked_after_acquire = os.stat(lock_path, follow_symlinks=False)
+        _require_private_regular_stat(after_acquire, "output lock")
+        _require_private_regular_stat(linked_after_acquire, "output lock")
+        if lock_identity != (
+            after_acquire.st_dev, after_acquire.st_ino, after_acquire.st_mode,
+            after_acquire.st_uid, after_acquire.st_nlink,
+        ) or lock_identity != (
+            linked_after_acquire.st_dev, linked_after_acquire.st_ino,
+            linked_after_acquire.st_mode, linked_after_acquire.st_uid,
+            linked_after_acquire.st_nlink,
+        ):
+            raise ValueError("output lock changed while flock was acquired")
+        parent_after_acquire = os.lstat(parent)
+        _require_private_directory_stat(parent_after_acquire, "output parent")
+        if (
+            int(parent_after_acquire.st_dev), int(parent_after_acquire.st_ino),
+            int(parent_after_acquire.st_mode), int(parent_after_acquire.st_uid),
+            int(parent_after_acquire.st_gid),
+        ) != parent_identity:
+            raise ValueError("output parent changed while flock was acquired")
         if output in _HELD_OUTPUT_LOCKS:
             raise RuntimeError("output lock is already held in this process")
         _HELD_OUTPUT_LOCKS.add(output)
         registered = True
         yield
+        parent_after = os.lstat(parent)
+        _require_private_directory_stat(parent_after, "output parent")
+        if (
+            int(parent_after.st_dev), int(parent_after.st_ino),
+            int(parent_after.st_mode), int(parent_after.st_uid),
+            int(parent_after.st_gid),
+        ) != parent_identity:
+            raise ValueError("output parent changed while its lock was held")
+        after = os.fstat(fd)
+        current = os.stat(lock_path, follow_symlinks=False)
+        _require_private_regular_stat(after, "output lock")
+        _require_private_regular_stat(current, "output lock")
+        if lock_identity != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_uid,
+            after.st_nlink,
+        ) or lock_identity != (
+            current.st_dev, current.st_ino, current.st_mode, current.st_uid,
+            current.st_nlink,
+        ):
+            raise ValueError("output lock changed while held")
     finally:
-        if registered:
-            _HELD_OUTPUT_LOCKS.discard(output)
-        if acquired:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+        try:
+            if registered:
+                _HELD_OUTPUT_LOCKS.discard(output)
+        finally:
+            try:
+                if acquired:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 def _require_output_lock(output: Path) -> None:
@@ -2073,7 +2264,28 @@ def _journal_path(output: Path) -> Path:
     return output.parent / f".{output.name}.transaction.json"
 
 
+def _decode_unique_json_object(payload: bytes, field: str) -> dict[str, object]:
+    """Decode one UTF-8 JSON object while rejecting duplicate keys recursively."""
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"{field} repeats JSON key {key!r}")
+            value[key] = item
+        return value
+
+    try:
+        decoded = payload.decode("utf-8")
+        value = json.loads(decoded, object_pairs_hook=unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must contain a JSON object")
+    return value
+
+
 def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> None:
+    _require_private_directory(path.parent, "Mayo transaction journal parent")
     temporary = path.parent / f".{path.name}.tmp-{secrets.token_hex(8)}"
     serialized = json.dumps(payload, sort_keys=True, allow_nan=False) + "\n"
     try:
@@ -2082,6 +2294,7 @@ def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> Non
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
+        os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(serialized)
             handle.flush()
@@ -2095,11 +2308,14 @@ def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> Non
 
 def _load_transaction_journal(path: Path) -> dict[str, object]:
     checked = _require_regular_file(path, "Mayo transaction journal")
-    if stat.S_IMODE(os.lstat(checked).st_mode) != 0o600:
-        raise ValueError("Mayo transaction journal must have mode 0600")
+    _require_private_regular_stat(
+        os.lstat(checked), "Mayo transaction journal",
+    )
     try:
-        payload = json.loads(checked.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = _decode_unique_json_object(
+            checked.read_bytes(), "Mayo transaction journal"
+        )
+    except (OSError, ValueError) as exc:
         raise ValueError("Mayo transaction journal is invalid") from exc
     required = {
         "schema", "token", "staging_name", "exposure_name",
@@ -2340,7 +2556,7 @@ def _promote_generation_with_exposure(
         pass
     else:
         raise ValueError("external exposure manifest must not live inside output generation")
-    exposure.parent.mkdir(parents=True, exist_ok=True)
+    _require_private_directory(exposure.parent, "external exposure parent")
     _assert_no_symlink_components(exposure.parent)
     if exposure.exists() or _is_symlink(exposure):
         _require_regular_file(exposure, "previous exposure manifest")
@@ -2371,7 +2587,12 @@ def _promote_generation_with_exposure(
 
     set_phase("prepared")
     try:
-        with staged_exposure.open("rb") as source, exposure_temporary.open("xb") as target:
+        temporary_descriptor = _open_exclusive_private_file(
+            exposure_temporary, "external exposure temporary",
+        )
+        with staged_exposure.open("rb") as source, os.fdopen(
+            temporary_descriptor, "wb",
+        ) as target:
             shutil.copyfileobj(source, target)
             target.flush()
             os.fsync(target.fileno())
@@ -2427,52 +2648,247 @@ def _promote_generation_with_exposure(
 
 def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
     validate_public_manifest(dict(payload))
+    _require_private_directory(path.parent, "private manifest parent")
     serialized = json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n"
-    with path.open("x", encoding="utf-8") as handle:
+    descriptor = _open_exclusive_private_file(path, "private manifest")
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(serialized)
         handle.flush()
         os.fsync(handle.fileno())
 
 
-def _read_regular_bytes(path: Path, field: str) -> tuple[bytes, str, int]:
-    checked = _require_regular_file(path, field)
+def _open_nofollow_directory(path: Path, field: str) -> int:
+    checked = _require_private_directory(path, field)
     descriptor = os.open(
-        checked, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        checked,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(checked)
+        _require_private_directory_stat(opened, field)
+        _require_private_directory_stat(current, field)
+        identity = (opened.st_dev, opened.st_ino, opened.st_mode)
+        if not stat.S_ISDIR(opened.st_mode) or identity != (
+            current.st_dev, current.st_ino, current.st_mode
+        ):
+            raise ValueError(f"{field} changed identity while it was opened")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _directory_snapshot(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+    )
+
+
+def _regular_snapshot(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+        int(value.st_size), int(value.st_mtime_ns), int(value.st_ctime_ns),
+    )
+
+
+def _open_nofollow_directory_at(
+    parent_descriptor: int,
+    name: str,
+    field: str,
+) -> tuple[int, tuple[int, ...]]:
+    if type(name) is not str or name in {"", ".", ".."} or Path(name).name != name:
+        raise ValueError(f"{field} anchored directory name is unsafe")
+    before = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=parent_descriptor,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        _require_private_directory_stat(before, field)
+        _require_private_directory_stat(opened, field)
+        _require_private_directory_stat(current, field)
+        identity = _directory_snapshot(opened)
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or not stat.S_ISDIR(opened.st_mode)
+            or _directory_snapshot(before) != identity
+            or _directory_snapshot(current) != identity
+        ):
+            raise ValueError(f"{field} changed identity while it was opened")
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_regular_at(
+    parent_descriptor: int,
+    name: str,
+    field: str,
+) -> tuple[int, tuple[int, ...]]:
+    if type(name) is not str or name in {"", ".", ".."} or Path(name).name != name:
+        raise ValueError(f"{field} anchored filename is unsafe")
+    before = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    descriptor = os.open(
+        name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=parent_descriptor,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        _require_private_regular_stat(before, field)
+        _require_private_regular_stat(opened, field)
+        _require_private_regular_stat(current, field)
+        identity = _regular_snapshot(opened)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or int(opened.st_nlink) != 1
+            or _regular_snapshot(before) != identity
+            or _regular_snapshot(current) != identity
+        ):
+            raise ValueError(f"{field} changed identity while it was opened")
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_regular_descriptor(
+    descriptor: int,
+    *,
+    parent_descriptor: int,
+    name: str,
+    field: str,
+    expected_identity: tuple[int, ...],
+    max_bytes: int | None = None,
+) -> tuple[bytes, str, int]:
+    if max_bytes is not None and (
+        not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1
+    ):
+        raise ValueError(f"{field} byte limit must be a positive integer")
+    before = os.fstat(descriptor)
+    _require_private_regular_stat(before, field)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or int(before.st_nlink) != 1
+        or _regular_snapshot(before) != expected_identity
+    ):
+        raise ValueError(f"{field} held descriptor changed")
+    if max_bytes is not None and int(before.st_size) > max_bytes:
+        raise ValueError(f"{field} exceeds its raw byte limit")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    payload = bytearray()
+    digest = hashlib.sha256()
+    while block := os.read(descriptor, 1024 * 1024):
+        payload.extend(block)
+        if max_bytes is not None and len(payload) > max_bytes:
+            raise ValueError(f"{field} exceeds its raw byte limit")
+        digest.update(block)
+    after = os.fstat(descriptor)
+    current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    _require_private_regular_stat(after, field)
+    _require_private_regular_stat(current, field)
+    if (
+        _regular_snapshot(after) != expected_identity
+        or _regular_snapshot(current) != expected_identity
+    ):
+        raise ValueError(f"{field} changed while its held descriptor was read")
+    return bytes(payload), digest.hexdigest(), int(after.st_size)
+
+
+def _read_regular_bytes(
+    path: Path,
+    field: str,
+    *,
+    max_bytes: int | None = None,
+    parent_descriptor: int | None = None,
+) -> tuple[bytes, str, int]:
+    if max_bytes is not None and (
+        not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1
+    ):
+        raise ValueError(f"{field} byte limit must be a positive integer")
+    open_kwargs: dict[str, int] = {}
+    if parent_descriptor is None:
+        target: str | Path = _require_regular_file(path, field)
+    else:
+        if path.name != str(path) or len(path.parts) != 1:
+            raise ValueError(f"{field} anchored filename is unsafe")
+        target = path.name
+        open_kwargs["dir_fd"] = parent_descriptor
+    descriptor = os.open(
+        target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0), **open_kwargs
     )
     payload = bytearray()
     digest = hashlib.sha256()
     try:
         before = os.fstat(descriptor)
+        _require_private_regular_stat(before, field)
+        if max_bytes is not None and int(before.st_size) > max_bytes:
+            raise ValueError(f"{field} exceeds its raw byte limit")
         while True:
             block = os.read(descriptor, 1024 * 1024)
             if not block:
                 break
             payload.extend(block)
+            if max_bytes is not None and len(payload) > max_bytes:
+                raise ValueError(f"{field} exceeds its raw byte limit")
             digest.update(block)
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    current = os.lstat(checked)
-    before_identity = (
-        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    current = (
+        os.lstat(target)
+        if parent_descriptor is None
+        else os.stat(target, dir_fd=parent_descriptor, follow_symlinks=False)
     )
-    if before_identity != (
-        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
-    ) or before_identity != (
-        current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns
+    _require_private_regular_stat(after, field)
+    _require_private_regular_stat(current, field)
+    before_identity = _regular_snapshot(before)
+    if (
+        before_identity != _regular_snapshot(after)
+        or before_identity != _regular_snapshot(current)
     ):
         raise ValueError(f"{field} changed while it was read")
     return bytes(payload), digest.hexdigest(), before.st_size
 
 
 def _load_public_json(path: Path, field: str) -> tuple[dict[str, object], str]:
-    payload, digest, _size = _read_regular_bytes(path, field)
-    try:
-        value = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{field} is not canonical JSON") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"{field} must contain a JSON object")
+    payload, digest, _size = _read_regular_bytes(
+        path, field, max_bytes=_MAX_MAYO_MANIFEST_BYTES
+    )
+    value = _decode_unique_json_object(payload, field)
+    validate_public_manifest(value)
+    return value, digest
+
+
+def _load_public_json_descriptor(
+    descriptor: int,
+    *,
+    parent_descriptor: int,
+    name: str,
+    field: str,
+    expected_identity: tuple[int, ...],
+) -> tuple[dict[str, object], str]:
+    payload, digest, _size = _read_regular_descriptor(
+        descriptor,
+        parent_descriptor=parent_descriptor,
+        name=name,
+        field=field,
+        expected_identity=expected_identity,
+        max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+    )
+    value = _decode_unique_json_object(payload, field)
     validate_public_manifest(value)
     return value, digest
 
@@ -2814,6 +3230,333 @@ def _validate_arkit_cache_payload(
     return CompactCacheSummary(len(sequence.features), missing)
 
 
+def _bounded_npy_header(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    field: str,
+) -> tuple[np.dtype, tuple[int, ...], bool]:
+    try:
+        with archive.open(info, "r") as member:
+            version = np.lib.format.read_magic(member)
+            if version not in {(1, 0), (2, 0), (3, 0)}:
+                raise ValueError(f"{field} has an unsupported NPY version")
+            shape, fortran_order, dtype = np.lib.format._read_array_header(
+                member, version, max_header_size=_MAX_NPY_HEADER_BYTES
+            )
+            header_bytes = member.tell()
+    except (OSError, EOFError, UnicodeError, ValueError, RuntimeError,
+            zipfile.BadZipFile) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith(field):
+            raise
+        raise ValueError(f"{field} has an invalid bounded NPY header") from exc
+    if (
+        not isinstance(shape, tuple)
+        or any(not isinstance(item, int) or isinstance(item, bool) or item < 0
+               for item in shape)
+        or not isinstance(fortran_order, bool)
+    ):
+        raise ValueError(f"{field} has a noncanonical NPY header")
+    canonical_dtype = np.dtype(dtype)
+    if canonical_dtype.hasobject or canonical_dtype.fields is not None:
+        raise ValueError(f"{field} uses an unsafe NPY dtype")
+    element_count = 1
+    for dimension in shape:
+        element_count *= dimension
+    if header_bytes + element_count * canonical_dtype.itemsize != int(info.file_size):
+        raise ValueError(f"{field} NPY header does not match its member size")
+    return canonical_dtype, shape, fortran_order
+
+
+def _require_exact_zip_eocd(payload: bytes, *, member_count: int, field: str) -> None:
+    """Validate a bounded, single-disk central directory before ``zipfile``."""
+    if (
+        not isinstance(member_count, int)
+        or isinstance(member_count, bool)
+        or not 0 < member_count < 0xFFFF
+    ):
+        raise ValueError(f"{field} has an invalid fixed member count")
+
+    offset = len(payload) - 22
+    if offset < 0 or payload[offset:offset + 4] != b"PK\x05\x06":
+        raise ValueError(f"{field} has no canonical ZIP end record")
+    record = memoryview(payload)[offset:offset + 22]
+    disk = int.from_bytes(record[4:6], "little")
+    central_disk = int.from_bytes(record[6:8], "little")
+    disk_members = int.from_bytes(record[8:10], "little")
+    total_members = int.from_bytes(record[10:12], "little")
+    central_size = int.from_bytes(record[12:16], "little")
+    central_offset = int.from_bytes(record[16:20], "little")
+    comment_size = int.from_bytes(record[20:22], "little")
+    if (
+        disk_members == 0xFFFF
+        or total_members == 0xFFFF
+        or central_size == 0xFFFF_FFFF
+        or central_offset == 0xFFFF_FFFF
+        or disk != 0
+        or central_disk != 0
+        or disk_members != member_count
+        or total_members != member_count
+        or comment_size != 0
+        or central_size < 47 * member_count
+        or central_size > _MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES * member_count
+        or central_offset <= 0
+        or central_offset + central_size != offset
+    ):
+        raise ValueError(f"{field} ZIP end record is noncanonical")
+    if offset >= 20 and payload[offset - 20:offset - 16] == b"PK\x06\x07":
+        raise ValueError(f"{field} ZIP64 end record is unsupported")
+
+    central = memoryview(payload)[central_offset:offset]
+    cursor = 0
+    actual_members = 0
+    compressed_total = 0
+    expanded_total = 0
+    member_names: set[bytes] = set()
+    local_offsets: set[int] = set()
+    while cursor < central_size:
+        remaining = central_size - cursor
+        if remaining < 46 or central[cursor:cursor + 4].tobytes() != b"PK\x01\x02":
+            raise ValueError(f"{field} central directory is noncanonical")
+
+        actual_members += 1
+        if actual_members > member_count:
+            raise ValueError(f"{field} central directory member count is not exact")
+        version_needed = int.from_bytes(central[cursor + 6:cursor + 8], "little")
+        flags = int.from_bytes(central[cursor + 8:cursor + 10], "little")
+        compression = int.from_bytes(central[cursor + 10:cursor + 12], "little")
+        compressed_size = int.from_bytes(central[cursor + 20:cursor + 24], "little")
+        expanded_size = int.from_bytes(central[cursor + 24:cursor + 28], "little")
+        name_size = int.from_bytes(central[cursor + 28:cursor + 30], "little")
+        extra_size = int.from_bytes(central[cursor + 30:cursor + 32], "little")
+        member_comment_size = int.from_bytes(
+            central[cursor + 32:cursor + 34], "little"
+        )
+        member_disk = int.from_bytes(central[cursor + 34:cursor + 36], "little")
+        local_offset = int.from_bytes(central[cursor + 42:cursor + 46], "little")
+        record_size = 46 + name_size + extra_size + member_comment_size
+        if (
+            version_needed != 20
+            or flags != 0
+            or compression != zipfile.ZIP_DEFLATED
+            or compressed_size == 0xFFFF_FFFF
+            or expanded_size == 0xFFFF_FFFF
+            or name_size <= 0
+            or extra_size != 0
+            or member_comment_size != 0
+            or member_disk != 0
+            or local_offset == 0xFFFF_FFFF
+            or local_offset >= central_offset
+            or record_size > _MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES
+            or record_size > remaining
+        ):
+            raise ValueError(f"{field} central directory metadata is noncanonical")
+
+        name_start = cursor + 46
+        member_name = central[name_start:name_start + name_size].tobytes()
+        if (
+            member_name in member_names
+            or local_offset in local_offsets
+            or payload[local_offset:local_offset + 4] != b"PK\x03\x04"
+        ):
+            raise ValueError(f"{field} central directory references are noncanonical")
+        member_names.add(member_name)
+        local_offsets.add(local_offset)
+
+        compressed_total += compressed_size
+        expanded_total += expanded_size
+        if (
+            compressed_total > _MAX_MAYO_NPZ_COMPRESSED_BYTES
+            or expanded_total > _MAX_MAYO_NPZ_EXPANDED_BYTES
+        ):
+            raise ValueError(f"{field} central directory size declarations are excessive")
+        cursor += record_size
+
+    if cursor != central_size or actual_members != member_count:
+        raise ValueError(f"{field} central directory member count is not exact")
+
+
+def _require_mayo_npz_headers(
+    payload: bytes,
+    *,
+    recording_id: str,
+    group_id: str,
+    source_integrity_id: str,
+    source_fingerprint: str,
+    expected_schema: str,
+) -> None:
+    """Inspect bounded ZIP metadata and NPY headers before ``np.load``."""
+    if len(payload) > _MAX_MAYO_CACHE_RAW_BYTES:
+        raise ValueError("compact cache exceeds its raw byte limit")
+    expected_fields = (
+        _MEDIAPIPE_CACHE_FIELDS
+        if expected_schema == MEDIAPIPE_CACHE_SCHEMA
+        else _ARKIT_CACHE_FIELDS
+        if expected_schema == ARKIT_CACHE_SCHEMA
+        else None
+    )
+    if expected_fields is None:
+        raise ValueError("compact cache schema is unsupported")
+    expected_names = {f"{name}.npy" for name in expected_fields}
+    _require_exact_zip_eocd(
+        payload, member_count=len(expected_names), field="compact cache"
+    )
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            infos = tuple(archive.infolist())
+            names = tuple(info.filename for info in infos)
+            if (
+                len(infos) != len(expected_names)
+                or len(names) != len(set(names))
+                or set(names) != expected_names
+                or any(info.is_dir() for info in infos)
+            ):
+                raise ValueError("compact cache ZIP member schema is not exact")
+            if any(
+                info.flag_bits & 0x1
+                or info.compress_type != zipfile.ZIP_DEFLATED
+                or info.compress_size < 0
+                or info.file_size < 0
+                for info in infos
+            ):
+                raise ValueError("compact cache ZIP metadata is noncanonical")
+            if sum(int(info.compress_size) for info in infos) > (
+                _MAX_MAYO_NPZ_COMPRESSED_BYTES
+            ):
+                raise ValueError("compact cache exceeds its compressed byte limit")
+            if sum(int(info.file_size) for info in infos) > (
+                _MAX_MAYO_NPZ_EXPANDED_BYTES
+            ):
+                raise ValueError("compact cache exceeds its expanded byte limit")
+            headers = {
+                info.filename[:-4]: _bounded_npy_header(
+                    archive, info, field=f"compact cache {info.filename[:-4]}"
+                )
+                for info in infos
+            }
+    except (OSError, EOFError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("compact cache"):
+            raise
+        raise ValueError("compact cache is not a bounded exact NPZ") from exc
+
+    if expected_schema == MEDIAPIPE_CACHE_SCHEMA:
+        source_dtype, source_shape, _ = headers["features_source_rate"]
+        target_dtype, target_shape, _ = headers["features_30hz"]
+        if (
+            source_dtype != np.dtype(np.float32)
+            or len(source_shape) != 2
+            or source_shape[1] != len(DYNAMIC_FEATURE_NAMES)
+            or not 1 <= source_shape[0] <= _MAX_MAYO_CACHE_ROWS
+            or target_dtype != np.dtype(np.float32)
+            or len(target_shape) != 2
+            or target_shape[1] != len(DYNAMIC_FEATURE_NAMES)
+            or not 1 <= target_shape[0] <= source_shape[0]
+        ):
+            raise ValueError("compact cache feature NPY headers are noncanonical")
+        source_rows = source_shape[0]
+        target_rows = target_shape[0]
+        expected_arrays = {
+            "features_source_rate": (np.dtype(np.float32), (source_rows, 95)),
+            "valid_mask_source_rate": (np.dtype(np.bool_), (source_rows,)),
+            "timestamps_source_rate": (np.dtype(np.float64), (source_rows,)),
+            "source_frame_indices_source_rate": (np.dtype(np.int64), (source_rows,)),
+            "facial_transforms_source_rate": (
+                np.dtype(np.float32), (source_rows, 4, 4),
+            ),
+            "facial_transform_mask_source_rate": (
+                np.dtype(np.bool_), (source_rows,),
+            ),
+            "features_30hz": (np.dtype(np.float32), (target_rows, 95)),
+            "valid_mask_30hz": (np.dtype(np.bool_), (target_rows,)),
+            "timestamps_30hz": (np.dtype(np.float64), (target_rows,)),
+            "source_frame_indices_30hz": (np.dtype(np.int64), (target_rows,)),
+            "target_frame_indices_30hz": (np.dtype(np.int64), (target_rows,)),
+            "contiguous_from_previous_30hz": (
+                np.dtype(np.bool_), (target_rows,),
+            ),
+            "facial_transforms_30hz": (
+                np.dtype(np.float32), (target_rows, 4, 4),
+            ),
+            "facial_transform_mask_30hz": (
+                np.dtype(np.bool_), (target_rows,),
+            ),
+        }
+        metadata = {
+            "feature_schema": DYNAMIC_FEATURE_SCHEMA,
+            "feature_names": np.asarray(DYNAMIC_FEATURE_NAMES),
+            "side_convention": CLINICAL_SIDE_CONVENTION,
+            "capture_mirrored": "unknown",
+            "normalization_transform": TRANSFORM_NORMALIZATION,
+            "facial_transform_source": "same_detection_mediapipe_video_mode",
+            "timestamp_unit": "seconds",
+            "timestamp_source": "source_frame_index_divided_by_audited_fps",
+            "source_fps": np.asarray(0.0, dtype=np.float64),
+            "producer_protocol": VIDEO_PRODUCER_PROTOCOL,
+            "producer_adapter_version": VIDEO_ADAPTER_VERSION,
+            "recording_id": recording_id,
+            "group_id": group_id,
+            "source_integrity_id": source_integrity_id,
+            "source_fingerprint": source_fingerprint,
+            "cache_schema": MEDIAPIPE_CACHE_SCHEMA,
+            "development_only": np.asarray(True),
+            "patient_identity": "unknown",
+            "split_unit": "recording",
+        }
+    else:
+        source_dtype, source_shape, _ = headers["features_60hz"]
+        target_dtype, target_shape, _ = headers["features_30hz"]
+        if (
+            source_dtype != np.dtype(np.float32)
+            or len(source_shape) != 2
+            or source_shape[1] != len(ARKIT_BLENDSHAPE_NAMES)
+            or not 1 <= source_shape[0] <= _MAX_MAYO_CACHE_ROWS
+            or target_dtype != np.dtype(np.float32)
+            or len(target_shape) != 2
+            or target_shape[1] != len(ARKIT_BLENDSHAPE_NAMES)
+            or not 1 <= target_shape[0] <= source_shape[0]
+        ):
+            raise ValueError("compact cache feature NPY headers are noncanonical")
+        source_rows = source_shape[0]
+        target_rows = target_shape[0]
+        expected_arrays = {
+            "features_60hz": (np.dtype(np.float32), (source_rows, 52)),
+            "valid_mask_60hz": (np.dtype(np.bool_), (source_rows,)),
+            "timestamps_60hz": (np.dtype(np.float64), (source_rows,)),
+            "source_frame_indices_60hz": (np.dtype(np.int64), (source_rows,)),
+            "features_30hz": (np.dtype(np.float32), (target_rows, 52)),
+            "valid_mask_30hz": (np.dtype(np.bool_), (target_rows,)),
+            "timestamps_30hz": (np.dtype(np.float64), (target_rows,)),
+            "source_frame_indices_30hz": (np.dtype(np.int64), (target_rows,)),
+            "target_frame_indices_30hz": (np.dtype(np.int64), (target_rows,)),
+            "contiguous_from_previous_30hz": (
+                np.dtype(np.bool_), (target_rows,),
+            ),
+        }
+        metadata = {
+            "feature_schema": "arkit_blendshapes_52_v1",
+            "feature_names": np.asarray(ARKIT_BLENDSHAPE_NAMES),
+            "timestamp_unit": "seconds",
+            "timestamp_source": "arkit_original_timecode_relative_seconds",
+            "recording_id": recording_id,
+            "group_id": group_id,
+            "source_integrity_id": source_integrity_id,
+            "source_fingerprint": source_fingerprint,
+            "cache_schema": ARKIT_CACHE_SCHEMA,
+            "development_only": np.asarray(True),
+            "patient_identity": "unknown",
+            "split_unit": "recording",
+        }
+    expected_headers = dict(expected_arrays)
+    expected_headers.update({
+        name: (np.asarray(value).dtype, np.asarray(value).shape)
+        for name, value in metadata.items()
+    })
+    for name, (expected_dtype, expected_shape) in expected_headers.items():
+        dtype, shape, fortran_order = headers[name]
+        if dtype != expected_dtype or shape != expected_shape or fortran_order:
+            raise ValueError(f"compact cache {name} NPY header is noncanonical")
+
+
 def _validate_compact_cache(
     path: Path,
     *,
@@ -2822,8 +3565,47 @@ def _validate_compact_cache(
     source_integrity_id: str,
     source_fingerprint: str,
     expected_schema: str,
+    salt: bytes | None = None,
+    integrity_context: str | None = None,
+    expected_integrity_id: str | None = None,
+    parent_descriptor: int | None = None,
+    held_descriptor: int | None = None,
+    held_identity: tuple[int, ...] | None = None,
 ) -> tuple[str, int, CompactCacheSummary]:
-    payload, digest, size = _read_regular_bytes(path, "compact cache")
+    if (held_descriptor is None) != (held_identity is None):
+        raise ValueError("compact cache held identity is incomplete")
+    if held_descriptor is not None:
+        if parent_descriptor is None or path.name != str(path):
+            raise ValueError("compact cache held path is malformed")
+        payload, digest, size = _read_regular_descriptor(
+            held_descriptor,
+            parent_descriptor=parent_descriptor,
+            name=path.name,
+            field="compact cache",
+            expected_identity=held_identity,
+            max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
+        )
+    else:
+        payload, digest, size = _read_regular_bytes(
+            path, "compact cache", max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
+            parent_descriptor=parent_descriptor,
+        )
+    if salt is not None:
+        if integrity_context is None or expected_integrity_id is None:
+            raise ValueError("compact cache integrity inputs are incomplete")
+        observed_integrity = hmac_identifier(
+            "cache", salt, integrity_context, digest
+        )
+        if not hmac.compare_digest(observed_integrity, expected_integrity_id):
+            raise ValueError("cache integrity ID does not bind the staged bytes")
+    _require_mayo_npz_headers(
+        payload,
+        recording_id=recording_id,
+        group_id=group_id,
+        source_integrity_id=source_integrity_id,
+        source_fingerprint=source_fingerprint,
+        expected_schema=expected_schema,
+    )
     try:
         with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
             observed_fields = tuple(cached.files)
@@ -2859,6 +3641,289 @@ def _validate_compact_cache(
     return digest, size, summary
 
 
+@dataclass(frozen=True)
+class _HeldCommittedMayoCache:
+    name: str
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _HeldCommittedMayoGeneration:
+    output: Path
+    exposure: Path
+    output_parent_descriptor: int = dataclass_field(repr=False)
+    output_parent_identity: tuple[int, ...]
+    output_descriptor: int = dataclass_field(repr=False)
+    output_identity: tuple[int, ...]
+    collection_descriptor: int = dataclass_field(repr=False)
+    collection_identity: tuple[int, ...]
+    internal_exposure_descriptor: int = dataclass_field(repr=False)
+    internal_exposure_identity: tuple[int, ...]
+    media_descriptor: int = dataclass_field(repr=False)
+    media_identity: tuple[int, ...]
+    media_files: tuple[_HeldCommittedMayoCache, ...]
+    arkit_descriptor: int = dataclass_field(repr=False)
+    arkit_identity: tuple[int, ...]
+    arkit_files: tuple[_HeldCommittedMayoCache, ...]
+    external_parent_descriptor: int = dataclass_field(repr=False)
+    external_parent_identity: tuple[int, ...]
+    external_exposure_descriptor: int = dataclass_field(repr=False)
+    external_exposure_identity: tuple[int, ...]
+
+
+@contextmanager
+def _hold_committed_mayo_generation(
+    output: Path,
+    exposure: Path,
+):
+    descriptors = ExitStack()
+    try:
+        output_parent_descriptor = _open_nofollow_directory(
+            output.parent, "committed Mayo output parent",
+        )
+        descriptors.callback(os.close, output_parent_descriptor)
+        output_parent_identity = _directory_snapshot(
+            os.fstat(output_parent_descriptor)
+        )
+        output_descriptor, output_identity = _open_nofollow_directory_at(
+            output_parent_descriptor, output.name, "committed Mayo generation",
+        )
+        descriptors.callback(os.close, output_descriptor)
+        collection_descriptor, collection_identity = _open_regular_at(
+            output_descriptor,
+            "collection_manifest.json",
+            "committed collection manifest",
+        )
+        descriptors.callback(os.close, collection_descriptor)
+        internal_exposure_descriptor, internal_exposure_identity = _open_regular_at(
+            output_descriptor,
+            "mayo_exposure_manifest.json",
+            "committed internal exposure manifest",
+        )
+        descriptors.callback(os.close, internal_exposure_descriptor)
+        media_descriptor, media_identity = _open_nofollow_directory_at(
+            output_descriptor, "mediapipe", "committed Mayo MediaPipe cache",
+        )
+        descriptors.callback(os.close, media_descriptor)
+        arkit_descriptor, arkit_identity = _open_nofollow_directory_at(
+            output_descriptor, "arkit", "committed Mayo ARKit cache",
+        )
+        descriptors.callback(os.close, arkit_descriptor)
+
+        def hold_cache_files(
+            parent_descriptor: int,
+            field: str,
+            expected_count: int,
+        ) -> tuple[_HeldCommittedMayoCache, ...]:
+            names = sorted(os.listdir(parent_descriptor))
+            if (
+                len(names) != expected_count
+                or any(Path(name).name != name or Path(name).suffix != ".npz"
+                       for name in names)
+            ):
+                raise ValueError(f"{field} file set is incomplete or unsafe")
+            held_files: list[_HeldCommittedMayoCache] = []
+            for name in names:
+                descriptor, identity = _open_regular_at(
+                    parent_descriptor, name, field,
+                )
+                descriptors.callback(os.close, descriptor)
+                held_files.append(_HeldCommittedMayoCache(
+                    name=name,
+                    descriptor=descriptor,
+                    identity=identity,
+                ))
+            return tuple(held_files)
+
+        media_files = hold_cache_files(
+            media_descriptor,
+            "committed Mayo MediaPipe cache",
+            int(FROZEN_INVENTORY["long_unique_videos"]),
+        )
+        arkit_files = hold_cache_files(
+            arkit_descriptor,
+            "committed Mayo ARKit cache",
+            int(FROZEN_INVENTORY["arkit_trajectories"]),
+        )
+
+        external_parent_descriptor = _open_nofollow_directory(
+            exposure.parent, "external exposure parent",
+        )
+        descriptors.callback(os.close, external_parent_descriptor)
+        external_parent_identity = _directory_snapshot(
+            os.fstat(external_parent_descriptor)
+        )
+        external_exposure_descriptor, external_exposure_identity = _open_regular_at(
+            external_parent_descriptor,
+            exposure.name,
+            "committed external exposure manifest",
+        )
+        descriptors.callback(os.close, external_exposure_descriptor)
+        held = _HeldCommittedMayoGeneration(
+            output=output,
+            exposure=exposure,
+            output_parent_descriptor=output_parent_descriptor,
+            output_parent_identity=output_parent_identity,
+            output_descriptor=output_descriptor,
+            output_identity=output_identity,
+            collection_descriptor=collection_descriptor,
+            collection_identity=collection_identity,
+            internal_exposure_descriptor=internal_exposure_descriptor,
+            internal_exposure_identity=internal_exposure_identity,
+            media_descriptor=media_descriptor,
+            media_identity=media_identity,
+            media_files=media_files,
+            arkit_descriptor=arkit_descriptor,
+            arkit_identity=arkit_identity,
+            arkit_files=arkit_files,
+            external_parent_descriptor=external_parent_descriptor,
+            external_parent_identity=external_parent_identity,
+            external_exposure_descriptor=external_exposure_descriptor,
+            external_exposure_identity=external_exposure_identity,
+        )
+        _assert_held_mayo_generation(held)
+        yield held
+        _assert_held_mayo_generation(held)
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
+def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
+    def require_directory(
+        descriptor: int,
+        expected: tuple[int, ...],
+        field: str,
+    ) -> None:
+        observed = os.fstat(descriptor)
+        _require_private_directory_stat(observed, field)
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or _directory_snapshot(observed) != expected
+        ):
+            raise ValueError(f"{field} held descriptor changed")
+
+    def require_directory_name(
+        parent_descriptor: int,
+        name: str,
+        expected: tuple[int, ...],
+        field: str,
+    ) -> None:
+        observed = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        _require_private_directory_stat(observed, field)
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or _directory_snapshot(observed) != expected
+        ):
+            raise ValueError(f"{field} name no longer binds its held directory")
+
+    def require_file(
+        descriptor: int,
+        parent_descriptor: int,
+        name: str,
+        expected: tuple[int, ...],
+        field: str,
+    ) -> None:
+        opened = os.fstat(descriptor)
+        linked = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+        _require_private_regular_stat(opened, field)
+        _require_private_regular_stat(linked, field)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or int(opened.st_nlink) != 1
+            or _regular_snapshot(opened) != expected
+            or _regular_snapshot(linked) != expected
+        ):
+            raise ValueError(f"{field} name no longer binds its held file")
+
+    require_directory(
+        held.output_parent_descriptor,
+        held.output_parent_identity,
+        "committed Mayo output parent",
+    )
+    output_parent_path = os.lstat(held.output.parent)
+    _require_private_directory_stat(
+        output_parent_path, "committed Mayo output parent",
+    )
+    if _directory_snapshot(output_parent_path) != held.output_parent_identity:
+        raise ValueError("committed Mayo output parent path changed")
+    require_directory(
+        held.output_descriptor, held.output_identity, "committed Mayo generation",
+    )
+    require_directory_name(
+        held.output_parent_descriptor,
+        held.output.name,
+        held.output_identity,
+        "committed Mayo generation",
+    )
+    require_file(
+        held.collection_descriptor,
+        held.output_descriptor,
+        "collection_manifest.json",
+        held.collection_identity,
+        "committed collection manifest",
+    )
+    require_file(
+        held.internal_exposure_descriptor,
+        held.output_descriptor,
+        "mayo_exposure_manifest.json",
+        held.internal_exposure_identity,
+        "committed internal exposure manifest",
+    )
+    require_directory(
+        held.media_descriptor, held.media_identity, "committed Mayo MediaPipe cache",
+    )
+    require_directory_name(
+        held.output_descriptor,
+        "mediapipe",
+        held.media_identity,
+        "committed Mayo MediaPipe cache",
+    )
+    require_directory(
+        held.arkit_descriptor, held.arkit_identity, "committed Mayo ARKit cache",
+    )
+    require_directory_name(
+        held.output_descriptor,
+        "arkit",
+        held.arkit_identity,
+        "committed Mayo ARKit cache",
+    )
+    for item in held.media_files:
+        require_file(
+            item.descriptor,
+            held.media_descriptor,
+            item.name,
+            item.identity,
+            "committed Mayo MediaPipe cache",
+        )
+    for item in held.arkit_files:
+        require_file(
+            item.descriptor,
+            held.arkit_descriptor,
+            item.name,
+            item.identity,
+            "committed Mayo ARKit cache",
+        )
+    require_directory(
+        held.external_parent_descriptor,
+        held.external_parent_identity,
+        "external exposure parent",
+    )
+    external_parent_path = os.lstat(held.exposure.parent)
+    _require_private_directory_stat(
+        external_parent_path, "external exposure parent",
+    )
+    if _directory_snapshot(external_parent_path) != held.external_parent_identity:
+        raise ValueError("external exposure parent path changed")
+    require_file(
+        held.external_exposure_descriptor,
+        held.external_parent_descriptor,
+        held.exposure.name,
+        held.external_exposure_identity,
+        "committed external exposure manifest",
+    )
+
+
 def _inventory_counts_sha256(value: Mapping[str, object]) -> str:
     if (
         not isinstance(value, Mapping)
@@ -2881,18 +3946,46 @@ def _validate_staging(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    _held: _HeldCommittedMayoGeneration | None = None,
 ) -> dict[str, object]:
-    staging = _require_directory(staging, "staging generation")
     allowed_top = {"collection_manifest.json", "mayo_exposure_manifest.json",
                    "mediapipe", "arkit"}
-    if {item.name for item in staging.iterdir()} != allowed_top:
-        raise ValueError("staging generation has a stale, missing, or unexpected top-level file")
-    collection, collection_digest = _load_public_json(
-        staging / "collection_manifest.json", "collection manifest"
-    )
-    exposure, exposure_digest = _load_public_json(
-        staging / "mayo_exposure_manifest.json", "exposure manifest"
-    )
+    if _held is None:
+        staging = _require_private_directory(staging, "staging generation")
+        observed_top = {item.name for item in staging.iterdir()}
+        if observed_top != allowed_top:
+            raise ValueError(
+                "staging generation has a stale, missing, or unexpected top-level file"
+            )
+        collection, collection_digest = _load_public_json(
+            staging / "collection_manifest.json", "collection manifest"
+        )
+        exposure, exposure_digest = _load_public_json(
+            staging / "mayo_exposure_manifest.json", "exposure manifest"
+        )
+    else:
+        if Path(staging) != _held.output:
+            raise ValueError("held Mayo generation path is inconsistent")
+        _assert_held_mayo_generation(_held)
+        observed_top = set(os.listdir(_held.output_descriptor))
+        if observed_top != allowed_top:
+            raise ValueError(
+                "staging generation has a stale, missing, or unexpected top-level file"
+            )
+        collection, collection_digest = _load_public_json_descriptor(
+            _held.collection_descriptor,
+            parent_descriptor=_held.output_descriptor,
+            name="collection_manifest.json",
+            field="collection manifest",
+            expected_identity=_held.collection_identity,
+        )
+        exposure, exposure_digest = _load_public_json_descriptor(
+            _held.internal_exposure_descriptor,
+            parent_descriptor=_held.output_descriptor,
+            name="mayo_exposure_manifest.json",
+            field="exposure manifest",
+            expected_identity=_held.internal_exposure_identity,
+        )
     collection_counts = _validate_collection_top(collection)
     inventory_counts_sha256 = _inventory_counts_sha256(collection_counts)
     if expected_inventory_counts is not None:
@@ -3101,46 +4194,91 @@ def _validate_staging(
         ("arkit", arkit_rows, ARKIT_CACHE_SCHEMA,
          "mayo-arkit-cache-integrity"),
     ):
-        directory = _require_directory(staging / dirname, f"staged {dirname} cache")
-        files = sorted(directory.iterdir(), key=lambda item: item.name)
-        expected_names = {f"{recording_id}.npz" for recording_id in rows}
-        if {path.name for path in files} != expected_names or any(
-            _is_symlink(path) or not path.is_file() or path.suffix != ".npz" for path in files
-        ):
-            raise ValueError(f"staged {dirname} cache file set is incomplete or unsafe")
-        for path in files:
-            recording_id = path.stem
-            row = rows[recording_id]
-            digest, size, summary = _validate_compact_cache(
-                path,
-                recording_id=recording_id,
-                group_id=str(row["group_id"]),
-                source_integrity_id=str(row["source_integrity_id"]),
-                source_fingerprint=str(row["source_fingerprint"]),
-                expected_schema=expected_schema,
+        close_directory = _held is None
+        if _held is None:
+            directory = _require_directory(
+                staging / dirname, f"staged {dirname} cache",
             )
-            if salt is not None:
-                expected_integrity = hmac_identifier(
-                    "cache", salt, context, digest
+            directory_descriptor = _open_nofollow_directory(
+                directory, f"staged {dirname} cache",
+            )
+        else:
+            directory_descriptor = (
+                _held.media_descriptor
+                if dirname == "mediapipe"
+                else _held.arkit_descriptor
+            )
+            held_files = {
+                item.name: item for item in (
+                    _held.media_files
+                    if dirname == "mediapipe"
+                    else _held.arkit_files
                 )
-                if not hmac.compare_digest(
-                    expected_integrity, str(row["cache_integrity_id"])
-                ):
-                    raise ValueError("cache integrity ID does not bind the staged bytes")
-            if dirname == "mediapipe":
-                if row["legacy_export_audit_status"] == "no_complete_legacy_export":
-                    remaining_media_rows += summary.source_rows
-            else:
-                observed_arkit_rows += summary.source_rows
-                observed_arkit_gaps += summary.missing_source_frames
-            cache_commitments.append((f"{dirname}/{path.name}", digest, size))
+            }
+            _assert_held_mayo_generation(_held)
+        try:
+            names = sorted(os.listdir(directory_descriptor))
+            expected_names = {f"{recording_id}.npz" for recording_id in rows}
+            if set(names) != expected_names:
+                raise ValueError(
+                    f"staged {dirname} cache file set is incomplete or unsafe"
+                )
+            for name in names:
+                info = os.stat(
+                    name, dir_fd=directory_descriptor, follow_symlinks=False
+                )
+                _require_private_regular_stat(
+                    info, f"staged {dirname} compact cache",
+                )
+                if Path(name).suffix != ".npz":
+                    raise ValueError(
+                        f"staged {dirname} cache file set is incomplete or unsafe"
+                    )
+                path = Path(name)
+                recording_id = path.stem
+                row = rows[recording_id]
+                held_file = None if _held is None else held_files.get(name)
+                if _held is not None and held_file is None:
+                    raise ValueError("held compact cache file set is incomplete")
+                digest, size, summary = _validate_compact_cache(
+                    path,
+                    recording_id=recording_id,
+                    group_id=str(row["group_id"]),
+                    source_integrity_id=str(row["source_integrity_id"]),
+                    source_fingerprint=str(row["source_fingerprint"]),
+                    expected_schema=expected_schema,
+                    salt=salt,
+                    integrity_context=context,
+                    expected_integrity_id=str(row["cache_integrity_id"]),
+                    parent_descriptor=directory_descriptor,
+                    held_descriptor=(
+                        None if held_file is None else held_file.descriptor
+                    ),
+                    held_identity=(
+                        None if held_file is None else held_file.identity
+                    ),
+                )
+                if dirname == "mediapipe":
+                    if row["legacy_export_audit_status"] == "no_complete_legacy_export":
+                        remaining_media_rows += summary.source_rows
+                else:
+                    observed_arkit_rows += summary.source_rows
+                    observed_arkit_gaps += summary.missing_source_frames
+                cache_commitments.append((f"{dirname}/{path.name}", digest, size))
+        finally:
+            if close_directory:
+                os.close(directory_descriptor)
     if (
         collection_counts["remaining_long_video_frames"] != remaining_media_rows
         or collection_counts["arkit_rows"] != observed_arkit_rows
         or collection_counts["arkit_timecode_gaps"] != observed_arkit_gaps
     ):
         raise ValueError("collection temporal totals disagree with private cache arrays")
-    if list(staging.rglob("*.csv")) or list(staging.rglob("*.mp4")) or list(staging.rglob("*.mov")):
+    if _held is None and (
+        list(staging.rglob("*.csv"))
+        or list(staging.rglob("*.mp4"))
+        or list(staging.rglob("*.mov"))
+    ):
         raise ValueError("staged generation must not contain raw CSV or preview video")
     cache_aggregate = hashlib.sha256()
     for relative_name, digest, size in cache_commitments:
@@ -3153,7 +4291,7 @@ def _validate_staging(
     generation_aggregate.update(
         f"caches:{cache_aggregate.hexdigest()}\n".encode("ascii")
     )
-    return {
+    result = {
         "schema": "mayo_cache_generation_commitment_v3",
         "collection_manifest_sha256": collection_digest,
         "exposure_manifest_sha256": exposure_digest,
@@ -3168,6 +4306,9 @@ def _validate_staging(
         ),
         "exposure_classification_integrity_id": classification_integrity,
     }
+    if _held is not None:
+        _assert_held_mayo_generation(_held)
+    return result
 
 
 def _validate_generation_commitment(value: object) -> dict[str, object]:
@@ -3220,6 +4361,8 @@ def _assert_committed_generation(
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
 ) -> None:
+    _require_private_directory(output.parent, "committed Mayo output parent")
+    _require_private_directory(exposure.parent, "external exposure parent")
     expected = _validate_generation_commitment(dict(commitment))
     observed = _validate_staging(
         output,
@@ -3234,13 +4377,291 @@ def _assert_committed_generation(
     )
     if observed != expected:
         raise ValueError("committed cache generation no longer matches its journal")
-    _payload, exposure_digest, _size = _read_regular_bytes(
+    _exposure, exposure_digest = _load_public_json(
         exposure, "committed external exposure manifest"
     )
     if not hmac.compare_digest(
         exposure_digest, str(expected["exposure_manifest_sha256"])
     ):
         raise ValueError("committed external exposure manifest changed")
+
+
+def _assert_no_unresolved_generation_state(output: Path, exposure: Path) -> None:
+    candidates = [
+        _journal_path(output),
+        *output.parent.glob(f".{output.name}.staging-*"),
+        *output.parent.glob(f".{output.name}.backup-*"),
+        *exposure.parent.glob(f".{exposure.name}.backup-*"),
+        *exposure.parent.glob(f".{exposure.name}.tmp-*"),
+    ]
+    if any(path.exists() or _is_symlink(path) for path in candidates):
+        raise RuntimeError(
+            "Mayo committed authorization rejects unresolved transaction state"
+        )
+
+
+def _key_file_identity(path: Path) -> tuple[int, ...]:
+    info = os.stat(path, follow_symlinks=False)
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+        info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _immutable_array(value: np.ndarray) -> np.ndarray:
+    result = np.asarray(value).copy()
+    result.flags.writeable = False
+    return result
+
+
+def authorize_committed_mayo_ssl_generation(
+    data_root: str | Path,
+    existing_export_root: str | Path,
+    salt_file: str | Path,
+    output_root: str | Path,
+    exposure_manifest: str | Path,
+) -> AuthorizedMayoGeneration:
+    """Live-authorize the coupled Mayo cache/exposure generation read-only.
+
+    The commitment is always recomputed from live bytes and the canonical key;
+    callers cannot provide or recover a transaction commitment.
+    """
+    data = _require_directory(data_root, "Mayo data root")
+    exports = _require_directory(existing_export_root, "existing MediaPipe export root")
+    output, exposure = validate_output_locations(
+        output_root, exposure_manifest, project_root=PROJECT_ROOT
+    )
+    validate_source_output_separation(data, exports, output, exposure)
+    key_path = _assert_no_symlink_components(salt_file)
+    expected_key = (
+        PROJECT_ROOT / "outputs" / "dynamic_landmark" / "pretraining"
+        / ".mayo_ssl_hmac.key"
+    )
+    if key_path != expected_key:
+        raise ValueError("Mayo authorization requires the canonical private key")
+    before_key_identity = _key_file_identity(key_path)
+    salt = read_canonical_salt(key_path, project_root=PROJECT_ROOT)
+    if len(salt) != 32:
+        raise ValueError("Mayo authorization key must contain exactly 32 bytes")
+    if _key_file_identity(key_path) != before_key_identity:
+        raise ValueError("Mayo private key changed while it was read")
+    inventory = inventory_mayo_sources(data, exports, enforce_frozen=True)
+    if not isinstance(inventory, MayoInventory) or inventory.counts != FROZEN_INVENTORY:
+        raise ValueError("Mayo live inventory does not match the frozen contract")
+    expected_collection, expected_exposure = build_public_manifests(inventory, salt)
+    expected_collection_classification = str(
+        expected_collection["classification_integrity_id"]
+    )
+    expected_exposure_classification = str(
+        expected_exposure["classification_integrity_id"]
+    )
+    with output_parent_lock(output, create_if_missing=False), \
+            _hold_committed_mayo_generation(output, exposure) as held:
+        _assert_no_unresolved_generation_state(output, exposure)
+        commitment = _validate_staging(
+            output,
+            int(FROZEN_INVENTORY["long_unique_videos"]),
+            int(FROZEN_INVENTORY["arkit_trajectories"]),
+            salt=salt,
+            expected_inventory_counts=inventory.counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification
+            ),
+            expected_classification_integrity_id=expected_exposure_classification,
+            _held=held,
+        )
+        _external_exposure, external_digest = _load_public_json_descriptor(
+            held.external_exposure_descriptor,
+            parent_descriptor=held.external_parent_descriptor,
+            name=held.exposure.name,
+            field="committed external exposure manifest",
+            expected_identity=held.external_exposure_identity,
+        )
+        if not hmac.compare_digest(
+            external_digest, str(commitment["exposure_manifest_sha256"])
+        ):
+            raise ValueError("external Mayo exposure manifest is not coupled to cache")
+        collection, collection_digest = _load_public_json_descriptor(
+            held.collection_descriptor,
+            parent_descriptor=held.output_descriptor,
+            name="collection_manifest.json",
+            field="committed collection manifest",
+            expected_identity=held.collection_identity,
+        )
+        if not hmac.compare_digest(
+            collection_digest, str(commitment["collection_manifest_sha256"])
+        ):
+            raise ValueError("committed collection manifest changed after validation")
+        media_rows = _manifest_cache_rows(
+            collection, "mediapipe_records", "mediapipe"
+        )
+        if len(media_rows) != int(FROZEN_INVENTORY["long_unique_videos"]):
+            raise ValueError("Mayo main bridge cache count is not exact")
+        expected_names = {f"{recording_id}.npz" for recording_id in media_rows}
+        recordings: list[AuthorizedMayoRecording] = []
+        closure_rows: list[dict[str, object]] = []
+        media_descriptor = held.media_descriptor
+        try:
+            _assert_held_mayo_generation(held)
+            names = sorted(os.listdir(media_descriptor))
+            if set(names) != expected_names:
+                raise ValueError("Mayo main bridge cache filename set is incomplete")
+            held_media = {item.name: item for item in held.media_files}
+            if set(held_media) != expected_names:
+                raise ValueError("held Mayo MediaPipe cache set is incomplete")
+            for name in names:
+                path = Path(name)
+                row = media_rows[path.stem]
+                held_file = held_media[name]
+                payload, digest, size = _read_regular_descriptor(
+                    held_file.descriptor,
+                    parent_descriptor=media_descriptor,
+                    name=name,
+                    field="committed Mayo MediaPipe cache",
+                    expected_identity=held_file.identity,
+                    max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
+                )
+                expected_integrity = hmac_identifier(
+                    "cache", salt, "mayo-mediapipe-cache-integrity", digest
+                )
+                if not hmac.compare_digest(
+                    expected_integrity, str(row["cache_integrity_id"])
+                ):
+                    raise ValueError("Mayo cache integrity ID does not bind cache bytes")
+                _require_mayo_npz_headers(
+                    payload,
+                    recording_id=path.stem,
+                    group_id=str(row["group_id"]),
+                    source_integrity_id=str(row["source_integrity_id"]),
+                    source_fingerprint=str(row["source_fingerprint"]),
+                    expected_schema=MEDIAPIPE_CACHE_SCHEMA,
+                )
+                try:
+                    with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
+                        if (
+                            len(cached.files) != len(set(cached.files))
+                            or set(cached.files) != _MEDIAPIPE_CACHE_FIELDS
+                        ):
+                            raise ValueError("Mayo MediaPipe cache field schema is not exact")
+                        _validate_mediapipe_cache_payload(
+                            cached,
+                            recording_id=path.stem,
+                            group_id=str(row["group_id"]),
+                            source_integrity_id=str(row["source_integrity_id"]),
+                            source_fingerprint=str(row["source_fingerprint"]),
+                        )
+                        recording = AuthorizedMayoRecording(
+                            recording_id=path.stem,
+                            group_id=str(row["group_id"]),
+                            cache_integrity_id=str(row["cache_integrity_id"]),
+                            cache_sha256=digest,
+                            cache_size_bytes=size,
+                            features_30hz=_immutable_array(cached["features_30hz"]),
+                            valid_mask_30hz=_immutable_array(cached["valid_mask_30hz"]),
+                            timestamps_30hz=_immutable_array(cached["timestamps_30hz"]),
+                            source_frame_indices_30hz=_immutable_array(
+                                cached["source_frame_indices_30hz"]
+                            ),
+                            target_frame_indices_30hz=_immutable_array(
+                                cached["target_frame_indices_30hz"]
+                            ),
+                        )
+                except (OSError, EOFError, KeyError, TypeError, ValueError) as exc:
+                    if isinstance(exc, ValueError) and str(exc).startswith("Mayo MediaPipe"):
+                        raise
+                    raise ValueError(
+                        "Mayo MediaPipe cache is not a safe exact NPZ"
+                    ) from exc
+                recordings.append(recording)
+                closure_rows.append({
+                    "recording_id": recording.recording_id,
+                    "group_id": recording.group_id,
+                    "cache_integrity_id": recording.cache_integrity_id,
+                    "cache_sha256": recording.cache_sha256,
+                    "cache_size_bytes": recording.cache_size_bytes,
+                })
+        finally:
+            _assert_held_mayo_generation(held)
+        if len({recording.recording_id for recording in recordings}) != len(recordings):
+            raise ValueError("Mayo main bridge repeats a recording")
+        if len({recording.group_id for recording in recordings}) != len(recordings):
+            raise ValueError("Mayo main bridge requires one exact recording group each")
+        closure_material = json.dumps({
+            "commitment": commitment,
+            "collection_manifest_sha256": collection_digest,
+            "recordings": closure_rows,
+        }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+        closure_hmac = hmac.new(
+            salt,
+            b"mayo-ssl-committed-generation-v1\0" + closure_material,
+            hashlib.sha256,
+        ).hexdigest()
+
+        # Revalidate all live commitments immediately before returning.  This
+        # deliberately does not invoke transaction recovery or mutate output.
+        _assert_no_unresolved_generation_state(output, exposure)
+        repeated = _validate_staging(
+            output,
+            int(FROZEN_INVENTORY["long_unique_videos"]),
+            int(FROZEN_INVENTORY["arkit_trajectories"]),
+            salt=salt,
+            expected_inventory_counts=inventory.counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification
+            ),
+            expected_classification_integrity_id=expected_exposure_classification,
+            _held=held,
+        )
+        if repeated != commitment:
+            raise ValueError("Mayo cache generation changed during authorization")
+        _repeated_exposure, repeated_exposure_digest = _load_public_json_descriptor(
+            held.external_exposure_descriptor,
+            parent_descriptor=held.external_parent_descriptor,
+            name=held.exposure.name,
+            field="committed external exposure manifest",
+            expected_identity=held.external_exposure_identity,
+        )
+        if not hmac.compare_digest(repeated_exposure_digest, external_digest):
+            raise ValueError("Mayo exposure manifest changed during authorization")
+        repeated_inventory = inventory_mayo_sources(data, exports, enforce_frozen=True)
+        if (
+            not isinstance(repeated_inventory, MayoInventory)
+            or repeated_inventory.counts != inventory.counts
+        ):
+            raise ValueError("Mayo live inventory changed during authorization")
+        repeated_collection, repeated_exposure = build_public_manifests(
+            repeated_inventory, salt
+        )
+        if (
+            not hmac.compare_digest(
+                str(repeated_collection["classification_integrity_id"]),
+                expected_collection_classification,
+            )
+            or not hmac.compare_digest(
+                str(repeated_exposure["classification_integrity_id"]),
+                expected_exposure_classification,
+            )
+        ):
+            raise ValueError("Mayo live classification changed during authorization")
+        final_salt = read_canonical_salt(key_path, project_root=PROJECT_ROOT)
+        if (
+            not hmac.compare_digest(final_salt, salt)
+            or _key_file_identity(key_path) != before_key_identity
+        ):
+            raise ValueError("Mayo private key changed during authorization")
+        _assert_held_mayo_generation(held)
+        return AuthorizedMayoGeneration(
+            schema=MEDIAPIPE_CACHE_SCHEMA,
+            collection_manifest_sha256=collection_digest,
+            exposure_manifest_sha256=external_digest,
+            generation_closure_hmac=closure_hmac,
+            recording_count=len(recordings),
+            arkit_count=int(commitment["arkit_file_count"]),
+            expected_recording_count=int(FROZEN_INVENTORY["long_unique_videos"]),
+            commitment=dict(commitment),
+            recordings=tuple(recordings),
+            private_key=salt,
+        )
 
 
 def validate_output_locations(
@@ -3304,20 +4725,40 @@ def read_canonical_salt(
     path = _assert_no_symlink_components(salt_file)
     if path != expected:
         raise ValueError("HMAC salt path must exactly equal the canonical ignored key path")
-    expected_owner = os.getuid() if owner_uid is None else owner_uid
+    _require_owned_nonwritable_directory(root / "outputs", "outputs directory")
+    _require_private_directory(
+        root / "outputs" / "dynamic_landmark", "dynamic-landmark output directory",
+    )
+    _require_private_directory(
+        root / "outputs" / "dynamic_landmark" / "pretraining",
+        "pretraining output directory",
+    )
+    expected_owner = os.geteuid() if owner_uid is None else owner_uid
     descriptor = os.open(
         path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
     )
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
             raise ValueError("HMAC salt must be a regular file")
-        if info.st_uid != expected_owner:
+        if before.st_uid != expected_owner:
             raise ValueError("HMAC salt must be owned by the current user")
-        if stat.S_IMODE(info.st_mode) != 0o600:
+        if stat.S_IMODE(before.st_mode) != 0o600:
             raise ValueError("HMAC salt must have exact mode 0600")
+        if before.st_nlink != 1:
+            raise ValueError("HMAC salt must have exactly one hard link")
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             salt = handle.read(4097)
+        after = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+        identity = lambda info: (
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+            info.st_gid, info.st_nlink, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns,
+        )
+        if identity(before) != identity(after) or identity(after) != identity(current):
+            raise ValueError("HMAC salt identity or stat changed while reading")
         if len(salt) > 4096:
             raise ValueError("HMAC salt file is unexpectedly large")
         return _require_salt(salt)
@@ -3441,7 +4882,8 @@ def _run_builder_impl(
         str(row["recording_id"]): row
         for row in exposure["videos"] if row["status"] == "mediapipe_ssl"
     }
-    output.parent.mkdir(parents=True, exist_ok=True)
+    _require_private_directory(output.parent, "Mayo output parent")
+    _require_private_directory(exposure_path.parent, "Mayo exposure parent")
     _assert_no_symlink_components(output.parent)
     with output_parent_lock(output):
         recover_interrupted_generations(
@@ -3459,8 +4901,10 @@ def _run_builder_impl(
             prefix=f".{output.name}.staging-", dir=output.parent
         ))
         try:
+            os.chmod(staging, 0o700, follow_symlinks=False)
+            _require_private_directory(staging, "Mayo staging generation")
             snapshot_dir = staging / ".source_snapshots"
-            snapshot_dir.mkdir()
+            _make_private_directory(snapshot_dir, "Mayo source snapshot directory")
             pinned: list[PinnedSourceSnapshot] = []
             video_decode_paths: dict[Path, Path] = {}
             for index, asset in enumerate(inventory.long_unique_videos):
@@ -3488,8 +4932,8 @@ def _run_builder_impl(
 
             media_dir = staging / "mediapipe"
             arkit_dir = staging / "arkit"
-            media_dir.mkdir()
-            arkit_dir.mkdir()
+            _make_private_directory(media_dir, "Mayo MediaPipe cache directory")
+            _make_private_directory(arkit_dir, "Mayo ARKit cache directory")
             for asset, sequence in extract_homogeneous_video_sequences(
                 inventory.long_unique_videos,
                 extractor_factory,

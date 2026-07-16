@@ -4,13 +4,16 @@ from __future__ import annotations
 import csv
 import base64
 import hashlib
+import io
 import inspect
 import importlib.metadata
 import importlib.util
 import json
 import os
+import stat
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +54,19 @@ ARKIT_GAP_COUNTS = (3, 3, 3, 4, 3, 2, 3, 3)
 
 def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _prepend_duplicate_json_field(
+    payload: bytes,
+    field: str,
+    hidden_value: object,
+) -> bytes:
+    text = payload.decode("utf-8")
+    marker = f'"{field}":'
+    if marker not in text:
+        raise AssertionError(f"fixture has no JSON field {field!r}")
+    duplicate = f'{marker}{json.dumps(hidden_value)},{marker}'
+    return text.replace(marker, duplicate, 1).encode("utf-8")
 
 
 def _record_digest(payload: bytes) -> str:
@@ -1164,8 +1180,11 @@ def _semantic_staging(
     staging = root / name
     media = staging / "mediapipe"
     arkit = staging / "arkit"
-    media.mkdir(parents=True)
-    arkit.mkdir()
+    staging.mkdir(mode=0o700)
+    media.mkdir(mode=0o700)
+    arkit.mkdir(mode=0o700)
+    for directory in (staging, media, arkit):
+        directory.chmod(0o700)
     private = root / "private_fixture"
     video = builder.VideoAsset(
         private / "video", private / "video" / "source.mov",
@@ -1251,11 +1270,11 @@ def _semantic_staging(
             _sha(arkit_path.read_bytes()),
         )
         arkit_row["cache_integrity_id"] = arkit_integrity
-    (staging / "collection_manifest.json").write_text(
-        json.dumps(collection, sort_keys=True)
-    )
-    (staging / "mayo_exposure_manifest.json").write_text(
-        json.dumps(exposure, sort_keys=True)
+    _write_staging_manifests(
+        staging / "collection_manifest.json",
+        staging / "mayo_exposure_manifest.json",
+        collection,
+        exposure,
     )
     return staging
 
@@ -1283,8 +1302,11 @@ def _legacy_swap_staging(root: Path, name: str, salt: bytes) -> Path:
     staging = root / name
     media = staging / "mediapipe"
     arkit = staging / "arkit"
-    media.mkdir(parents=True)
-    arkit.mkdir()
+    staging.mkdir(mode=0o700)
+    media.mkdir(mode=0o700)
+    arkit.mkdir(mode=0o700)
+    for directory in (staging, media, arkit):
+        directory.chmod(0o700)
     private = root / "private_legacy_fixture"
     lengths = (2, 5, 3, 4)
     assets = tuple(
@@ -1359,6 +1381,22 @@ def _rewrite_npz(path: Path, mutate) -> None:
         np.savez_compressed(handle, **payload)
 
 
+def _patch_cache_central_size(path: Path, *, field_offset: int) -> None:
+    payload = bytearray(path.read_bytes())
+    central = payload.index(b"PK\x01\x02")
+    payload[central + field_offset:central + field_offset + 4] = (
+        0x7FFF_FFFF
+    ).to_bytes(4, "little")
+    path.write_bytes(payload)
+
+
+def _append_unexpected_npz_member(path: Path) -> None:
+    member = io.BytesIO()
+    np.save(member, np.asarray(1, dtype=np.int64), allow_pickle=False)
+    with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("unexpected.npy", member.getvalue())
+
+
 def _refresh_cache_integrity(staging: Path, salt: bytes, modality: str) -> None:
     collection_path = staging / "collection_manifest.json"
     exposure_path = staging / "mayo_exposure_manifest.json"
@@ -1391,6 +1429,21 @@ def _set_nonfinite(payload: dict[str, np.ndarray], field: str) -> None:
     value = payload[field].copy()
     value.flat[0] = np.nan
     payload[field] = value
+
+
+def _exception_chain_contains(
+    error: BaseException,
+    exception_type: type[BaseException],
+    message: str,
+) -> bool:
+    observed: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in observed:
+        observed.add(id(current))
+        if isinstance(current, exception_type) and message in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _duplicate_first_source_index(
@@ -1475,6 +1528,192 @@ def test_compact_cache_validation_is_exact_and_recomputes_30hz(c: Check):
                     ValueError,
                     f"{modality} {label} fails despite a freshly valid cache HMAC/tree",
                 )
+
+
+def test_mayo_npz_resource_metadata_is_rejected_before_numpy_load(c: Check):
+    salt = b"bounded-npz-metadata-salt-0123456789"
+    attacks = (
+        ("declared compressed bytes",
+         lambda path: _patch_cache_central_size(path, field_offset=20)),
+        ("declared expanded bytes",
+         lambda path: _patch_cache_central_size(path, field_offset=24)),
+        ("excessive member count", _append_unexpected_npz_member),
+    )
+    for index, (label, mutate) in enumerate(attacks):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-bounded-{index}", salt,
+                include_arkit=False,
+            )
+            cache_path = next((staging / "mediapipe").glob("*.npz"))
+            mutate(cache_path)
+            _refresh_cache_integrity(staging, salt, "mediapipe")
+            original_load = builder.np.load
+
+            def materialized_too_early(*_args, **_kwargs):
+                raise RuntimeError("np.load reached before bounded ZIP inspection")
+
+            builder.np.load = materialized_too_early
+            try:
+                c.raises(
+                    lambda: builder._validate_staging(staging, salt=salt),
+                    ValueError,
+                    f"Mayo {label} is rejected before NumPy materialization",
+                )
+            finally:
+                builder.np.load = original_load
+
+
+def test_mayo_zip_preflight_counts_actual_central_records_before_zipfile(c: Check):
+    buffer = io.BytesIO()
+    actual_record_count = len(builder._MEDIAPIPE_CACHE_FIELDS) + 96
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for index in range(actual_record_count):
+            archive.writestr(f"member-{index:04d}.npy", b"")
+    payload = bytearray(buffer.getvalue())
+    eocd = payload.rfind(b"PK\x05\x06")
+    c.true(eocd >= 0, "the fixture has one ordinary EOCD")
+    claimed = len(builder._MEDIAPIPE_CACHE_FIELDS)
+    payload[eocd + 8:eocd + 10] = claimed.to_bytes(2, "little")
+    payload[eocd + 10:eocd + 12] = claimed.to_bytes(2, "little")
+
+    original_zipfile = builder.zipfile.ZipFile
+    materialization_calls = 0
+
+    def materialized_too_early(*_args, **_kwargs):
+        nonlocal materialization_calls
+        materialization_calls += 1
+        raise RuntimeError("ZipFile reached before bounded central-directory parsing")
+
+    builder.zipfile.ZipFile = materialized_too_early
+    try:
+        c.raises(lambda: builder._require_mayo_npz_headers(
+            bytes(payload),
+            recording_id="rec_" + "1" * 64,
+            group_id="grp_" + "2" * 64,
+            source_integrity_id="src_" + "3" * 64,
+            source_fingerprint="fp_" + "4" * 64,
+            expected_schema=builder.MEDIAPIPE_CACHE_SCHEMA,
+        ), ValueError,
+        "actual central-directory record count is rejected before ZipFile")
+    finally:
+        builder.zipfile.ZipFile = original_zipfile
+    c.eq(materialization_calls, 0,
+         "preflight never allocates ZipInfo records from a forged EOCD count")
+
+
+def test_mayo_npy_dtype_and_shape_are_rejected_before_numpy_load(c: Check):
+    salt = b"bounded-npy-header-salt-01234567890"
+    attacks = (
+        ("wrong feature dtype", lambda payload: payload.__setitem__(
+            "features_source_rate",
+            payload["features_source_rate"].astype(np.float64),
+        )),
+        ("wrong feature shape", lambda payload: payload.__setitem__(
+            "features_source_rate", payload["features_source_rate"][:, :-1],
+        )),
+    )
+    for index, (label, mutate) in enumerate(attacks):
+        with tempfile.TemporaryDirectory() as td:
+            staging = _semantic_staging(
+                Path(td), f".cache.staging-header-{index}", salt,
+                include_arkit=False,
+            )
+            cache_path = next((staging / "mediapipe").glob("*.npz"))
+            _rewrite_npz(cache_path, mutate)
+            _refresh_cache_integrity(staging, salt, "mediapipe")
+            original_load = builder.np.load
+
+            def materialized_too_early(*_args, **_kwargs):
+                raise RuntimeError("np.load reached before NPY header validation")
+
+            builder.np.load = materialized_too_early
+            try:
+                c.raises(
+                    lambda: builder._validate_staging(staging, salt=salt),
+                    ValueError,
+                    f"Mayo {label} is rejected from its NPY header",
+                )
+            finally:
+                builder.np.load = original_load
+
+
+def test_mayo_raw_cache_limit_is_checked_before_read(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        Path(td).chmod(0o700)
+        path = Path(td) / "oversized.npz"
+        path.write_bytes(b"x" * 65)
+        path.chmod(0o600)
+        original_read = builder.os.read
+
+        def read_must_not_run(*_args, **_kwargs):
+            raise RuntimeError("oversized raw file was read")
+
+        builder.os.read = read_must_not_run
+        try:
+            c.raises(
+                lambda: builder._read_regular_bytes(
+                    path, "compact cache", max_bytes=64
+                ),
+                ValueError,
+                "Mayo raw cache size is gated from fstat before reading",
+            )
+        finally:
+            builder.os.read = original_read
+
+
+def test_mayo_staging_checks_raw_hmac_before_numpy_load(c: Check):
+    salt = b"raw-hmac-before-numpy-salt-012345678"
+    with tempfile.TemporaryDirectory() as td:
+        staging = _semantic_staging(
+            Path(td), ".cache.staging-hmac-order", salt, include_arkit=False
+        )
+        cache_path = next((staging / "mediapipe").glob("*.npz"))
+        cache_path.write_bytes(cache_path.read_bytes() + b"tampered-after-eocd")
+        original_load = builder.np.load
+        load_calls = 0
+
+        def materialized_too_early(*_args, **_kwargs):
+            nonlocal load_calls
+            load_calls += 1
+            raise RuntimeError("np.load reached before raw cache HMAC")
+
+        builder.np.load = materialized_too_early
+        try:
+            c.raises(
+                lambda: builder._validate_staging(staging, salt=salt),
+                ValueError,
+                "a raw-byte HMAC mismatch is rejected before NumPy materialization",
+            )
+        finally:
+            builder.np.load = original_load
+        c.eq(load_calls, 0, "HMAC rejection decompresses no NPY member")
+
+
+def test_mayo_staging_reads_npz_members_from_held_directory_fd(c: Check):
+    salt = b"anchored-cache-read-salt-012345678901"
+    with tempfile.TemporaryDirectory() as td:
+        staging = _semantic_staging(
+            Path(td), ".cache.staging-anchored-read", salt, include_arkit=True
+        )
+        original_read = builder._read_regular_bytes
+        cache_parent_descriptors: list[int | None] = []
+
+        def tracked_read(path, field, **kwargs):
+            if field == "compact cache":
+                cache_parent_descriptors.append(kwargs.get("parent_descriptor"))
+            return original_read(path, field, **kwargs)
+
+        builder._read_regular_bytes = tracked_read
+        try:
+            builder._validate_staging(staging, salt=salt)
+        finally:
+            builder._read_regular_bytes = original_read
+        c.eq(len(cache_parent_descriptors), 2, "both modality caches were read")
+        c.true(
+            all(isinstance(item, int) for item in cache_parent_descriptors),
+            "every staged NPZ read is anchored to its held modality directory FD",
+        )
 
 
 def test_staging_validation_joins_every_identity_and_governance_field(c: Check):
@@ -1602,6 +1841,8 @@ def _write_staging_manifests(
 ) -> None:
     collection_path.write_text(json.dumps(collection, sort_keys=True))
     exposure_path.write_text(json.dumps(exposure, sort_keys=True))
+    collection_path.chmod(0o600)
+    exposure_path.chmod(0o600)
 
 
 def _append_valid_media_cache_row(staging: Path, salt: bytes) -> None:
@@ -2063,11 +2304,13 @@ def test_transaction_journal_recovers_simulated_process_interruptions(c: Check):
         for phase_to_interrupt in phases:
             root = outer / phase_to_interrupt
             root.mkdir()
+            root.chmod(0o700)
             output = root / "cache"
             output.mkdir()
             (output / "sentinel").write_text("old-cache")
             exposure = root / "mayo_exposure_manifest.json"
             exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
             staging = _canonical_transaction_staging(
                 root, ".cache.staging-new",
                 b"interrupt-recovery-salt-0123456789",
@@ -2114,6 +2357,7 @@ def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
         for scenario in scenarios:
             root = outer / scenario
             root.mkdir()
+            root.chmod(0o700)
             output = root / "cache"
             exposure = root / "mayo_exposure_manifest.json"
             staging = _canonical_transaction_staging(
@@ -2322,6 +2566,8 @@ def test_run_builder_uses_pinned_homogeneous_sources_and_exact_runtime(c: Check)
         exposure = root / "outputs" / "dynamic_landmark" / "mayo_exposure_manifest.json"
         salt = output.parent / ".mayo_ssl_hmac.key"
         salt.parent.mkdir(parents=True)
+        (root / "outputs" / "dynamic_landmark").chmod(0o700)
+        output.parent.chmod(0o700)
         salt.write_bytes(b"k" * 32)
         salt.chmod(0o600)
         captures = []
@@ -2343,23 +2589,51 @@ def test_run_builder_uses_pinned_homogeneous_sources_and_exact_runtime(c: Check)
             extractors.append(item)
             return item
 
-        manifest = builder._run_builder_impl(
-            data, exports, model, salt, output, exposure,
-            extractor_factory=extractor_factory,
-            capture_factory=capture_factory,
-            inventory_factory=lambda *_args, **_kwargs: inventory,
-            project_root=root,
-            current_executable=expected_python,
-            expected_executable=expected_python,
-            version_resolver=version_resolver,
-            dependency_artifact_resolver=lambda name: artifacts[name],
-            provenance_python_executable=expected_python,
-        )
+        previous_umask = os.umask(0o777)
+        try:
+            manifest = builder._run_builder_impl(
+                data, exports, model, salt, output, exposure,
+                extractor_factory=extractor_factory,
+                capture_factory=capture_factory,
+                inventory_factory=lambda *_args, **_kwargs: inventory,
+                project_root=root,
+                current_executable=expected_python,
+                expected_executable=expected_python,
+                version_resolver=version_resolver,
+                dependency_artifact_resolver=lambda name: artifacts[name],
+                provenance_python_executable=expected_python,
+            )
+        finally:
+            os.umask(previous_umask)
         c.eq(manifest["mediapipe_records"][0]["legacy_export_audit_status"],
              "not_reused_unverifiable_source_binding")
         c.eq(len(captures), 1, "legacy export was not opened or compacted")
         c.true(captures[0].released and extractors[0].closed == 1)
         c.true(output.is_dir() and exposure.is_file())
+        private_directories = (
+            root / "outputs" / "dynamic_landmark",
+            output.parent,
+            output,
+            output / "mediapipe",
+            output / "arkit",
+        )
+        c.true(all(
+            stat.S_IMODE(path.stat().st_mode) == 0o700
+            and path.stat().st_uid == os.geteuid()
+            for path in private_directories
+        ), "hostile umask cannot weaken any committed private directory")
+        private_files = (
+            salt,
+            exposure,
+            output.parent / f".{output.name}.lock",
+            *(path for path in output.rglob("*") if path.is_file()),
+        )
+        c.true(all(
+            stat.S_IMODE(path.stat().st_mode) == 0o600
+            and path.stat().st_uid == os.geteuid()
+            and path.stat().st_nlink == 1
+            for path in private_files
+        ), "hostile umask cannot weaken any committed private file")
         c.true(not any(output.rglob(".source_snapshots")),
                "pinned raw hard links never enter the promoted cache")
         saved_manifest = json.loads((output / "collection_manifest.json").read_text())
@@ -2427,6 +2701,8 @@ def test_canonical_salt_permissions_runtime_and_inventory_only_cli(c: Check):
         root = Path(td)
         salt = root / "outputs" / "dynamic_landmark" / "pretraining" / ".mayo_ssl_hmac.key"
         salt.parent.mkdir(parents=True)
+        (root / "outputs" / "dynamic_landmark").chmod(0o700)
+        salt.parent.chmod(0o700)
         salt.write_bytes(b"s" * 32)
         salt.chmod(0o600)
         real_os_open = builder.os.open
@@ -2476,6 +2752,819 @@ def test_canonical_salt_permissions_runtime_and_inventory_only_cli(c: Check):
         c.raises(lambda: builder.validate_extraction_runtime(
             other_python, expected_executable=expected_python,
         ), RuntimeError, "cache extraction fails outside the pinned isolated runtime")
+
+
+def test_committed_mayo_generation_exposes_narrow_read_only_authorizer(c: Check):
+    c.true(
+        hasattr(builder, "authorize_committed_mayo_ssl_generation"),
+        "the bridge requires a public live committed-generation authorizer",
+    )
+
+
+def test_mayo_manifests_reject_duplicate_json_keys_at_every_object_depth(c: Check):
+    cases = (
+        ("collection_manifest.json", "dataset"),
+        ("collection_manifest.json", "recording_id"),
+        ("mayo_exposure_manifest.json", "dataset"),
+        ("mayo_exposure_manifest.json", "recording_id"),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        for index, (filename, field) in enumerate(cases):
+            salt = b"d" * 32
+            staging = _semantic_staging(
+                root, f".mayo_ssl_cache.staging-duplicate-{index}", salt,
+                include_arkit=True, include_exclusions=True,
+            )
+            target = staging / filename
+            target.write_bytes(_prepend_duplicate_json_field(
+                target.read_bytes(), field, "/private/PHI/hidden-source.mov"
+            ))
+            c.raises(
+                lambda staging=staging, salt=salt: builder._validate_staging(
+                    staging, salt=salt
+                ),
+                ValueError,
+                f"{filename} rejects duplicate {field!r} even when last-value wins",
+            )
+
+
+def test_external_exposure_manifest_is_recursively_duplicate_key_safe(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        salt = b"e" * 32
+        output = _semantic_staging(
+            root, ".mayo_ssl_cache.staging-external-duplicate", salt,
+            include_arkit=True, include_exclusions=True,
+        )
+        commitment = builder._validate_staging(output, salt=salt)
+        external = root / "mayo_exposure_manifest.json"
+        external_payload = _prepend_duplicate_json_field(
+            (output / "mayo_exposure_manifest.json").read_bytes(),
+            "recording_id",
+            "/private/PHI/hidden-external-source.mov",
+        )
+        external.write_bytes(external_payload)
+        commitment["exposure_manifest_sha256"] = _sha(external_payload)
+        real_validate_staging = builder._validate_staging
+        builder._validate_staging = lambda *_args, **_kwargs: dict(commitment)
+        try:
+            c.raises(
+                lambda: builder._assert_committed_generation(
+                    output, external, commitment, salt=salt
+                ),
+                ValueError,
+                "the separately published exposure copy is decoded, not only hashed",
+            )
+        finally:
+            builder._validate_staging = real_validate_staging
+
+
+def test_mayo_transaction_journal_and_nested_commitment_reject_duplicate_keys(c: Check):
+    commitment = {
+        "schema": "mayo_cache_generation_commitment_v3",
+        "collection_manifest_sha256": "1" * 64,
+        "exposure_manifest_sha256": "2" * 64,
+        "mediapipe_file_count": 1,
+        "arkit_file_count": 1,
+        "cache_file_count": 2,
+        "cache_tree_aggregate_sha256": "3" * 64,
+        "generation_aggregate_sha256": "4" * 64,
+        "inventory_counts_sha256": "5" * 64,
+        "collection_classification_integrity_id": "agg_" + "6" * 64,
+        "exposure_classification_integrity_id": "agg_" + "7" * 64,
+    }
+    journal = {
+        "schema": "mayo_cache_exposure_transaction_v1",
+        "token": "0123456789abcdef",
+        "staging_name": ".cache.staging-0123456789abcdef",
+        "exposure_name": "mayo_exposure_manifest.json",
+        "had_output": False,
+        "had_exposure": False,
+        "phase": "prepared",
+        "generation_commitment": commitment,
+    }
+    serialized = json.dumps(journal, sort_keys=True, separators=(",", ":"))
+    payloads = (
+        serialized.replace(
+            '"staging_name":',
+            '"staging_name":"/private/PHI/hidden-staging","staging_name":',
+            1,
+        ),
+        serialized.replace(
+            '"generation_commitment":{',
+            '"generation_commitment":{"schema":"/private/PHI/hidden-commitment",',
+            1,
+        ),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / ".cache.transaction.json"
+        for payload in payloads:
+            path.write_text(payload, encoding="utf-8")
+            path.chmod(0o600)
+            c.raises(
+                lambda: builder._load_transaction_journal(path),
+                ValueError,
+                "journal and nested generation commitment reject duplicate keys",
+            )
+
+
+class _CommittedMayoAuthorizerFixture:
+    def __init__(self, root: Path):
+        self.root = root
+        self.salt_bytes = b"m" * 32
+        staging = _semantic_staging(
+            root, ".mayo_ssl_cache.staging-fixture", self.salt_bytes,
+            include_arkit=True, include_exclusions=True,
+        )
+        self.output = (
+            root / "outputs" / "dynamic_landmark" / "pretraining"
+            / "mayo_ssl_cache"
+        )
+        self.exposure = (
+            root / "outputs" / "dynamic_landmark"
+            / "mayo_exposure_manifest.json"
+        )
+        self.output.parent.mkdir(parents=True, exist_ok=True)
+        self.exposure.parent.mkdir(parents=True, exist_ok=True)
+        self.exposure.parent.chmod(0o700)
+        self.output.parent.chmod(0o700)
+        os.replace(staging, self.output)
+        self.exposure.write_bytes(
+            (self.output / "mayo_exposure_manifest.json").read_bytes()
+        )
+        self.exposure.chmod(0o600)
+        self.key = self.output.parent / ".mayo_ssl_hmac.key"
+        self.key.write_bytes(self.salt_bytes)
+        self.key.chmod(0o600)
+        self.lock = self.output.parent / f".{self.output.name}.lock"
+        self.lock.write_bytes(b"")
+        self.lock.chmod(0o600)
+        self.collection = json.loads(
+            (self.output / "collection_manifest.json").read_text()
+        )
+        self.exposure_value = json.loads(self.exposure.read_text())
+        self.counts = dict(self.collection["counts"])
+        self.data = root / "data" / "livelinkface_data"
+        self.exports = root / "data" / "mediapipe_out"
+        self.data.mkdir(parents=True)
+        self.exports.mkdir()
+        self.inventory = builder.MayoInventory(
+            self.data, self.exports, self.counts,
+            (), (), (), (), (), (), (), (), (),
+        )
+
+    def __enter__(self):
+        self.original_root = builder.PROJECT_ROOT
+        self.original_frozen = builder.FROZEN_INVENTORY
+        self.original_inventory = builder.inventory_mayo_sources
+        self.original_manifest_builder = builder.build_public_manifests
+        builder.PROJECT_ROOT = self.root
+        builder.FROZEN_INVENTORY = self.counts
+        builder.inventory_mayo_sources = lambda *_args, **_kwargs: self.inventory
+        builder.build_public_manifests = lambda *_args, **_kwargs: (
+            json.loads(json.dumps(self.collection)),
+            json.loads(json.dumps(self.exposure_value)),
+        )
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
+        builder.PROJECT_ROOT = self.original_root
+        builder.FROZEN_INVENTORY = self.original_frozen
+        builder.inventory_mayo_sources = self.original_inventory
+        builder.build_public_manifests = self.original_manifest_builder
+
+    def authorize(self):
+        return builder.authorize_committed_mayo_ssl_generation(
+            self.data, self.exports, self.key, self.output, self.exposure,
+        )
+
+
+def test_committed_mayo_authorizer_requires_exact_private_tree_modes(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            private_directories = (
+                fixture.output.parent,
+                fixture.output,
+                fixture.output / "mediapipe",
+                fixture.output / "arkit",
+                fixture.exposure.parent,
+            )
+            private_files = (
+                fixture.output / "collection_manifest.json",
+                fixture.output / "mayo_exposure_manifest.json",
+                fixture.exposure,
+                *tuple((fixture.output / "mediapipe").glob("*.npz")),
+                *tuple((fixture.output / "arkit").glob("*.npz")),
+            )
+            for directory in private_directories:
+                directory.chmod(0o700)
+            for path in private_files:
+                path.chmod(0o600)
+            c.eq(fixture.authorize().commitment["schema"],
+                 "mayo_cache_generation_commitment_v3",
+                 "exact owner-only Mayo cache tree remains authorizable")
+
+            for directory in private_directories:
+                directory.chmod(0o777)
+                try:
+                    c.raises(
+                        fixture.authorize,
+                        ValueError,
+                        f"unsafe private directory mode is rejected: {directory.name}",
+                    )
+                finally:
+                    directory.chmod(0o700)
+
+            for path in private_files:
+                path.chmod(0o666)
+                try:
+                    c.raises(
+                        fixture.authorize,
+                        ValueError,
+                        f"unsafe private file mode is rejected: {path.name}",
+                    )
+                finally:
+                    path.chmod(0o600)
+
+            for index, path in enumerate(private_files):
+                alias = root / f"private-cache-hardlink-{index}"
+                os.link(path, alias)
+                try:
+                    c.raises(
+                        fixture.authorize,
+                        ValueError,
+                        "committed Mayo private files reject additional hard links",
+                    )
+                finally:
+                    alias.unlink()
+
+
+def test_committed_mayo_authorizer_never_mixes_swapped_generation_roots(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            expected_commitment = builder._validate_staging(
+                fixture.output, salt=fixture.salt_bytes,
+            )
+            expected_cache = next((fixture.output / "mediapipe").glob("*.npz"))
+            expected_cache_sha256 = _sha(expected_cache.read_bytes())
+            with np.load(expected_cache, allow_pickle=False) as cached:
+                expected_feature = float(cached["features_30hz"][0, 0])
+
+            alternate = _semantic_staging(
+                root,
+                ".mayo_ssl_cache.alternate-generation",
+                fixture.salt_bytes,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            alternate_cache = next((alternate / "mediapipe").glob("*.npz"))
+
+            def mutate(payload: dict[str, np.ndarray]) -> None:
+                payload["features_source_rate"][0, 0] = np.float32(123.0)
+                payload["features_30hz"][0, 0] = np.float32(123.0)
+
+            _rewrite_npz(alternate_cache, mutate)
+            _refresh_cache_integrity(
+                alternate, fixture.salt_bytes, "mediapipe",
+            )
+            alternate_commitment = builder._validate_staging(
+                alternate, salt=fixture.salt_bytes,
+            )
+            alternate_cache_sha256 = _sha(alternate_cache.read_bytes())
+            c.true(
+                alternate_commitment != expected_commitment
+                and alternate_cache_sha256 != expected_cache_sha256,
+                "the adversarial generation is independently valid but byte-distinct",
+            )
+
+            parked = fixture.output.parent / ".mayo_ssl_cache.parked-generation"
+            original_validate = builder._validate_staging
+            validation_calls = 0
+            swapped = False
+
+            def validate_with_root_swap(*args, **kwargs):
+                nonlocal validation_calls, swapped
+                validation_calls += 1
+                if validation_calls == 2 and swapped:
+                    os.rename(fixture.output, alternate)
+                    os.rename(parked, fixture.output)
+                    swapped = False
+                result = original_validate(*args, **kwargs)
+                if validation_calls == 1:
+                    os.rename(fixture.output, parked)
+                    os.rename(alternate, fixture.output)
+                    swapped = True
+                return result
+
+            builder._validate_staging = validate_with_root_swap
+            authorized = None
+            rejected = False
+            descriptor_baseline = (
+                len(os.listdir("/dev/fd")) if Path("/dev/fd").is_dir() else None
+            )
+            try:
+                try:
+                    authorized = fixture.authorize()
+                except (OSError, RuntimeError, ValueError):
+                    rejected = True
+            finally:
+                builder._validate_staging = original_validate
+                if swapped:
+                    os.rename(fixture.output, alternate)
+                    os.rename(parked, fixture.output)
+
+            if descriptor_baseline is not None:
+                c.eq(len(os.listdir("/dev/fd")), descriptor_baseline,
+                     "mixed-root rejection closes every held descriptor")
+
+            c.true(validation_calls >= 1,
+                   "the swap occurs only after the initial committed validation")
+            if not rejected:
+                c.true(authorized is not None)
+                c.eq(authorized.commitment, expected_commitment,
+                     "returned commitment remains the held generation A")
+                c.eq(authorized.recordings[0].cache_sha256, expected_cache_sha256,
+                     "returned cache bytes remain the held generation A")
+                c.eq(float(authorized.recordings[0].features_30hz[0, 0]),
+                     expected_feature,
+                     "returned features never come from swapped generation B")
+
+
+def test_committed_mayo_authorizer_gates_all_live_manifest_sizes_before_read(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            targets = (
+                fixture.output / "collection_manifest.json",
+                fixture.output / "mayo_exposure_manifest.json",
+                fixture.exposure,
+            )
+            original_read = builder.os.read
+            for target in targets:
+                original_payload = target.read_bytes()
+                with target.open("wb") as handle:
+                    handle.truncate(4 * 1024 * 1024 + 1)
+                target.chmod(0o600)
+                target_identity = (
+                    int(target.stat().st_dev), int(target.stat().st_ino)
+                )
+                guarded_reads: list[int] = []
+
+                def guarded_read(descriptor, count):
+                    info = os.fstat(descriptor)
+                    if (int(info.st_dev), int(info.st_ino)) == target_identity:
+                        guarded_reads.append(descriptor)
+                        raise AssertionError("oversized live manifest reached os.read")
+                    return original_read(descriptor, count)
+
+                builder.os.read = guarded_read
+                try:
+                    c.raises(
+                        fixture.authorize,
+                        ValueError,
+                        f"{target.name} size is gated from fstat before reading",
+                    )
+                finally:
+                    builder.os.read = original_read
+                    target.write_bytes(original_payload)
+                    target.chmod(0o600)
+                c.eq(
+                    guarded_reads,
+                    [],
+                    f"{target.name} oversized bytes are never read",
+                )
+
+
+def test_nonheld_mayo_manifests_are_size_gated_before_read(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        targets = (
+            root / "staging" / "collection_manifest.json",
+            root / "mayo_exposure_manifest.json",
+        )
+        original_read = builder.os.read
+        for target in targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.chmod(0o700)
+            with target.open("wb") as handle:
+                handle.truncate(4 * 1024 * 1024 + 1)
+            target.chmod(0o600)
+            guarded_reads: list[int] = []
+
+            def guarded_read(descriptor, count):
+                guarded_reads.append(descriptor)
+                raise AssertionError("oversized non-held manifest reached os.read")
+
+            builder.os.read = guarded_read
+            try:
+                c.raises(
+                    lambda value=target: builder._load_public_json(
+                        value, "non-held Mayo manifest"
+                    ),
+                    ValueError,
+                    f"{target.name} size is gated from fstat before reading",
+                )
+            finally:
+                builder.os.read = original_read
+            c.eq(
+                guarded_reads,
+                [],
+                f"{target.name} non-held oversized bytes are never read",
+            )
+
+
+def test_output_parent_lock_cleanup_is_exception_safe(c: Check):
+    for failure_point in ("unlock", "close"):
+        with tempfile.TemporaryDirectory() as td:
+            output = Path(td) / "mayo_ssl_cache"
+            original_flock = builder.fcntl.flock
+            original_close = builder.os.close
+            lock_descriptors: list[int] = []
+            close_attempts: list[int] = []
+            failed = False
+
+            def tracked_flock(descriptor, operation):
+                nonlocal failed
+                if operation == builder.fcntl.LOCK_EX | builder.fcntl.LOCK_NB:
+                    lock_descriptors.append(descriptor)
+                if failure_point == "unlock" and operation == builder.fcntl.LOCK_UN:
+                    original_flock(descriptor, operation)
+                    failed = True
+                    raise OSError("synthetic unlock failure")
+                return original_flock(descriptor, operation)
+
+            def tracked_close(descriptor):
+                nonlocal failed
+                close_attempts.append(descriptor)
+                original_close(descriptor)
+                if failure_point == "close" and descriptor in lock_descriptors:
+                    failed = True
+                    raise OSError("synthetic close failure")
+
+            builder.fcntl.flock = tracked_flock
+            builder.os.close = tracked_close
+            caught: BaseException | None = None
+            try:
+                try:
+                    with builder.output_parent_lock(output):
+                        raise RuntimeError("primary lock body failure")
+                except BaseException as exc:  # inspect cleanup chaining
+                    caught = exc
+            finally:
+                builder.os.close = original_close
+                builder.fcntl.flock = original_flock
+                for descriptor in lock_descriptors:
+                    if descriptor not in close_attempts:
+                        try:
+                            original_close(descriptor)
+                        except OSError:
+                            pass
+            c.true(failed, f"{failure_point} cleanup failure was injected")
+            c.true(caught is not None, f"{failure_point} cleanup failure is surfaced")
+            c.true(
+                bool(lock_descriptors)
+                and all(descriptor in close_attempts for descriptor in lock_descriptors),
+                f"lock FD is closed even when {failure_point} fails",
+            )
+            c.true(
+                caught is not None and _exception_chain_contains(
+                    caught, RuntimeError, "primary lock body failure"
+                ),
+                f"{failure_point} cleanup preserves the primary exception chain",
+            )
+
+
+def test_output_parent_lock_rebinds_live_name_after_flock_before_yield(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        parent = Path(td)
+        parent.chmod(0o700)
+        output = parent / "mayo_ssl_cache"
+        lock = parent / ".mayo_ssl_cache.lock"
+        parked = parent / ".mayo_ssl_cache.lock.parked"
+        lock.write_bytes(b"")
+        lock.chmod(0o600)
+        original_flock = builder.fcntl.flock
+        replacement_descriptor: int | None = None
+        swapped = False
+        entered = False
+
+        def split_brain_flock(descriptor, operation):
+            nonlocal replacement_descriptor, swapped
+            if operation == builder.fcntl.LOCK_EX | builder.fcntl.LOCK_NB and not swapped:
+                lock.rename(parked)
+                lock.write_bytes(b"")
+                lock.chmod(0o600)
+                replacement_descriptor = os.open(lock, os.O_RDWR)
+                original_flock(
+                    replacement_descriptor,
+                    builder.fcntl.LOCK_EX | builder.fcntl.LOCK_NB,
+                )
+                swapped = True
+            return original_flock(descriptor, operation)
+
+        def enter_lock() -> None:
+            nonlocal entered
+            with builder.output_parent_lock(output):
+                entered = True
+
+        builder.fcntl.flock = split_brain_flock
+        try:
+            c.raises(
+                enter_lock,
+                ValueError,
+                "post-flock live-name replacement fails before the lock body",
+            )
+        finally:
+            builder.fcntl.flock = original_flock
+            if replacement_descriptor is not None:
+                try:
+                    original_flock(replacement_descriptor, builder.fcntl.LOCK_UN)
+                finally:
+                    os.close(replacement_descriptor)
+        c.true(swapped)
+        c.true(not entered, "split-brain destination lock never enters the body")
+
+
+def test_held_mayo_generation_attempts_every_fd_close_after_one_failure(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            original_close = builder.os.close
+            expected_descriptors: list[int] = []
+            close_attempts: list[int] = []
+            fail_descriptor: int | None = None
+            failed = False
+
+            def tracked_close(descriptor):
+                nonlocal failed
+                close_attempts.append(descriptor)
+                original_close(descriptor)
+                if descriptor == fail_descriptor and not failed:
+                    failed = True
+                    raise OSError("synthetic held descriptor close failure")
+
+            builder.os.close = tracked_close
+            caught: BaseException | None = None
+            try:
+                try:
+                    with builder._hold_committed_mayo_generation(
+                        fixture.output, fixture.exposure
+                    ) as held:
+                        expected_descriptors = [
+                            held.output_parent_descriptor,
+                            held.output_descriptor,
+                            held.collection_descriptor,
+                            held.internal_exposure_descriptor,
+                            held.media_descriptor,
+                            held.arkit_descriptor,
+                            held.external_parent_descriptor,
+                            held.external_exposure_descriptor,
+                            *(item.descriptor for item in held.media_files),
+                            *(item.descriptor for item in held.arkit_files),
+                        ]
+                        fail_descriptor = held.arkit_descriptor
+                        raise RuntimeError("primary held generation failure")
+                except BaseException as exc:  # inspect cleanup chaining
+                    caught = exc
+            finally:
+                builder.os.close = original_close
+                for descriptor in expected_descriptors:
+                    if descriptor not in close_attempts:
+                        try:
+                            original_close(descriptor)
+                        except OSError:
+                            pass
+            c.true(failed, "one held descriptor close failure was injected")
+            c.eq(
+                set(close_attempts),
+                set(expected_descriptors),
+                "every held descriptor close is attempted after an intermediate failure",
+            )
+            c.true(
+                caught is not None and _exception_chain_contains(
+                    caught, RuntimeError, "primary held generation failure"
+                ),
+                "held descriptor cleanup preserves the primary exception chain",
+            )
+
+
+def test_committed_mayo_authorizer_live_recomputes_v3_and_rejects_transaction_state(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        salt_bytes = b"m" * 32
+        staging = _semantic_staging(
+            root, ".mayo_ssl_cache.staging-fixture", salt_bytes,
+            include_arkit=True, include_exclusions=True,
+        )
+        output = root / "outputs" / "dynamic_landmark" / "pretraining" / "mayo_ssl_cache"
+        exposure = root / "outputs" / "dynamic_landmark" / "mayo_exposure_manifest.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        exposure.parent.mkdir(parents=True, exist_ok=True)
+        exposure.parent.chmod(0o700)
+        output.parent.chmod(0o700)
+        os.replace(staging, output)
+        exposure.write_bytes((output / "mayo_exposure_manifest.json").read_bytes())
+        exposure.chmod(0o600)
+        key = output.parent / ".mayo_ssl_hmac.key"
+        key.write_bytes(salt_bytes)
+        key.chmod(0o600)
+        lock = output.parent / f".{output.name}.lock"
+        lock.write_bytes(b"")
+        lock.chmod(0o600)
+        collection = json.loads((output / "collection_manifest.json").read_text())
+        exposure_value = json.loads(exposure.read_text())
+        counts = dict(collection["counts"])
+        data = root / "data" / "livelinkface_data"
+        exports = root / "data" / "mediapipe_out"
+        data.mkdir(parents=True)
+        exports.mkdir()
+        inventory = builder.MayoInventory(
+            data, exports, counts, (), (), (), (), (), (), (), (), (),
+        )
+        original_root = builder.PROJECT_ROOT
+        original_frozen = builder.FROZEN_INVENTORY
+        original_inventory = builder.inventory_mayo_sources
+        original_manifest_builder = builder.build_public_manifests
+        builder.PROJECT_ROOT = root
+        builder.FROZEN_INVENTORY = counts
+        builder.inventory_mayo_sources = lambda *_args, **_kwargs: inventory
+        builder.build_public_manifests = lambda *_args, **_kwargs: (
+            json.loads(json.dumps(collection)),
+            json.loads(json.dumps(exposure_value)),
+        )
+        try:
+            before = {
+                path.relative_to(root): path.read_bytes()
+                for path in (key, exposure, *(item for item in output.rglob("*") if item.is_file()))
+            }
+            authorized = builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            )
+            c.eq(authorized.recording_count, 1)
+            c.eq(authorized.arkit_count, 1)
+            c.eq(len(authorized.recordings), 1,
+                 "ARKit remains outside the main bridge recordings")
+            c.eq(authorized.commitment["schema"],
+                 "mayo_cache_generation_commitment_v3")
+            c.eq({
+                path.relative_to(root): path.read_bytes()
+                for path in (key, exposure, *(item for item in output.rglob("*") if item.is_file()))
+            }, before, "committed authorization does not recover or rewrite data")
+
+            journal = output.parent / f".{output.name}.transaction.json"
+            journal.write_text("unresolved", encoding="utf-8")
+            journal.chmod(0o600)
+            c.raises(lambda: builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            ), RuntimeError, "unresolved transaction state is rejected, never recovered")
+            c.eq(journal.read_text(), "unresolved",
+                 "read-only authorization leaves the unresolved journal untouched")
+            journal.unlink()
+
+            residue = output.parent / f".{output.name}.staging-interrupted"
+            residue.mkdir()
+            c.raises(lambda: builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            ), RuntimeError, "unresolved staging residue is rejected, never recovered")
+            c.true(residue.is_dir(), "read-only authorization leaves residue untouched")
+            residue.rmdir()
+
+            cache = next((output / "mediapipe").glob("*.npz"))
+            original_cache = cache.read_bytes()
+            cache.write_bytes(original_cache[:-1] + bytes([original_cache[-1] ^ 1]))
+            c.raises(lambda: builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            ), ValueError, "a changed main-cache byte invalidates live v3 authorization")
+            cache.write_bytes(original_cache)
+            key.chmod(0o640)
+            c.raises(lambda: builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            ), ValueError, "the canonical Mayo key must remain exact mode 0600")
+            key.chmod(0o600)
+
+            collection_path = output / "collection_manifest.json"
+            original_collection = collection_path.read_bytes()
+            changed_collection = json.loads(original_collection)
+            changed_collection["dataset"] = "forged-live-manifest"
+            collection_path.write_text(json.dumps(changed_collection), encoding="utf-8")
+            c.raises(lambda: builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            ), ValueError, "a changed committed manifest fails closed")
+            collection_path.write_bytes(original_collection)
+            collection_path.chmod(0o600)
+
+            hardlink = output.parent / ".hardlinked-mayo-key"
+            os.link(key, hardlink)
+            c.raises(lambda: builder.authorize_committed_mayo_ssl_generation(
+                data, exports, key, output, exposure,
+            ), ValueError, "a multiply-linked canonical Mayo key is rejected")
+            hardlink.unlink()
+
+            lock.unlink()
+            rejected = False
+            try:
+                builder.authorize_committed_mayo_ssl_generation(
+                    data, exports, key, output, exposure,
+                )
+            except ValueError:
+                rejected = True
+            c.true(rejected, "read-only authorization requires the existing lock")
+            c.true(not lock.exists(),
+                   "read-only authorization never O_CREATs a missing lock")
+        finally:
+            builder.PROJECT_ROOT = original_root
+            builder.FROZEN_INVENTORY = original_frozen
+            builder.inventory_mayo_sources = original_inventory
+            builder.build_public_manifests = original_manifest_builder
+
+
+def test_committed_mayo_authorizer_missing_lock_is_read_only(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            fixture.lock.unlink()
+            before = {
+                path.relative_to(root): (
+                    path.read_bytes(), path.stat().st_mode,
+                    path.stat().st_mtime_ns,
+                )
+                for path in root.rglob("*") if path.is_file()
+            }
+            c.raises(
+                fixture.authorize,
+                ValueError,
+                "read-only Mayo authorization requires the existing producer lock",
+            )
+            c.true(not fixture.lock.exists(), "authorization never O_CREATs a lock")
+            c.eq({
+                path.relative_to(root): (
+                    path.read_bytes(), path.stat().st_mode,
+                    path.stat().st_mtime_ns,
+                )
+                for path in root.rglob("*") if path.is_file()
+            }, before, "a rejected authorization leaves every file unchanged")
+
+
+def test_committed_mayo_authorizer_rechecks_live_root_classification(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            drifted = builder.MayoInventory(
+                fixture.data, fixture.exports, fixture.counts,
+                (), (), (), (), (), (), (), (), (Path("opaque-drift"),),
+            )
+            inventory_calls = 0
+
+            def changing_inventory(*_args, **_kwargs):
+                nonlocal inventory_calls
+                inventory_calls += 1
+                return fixture.inventory if inventory_calls == 1 else drifted
+
+            def live_manifests(inventory, *_args, **_kwargs):
+                collection = json.loads(json.dumps(fixture.collection))
+                exposure = json.loads(json.dumps(fixture.exposure_value))
+                if inventory is drifted:
+                    collection["classification_integrity_id"] = "agg_" + "1" * 64
+                    exposure["classification_integrity_id"] = "agg_" + "2" * 64
+                return collection, exposure
+
+            builder.inventory_mayo_sources = changing_inventory
+            builder.build_public_manifests = live_manifests
+            c.raises(
+                fixture.authorize,
+                ValueError,
+                "a live-root classification change during authorization fails closed",
+            )
+            c.eq(inventory_calls, 2, "the live roots are audited again before return")
+
+
+def test_committed_mayo_authorizer_holds_every_cache_mode_through_return(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            cache = next((fixture.output / "mediapipe").glob("*.npz"))
+            inventory_calls = 0
+
+            def mutate_after_final_cache_validation(*_args, **_kwargs):
+                nonlocal inventory_calls
+                inventory_calls += 1
+                if inventory_calls == 2:
+                    cache.chmod(0o666)
+                return fixture.inventory
+
+            builder.inventory_mayo_sources = mutate_after_final_cache_validation
+            try:
+                c.raises(
+                    fixture.authorize,
+                    ValueError,
+                    "cache permission drift after validation fails before return",
+                )
+            finally:
+                cache.chmod(0o600)
+            c.eq(inventory_calls, 2)
 
 
 if __name__ == "__main__":

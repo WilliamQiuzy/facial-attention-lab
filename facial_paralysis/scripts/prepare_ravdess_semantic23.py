@@ -19,15 +19,16 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import stat
 import sys
 import uuid
 import zipfile
-from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from contextlib import ExitStack, contextmanager
+from dataclasses import asdict, dataclass, field as dataclass_field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -51,6 +52,12 @@ RAVDESS_ARCHIVE_RELATIVE_PATH = Path("raw/FacialTracking_Actors_01-24.zip")
 RAVDESS_ID_KEY_RELATIVE_PATH = Path(".semantic23_private_id_key")
 DEFAULT_CONFIDENCE_THRESHOLD = 0.80
 PRIVATE_ID_KEY_BYTES = 32
+_MAX_RAVDESS_CACHE_RAW_BYTES = 16 * 1024 * 1024
+_MAX_RAVDESS_NPZ_COMPRESSED_BYTES = 16 * 1024 * 1024
+_MAX_RAVDESS_NPZ_EXPANDED_BYTES = 64 * 1024 * 1024
+_MAX_RAVDESS_NPZ_CENTRAL_BYTES = 4096
+_MAX_RAVDESS_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_NPY_HEADER_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,39 @@ class SemanticTrial:
     features: np.ndarray
     valid_mask: np.ndarray
     source_sha256: str
+
+
+@dataclass(frozen=True)
+class AuthorizedRavdessTrial:
+    """One cache snapshot authorized from the exact bytes that were parsed."""
+
+    trial_id: str
+    actor_id: str
+    cache_integrity_id: str
+    cache_sha256: str
+    cache_size_bytes: int
+    features: np.ndarray
+    valid_mask: np.ndarray
+    timestamps: np.ndarray
+    frame_indices: np.ndarray
+    detector_confidence: np.ndarray
+
+
+@dataclass(frozen=True)
+class AuthorizedRavdessGeneration:
+    """Private, in-memory authorization for one immutable source generation."""
+
+    schema: str
+    manifest_sha256: str
+    generation_closure_hmac: str
+    trial_count: int
+    actor_count: int
+    source_frames: int
+    valid_frames: int
+    expected_trial_count: int
+    expected_actor_count: int
+    trials: tuple[AuthorizedRavdessTrial, ...]
+    private_key: bytes = dataclass_field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -434,6 +474,8 @@ def _validate_private_key_stat(
         raise ValueError("private ID key must be owned by the current user")
     if stat.S_IMODE(value.st_mode) != 0o600:
         raise ValueError("private ID key permissions must be exactly 0600")
+    if int(value.st_nlink) != 1:
+        raise ValueError("private ID key must have exactly one hard link")
     if exact_size is not None and int(value.st_size) != exact_size:
         raise ValueError(f"private ID key must contain exactly {exact_size} bytes")
 
@@ -480,51 +522,200 @@ def _load_private_id_key(path: Path) -> bytes:
         os.close(descriptor)
 
 
+def _private_key_staging_prefix(destination_name: str) -> str:
+    return f".{_safe_entry_name(destination_name)}.staging-"
+
+
+def _assert_no_private_key_staging(
+    parent_descriptor: int,
+    destination_name: str,
+) -> None:
+    prefix = _private_key_staging_prefix(destination_name)
+    if any(name.startswith(prefix) for name in os.listdir(parent_descriptor)):
+        raise RuntimeError("private ID key has unresolved staging state")
+
+
+def _publish_private_key_no_replace(
+    parent_descriptor: int,
+    staging_name: str,
+    destination_name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    """Move one verified private-key inode to its absent canonical name."""
+    staging_name = _safe_entry_name(staging_name)
+    destination_name = _safe_entry_name(destination_name)
+    staged = _entry_stat(parent_descriptor, staging_name)
+    if (
+        staged is None
+        or not stat.S_ISREG(staged.st_mode)
+        or (int(staged.st_dev), int(staged.st_ino)) != expected_identity
+    ):
+        raise ValueError("private ID key staging identity changed before publication")
+    _validate_private_key_stat(staged, exact_size=PRIVATE_ID_KEY_BYTES)
+    if _entry_stat(parent_descriptor, destination_name) is not None:
+        raise FileExistsError("canonical private ID key already exists")
+
+    library = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(staging_name)
+    destination_bytes = os.fsencode(destination_name)
+    if sys.platform == "darwin":
+        operation = library.renameatx_np
+        no_replace_flag = 0x00000004 | 0x00000010
+    elif sys.platform.startswith("linux"):
+        operation = library.renameat2
+        no_replace_flag = 0x00000001
+    else:
+        raise OSError("atomic private-key publication is unsupported")
+    operation.argtypes = (
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    operation.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if operation(
+        parent_descriptor,
+        source_bytes,
+        parent_descriptor,
+        destination_bytes,
+        no_replace_flag,
+    ) != 0:
+        error = ctypes.get_errno()
+        if error in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise FileExistsError("canonical private ID key already exists")
+        raise OSError(error, os.strerror(error), destination_name)
+    published = _entry_stat(parent_descriptor, destination_name)
+    if (
+        published is None
+        or (int(published.st_dev), int(published.st_ino)) != expected_identity
+    ):
+        raise ValueError("published private ID key changed identity")
+    _validate_private_key_stat(published, exact_size=PRIVATE_ID_KEY_BYTES)
+    os.fsync(parent_descriptor)
+
+
 def load_or_create_private_id_key(path: str | Path) -> bytes:
     """Load or atomically create one owner-only stable HMAC key."""
-    destination = Path(path).expanduser()
+    destination = _absolute_lexical_path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if os.path.lexists(destination):
-        return _load_private_id_key(destination)
-
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    try:
-        descriptor = os.open(destination, flags, 0o600)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise ValueError("private ID key must not be a symlink") from exc
-        raise
+    parent_descriptor, parent_identity = _open_output_parent(destination.parent)
+    locked = False
+    descriptor: int | None = None
+    staging_name = (
+        _private_key_staging_prefix(destination.name) + uuid.uuid4().hex
+    )
     created_identity: tuple[int, int] | None = None
     try:
+        fcntl.flock(parent_descriptor, fcntl.LOCK_EX)
+        locked = True
+        _assert_output_parent_identity(
+            destination.parent, parent_descriptor, parent_identity,
+        )
+        _assert_no_private_key_staging(parent_descriptor, destination.name)
+        if _entry_stat(parent_descriptor, destination.name) is not None:
+            result = _load_private_id_key(destination)
+            _assert_output_parent_identity(
+                destination.parent, parent_descriptor, parent_identity,
+            )
+            return result
+
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        try:
+            descriptor = os.open(
+                staging_name, flags, 0o600, dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError("private ID key staging must not be a symlink") from exc
+            raise
         os.fchmod(descriptor, 0o600)
         initial = os.fstat(descriptor)
         created_identity = (int(initial.st_dev), int(initial.st_ino))
         _validate_private_key_stat(initial)
         payload = secrets.token_bytes(PRIVATE_ID_KEY_BYTES)
-        offset = 0
-        while offset < len(payload):
-            written = os.write(descriptor, payload[offset:])
-            if written <= 0:
-                raise OSError("private ID key write was incomplete")
-            offset += written
+        _write_all(descriptor, payload)
         os.fsync(descriptor)
-        final = os.fstat(descriptor)
-        _validate_private_key_stat(final, exact_size=PRIVATE_ID_KEY_BYTES)
-        if (int(final.st_dev), int(final.st_ino)) != created_identity:
+        written = os.fstat(descriptor)
+        _validate_private_key_stat(written, exact_size=PRIVATE_ID_KEY_BYTES)
+        if (int(written.st_dev), int(written.st_ino)) != created_identity:
             raise ValueError("private ID key identity changed during creation")
-        _assert_private_key_path_identity(destination, final)
+        staged = os.stat(
+            staging_name, dir_fd=parent_descriptor, follow_symlinks=False,
+        )
+        if _private_key_stat_identity(staged) != _private_key_stat_identity(written):
+            raise ValueError("private ID key staging path changed during creation")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        observed = bytearray()
+        while len(observed) <= PRIVATE_ID_KEY_BYTES:
+            chunk = os.read(
+                descriptor, PRIVATE_ID_KEY_BYTES + 1 - len(observed),
+            )
+            if not chunk:
+                break
+            observed.extend(chunk)
+        verified = os.fstat(descriptor)
+        if (
+            len(observed) != PRIVATE_ID_KEY_BYTES
+            or not hmac.compare_digest(bytes(observed), payload)
+            or _private_key_stat_identity(verified)
+            != _private_key_stat_identity(written)
+        ):
+            raise ValueError("private ID key staging bytes changed before publication")
+        staged = os.stat(
+            staging_name, dir_fd=parent_descriptor, follow_symlinks=False,
+        )
+        if _private_key_stat_identity(staged) != _private_key_stat_identity(verified):
+            raise ValueError("private ID key staging identity changed before publication")
+        _assert_output_parent_identity(
+            destination.parent, parent_descriptor, parent_identity,
+        )
+        _publish_private_key_no_replace(
+            parent_descriptor,
+            staging_name,
+            destination.name,
+            created_identity,
+        )
+
+        final = os.fstat(descriptor)
+        canonical = os.stat(
+            destination.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        _validate_private_key_stat(final, exact_size=PRIVATE_ID_KEY_BYTES)
+        if (
+            _private_key_stat_identity(final)
+            != _private_key_stat_identity(canonical)
+            or (int(final.st_dev), int(final.st_ino)) != created_identity
+        ):
+            raise ValueError("canonical private ID key changed after publication")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        final_payload = bytearray()
+        while len(final_payload) <= PRIVATE_ID_KEY_BYTES:
+            chunk = os.read(
+                descriptor, PRIVATE_ID_KEY_BYTES + 1 - len(final_payload),
+            )
+            if not chunk:
+                break
+            final_payload.extend(chunk)
+        if (
+            len(final_payload) != PRIVATE_ID_KEY_BYTES
+            or not hmac.compare_digest(bytes(final_payload), payload)
+        ):
+            raise ValueError("canonical private ID key bytes changed after publication")
+        _assert_output_parent_identity(
+            destination.parent, parent_descriptor, parent_identity,
+        )
         return payload
-    except BaseException:
-        try:
-            current = os.stat(destination, follow_symlinks=False)
-        except FileNotFoundError:
-            current = None
-        if (current is not None and created_identity is not None
-                and (int(current.st_dev), int(current.st_ino)) == created_identity):
-            os.unlink(destination)
-        raise
     finally:
-        os.close(descriptor)
+        try:
+            if descriptor is not None:
+                os.close(descriptor)
+        finally:
+            try:
+                if locked:
+                    fcntl.flock(parent_descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(parent_descriptor)
 
 
 def _opaque_id(namespace: str, source_value: str, prefix: str, *, key: bytes) -> str:
@@ -547,6 +738,27 @@ def opaque_actor_id(actor_token: str, *, key: bytes) -> str:
 def opaque_trial_id(source_sha256: str, *, key: bytes) -> str:
     """Stable private-key pseudonym for one source-content digest."""
     return _opaque_id("trial", source_sha256, "trial", key=key)
+
+
+def _opaque_cache_integrity_id(
+    cache_sha256: str,
+    *,
+    trial_id: str,
+    actor_id: str,
+    key: bytes,
+) -> str:
+    """Bind exact cache bytes to their keyed trial and actor identities."""
+    binding = json.dumps(
+        {
+            "actor_id": actor_id,
+            "cache_sha256": cache_sha256,
+            "trial_id": trial_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return _opaque_id("cache-integrity-v2", binding, "cache", key=key)
 
 
 def _manifest_inventory(inventory: RavdessInventory) -> dict[str, Any]:
@@ -581,6 +793,757 @@ def _assert_manifest_deidentified(
         raise ValueError("aggregate manifest contains raw source or cache digests")
 
 
+_AUTHORIZED_MANIFEST_FIELDS = frozenset({
+    "format_version", "schema", "feature_names", "feature_definitions",
+    "source_dataset", "license", "permitted_role", "clinical_claim",
+    "adapter", "filter", "timeline_policy", "provenance_policy",
+    "inventory", "quality_control", "trials",
+})
+_AUTHORIZED_TRIAL_FIELDS = frozenset({
+    "trial_id", "actor_id", "cache_integrity_id",
+})
+_AUTHORIZED_CACHE_FIELDS = (
+    "features", "valid_mask", "timestamps", "frame_indices",
+    "detector_confidence", "feature_names", "schema", "adapter_name",
+    "scale_normalization", "confidence_threshold",
+)
+_TRIAL_ID = re.compile(r"^trial_[a-z2-7]{16}$")
+_ACTOR_ID = re.compile(r"^actor_[a-z2-7]{16}$")
+_CACHE_ID = re.compile(r"^cache_[a-z2-7]{16}$")
+
+
+def _owner_regular_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+        int(value.st_size), int(value.st_mtime_ns), int(value.st_ctime_ns),
+    )
+
+
+def _owner_directory_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+        int(value.st_size), int(value.st_mtime_ns), int(value.st_ctime_ns),
+    )
+
+
+def _snapshot_exact_owner_directory(
+    descriptor: int,
+    expected_names: Sequence[str],
+    field: str,
+) -> tuple[tuple[int, ...], tuple[str, ...]]:
+    expected = tuple(expected_names)
+    if (
+        not expected
+        or len(set(expected)) != len(expected)
+        or any(type(name) is not str or not name or Path(name).name != name
+               for name in expected)
+    ):
+        raise ValueError(f"{field} expected entry set is malformed")
+    before = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(before.st_mode)
+        or int(before.st_uid) != os.geteuid()
+        or stat.S_IMODE(before.st_mode) != 0o700
+    ):
+        raise ValueError(f"{field} is not an owner-only directory")
+    names = tuple(sorted(os.listdir(descriptor)))
+    after = os.fstat(descriptor)
+    identity = _owner_directory_stat_identity(before)
+    if _owner_directory_stat_identity(after) != identity:
+        raise ValueError(f"{field} changed while its entries were listed")
+    if len(names) != len(expected) or set(names) != set(expected):
+        raise ValueError(f"{field} entry set is not exact")
+    return identity, names
+
+
+def _read_owner_only_regular(
+    path: Path,
+    field: str,
+    *,
+    max_bytes: int | None = None,
+    parent_descriptor: int | None = None,
+) -> tuple[bytes, str, tuple[int, ...]]:
+    """Read and hash one owner-only file from one no-follow descriptor."""
+    if max_bytes is not None and (
+        not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1
+    ):
+        raise ValueError(f"{field} byte limit must be a positive integer")
+    target: str | Path = path
+    open_kwargs: dict[str, int] = {}
+    if parent_descriptor is not None:
+        if str(path) != path.name or len(path.parts) != 1:
+            raise ValueError(f"{field} anchored filename is unsafe")
+        target = _safe_entry_name(path.name)
+        open_kwargs["dir_fd"] = parent_descriptor
+    try:
+        descriptor = os.open(
+            target, os.O_RDONLY | os.O_NOFOLLOW, **open_kwargs
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError(f"{field} must not be a symlink") from exc
+        raise
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or int(before.st_uid) != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or int(before.st_nlink) != 1
+        ):
+            raise ValueError(f"{field} must be a singly-linked owner-only regular file")
+        if max_bytes is not None and int(before.st_size) > max_bytes:
+            raise ValueError(f"{field} exceeds its raw byte limit")
+        digest = hashlib.sha256()
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+            if max_bytes is not None and len(payload) > max_bytes:
+                raise ValueError(f"{field} exceeds its raw byte limit")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        if _owner_regular_identity(before) != _owner_regular_identity(after):
+            raise ValueError(f"{field} changed while it was read")
+        try:
+            current = os.stat(
+                target, follow_symlinks=False, **open_kwargs
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(f"{field} disappeared while it was read") from exc
+        if _owner_regular_identity(after) != _owner_regular_identity(current):
+            raise ValueError(f"{field} path identity or stat changed while it was read")
+        return bytes(payload), digest.hexdigest(), _owner_regular_identity(after)
+    finally:
+        os.close(descriptor)
+
+
+def _assert_owner_snapshot(path: Path, identity: tuple[int, ...], field: str) -> None:
+    try:
+        current = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise ValueError(f"{field} disappeared before authorization returned") from exc
+    if _owner_regular_identity(current) != identity:
+        raise ValueError(f"{field} changed before authorization returned")
+
+
+def _assert_owner_snapshot_at(
+    parent_descriptor: int,
+    name: str,
+    identity: tuple[int, ...],
+    field: str,
+) -> None:
+    try:
+        current = os.stat(
+            _safe_entry_name(name),
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(f"{field} disappeared before authorization returned") from exc
+    if _owner_regular_identity(current) != identity:
+        raise ValueError(f"{field} changed before authorization returned")
+
+
+def _load_unique_json_object(payload: bytes, field: str) -> dict[str, Any]:
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{field} repeats a JSON field")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=unique)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{field} is not valid UTF-8 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must contain an object")
+    return value
+
+
+def _json_exact_equal(observed: object, expected: object) -> bool:
+    if type(observed) is not type(expected):
+        return False
+    if type(expected) is dict:
+        observed_mapping = observed
+        expected_mapping = expected
+        return (
+            set(observed_mapping) == set(expected_mapping)
+            and all(
+                _json_exact_equal(observed_mapping[key], expected_mapping[key])
+                for key in expected_mapping
+            )
+        )
+    if type(expected) is list:
+        observed_items = observed
+        expected_items = expected
+        return (
+            len(observed_items) == len(expected_items)
+            and all(
+                _json_exact_equal(left, right)
+                for left, right in zip(observed_items, expected_items)
+            )
+        )
+    return bool(observed == expected)
+
+
+def _readonly_array(value: np.ndarray) -> np.ndarray:
+    result = np.asarray(value).copy()
+    result.flags.writeable = False
+    return result
+
+
+def _npy_header(
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    *,
+    field: str,
+) -> tuple[np.dtype, tuple[int, ...], bool]:
+    try:
+        with archive.open(info, "r") as member:
+            version = np.lib.format.read_magic(member)
+            if version not in {(1, 0), (2, 0), (3, 0)}:
+                raise ValueError(f"{field} has an unsupported NPY version")
+            shape, fortran_order, dtype = np.lib.format._read_array_header(
+                member, version, max_header_size=_MAX_NPY_HEADER_BYTES
+            )
+            header_bytes = member.tell()
+    except (OSError, EOFError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith(field):
+            raise
+        raise ValueError(f"{field} has an invalid bounded NPY header") from exc
+    if (
+        not isinstance(shape, tuple)
+        or any(not isinstance(item, int) or isinstance(item, bool) or item < 0
+               for item in shape)
+        or not isinstance(fortran_order, bool)
+    ):
+        raise ValueError(f"{field} has a noncanonical NPY header")
+    canonical_dtype = np.dtype(dtype)
+    if canonical_dtype.hasobject or canonical_dtype.fields is not None:
+        raise ValueError(f"{field} uses an unsafe NPY dtype")
+    element_count = 1
+    for dimension in shape:
+        element_count *= dimension
+    expected_size = header_bytes + element_count * canonical_dtype.itemsize
+    if expected_size != int(info.file_size):
+        raise ValueError(f"{field} NPY header does not match its declared member size")
+    return canonical_dtype, shape, fortran_order
+
+
+def _require_exact_zip_eocd(payload: bytes, *, member_count: int, field: str) -> None:
+    """Validate a small, single-disk central directory before ``zipfile``."""
+    if (
+        not isinstance(member_count, int)
+        or isinstance(member_count, bool)
+        or not 0 < member_count < 0xFFFF
+    ):
+        raise ValueError(f"{field} has an invalid fixed member count")
+    offset = len(payload) - 22
+    if offset < 0 or payload[offset:offset + 4] != b"PK\x05\x06":
+        raise ValueError(f"{field} has no canonical ZIP end record")
+    record = memoryview(payload)[offset:offset + 22]
+    disk = int.from_bytes(record[4:6], "little")
+    central_disk = int.from_bytes(record[6:8], "little")
+    disk_members = int.from_bytes(record[8:10], "little")
+    total_members = int.from_bytes(record[10:12], "little")
+    central_size = int.from_bytes(record[12:16], "little")
+    central_offset = int.from_bytes(record[16:20], "little")
+    comment_size = int.from_bytes(record[20:22], "little")
+    if (
+        disk_members == 0xFFFF
+        or total_members == 0xFFFF
+        or central_size == 0xFFFF_FFFF
+        or central_offset == 0xFFFF_FFFF
+        or disk != 0
+        or central_disk != 0
+        or disk_members != member_count
+        or total_members != member_count
+        or comment_size != 0
+        or central_size <= 0
+        or central_size > _MAX_RAVDESS_NPZ_CENTRAL_BYTES
+        or central_offset <= 0
+        or central_offset + central_size != offset
+    ):
+        raise ValueError(f"{field} ZIP end record is noncanonical")
+
+    central = memoryview(payload)[central_offset:offset]
+    cursor = 0
+    actual_members = 0
+    while cursor < central_size:
+        remaining = central_size - cursor
+        if remaining < 46 or central[cursor:cursor + 4].tobytes() != b"PK\x01\x02":
+            raise ValueError(f"{field} central directory is noncanonical")
+        actual_members += 1
+        if actual_members > member_count:
+            raise ValueError(f"{field} central directory member count is not exact")
+
+        version_needed = int.from_bytes(central[cursor + 6:cursor + 8], "little")
+        flags = int.from_bytes(central[cursor + 8:cursor + 10], "little")
+        compression = int.from_bytes(central[cursor + 10:cursor + 12], "little")
+        compressed_size = int.from_bytes(central[cursor + 20:cursor + 24], "little")
+        expanded_size = int.from_bytes(central[cursor + 24:cursor + 28], "little")
+        name_size = int.from_bytes(central[cursor + 28:cursor + 30], "little")
+        extra_size = int.from_bytes(central[cursor + 30:cursor + 32], "little")
+        member_comment_size = int.from_bytes(
+            central[cursor + 32:cursor + 34], "little"
+        )
+        member_disk = int.from_bytes(central[cursor + 34:cursor + 36], "little")
+        local_offset = int.from_bytes(central[cursor + 42:cursor + 46], "little")
+        record_size = 46 + name_size + extra_size + member_comment_size
+        if (
+            version_needed != 20
+            or flags != 0
+            or compression != zipfile.ZIP_DEFLATED
+            or compressed_size == 0xFFFF_FFFF
+            or expanded_size == 0xFFFF_FFFF
+            or name_size <= 0
+            or extra_size != 0
+            or member_comment_size != 0
+            or member_disk != 0
+            or local_offset == 0xFFFF_FFFF
+            or local_offset >= central_offset
+            or record_size > remaining
+        ):
+            raise ValueError(f"{field} central directory metadata is noncanonical")
+        cursor += record_size
+
+    if cursor != central_size or actual_members != member_count:
+        raise ValueError(f"{field} central directory member count is not exact")
+
+
+def _require_ravdess_npz_headers(payload: bytes) -> None:
+    """Bound the ZIP and validate every NPY header before array materialization."""
+    if len(payload) > _MAX_RAVDESS_CACHE_RAW_BYTES:
+        raise ValueError("RAVDESS cache exceeds its raw byte limit")
+    expected_names = tuple(f"{name}.npy" for name in _AUTHORIZED_CACHE_FIELDS)
+    _require_exact_zip_eocd(
+        payload, member_count=len(expected_names), field="RAVDESS cache"
+    )
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            infos = tuple(archive.infolist())
+            names = tuple(info.filename for info in infos)
+            if (
+                len(infos) != len(expected_names)
+                or len(names) != len(set(names))
+                or names != expected_names
+                or any(info.is_dir() for info in infos)
+            ):
+                raise ValueError("RAVDESS cache ZIP member schema is not exact")
+            if any(
+                info.flag_bits & 0x1
+                or info.compress_type != zipfile.ZIP_DEFLATED
+                or info.compress_size < 0
+                or info.file_size < 0
+                for info in infos
+            ):
+                raise ValueError("RAVDESS cache ZIP metadata is noncanonical")
+            if sum(int(info.compress_size) for info in infos) > (
+                _MAX_RAVDESS_NPZ_COMPRESSED_BYTES
+            ):
+                raise ValueError("RAVDESS cache exceeds its compressed byte limit")
+            if sum(int(info.file_size) for info in infos) > (
+                _MAX_RAVDESS_NPZ_EXPANDED_BYTES
+            ):
+                raise ValueError("RAVDESS cache exceeds its expanded byte limit")
+            headers = {
+                info.filename[:-4]: _npy_header(
+                    archive, info, field=f"RAVDESS cache {info.filename[:-4]}"
+                )
+                for info in infos
+            }
+    except (OSError, EOFError, ValueError, zipfile.BadZipFile) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("RAVDESS cache"):
+            raise
+        raise ValueError("RAVDESS cache is not a bounded exact NPZ") from exc
+
+    features_dtype, features_shape, _ = headers["features"]
+    if (
+        features_dtype != np.dtype(np.float32)
+        or len(features_shape) != 2
+        or features_shape[1] != len(SEMANTIC23_FEATURE_NAMES)
+        or not 1 <= features_shape[0] <= FROZEN_RAVDESS_INVENTORY.frames
+    ):
+        raise ValueError("RAVDESS cache features NPY header is noncanonical")
+    length = features_shape[0]
+    expected = {
+        "features": (np.dtype(np.float32), (length, 23)),
+        "valid_mask": (np.dtype(np.bool_), (length,)),
+        "timestamps": (np.dtype(np.float64), (length,)),
+        "frame_indices": (np.dtype(np.int64), (length,)),
+        "detector_confidence": (np.dtype(np.float32), (length,)),
+        "feature_names": (
+            np.asarray(SEMANTIC23_FEATURE_NAMES).dtype,
+            (len(SEMANTIC23_FEATURE_NAMES),),
+        ),
+        "schema": (np.asarray(SEMANTIC23_SCHEMA).dtype, ()),
+        "adapter_name": (
+            np.asarray(OPENFACE68_ADAPTER_METADATA["adapter_name"]).dtype, (),
+        ),
+        "scale_normalization": (
+            np.asarray(OPENFACE68_ADAPTER_METADATA["scale_normalization"]).dtype, (),
+        ),
+        "confidence_threshold": (np.dtype(np.float32), ()),
+    }
+    for name, (expected_dtype, expected_shape) in expected.items():
+        dtype, shape, fortran_order = headers[name]
+        if dtype != expected_dtype or shape != expected_shape or fortran_order:
+            raise ValueError(f"RAVDESS cache {name} NPY header is noncanonical")
+
+
+def _validate_authorized_ravdess_cache(
+    payload: bytes,
+    *,
+    trial_id: str,
+    actor_id: str,
+    cache_integrity_id: str,
+    cache_sha256: str,
+) -> AuthorizedRavdessTrial:
+    _require_ravdess_npz_headers(payload)
+    try:
+        with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
+            if tuple(cached.files) != _AUTHORIZED_CACHE_FIELDS:
+                raise ValueError("RAVDESS cache field schema is not exact")
+            features = np.asarray(cached["features"])
+            valid = np.asarray(cached["valid_mask"])
+            timestamps = np.asarray(cached["timestamps"])
+            frame_indices = np.asarray(cached["frame_indices"])
+            confidence = np.asarray(cached["detector_confidence"])
+            length = features.shape[0] if features.ndim == 2 else -1
+            if features.dtype != np.float32 or features.shape != (length, 23) or length < 1:
+                raise ValueError("RAVDESS cache feature array is noncanonical")
+            if valid.dtype != np.bool_ or valid.shape != (length,):
+                raise ValueError("RAVDESS cache validity mask is noncanonical")
+            if timestamps.dtype != np.float64 or timestamps.shape != (length,):
+                raise ValueError("RAVDESS cache timestamps are noncanonical")
+            if frame_indices.dtype != np.int64 or frame_indices.shape != (length,):
+                raise ValueError("RAVDESS cache frame indices are noncanonical")
+            if confidence.dtype != np.float32 or confidence.shape != (length,):
+                raise ValueError("RAVDESS detector confidence is noncanonical")
+            if (
+                not np.isfinite(features).all()
+                or not np.isfinite(timestamps).all()
+                or not np.isfinite(confidence).all()
+                or np.any(confidence < 0.0)
+                or np.any(confidence > 1.0)
+                or np.any(frame_indices < 0)
+                or (length > 1 and not np.all(np.diff(frame_indices) == 1))
+                or (length > 1 and not np.all(np.diff(timestamps) > 0))
+                or np.any(features[~valid] != np.float32(0.0))
+                or np.any(confidence[valid] < np.float32(DEFAULT_CONFIDENCE_THRESHOLD))
+            ):
+                raise ValueError("RAVDESS cache timeline, mask, or values are invalid")
+            if tuple(str(item) for item in np.asarray(cached["feature_names"]).tolist()) != SEMANTIC23_FEATURE_NAMES:
+                raise ValueError("RAVDESS cache semantic23 names are noncanonical")
+            exact_scalars = {
+                "schema": SEMANTIC23_SCHEMA,
+                "adapter_name": OPENFACE68_ADAPTER_METADATA["adapter_name"],
+                "scale_normalization": OPENFACE68_ADAPTER_METADATA["scale_normalization"],
+            }
+            for name, expected in exact_scalars.items():
+                if str(np.asarray(cached[name]).item()) != expected:
+                    raise ValueError(f"RAVDESS cache {name} is noncanonical")
+            threshold = np.asarray(cached["confidence_threshold"])
+            if threshold.dtype != np.float32 or threshold.shape != () or threshold.item() != np.float32(DEFAULT_CONFIDENCE_THRESHOLD):
+                raise ValueError("RAVDESS cache confidence threshold is noncanonical")
+    except (OSError, EOFError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("RAVDESS cache"):
+            raise
+        raise ValueError("RAVDESS cache is not a safe exact NPZ") from exc
+    return AuthorizedRavdessTrial(
+        trial_id=trial_id,
+        actor_id=actor_id,
+        cache_integrity_id=cache_integrity_id,
+        cache_sha256=cache_sha256,
+        cache_size_bytes=len(payload),
+        features=_readonly_array(features),
+        valid_mask=_readonly_array(valid),
+        timestamps=_readonly_array(timestamps),
+        frame_indices=_readonly_array(frame_indices),
+        detector_confidence=_readonly_array(confidence),
+    )
+
+
+def authorize_committed_ravdess_semantic23(
+    data_root: str | Path,
+    *,
+    id_key_path: str | Path | None = None,
+) -> AuthorizedRavdessGeneration:
+    """Authorize the exact committed RAVDESS generation without modifying it."""
+    root = Path(data_root).expanduser().resolve()
+    output = root / "derived_semantic23"
+    key_path = root / RAVDESS_ID_KEY_RELATIVE_PATH
+    if id_key_path is not None and _absolute_lexical_path(id_key_path) != key_path:
+        raise ValueError("RAVDESS authorization requires the canonical private key")
+    if not output.is_dir() or output.is_symlink():
+        raise ValueError("committed RAVDESS semantic23 generation is missing or unsafe")
+    trials_root = output / "trials"
+    if not trials_root.is_dir() or trials_root.is_symlink():
+        raise ValueError("committed RAVDESS trial directory is missing or unsafe")
+    parent_descriptor, parent_identity = _open_output_parent(output.parent)
+    descriptors = ExitStack()
+    descriptors.callback(os.close, parent_descriptor)
+    lock_name = f".{output.name}.lock"
+    lock_descriptor: int | None = None
+    lock_identity: tuple[int, int] | None = None
+    output_descriptor: int | None = None
+    trials_descriptor: int | None = None
+    snapshots: list[
+        tuple[int, str, Path, tuple[int, ...], str]
+    ] = []
+    try:
+        lock_descriptor, lock_identity = _acquire_output_lock(
+            parent_descriptor, lock_name, create_if_missing=False
+        )
+        _assert_no_unresolved_ravdess_state(parent_descriptor, output.name)
+        output_descriptor = _open_directory_at(
+            parent_descriptor, output.name, "committed RAVDESS generation"
+        )
+        descriptors.callback(os.close, output_descriptor)
+        output_tree_identity, _ = _snapshot_exact_owner_directory(
+            output_descriptor,
+            ("manifest.json", "trials"),
+            "committed RAVDESS generation",
+        )
+        trials_descriptor = _open_directory_at(
+            output_descriptor, "trials", "committed RAVDESS trial cache"
+        )
+        descriptors.callback(os.close, trials_descriptor)
+        private_key = _load_private_id_key(key_path)
+        key_status = os.stat(key_path, follow_symlinks=False)
+        key_snapshot = _private_key_stat_identity(key_status)
+        live_inventory = audit_ravdess_inventory(
+            root, expectation=FROZEN_RAVDESS_INVENTORY
+        )
+        expected_actor_by_trial: dict[str, str] = {}
+        for member_name, source_sha256 in live_inventory.member_sha256.items():
+            trial_id = opaque_trial_id(source_sha256, key=private_key)
+            actor_id = opaque_actor_id(
+                _actor_token_from_name(Path(member_name)), key=private_key
+            )
+            if trial_id in expected_actor_by_trial:
+                raise ValueError("RAVDESS live archive repeats an opaque trial ID")
+            expected_actor_by_trial[trial_id] = actor_id
+        manifest_path = output / "manifest.json"
+        manifest_bytes, manifest_sha256, manifest_identity = (
+            _read_owner_only_regular(
+                Path("manifest.json"), "RAVDESS manifest",
+                max_bytes=_MAX_RAVDESS_MANIFEST_BYTES,
+                parent_descriptor=output_descriptor,
+            )
+        )
+        snapshots.append((
+            output_descriptor, "manifest.json", manifest_path,
+            manifest_identity, "RAVDESS manifest",
+        ))
+        manifest = _load_unique_json_object(manifest_bytes, "RAVDESS manifest")
+        if set(manifest) != _AUTHORIZED_MANIFEST_FIELDS:
+            raise ValueError("RAVDESS manifest field schema is not exact")
+        expectation = FROZEN_RAVDESS_INVENTORY
+        expected_inventory = {
+            "archive_size_bytes": expectation.archive_size,
+            "archive_md5": expectation.archive_md5,
+            "csv_trials": expectation.csv_files,
+            "actors": expectation.actors,
+            "source_frames": expectation.frames,
+            "header_sha256": expectation.header_sha256,
+            "empty_trials": expectation.empty_trials,
+            "repeated_headers": expectation.repeated_headers,
+        }
+        exact_values = {
+            "format_version": 1,
+            "schema": SEMANTIC23_SCHEMA,
+            "feature_names": list(SEMANTIC23_FEATURE_NAMES),
+            "feature_definitions": [asdict(item) for item in SEMANTIC23_DEFINITIONS],
+            "source_dataset": "RAVDESS Facial Landmark Tracking",
+            "license": "CC BY-NC-SA 4.0",
+            "permitted_role": "non_clinical_healthy_motion_pretraining_only",
+            "clinical_claim": "not_a_facial_palsy_or_house_brackmann_validation_cohort",
+            "adapter": dict(OPENFACE68_ADAPTER_METADATA),
+            "filter": {
+                "confidence_operator": ">=",
+                "confidence_threshold": DEFAULT_CONFIDENCE_THRESHOLD,
+                "required_coordinates": "finite_openface68_semantic_anchor_coordinates",
+            },
+            "timeline_policy": {
+                "source_rows_preserved": True,
+                "timestamps_preserved": True,
+                "detector_gaps_preserved_in_valid_mask": True,
+                "interpolation": "none",
+                "masked_feature_storage": "zeros_with_required_valid_mask",
+            },
+            "provenance_policy": {
+                "actor_id": "private_hmac_sha256_base32",
+                "trial_id": "private_hmac_source_content_sha256_base32",
+                "cache_integrity_id": (
+                    "private_hmac_trial_id_actor_id_cache_sha256_base32"
+                ),
+                "source_binding": "verified_archive_member_bytes_single_read",
+                "raw_paths_or_filenames_in_manifest": False,
+            },
+            "inventory": expected_inventory,
+        }
+        if any(
+            name not in manifest
+            or not _json_exact_equal(manifest[name], value)
+            for name, value in exact_values.items()
+        ):
+            raise ValueError("RAVDESS manifest policy or frozen inventory is noncanonical")
+        raw_rows = manifest.get("trials")
+        if not isinstance(raw_rows, list) or len(raw_rows) != expectation.csv_files:
+            raise ValueError("RAVDESS manifest trial set is incomplete")
+        rows: list[dict[str, str]] = []
+        for value in raw_rows:
+            if not isinstance(value, dict) or set(value) != _AUTHORIZED_TRIAL_FIELDS:
+                raise ValueError("RAVDESS trial row field schema is not exact")
+            row = {name: value[name] for name in _AUTHORIZED_TRIAL_FIELDS}
+            if (
+                not isinstance(row["trial_id"], str)
+                or _TRIAL_ID.fullmatch(row["trial_id"]) is None
+                or not isinstance(row["actor_id"], str)
+                or _ACTOR_ID.fullmatch(row["actor_id"]) is None
+                or not isinstance(row["cache_integrity_id"], str)
+                or _CACHE_ID.fullmatch(row["cache_integrity_id"]) is None
+            ):
+                raise ValueError("RAVDESS trial row contains a noncanonical opaque ID")
+            rows.append(row)
+        if rows != sorted(rows, key=lambda item: item["trial_id"]):
+            raise ValueError("RAVDESS trial rows are not in canonical keyed order")
+        trial_ids = [row["trial_id"] for row in rows]
+        if len(set(trial_ids)) != len(trial_ids):
+            raise ValueError("RAVDESS manifest repeats a trial")
+        if set(trial_ids) != set(expected_actor_by_trial):
+            raise ValueError("RAVDESS manifest trial IDs do not match the live archive")
+        if any(
+            not hmac.compare_digest(
+                row["actor_id"], expected_actor_by_trial[row["trial_id"]]
+            )
+            for row in rows
+        ):
+            raise ValueError("RAVDESS trial/group join does not match the live archive")
+        if len({row["actor_id"] for row in rows}) != expectation.actors:
+            raise ValueError("RAVDESS actor grouping is incomplete")
+        expected_names = {f"{trial_id}.npz" for trial_id in trial_ids}
+        trials_tree_identity, cache_name_tuple = _snapshot_exact_owner_directory(
+            trials_descriptor,
+            tuple(sorted(expected_names)),
+            "committed RAVDESS trial cache",
+        )
+        cache_names = list(cache_name_tuple)
+        authorized_trials: list[AuthorizedRavdessTrial] = []
+        closure_rows: list[dict[str, object]] = []
+        source_frames = valid_frames = 0
+        rows_by_trial = {row["trial_id"]: row for row in rows}
+        for name in cache_names:
+            path = trials_root / name
+            row = rows_by_trial[path.stem]
+            cache_bytes, cache_sha256, cache_identity = _read_owner_only_regular(
+                Path(name), "RAVDESS semantic23 cache",
+                max_bytes=_MAX_RAVDESS_CACHE_RAW_BYTES,
+                parent_descriptor=trials_descriptor,
+            )
+            snapshots.append((
+                trials_descriptor, name, path, cache_identity,
+                "RAVDESS semantic23 cache",
+            ))
+            expected_cache_id = _opaque_cache_integrity_id(
+                cache_sha256,
+                trial_id=row["trial_id"],
+                actor_id=row["actor_id"],
+                key=private_key,
+            )
+            if not hmac.compare_digest(expected_cache_id, row["cache_integrity_id"]):
+                raise ValueError("RAVDESS cache integrity ID does not bind cache bytes")
+            trial = _validate_authorized_ravdess_cache(
+                cache_bytes,
+                trial_id=row["trial_id"], actor_id=row["actor_id"],
+                cache_integrity_id=row["cache_integrity_id"],
+                cache_sha256=cache_sha256,
+            )
+            authorized_trials.append(trial)
+            source_frames += len(trial.features)
+            valid_frames += int(trial.valid_mask.sum())
+            closure_rows.append({
+                "trial_id": trial.trial_id,
+                "actor_id": trial.actor_id,
+                "cache_integrity_id": trial.cache_integrity_id,
+                "cache_sha256": cache_sha256,
+                "cache_size_bytes": len(cache_bytes),
+            })
+        quality = manifest.get("quality_control")
+        if not _json_exact_equal(quality, {
+            "source_frames": source_frames,
+            "valid_frames": valid_frames,
+            "invalid_frames": source_frames - valid_frames,
+        }) or source_frames != expectation.frames:
+            raise ValueError("RAVDESS aggregate frame counts do not close")
+        material = json.dumps({
+            "manifest_sha256": manifest_sha256,
+            "trials": closure_rows,
+        }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+        closure_hmac = hmac.new(
+            private_key,
+            b"ravdess-semantic23-committed-generation-v1\0" + material,
+            hashlib.sha256,
+        ).hexdigest()
+        repeated_inventory = audit_ravdess_inventory(
+            root, expectation=FROZEN_RAVDESS_INVENTORY
+        )
+        if repeated_inventory != live_inventory:
+            raise ValueError("RAVDESS live archive changed during authorization")
+        final_key = _load_private_id_key(key_path)
+        final_key_status = os.stat(key_path, follow_symlinks=False)
+        if (
+            not hmac.compare_digest(final_key, private_key)
+            or _private_key_stat_identity(final_key_status) != key_snapshot
+        ):
+            raise ValueError("RAVDESS private key changed before authorization returned")
+        _assert_no_unresolved_ravdess_state(parent_descriptor, output.name)
+        for descriptor, name, path, identity, field in snapshots:
+            _assert_owner_snapshot_at(descriptor, name, identity, field)
+            _assert_owner_snapshot(path, identity, field)
+        final_trials_tree_identity, _ = _snapshot_exact_owner_directory(
+            trials_descriptor,
+            tuple(sorted(expected_names)),
+            "committed RAVDESS trial cache",
+        )
+        if final_trials_tree_identity != trials_tree_identity:
+            raise ValueError("committed RAVDESS trial directory changed during authorization")
+        final_output_tree_identity, _ = _snapshot_exact_owner_directory(
+            output_descriptor,
+            ("manifest.json", "trials"),
+            "committed RAVDESS generation",
+        )
+        if final_output_tree_identity != output_tree_identity:
+            raise ValueError("committed RAVDESS generation changed during authorization")
+        return AuthorizedRavdessGeneration(
+            schema=SEMANTIC23_SCHEMA,
+            manifest_sha256=manifest_sha256,
+            generation_closure_hmac=closure_hmac,
+            trial_count=len(authorized_trials),
+            actor_count=len({trial.actor_id for trial in authorized_trials}),
+            source_frames=source_frames,
+            valid_frames=valid_frames,
+            expected_trial_count=expectation.csv_files,
+            expected_actor_count=expectation.actors,
+            trials=tuple(authorized_trials),
+            private_key=private_key,
+        )
+    finally:
+        try:
+            if lock_descriptor is not None and lock_identity is not None:
+                _release_output_lock(
+                    output.parent, parent_descriptor, parent_identity,
+                    lock_name, lock_descriptor, lock_identity,
+                )
+        finally:
+            descriptors.__exit__(*sys.exc_info())
+
+
 def _safe_entry_name(value: str) -> str:
     if (not isinstance(value, str) or not value or value in {".", ".."}
             or Path(value).name != value):
@@ -592,19 +1555,33 @@ def _directory_identity(value: os.stat_result) -> tuple[int, int]:
     return int(value.st_dev), int(value.st_ino)
 
 
+def _is_safe_output_parent(value: os.stat_result) -> bool:
+    return (
+        stat.S_ISDIR(value.st_mode)
+        and int(value.st_uid) == os.geteuid()
+        and stat.S_IMODE(value.st_mode) & 0o022 == 0
+    )
+
+
 def _assert_output_parent_identity(
     parent_path: Path,
     parent_descriptor: int,
     identity: tuple[int, int],
 ) -> None:
     opened = os.fstat(parent_descriptor)
-    if not stat.S_ISDIR(opened.st_mode) or _directory_identity(opened) != identity:
+    if (
+        not _is_safe_output_parent(opened)
+        or _directory_identity(opened) != identity
+    ):
         raise ValueError("held output parent directory changed identity")
     try:
         current = os.stat(parent_path, follow_symlinks=False)
     except FileNotFoundError as exc:
         raise ValueError("output parent lexical path disappeared") from exc
-    if not stat.S_ISDIR(current.st_mode) or _directory_identity(current) != identity:
+    if (
+        not _is_safe_output_parent(current)
+        or _directory_identity(current) != identity
+    ):
         raise ValueError("output parent lexical path changed identity")
 
 
@@ -613,8 +1590,10 @@ def _open_output_parent(parent_path: Path) -> tuple[int, tuple[int, int]]:
         before = os.stat(parent_path, follow_symlinks=False)
     except FileNotFoundError as exc:
         raise ValueError("trusted output parent directory must already exist") from exc
-    if not stat.S_ISDIR(before.st_mode):
-        raise ValueError("trusted output parent must be a non-symlink directory")
+    if not _is_safe_output_parent(before):
+        raise ValueError(
+            "trusted output parent must be current-owner and not group/world-writable"
+        )
     try:
         descriptor = os.open(
             parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -628,7 +1607,7 @@ def _open_output_parent(parent_path: Path) -> tuple[int, tuple[int, int]]:
     try:
         opened = os.fstat(descriptor)
         identity = _directory_identity(opened)
-        if (not stat.S_ISDIR(opened.st_mode)
+        if (not _is_safe_output_parent(opened)
                 or identity != _directory_identity(before)):
             raise ValueError("output parent changed while its directory fd was opened")
         _assert_output_parent_identity(parent_path, descriptor, identity)
@@ -644,6 +1623,33 @@ def _entry_stat(parent_descriptor: int, name: str) -> os.stat_result | None:
         return os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     except FileNotFoundError:
         return None
+
+
+def _open_directory_at(parent_descriptor: int, name: str, field: str) -> int:
+    name = _safe_entry_name(name)
+    descriptor = os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=parent_descriptor,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(
+            name, dir_fd=parent_descriptor, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or int(opened.st_uid) != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+            or not stat.S_ISDIR(current.st_mode)
+            or int(current.st_uid) != os.geteuid()
+            or stat.S_IMODE(current.st_mode) != 0o700
+            or _directory_identity(opened) != _directory_identity(current)
+        ):
+            raise ValueError(f"{field} is not an anchored owner-only directory")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _create_directory_at(
@@ -760,58 +1766,75 @@ def _write_cache_at(
         os.close(descriptor)
 
 
-def _remove_tree_at(parent_descriptor: int, name: str) -> bool:
-    name = _safe_entry_name(name)
-    info = _entry_stat(parent_descriptor, name)
-    if info is None:
-        return False
-    if stat.S_ISDIR(info.st_mode):
-        descriptor = os.open(
-            name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=parent_descriptor,
+def _assert_no_unresolved_ravdess_state(
+    parent_descriptor: int,
+    output_name: str,
+) -> None:
+    output_name = _safe_entry_name(output_name)
+    residue_prefixes = (
+        f".{output_name}.staging-",
+        f".{output_name}.backup-",
+        f".{output_name}.tmp-",
+    )
+    residue_names = {
+        f".{output_name}.transaction.json",
+        f".{output_name}.journal.json",
+    }
+    if any(
+        name in residue_names or name.startswith(residue_prefixes)
+        for name in os.listdir(parent_descriptor)
+    ):
+        raise RuntimeError(
+            "RAVDESS authorization rejects unresolved transaction state"
         )
-        try:
-            for child in os.listdir(descriptor):
-                _remove_tree_at(descriptor, child)
-        finally:
-            os.close(descriptor)
-        os.rmdir(name, dir_fd=parent_descriptor)
-    else:
-        os.unlink(name, dir_fd=parent_descriptor)
-    os.fsync(parent_descriptor)
-    return True
 
 
 def _acquire_output_lock(
     parent_descriptor: int,
     lock_name: str,
+    *,
+    create_if_missing: bool = True,
 ) -> tuple[int, tuple[int, int]]:
     lock_name = _safe_entry_name(lock_name)
     created = False
-    try:
-        descriptor = os.open(
-            lock_name,
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=parent_descriptor,
-        )
-        created = True
-    except FileExistsError:
+    if not create_if_missing:
         try:
             descriptor = os.open(
-                lock_name,
-                os.O_RDWR | os.O_NOFOLLOW,
+                lock_name, os.O_RDONLY | os.O_NOFOLLOW,
                 dir_fd=parent_descriptor,
             )
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "committed authorization requires the existing producer lock"
+            ) from exc
         except OSError as exc:
             if exc.errno == errno.ELOOP:
                 raise ValueError("output lock must not be a symlink") from exc
             raise
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise ValueError("output lock must not be a symlink") from exc
-        raise
+    else:
+        try:
+            descriptor = os.open(
+                lock_name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+            created = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(
+                    lock_name,
+                    os.O_RDWR | os.O_NOFOLLOW,
+                    dir_fd=parent_descriptor,
+                )
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise ValueError("output lock must not be a symlink") from exc
+                raise
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError("output lock must not be a symlink") from exc
+            raise
     try:
         if created:
             os.fchmod(descriptor, 0o600)
@@ -822,6 +1845,8 @@ def _acquire_output_lock(
             raise ValueError("output lock must be owned by the current user")
         if stat.S_IMODE(info.st_mode) != 0o600:
             raise ValueError("output lock permissions must be exactly 0600")
+        if int(info.st_nlink) != 1:
+            raise ValueError("output lock must have exactly one hard link")
         identity = (int(info.st_dev), int(info.st_ino))
         current = os.stat(
             lock_name, dir_fd=parent_descriptor, follow_symlinks=False
@@ -829,6 +1854,7 @@ def _acquire_output_lock(
         if (not stat.S_ISREG(current.st_mode)
                 or int(current.st_uid) != os.geteuid()
                 or stat.S_IMODE(current.st_mode) != 0o600
+                or int(current.st_nlink) != 1
                 or (int(current.st_dev), int(current.st_ino)) != identity):
             raise ValueError("output lock path identity or stat changed during open")
         try:
@@ -844,6 +1870,7 @@ def _acquire_output_lock(
         if (not stat.S_ISREG(after.st_mode)
                 or int(after.st_uid) != os.geteuid()
                 or stat.S_IMODE(after.st_mode) != 0o600
+                or int(after.st_nlink) != 1
                 or (int(after.st_dev), int(after.st_ino)) != identity):
             raise ValueError("output lock identity or stat changed during acquisition")
         current = os.stat(
@@ -852,6 +1879,7 @@ def _acquire_output_lock(
         if (not stat.S_ISREG(current.st_mode)
                 or int(current.st_uid) != os.geteuid()
                 or stat.S_IMODE(current.st_mode) != 0o600
+                or int(current.st_nlink) != 1
                 or (int(current.st_dev), int(current.st_ino)) != identity):
             raise ValueError("output lock path identity or stat changed during acquisition")
         if created:
@@ -882,6 +1910,7 @@ def _release_output_lock(
         if (not stat.S_ISREG(current.st_mode)
                 or int(current.st_uid) != os.geteuid()
                 or stat.S_IMODE(current.st_mode) != 0o600
+                or int(current.st_nlink) != 1
                 or (int(current.st_dev), int(current.st_ino)) != identity):
             raise ValueError("output lock path identity or stat changed before release")
         _assert_output_parent_identity(
@@ -898,13 +1927,26 @@ def _publish_directory_no_replace(
     parent_descriptor: int,
     stage_name: str,
     destination_name: str,
+    expected_stage_identity: tuple[int, int],
 ) -> None:
     """Atomically publish two entries anchored to one trusted parent fd."""
     stage_name = _safe_entry_name(stage_name)
     destination_name = _safe_entry_name(destination_name)
+    if (
+        type(expected_stage_identity) is not tuple
+        or len(expected_stage_identity) != 2
+        or any(type(item) is not int for item in expected_stage_identity)
+    ):
+        raise ValueError("expected staging identity is malformed")
     staged = _entry_stat(parent_descriptor, stage_name)
-    if staged is None or not stat.S_ISDIR(staged.st_mode):
-        raise ValueError("staged generation must be a directory")
+    if (
+        staged is None
+        or not stat.S_ISDIR(staged.st_mode)
+        or int(staged.st_uid) != os.geteuid()
+        or stat.S_IMODE(staged.st_mode) != 0o700
+        or _directory_identity(staged) != expected_stage_identity
+    ):
+        raise ValueError("staged generation changed identity before publication")
     if _entry_stat(parent_descriptor, destination_name) is not None:
         raise FileExistsError(
             f"derived semantic23 output already exists: {destination_name}"
@@ -939,7 +1981,13 @@ def _publish_directory_no_replace(
             )
         raise OSError(error, os.strerror(error), destination_name)
     published = _entry_stat(parent_descriptor, destination_name)
-    if published is None or _directory_identity(published) != _directory_identity(staged):
+    if (
+        published is None
+        or not stat.S_ISDIR(published.st_mode)
+        or int(published.st_uid) != os.geteuid()
+        or stat.S_IMODE(published.st_mode) != 0o700
+        or _directory_identity(published) != expected_stage_identity
+    ):
         raise ValueError("published output changed identity during anchored rename")
     os.fsync(parent_descriptor)
 
@@ -1012,6 +2060,8 @@ def build_generation_from_audited_sources(
     private_key = _private_id_key(id_key)
     _assert_output_path_safe_under_root(source_root, output)
     parent_descriptor, parent_identity = _open_output_parent(output.parent)
+    descriptors = ExitStack()
+    descriptors.callback(os.close, parent_descriptor)
     lock_name = f".{output.name}.lock"
     stage_name = f".{output.name}.staging-{uuid.uuid4().hex}"
     lock_descriptor: int | None = None
@@ -1020,6 +2070,7 @@ def build_generation_from_audited_sources(
     trials_descriptor: int | None = None
     stage_identity: tuple[int, int] | None = None
     committed = False
+    pending_error: BaseException | None = None
     try:
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
@@ -1034,6 +2085,7 @@ def build_generation_from_audited_sources(
         )
         if _entry_stat(parent_descriptor, output.name) is not None:
             raise FileExistsError(f"derived semantic23 output already exists: {output}")
+        _assert_no_unresolved_ravdess_state(parent_descriptor, output.name)
         archive_path = source_root / RAVDESS_ARCHIVE_RELATIVE_PATH
         expected_inventory = asdict(expectation)
         observed_inventory = _inventory_values(inventory)
@@ -1054,7 +2106,9 @@ def build_generation_from_audited_sources(
                 f"staging path already exists: {stage_name}"
             ) from exc
         stage_identity = _directory_identity(os.fstat(stage_descriptor))
+        descriptors.callback(os.close, stage_descriptor)
         trials_descriptor = _create_directory_at(stage_descriptor, "trials")
+        descriptors.callback(os.close, trials_descriptor)
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
         )
@@ -1110,8 +2164,10 @@ def build_generation_from_audited_sources(
                     records.append({
                         "trial_id": trial_id,
                         "actor_id": actor_id,
-                        "cache_integrity_id": _opaque_id(
-                            "cache-integrity", cache_sha256, "cache",
+                        "cache_integrity_id": _opaque_cache_integrity_id(
+                            cache_sha256,
+                            trial_id=trial_id,
+                            actor_id=actor_id,
                             key=private_key,
                         ),
                     })
@@ -1150,7 +2206,9 @@ def build_generation_from_audited_sources(
             "provenance_policy": {
                 "actor_id": "private_hmac_sha256_base32",
                 "trial_id": "private_hmac_source_content_sha256_base32",
-                "cache_integrity_id": "private_hmac_cache_sha256_base32",
+                "cache_integrity_id": (
+                    "private_hmac_trial_id_actor_id_cache_sha256_base32"
+                ),
                 "source_binding": "verified_archive_member_bytes_single_read",
                 "raw_paths_or_filenames_in_manifest": False,
             },
@@ -1183,7 +2241,7 @@ def build_generation_from_audited_sources(
             output.parent, parent_descriptor, parent_identity
         )
         _publish_directory_no_replace(
-            parent_descriptor, stage_name, output.name
+            parent_descriptor, stage_name, output.name, stage_identity
         )
         _assert_output_parent_identity(
             output.parent, parent_descriptor, parent_identity
@@ -1206,37 +2264,36 @@ def build_generation_from_audited_sources(
         )
         committed = True
         return manifest
+    except BaseException as caught:
+        pending_error = caught
+        raise
     finally:
-        if trials_descriptor is not None:
-            os.close(trials_descriptor)
-        if stage_descriptor is not None:
-            os.close(stage_descriptor)
+        cleanup_error: BaseException | None = None
         try:
-            if not committed and stage_identity is not None:
-                published = _entry_stat(parent_descriptor, output.name)
-                if (published is not None
-                        and _directory_identity(published) == stage_identity):
-                    _remove_tree_at(parent_descriptor, output.name)
-                staged = _entry_stat(parent_descriptor, stage_name)
-                if staged is not None:
-                    if _directory_identity(staged) != stage_identity:
-                        raise ValueError(
-                            "staging entry changed identity before cleanup"
-                        )
-                    _remove_tree_at(parent_descriptor, stage_name)
-        finally:
-            try:
-                if lock_descriptor is not None and lock_identity is not None:
-                    _release_output_lock(
-                        output.parent,
-                        parent_descriptor,
-                        parent_identity,
-                        lock_name,
-                        lock_descriptor,
-                        lock_identity,
-                    )
-            finally:
-                os.close(parent_descriptor)
+            if lock_descriptor is not None and lock_identity is not None:
+                _release_output_lock(
+                    output.parent,
+                    parent_descriptor,
+                    parent_identity,
+                    lock_name,
+                    lock_descriptor,
+                    lock_identity,
+                )
+        except BaseException as caught:
+            cleanup_error = caught
+        try:
+            descriptors.close()
+        except BaseException as caught:
+            if cleanup_error is None:
+                cleanup_error = caught
+        if pending_error is not None and stage_identity is not None and not committed:
+            raise RuntimeError(
+                "RAVDESS generation storage is retained as indeterminate"
+            ) from pending_error
+        if pending_error is not None and cleanup_error is not None:
+            raise pending_error from cleanup_error
+        if pending_error is None and cleanup_error is not None:
+            raise cleanup_error
 
 
 def prepare_ravdess_semantic23(
@@ -1309,6 +2366,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "AuthorizedRavdessGeneration",
+    "AuthorizedRavdessTrial",
     "DEFAULT_CONFIDENCE_THRESHOLD",
     "FROZEN_RAVDESS_INVENTORY",
     "RAVDESS_ARCHIVE_RELATIVE_PATH",
@@ -1317,6 +2376,7 @@ __all__ = [
     "RavdessInventoryExpectation",
     "SemanticTrial",
     "audit_ravdess_inventory",
+    "authorize_committed_ravdess_semantic23",
     "build_generation_from_audited_sources",
     "load_or_create_private_id_key",
     "opaque_actor_id",
