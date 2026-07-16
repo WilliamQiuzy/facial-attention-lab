@@ -13,6 +13,49 @@
 ## Frozen scientific and data contracts
 
 - RAVDESS input is `semantic23_v1`, all 2,452 trials and all 24 actor groups. No trial is excluded for being shorter than 128 frames: observed canonical lengths are 88–191 frames.
+- RAVDESS scientific identity and member/content topology are frozen: each validated archive member is one source unit. The verified inventory has exactly 2,452 unique archive member names, 2,451 unique member-byte SHA-256 digests, one duplicate-content group, one member beyond unique content, maximum content multiplicity two, and zero cross-actor duplicate-content groups. The sole duplicate-content group contains two distinct valid members from the same actor; both members are retained as separate trials with no content deduplication or exclusion. Any drift in those aggregate counts, multiplicities, or actor topology fails closed and requires renewed review.
+- RAVDESS v2 trial identity is generated only by one shared helper used by both the generator and committed-generation authorizer. `member_name` is the exact `ZipInfo.filename` string, with no `Path` coercion, Unicode normalization, case-folding, or other rewrite; `type(member_name) is str`, `member_name.isascii()`, and `re.fullmatch(r"[0-9]{2}(?:-[0-9]{2}){6}\.csv", member_name)` must all succeed. `source_content_sha256` is a type-exact string satisfying `re.fullmatch(r"[0-9a-f]{64}", source_content_sha256)`, and `key` is the exact canonical RAVDESS key with `type(key) is bytes` and `len(key) == 32`. The helper is exactly:
+
+  ```python
+  body = json.dumps(
+      {"archive_member_name": member_name, "source_content_sha256": source_content_sha256},
+      sort_keys=True,
+      separators=(",", ":"),
+      ensure_ascii=True,
+      allow_nan=False,
+  ).encode("ascii")
+  mac = hmac.new(
+      key,
+      b"ravdess-semantic23-trial-id-v2\x00" + body,
+      hashlib.sha256,
+  ).digest()
+  token = base64.b32encode(mac).decode("ascii").lower().rstrip("=")[:16]
+  trial_id = "trial_" + token
+  ```
+
+  Each caller recomputes the helper from the exact validated member name and the SHA-256 of the same single-read verified member bytes used for validation and parsing. Caller-provided trial IDs or source digests, every v1 ID or provenance policy, content-only identity, alternate serialization, and alternate normalization are rejected. The required known-answer vector is key `b"k" * 32`, member name `01-01-01-01-01-01-01.csv`, and source digest of 64 lowercase zeroes, producing `trial_o457alx6gmxoxyak`. Raw member names and source digests are prohibited from persisted artifacts, logs, stdout, and stderr.
+- The RAVDESS manifest has type-exact integer `format_version=2` (`type(format_version) is int`, so `bool` is rejected) and exact type-preserving equality with `provenance_policy={"actor_id":"private_hmac_sha256_base32","cache_integrity_id":"private_hmac_trial_id_actor_id_cache_sha256_base32","raw_paths_or_filenames_in_manifest":false,"raw_source_content_sha256_in_manifest":false,"source_binding":"verified_archive_member_name_and_bytes_single_read","trial_id":"private_hmac_archive_member_name_source_content_sha256_base32_v2"}`. Its v2 inventory retains every existing frozen aggregate field and adds exactly the six frozen topology fields, yielding this exact field union and values:
+
+  ```json
+  {
+    "archive_size_bytes": 417163019,
+    "archive_md5": "5753bbc64a9a790f8a8d3e03cba526ee",
+    "csv_trials": 2452,
+    "actors": 24,
+    "source_frames": 299854,
+    "header_sha256": "d89e2164e4c4e8d60393f88365ef0e87a10bef227dc90dc1d431117a74991b4e",
+    "empty_trials": 0,
+    "repeated_headers": 0,
+    "unique_archive_member_names": 2452,
+    "unique_source_content_sha256s": 2451,
+    "duplicate_content_groups": 1,
+    "members_beyond_unique_content": 1,
+    "max_content_multiplicity": 2,
+    "cross_actor_duplicate_content_groups": 0
+  }
+  ```
+
+  All numeric values are type-exact integers and both digests are type-exact lowercase strings. Missing or extra fields, different names/types/values, member-name maps or arrays, and member digests fail closed. The generator and authorizer require the identical exact field union; no archive member name or member-byte digest may persist.
 - RAVDESS emits one `(4,32,23)` packet per trial. Window starts are `floor(i * (T - 32) / 3)` for `i=0..3`; overlap is allowed for short trials and must be recorded, not hidden.
 - Mayo input is the full retained set of 48 unique long recordings from the homogeneous MediaPipe VIDEO-mode cache. The 13 legacy exports remain audit-only and are never reused.
 - Mayo emits exactly 16 `(4,32,95)` packets per recording, or 768 samples total. For `M=64`, starts are `floor(j * (T - 32) / 63)` for `j=0..63`; packet `k` uses starts `k`, `k+16`, `k+32`, `k+48`.
@@ -188,7 +231,35 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 - [ ] **Step 1: Write failing RAVDESS authorization tests.**
 
-  Given `derived_semantic23/manifest.json`, its owner-only `.semantic23_private_id_key`, and `trials/*.npz`, require exact manifest fields, `semantic23_v1` names/order, 2,452 unique opaque trials, 24 actor groups, exact cache filenames, recomputed private-key cache integrity IDs, safe NPZ fields, and the frozen aggregate counts. Reject a changed manifest, cache byte, key identity/mode, trial/group join, duplicate ID, raw filename/path, or partial generation. Require the held-descriptor 4-MiB manifest pre-read limit, type-exact nested JSON comparison, pre-NumPy NPZ resource bounds, and rejection of payload-bearing directory records.
+  Given `derived_semantic23/manifest.json`, its owner-only `.semantic23_private_id_key`, and `trials/*.npz`, require exact manifest fields, type-exact integer `format_version=2`, exact type-preserving provenance-policy equality, `semantic23_v1` names/order, 2,452 unique opaque trials, 24 actor groups, exact cache filenames, recomputed private-key cache integrity IDs, safe NPZ fields, and the exact inventory union frozen above. Assert the exact six topology keys, integer types, and values in addition to all eight existing aggregate fields. Reject a changed manifest, cache byte, key identity/mode, trial/group join, duplicate ID, raw filename/path, missing/extra/wrongly typed inventory field, or partial generation. Require the held-descriptor 4-MiB manifest pre-read limit, type-exact nested JSON comparison, pre-NumPy NPZ resource bounds, and rejection of payload-bearing directory records.
+
+  Require the read-only RAVDESS inventory CLI to emit one JSON document whose parsed value is exactly the following object, with no missing or extra output fields:
+
+  ```json
+  {
+    "status": "audit_ok",
+    "archive_size_bytes": 417163019,
+    "archive_md5": "5753bbc64a9a790f8a8d3e03cba526ee",
+    "csv_trials": 2452,
+    "actors": 24,
+    "source_frames": 299854,
+    "header_sha256": "d89e2164e4c4e8d60393f88365ef0e87a10bef227dc90dc1d431117a74991b4e",
+    "empty_trials": 0,
+    "repeated_headers": 0,
+    "unique_archive_member_names": 2452,
+    "unique_source_content_sha256s": 2451,
+    "duplicate_content_groups": 1,
+    "members_beyond_unique_content": 1,
+    "max_content_multiplicity": 2,
+    "cross_actor_duplicate_content_groups": 0
+  }
+  ```
+
+  Add a synthetic same-actor archive fixture containing two distinct exact validated `ZipInfo.filename` values with identical CSV bytes. Assert the known-answer vector `b"k" * 32`, `01-01-01-01-01-01-01.csv`, and 64 lowercase zeroes gives `trial_o457alx6gmxoxyak`; reject non-ASCII, Unicode-normalized/coerced, path-like, wrong-case/shape names or digests, and a noncanonical/wrong-length key. Generator followed by committed authorization must call the same shared v2 helper and independently recompute from each exact name plus the digest of the same single-read verified bytes, retaining two unique opaque trial IDs and two unique cache IDs joined to the same opaque actor, with no deduplication or exclusion. Reject a valid-shaped v1 manifest/ID/policy and a nominal v2 manifest that uses the old content-only ID, wrong v2 serialization/prefix/policy, a caller-provided ID/digest, or any other construction.
+
+  Force two distinct validated members to receive the same final 80-bit token and require a generic fail-closed collision error before any cache filename is opened, any manifest is written, or any staging or canonical generation is created. Never overwrite, deduplicate, skip, or continue after the collision. Any already-existing transaction residue must remain owner-only and unchanged, and it must block retry before new staging or output work.
+
+  Scan every artifact filename and payload, including NPZ/ZIP entry names and decompressed payloads, plus exceptions, captured logs, stdout, and stderr for each raw member name and source digest as text; the raw 32 digest bytes; lower- and upper-case hexadecimal; Base64; and reversible hex encodings of the raw name, digest text, and digest bytes. Inject each representation into every applicable surface and require rejection. Only the opaque HMAC-derived IDs may survive; zero raw or reversibly encoded matches are allowed.
 
 - [ ] **Step 2: Write failing Mayo authorization tests.**
 
@@ -235,6 +306,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
 - [ ] **Step 5: Implement same-file-descriptor snapshot authorization.**
 
   Authorize manifests, keys, and every cache from the bytes actually parsed; recheck identity before publication. Use the new narrow public committed-generation wrappers. The wrapper itself must derive its commitment from live bytes and the canonical key; it cannot accept a caller-provided commitment. Apply the shared exact-tree depth/entry/aggregate-byte budgets, require current-owner private transaction parents, enforce the exact Mayo `0700/0600` tree contract through central stat guards and hostile-umask-safe creators, and make every multi-descriptor/multi-root close path attempt all closes while preserving validation and cleanup failures in the exception chain. Compute producer v3 from two matching, strictly bounded canonical live-semantic graph passes around the complete held source-file snapshot closure; tests must mutate positional/keyword defaults, closure cells, referenced globals, and imported dispatch, and must cover deterministic cycles, unsupported referenced values, bounds, and between-pass mutation.
+
+  Implement the single shared byte-exact RAVDESS v2 trial-ID helper frozen above and call that helper from both generation and committed authorization. Each path must validate the exact `ZipInfo.filename`, compute the lowercase source digest from the same single read of the verified member bytes, and reject caller-provided IDs/digests and every v1/content-only policy. Before creating staging or opening a cache filename, precompute the complete opaque-ID set and reject any final 80-bit collision generically. Generator and authorizer must both require type-exact `format_version=2`, the exact provenance policy, and the identical exact eight-existing-plus-six-topology inventory field union.
 
   Harden the RAVDESS source publisher before the bridge consumes it: require and continuously recheck a current-euid, non-symlinked, non-group/world-writable held output parent (the canonical data root may remain mode `0755`); while holding its output lock, reject every stale staging/backup/tmp/journal state before creating a new stage; bind publication to the original held staging device/inode; never delete a staging or canonical generation by pathname after failure; retain prepublication staging and postpublication canonical storage as indeterminate evidence; and make that retained state block the next generation attempt. Its committed-generation authorizer remains strictly read-only.
 
@@ -351,6 +424,57 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 ---
 
+## 2026-07-15 post-audit Task 2 re-entry amendment
+
+The current approved-code parent HEAD is `23cfc27bc841480ab0bde8fd8ff984830fc8aebd`. Task 2 and Task 3 APIs already exist on that parent, so the original historical RED expectations for missing APIs must not be rerun or claimed. The existing failed real-data staging remains untouched evidence throughout all plan and code work below.
+
+1. The current plan-only bytes must receive a full plan review. After approval, commit only this lower plan with `docs(ssl): harden bridge execution plan`, verify that the worktree is clean, and record the resulting plan commit hash.
+
+   ```bash
+   git add facial_paralysis/docs/superpowers/plans/2026-07-15-dynamic-landmark-ssl-bridge.md
+   git commit -m "docs(ssl): harden bridge execution plan"
+   git status --short
+   git rev-parse HEAD
+   ```
+
+   Expected: the plan-only commit succeeds, `git status --short` prints nothing, and the exact resulting hash is recorded before Task 2 re-entry begins.
+
+2. Modify only the already-enumerated Task 2 paths `facial_paralysis/scripts/prepare_ravdess_semantic23.py` and `facial_paralysis/tests/test_openface68_semantic.py`. No other file may change unless this plan is re-amended and reapproved. Add the v2 identity, frozen-topology, known-answer-vector (KAT), collision-preflight, privacy, and CLI tests first.
+
+3. Run the OpenFace semantic suite and observe RED for the exact remaining defects: content-only trial identity, a v1 manifest, and the missing six topology aggregates, KAT, and collision preflight. Record those failures; do not substitute or claim the historical missing-API RED expectations. Existing unrelated tests must stay green.
+
+   ```bash
+   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_openface68_semantic.py
+   ```
+
+4. Implement the minimal v2 repair in those same two files. Then run all four exact suites, compile the six exact Python files, and run `git diff --check`. Commit only the two authorized files with `fix(ravdess): bind trial identity to archive members`, verify that the worktree is clean, and record the resulting code commit hash.
+
+   ```bash
+   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_openface68_semantic.py
+   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_build_mayo_ssl_cache.py
+   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl_bridge.py
+   /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl.py
+   /Users/williamqiu/opt/anaconda3/bin/python3 -m py_compile \
+     facial_paralysis/src/pretraining/dynamic_landmark_ssl_bridge.py \
+     facial_paralysis/src/pretraining/dynamic_landmark_ssl.py \
+     facial_paralysis/scripts/prepare_dynamic_landmark_ssl_inputs.py \
+     facial_paralysis/scripts/pretrain_dynamic_landmarks.py \
+     facial_paralysis/scripts/prepare_ravdess_semantic23.py \
+     facial_paralysis/scripts/build_mayo_ssl_cache.py
+   git diff --check
+   git add facial_paralysis/scripts/prepare_ravdess_semantic23.py \
+     facial_paralysis/tests/test_openface68_semantic.py
+   git commit -m "fix(ravdess): bind trial identity to archive members"
+   git status --short
+   git rev-parse HEAD
+   ```
+
+   Expected: all four suites pass, compilation and `git diff --check` succeed, the code commit contains only the two authorized paths, `git status --short` prints nothing, and the exact resulting hash is recorded.
+
+5. Restart the entire Task 4 exact gate from its first command on the new clean HEAD. Only after that exact gate passes, obtain a fresh specification review and then a security/code review against that exact new HEAD. No real-data mutation, quarantine rename, or retry is allowed until Task 4 is approved. Any further code or scientific change invalidates the gate and both reviews and requires the entire sequence again.
+
+---
+
 ## Task 4: Mandatory pre-data specification and security review gate
 
 **Files:**
@@ -414,7 +538,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
 - [ ] **Step 1: Re-run read-only frozen inventories immediately before mutation.**
 
-  Require RAVDESS `2452/24/299854` and Mayo `65/50/48`, plus the already-reviewed duplicate, short-clip, ARKit, frame, and gap counts.
+  Require RAVDESS `2452/24/299854` plus exact member/content aggregates `unique_archive_member_names=2452`, `unique_source_content_sha256s=2451`, `duplicate_content_groups=1`, `members_beyond_unique_content=1`, `max_content_multiplicity=2`, and `cross_actor_duplicate_content_groups=0`; require Mayo `65/50/48`, plus the already-reviewed duplicate, short-clip, ARKit, frame, and gap counts.
 
   ```bash
   /Users/williamqiu/opt/anaconda3/bin/python3 \
@@ -428,7 +552,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
     --inventory-only
   ```
 
-  Expected: exit 0; RAVDESS `2452/24/299854`; Mayo `65 sessions`, `50 video`, `48 long unique`, `13 legacy`, `35 pending`, `221121 pending frames`, `8 ARKit trajectories`, `58054 ARKit rows`, `24 gaps`.
+  Expected: exit 0; RAVDESS `2452/24/299854`, `unique_archive_member_names=2452`, `unique_source_content_sha256s=2451`, `duplicate_content_groups=1`, `members_beyond_unique_content=1`, `max_content_multiplicity=2`, and `cross_actor_duplicate_content_groups=0`; Mayo `65 sessions`, `50 video`, `48 long unique`, `13 legacy`, `35 pending`, `221121 pending frames`, `8 ARKit trajectories`, `58054 ARKit rows`, `24 gaps`.
 
 - [ ] **Step 2: Generate the canonical RAVDESS semantic23 generation.**
 
