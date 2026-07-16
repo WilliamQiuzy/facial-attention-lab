@@ -981,10 +981,13 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         raise ValueError("unsupported pretraining command")
     from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
 
-    result = inputs_cli._run_mayo_cli_captured(
+    captured = inputs_cli._run_mayo_cli_captured(
         args, lambda: _run_two_stage(args),
     )
-    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    print(captured.json_line)
+    result = json.loads(captured.json_line)
+    if type(result) is not dict:
+        raise ValueError("pretraining result is malformed")
     return result
 
 

@@ -1404,6 +1404,41 @@ def test_mayo_cli_rejects_private_root_in_operation_result(c: Check):
         c.eq(str(observed), "private Mayo command failed")
 
 
+def test_mayo_cli_result_bytes_are_frozen_before_fd_restore(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        mayo_root = parent / "mayo-private-live"
+        args = SimpleNamespace(
+            mayo_data_root=mayo_root,
+            mayo_existing_export_root=parent / "mayo-private-legacy",
+        )
+        mutable_result = {"status": "ok"}
+        captured = cli._run_mayo_cli_captured(
+            args, lambda: mutable_result,
+        )
+        mutable_result["late_private_value"] = str(mayo_root)
+        c.true(hasattr(captured, "json_line"))
+        c.true(str(mayo_root) not in captured.json_line)
+        c.eq(json.loads(captured.json_line), {"status": "ok"})
+
+
+def test_mayo_cli_rejects_json_escaped_unicode_root_result(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        mayo_root = parent / '患者"秘密\\目录'
+        args = SimpleNamespace(
+            mayo_data_root=mayo_root,
+            mayo_existing_export_root=parent / '旧"导出\\目录',
+        )
+        observed = _caught(lambda: cli._run_mayo_cli_captured(
+            args, lambda: {"unexpected_private_value": str(mayo_root)},
+        ))
+        c.true(isinstance(observed, ValueError))
+        c.eq(str(observed), "private Mayo command failed")
+
+
 def test_mayo_cli_capture_recovers_fd_restoration_before_generic_failure(c: Check):
     cli = _load_cli()
     with tempfile.TemporaryDirectory() as temporary:

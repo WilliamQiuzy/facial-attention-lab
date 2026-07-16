@@ -1599,6 +1599,11 @@ class _PrivacyForbidden:
     tokens: tuple[bytes, ...] = dataclass_field(repr=False)
 
 
+@dataclass(frozen=True)
+class _CapturedMayoCommandResult:
+    json_line: str = dataclass_field(repr=False)
+
+
 def _add_token(tokens: set[bytes], value: bytes) -> None:
     if type(value) is bytes and len(value) >= 4:
         tokens.add(value)
@@ -2678,6 +2683,17 @@ def _mayo_cli_root_forbidden(args: argparse.Namespace) -> _PrivacyForbidden:
     for root in (args.mayo_data_root, args.mayo_existing_export_root):
         for representation in _root_text_representations(Path(root)):
             _add_text_variants(tokens, representation)
+            for normalized in dict.fromkeys((
+                representation,
+                unicodedata.normalize("NFC", representation),
+                unicodedata.normalize("NFD", representation),
+            )):
+                escaped = json.dumps(
+                    normalized,
+                    ensure_ascii=True,
+                    allow_nan=False,
+                )[1:-1]
+                _add_token(tokens, escaped.encode("ascii"))
     total = sum(len(token) for token in tokens)
     if not tokens or len(tokens) > 1024 or total > 1024 * 1024:
         raise ValueError("private Mayo command failed")
@@ -2870,7 +2886,7 @@ def _finish_bounded_capture_drain(
 def _run_mayo_cli_captured(
     args: argparse.Namespace,
     operation: Callable[[], object],
-) -> object:
+) -> _CapturedMayoCommandResult:
     """Run one Mayo-consuming command with Python and FD output quarantined."""
     forbidden: _PrivacyForbidden | None = None
     stdout_capture = None
@@ -2890,6 +2906,7 @@ def _run_mayo_cli_captured(
     primary: BaseException | None = None
     cleanup_errors: list[BaseException] = []
     result: object = None
+    result_json_line: str | None = None
     leaked = False
     try:
         try:
@@ -2944,6 +2961,7 @@ def _run_mayo_cli_captured(
                 result_matcher = _ByteMatcher(forbidden.tokens)
                 _state, result_leaked = result_matcher.feed(result_payload)
                 leaked = leaked or result_leaked
+                result_json_line = result_payload.decode("ascii")
         except BaseException as exc:
             primary = exc
     finally:
@@ -3030,9 +3048,14 @@ def _run_mayo_cli_captured(
                     lambda capture=capture: _close_captured_resource(capture),
                 )
 
-    if primary is not None or cleanup_errors or leaked:
+    if (
+        primary is not None
+        or cleanup_errors
+        or leaked
+        or type(result_json_line) is not str
+    ):
         raise ValueError("private Mayo command failed") from None
-    return result
+    return _CapturedMayoCommandResult(json_line=result_json_line)
 
 
 def _run_mayo_cli_operation(args: argparse.Namespace) -> object:
@@ -3176,10 +3199,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _json_line({"created": created, "key_bytes": 32, "mode": "0600"})
         return 0
 
-    result = _run_mayo_cli_captured(
+    captured = _run_mayo_cli_captured(
         args, lambda: _run_mayo_cli_operation(args),
     )
-    _json_line(result)
+    print(captured.json_line)
     return 0
 
 

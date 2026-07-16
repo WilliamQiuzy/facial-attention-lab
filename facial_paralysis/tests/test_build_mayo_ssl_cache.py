@@ -2636,6 +2636,90 @@ def test_coupled_promotion_rejects_unsafe_existing_storage(c: Check):
                 alias.unlink()
 
 
+def test_coupled_promotion_rechecks_old_tree_after_move(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-old-tree-race",
+            b"old-tree-race-storage-salt-01234",
+        )
+
+        def mutate_during_old_output_move(source, destination):
+            if Path(source) == output and ".backup-" in Path(destination).name:
+                sentinel.chmod(0o666)
+            return os.replace(source, destination)
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    replace_func=mutate_during_old_output_move,
+                ),
+                ValueError,
+                "old generation mode drift inside rename hook fails closed",
+            )
+        c.true(output.is_dir(), "old generation remains canonical after rejection")
+        c.eq(sentinel.read_text(), "old-cache")
+        c.eq(exposure.read_text(), "old-exposure")
+        c.true(
+            not (output / "collection_manifest.json").exists(),
+            "new generation remains unpublished",
+        )
+
+
+def test_coupled_promotion_rechecks_old_exposure_after_move(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root, ".cache.staging-old-exposure-race",
+            b"old-exposure-race-storage-salt-0123",
+        )
+
+        def mutate_during_old_exposure_move(source, destination):
+            if Path(source) == exposure and ".backup-" in Path(destination).name:
+                exposure.chmod(0o666)
+            return os.replace(source, destination)
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    replace_func=mutate_during_old_exposure_move,
+                ),
+                ValueError,
+                "old exposure mode drift inside rename hook fails closed",
+            )
+        c.true(output.is_dir(), "old generation remains canonical after rejection")
+        c.eq(sentinel.read_text(), "old-cache")
+        c.eq(exposure.read_text(), "old-exposure")
+        c.true(
+            not (output / "collection_manifest.json").exists(),
+            "new generation remains unpublished",
+        )
+
+
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
@@ -3787,6 +3871,40 @@ def test_committed_mayo_generation_aggregate_budget_precedes_cache_read(c: Check
             finally:
                 builder._read_regular_descriptor = original_read
             c.eq(cache_reads, [], "aggregate overflow reaches no cache read")
+
+
+def test_staged_mayo_generation_aggregate_budget_precedes_cache_validation(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        staging = _semantic_staging(
+            root,
+            ".mayo_ssl_cache.staging-aggregate-limit",
+            b"s" * 32,
+            include_arkit=True,
+            include_exclusions=True,
+        )
+        cache = next((staging / "mediapipe").glob("*.npz"))
+        with cache.open("r+b") as handle:
+            handle.truncate(128 * 1024 * 1024 + 1)
+        cache.chmod(0o600)
+        original_validate = builder._validate_compact_cache
+        validation_calls = 0
+
+        def unexpected_validation(*_args, **_kwargs):
+            nonlocal validation_calls
+            validation_calls += 1
+            raise AssertionError("aggregate-overflow staging reached cache validation")
+
+        builder._validate_compact_cache = unexpected_validation
+        try:
+            c.raises(
+                lambda: builder._validate_staging(staging, salt=b"s" * 32),
+                ValueError,
+                "shared staging budget fails before cache validation",
+            )
+        finally:
+            builder._validate_compact_cache = original_validate
+        c.eq(validation_calls, 0, "staging overflow reaches no cache parser")
 
 
 def test_nonheld_mayo_manifests_are_size_gated_before_read(c: Check):

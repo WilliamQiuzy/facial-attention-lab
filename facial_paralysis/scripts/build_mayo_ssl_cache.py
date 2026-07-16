@@ -534,20 +534,31 @@ def _require_private_regular_stat(info: os.stat_result, field: str) -> None:
         )
 
 
+def _movement_stable_regular_snapshot(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev), int(value.st_ino), int(value.st_mode),
+        int(value.st_uid), int(value.st_gid), int(value.st_nlink),
+        int(value.st_size),
+    )
+
+
 def _require_private_directory(path: str | Path, field: str) -> Path:
     checked = _require_directory(path, field)
     _require_private_directory_stat(os.lstat(checked), field)
     return checked
 
 
-def _require_private_generation_storage_tree(
+def _private_generation_storage_ledger(
     path: str | Path,
     field: str,
-) -> Path:
+) -> tuple[Path, tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...]]:
     root = _require_private_directory(path, field)
     entries = 0
     total_bytes = 0
     pending: list[tuple[Path, int]] = [(root, 0)]
+    records: list[tuple[str, tuple[str, ...], tuple[int, ...]]] = [
+        ("directory", (), _directory_snapshot(os.lstat(root)))
+    ]
     while pending:
         directory, depth = pending.pop()
         for child in sorted(directory.iterdir(), key=lambda item: item.name):
@@ -557,9 +568,17 @@ def _require_private_generation_storage_tree(
             info = os.lstat(child)
             if stat.S_ISDIR(info.st_mode):
                 _require_private_directory_stat(info, field)
+                records.append((
+                    "directory", child.relative_to(root).parts,
+                    _directory_snapshot(info),
+                ))
                 pending.append((child, depth + 1))
             elif stat.S_ISREG(info.st_mode):
                 _require_private_regular_stat(info, field)
+                records.append((
+                    "file", child.relative_to(root).parts,
+                    _regular_snapshot(info),
+                ))
                 total_bytes += int(info.st_size)
                 if total_bytes > _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES:
                     raise ValueError(
@@ -567,6 +586,14 @@ def _require_private_generation_storage_tree(
                     )
             else:
                 raise ValueError(f"{field} contains unsafe storage")
+    return root, tuple(sorted(records, key=lambda item: (item[1], item[0])))
+
+
+def _require_private_generation_storage_tree(
+    path: str | Path,
+    field: str,
+) -> Path:
+    root, _ledger = _private_generation_storage_ledger(path, field)
     return root
 
 
@@ -2610,16 +2637,33 @@ def _promote_generation_with_exposure(
         raise ValueError("external exposure manifest must not live inside output generation")
     _require_private_directory(exposure.parent, "external exposure parent")
     _assert_no_symlink_components(exposure.parent)
+    previous_output_ledger = None
     if output.exists() or _is_symlink(output):
-        _require_private_generation_storage_tree(
-            output, "previous output generation",
+        _previous_output, previous_output_ledger = (
+            _private_generation_storage_ledger(
+                output, "previous output generation",
+            )
         )
+    previous_exposure_identity = None
+    previous_exposure_stable_identity = None
+    previous_exposure_sha256 = None
     if exposure.exists() or _is_symlink(exposure):
         checked_exposure = _require_regular_file(
             exposure, "previous exposure manifest",
         )
         _require_private_regular_stat(
             os.lstat(checked_exposure), "previous exposure manifest",
+        )
+        previous_exposure_identity = _regular_snapshot(
+            os.lstat(checked_exposure)
+        )
+        previous_exposure_stable_identity = _movement_stable_regular_snapshot(
+            os.lstat(checked_exposure)
+        )
+        _payload, previous_exposure_sha256, _size = _read_regular_bytes(
+            checked_exposure,
+            "previous exposure manifest",
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
         )
 
     journal_path = _journal_path(output)
@@ -2664,17 +2708,47 @@ def _promote_generation_with_exposure(
             os.fsync(target.fileno())
         _fsync_directory(exposure.parent)
         if output.exists():
-            _require_private_generation_storage_tree(
-                output, "previous output generation",
+            _current_output, current_output_ledger = (
+                _private_generation_storage_ledger(
+                    output, "previous output generation",
+                )
             )
+            if current_output_ledger != previous_output_ledger:
+                raise ValueError("previous output generation changed before move")
             replace_func(output, output_backup)
+            _moved_output, moved_output_ledger = (
+                _private_generation_storage_ledger(
+                    output_backup, "moved previous output generation",
+                )
+            )
+            if moved_output_ledger != previous_output_ledger:
+                raise ValueError("previous output generation changed during move")
             _fsync_directory(output.parent)
             set_phase("old_output_moved")
         if exposure.exists():
-            _require_private_regular_stat(
-                os.lstat(exposure), "previous exposure manifest",
-            )
+            live_exposure = os.lstat(exposure)
+            _require_private_regular_stat(live_exposure, "previous exposure manifest")
+            if _regular_snapshot(live_exposure) != previous_exposure_identity:
+                raise ValueError("previous exposure manifest changed before move")
             replace_func(exposure, exposure_backup)
+            moved_exposure = os.lstat(exposure_backup)
+            _require_private_regular_stat(
+                moved_exposure, "moved previous exposure manifest",
+            )
+            if (
+                _movement_stable_regular_snapshot(moved_exposure)
+                != previous_exposure_stable_identity
+            ):
+                raise ValueError("previous exposure manifest changed during move")
+            _payload, moved_exposure_sha256, _size = _read_regular_bytes(
+                exposure_backup,
+                "moved previous exposure manifest",
+                max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+            )
+            if not hmac.compare_digest(
+                moved_exposure_sha256, previous_exposure_sha256,
+            ):
+                raise ValueError("previous exposure manifest changed during move")
             _fsync_directory(exposure.parent)
             set_phase("old_exposure_moved")
         replace_func(staging, output)
@@ -4064,7 +4138,9 @@ def _validate_staging(
     allowed_top = {"collection_manifest.json", "mayo_exposure_manifest.json",
                    "mediapipe", "arkit"}
     if _held is None:
-        staging = _require_private_directory(staging, "staging generation")
+        staging = _require_private_generation_storage_tree(
+            staging, "staging generation",
+        )
         observed_top = {item.name for item in staging.iterdir()}
         if observed_top != allowed_top:
             raise ValueError(
