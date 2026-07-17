@@ -591,6 +591,30 @@ def _private_generation_storage_ledger(
     return root, tuple(sorted(records, key=lambda item: (item[1], item[0])))
 
 
+def _private_storage_ledgers_match(
+    observed: tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+    expected: tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+) -> bool:
+    return len(observed) == len(expected) and all(
+        observed_kind == expected_kind
+        and observed_parts == expected_parts
+        and (
+            observed_identity == expected_identity
+            if expected_kind == "directory"
+            else observed_identity[:-1] == expected_identity[:-1]
+        )
+        for (
+            observed_kind,
+            observed_parts,
+            observed_identity,
+        ), (
+            expected_kind,
+            expected_parts,
+            expected_identity,
+        ) in zip(observed, expected)
+    )
+
+
 def _private_generation_storage_commitment(
     path: str | Path,
     field: str,
@@ -613,6 +637,20 @@ def _held_private_generation_storage_commitment(
     tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
     str,
 ]:
+    ledger, commitment, _file_digests = (
+        _held_private_generation_storage_snapshot(held, field)
+    )
+    return ledger, commitment
+
+
+def _held_private_generation_storage_snapshot(
+    held: _HeldPrivateStorageTree,
+    field: str,
+) -> tuple[
+    tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+    str,
+    tuple[tuple[tuple[str, ...], str], ...],
+]:
     ledger = tuple(
         (entry.kind, entry.parts, entry.identity)
         for entry in held.entries
@@ -630,16 +668,27 @@ def _held_private_generation_storage_commitment(
         remaining_bytes -= size
         file_digests.append((entry.parts, digest))
     _assert_held_private_storage_tree(held, field)
+    commitment_ledger = tuple(
+        (
+            kind,
+            parts,
+            identity if kind == "directory" else identity[:-1],
+        )
+        for kind, parts, identity in ledger
+    )
     encoded = json.dumps(
         {
-            "ledger": ledger,
+            # ctime is not a storage-content contract on macOS: provenance xattrs
+            # may update it asynchronously.  Every other identity field plus the
+            # complete per-file SHA-256 remains committed below.
+            "ledger": commitment_ledger,
             "file_sha256": tuple(file_digests),
         },
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    return ledger, hashlib.sha256(encoded).hexdigest()
+    return ledger, hashlib.sha256(encoded).hexdigest(), tuple(file_digests)
 
 
 def _sha256_private_regular_file(
@@ -892,6 +941,7 @@ class _HeldPrivateStorageEntry:
     parts: tuple[str, ...]
     descriptor: int = dataclass_field(repr=False)
     identity: tuple[int, ...]
+    sha256: str | None = None
 
 
 def _sha256_held_private_regular_file(
@@ -899,12 +949,22 @@ def _sha256_held_private_regular_file(
     field: str,
     *,
     max_bytes: int,
+    expected_sha256: str | None = None,
 ) -> tuple[str, int]:
     if entry.kind != "file" or max_bytes < 0:
         raise ValueError(f"{field} held digest inputs are invalid")
+    content_sha256 = expected_sha256 or entry.sha256
     before = os.fstat(entry.descriptor)
     _require_private_regular_stat(before, field)
-    if _regular_snapshot(before) != entry.identity:
+    before_identity = _regular_snapshot(before)
+    if (
+        before_identity != entry.identity
+        and (
+            content_sha256 is None
+            or _SHA256.fullmatch(content_sha256) is None
+            or before_identity[:-1] != entry.identity[:-1]
+        )
+    ):
         raise ValueError(f"{field} held file changed before digest")
     if int(before.st_size) > max_bytes:
         raise ValueError(f"{field} exceeds its shared digest budget")
@@ -920,9 +980,19 @@ def _sha256_held_private_regular_file(
         digest.update(block)
     after = os.fstat(entry.descriptor)
     _require_private_regular_stat(after, field)
-    if _regular_snapshot(after) != entry.identity or total != int(after.st_size):
+    observed_sha256 = digest.hexdigest()
+    after_identity = _regular_snapshot(after)
+    exact = before_identity == entry.identity and after_identity == entry.identity
+    ctime_only = (
+        content_sha256 is not None
+        and _SHA256.fullmatch(content_sha256) is not None
+        and before_identity[:-1] == entry.identity[:-1]
+        and after_identity[:-1] == entry.identity[:-1]
+        and hmac.compare_digest(observed_sha256, content_sha256)
+    )
+    if (not exact and not ctime_only) or total != int(after.st_size):
         raise ValueError(f"{field} held file changed during digest")
-    return digest.hexdigest(), total
+    return observed_sha256, total
 
 
 @dataclass(frozen=True)
@@ -936,8 +1006,9 @@ def _assert_held_private_storage_tree(
     field: str,
 ) -> None:
     for entry in held.entries:
+        entry_path = held.root.joinpath(*entry.parts)
         opened = os.fstat(entry.descriptor)
-        linked = os.lstat(held.root.joinpath(*entry.parts))
+        linked = os.lstat(entry_path)
         snapshot = (
             _directory_snapshot if entry.kind == "directory"
             else _regular_snapshot
@@ -945,10 +1016,26 @@ def _assert_held_private_storage_tree(
         if entry.kind == "directory":
             _require_private_directory_stat(opened, field)
             _require_private_directory_stat(linked, field)
-        else:
+        elif entry.sha256 is None:
             _require_private_regular_stat(opened, field)
             _require_private_regular_stat(linked, field)
-        if snapshot(opened) != entry.identity or snapshot(linked) != entry.identity:
+        if entry.kind == "file" and entry.sha256 is not None:
+            parent_descriptor = _open_nofollow_directory(
+                entry_path.parent, f"{field} file parent",
+            )
+            try:
+                _revalidate_ctime_only_held_regular(
+                    entry.descriptor,
+                    parent_descriptor=parent_descriptor,
+                    name=entry_path.name,
+                    field=field,
+                    expected_identity=entry.identity,
+                    expected_sha256=entry.sha256,
+                    max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+                )
+            finally:
+                os.close(parent_descriptor)
+        elif snapshot(opened) != entry.identity or snapshot(linked) != entry.identity:
             raise ValueError(f"{field} changed while held")
 
 
@@ -964,11 +1051,29 @@ def _hold_private_storage_tree(path: Path, field: str):
                 flags |= getattr(os, "O_DIRECTORY", 0)
             descriptor = os.open(root.joinpath(*parts), flags)
             descriptors.callback(os.close, descriptor)
+            sha256 = None
+            if kind == "file":
+                entry_path = root.joinpath(*parts)
+                parent_descriptor = _open_nofollow_directory(
+                    entry_path.parent, f"{field} file parent",
+                )
+                try:
+                    sha256, identity = _snapshot_held_regular_digest(
+                        descriptor,
+                        parent_descriptor=parent_descriptor,
+                        name=entry_path.name,
+                        field=field,
+                        expected_identity=identity,
+                        max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+                    )
+                finally:
+                    os.close(parent_descriptor)
             entries.append(_HeldPrivateStorageEntry(
                 kind=kind,
                 parts=parts,
                 descriptor=descriptor,
                 identity=identity,
+                sha256=sha256,
             ))
         held = _HeldPrivateStorageTree(root=root, entries=tuple(entries))
         _assert_held_private_storage_tree(held, field)
@@ -982,12 +1087,18 @@ class _HeldPrivateRegularStorage:
     path: Path
     descriptor: int = dataclass_field(repr=False)
     identity: tuple[int, ...]
+    sha256: str | None = None
 
 
 def _assert_held_private_regular_storage(
     held: _HeldPrivateRegularStorage,
     field: str,
 ) -> None:
+    if held.sha256 is not None:
+        _assert_content_bound_held_private_regular_storage(
+            held, field, expected_sha256=held.sha256,
+        )
+        return
     opened = os.fstat(held.descriptor)
     linked = os.lstat(held.path)
     _require_private_regular_stat(opened, field)
@@ -997,6 +1108,29 @@ def _assert_held_private_regular_storage(
         or _regular_snapshot(linked) != held.identity
     ):
         raise ValueError(f"{field} changed while held")
+
+
+def _assert_content_bound_held_private_regular_storage(
+    held: _HeldPrivateRegularStorage,
+    field: str,
+    *,
+    expected_sha256: str,
+) -> None:
+    parent_descriptor = _open_nofollow_directory(
+        held.path.parent, f"{field} parent",
+    )
+    try:
+        _revalidate_ctime_only_held_regular(
+            held.descriptor,
+            parent_descriptor=parent_descriptor,
+            name=held.path.name,
+            field=field,
+            expected_identity=held.identity,
+            expected_sha256=expected_sha256,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+    finally:
+        os.close(parent_descriptor)
 
 
 @contextmanager
@@ -1009,8 +1143,25 @@ def _hold_private_regular_storage(path: Path, field: str):
     )
     try:
         identity = _regular_snapshot(os.fstat(descriptor))
+        parent_descriptor = _open_nofollow_directory(
+            checked.parent, f"{field} parent",
+        )
+        try:
+            sha256, identity = _snapshot_held_regular_digest(
+                descriptor,
+                parent_descriptor=parent_descriptor,
+                name=checked.name,
+                field=field,
+                expected_identity=identity,
+                max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+            )
+        finally:
+            os.close(parent_descriptor)
         held = _HeldPrivateRegularStorage(
-            path=checked, descriptor=descriptor, identity=identity,
+            path=checked,
+            descriptor=descriptor,
+            identity=identity,
+            sha256=sha256,
         )
         _assert_held_private_regular_storage(held, field)
         yield held
@@ -1027,9 +1178,13 @@ def _held_private_regular_storage_commitment(
         parts=(held.path.name,),
         descriptor=held.descriptor,
         identity=held.identity,
+        sha256=held.sha256,
     )
     digest, _size = _sha256_held_private_regular_file(
-        entry, field, max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        entry,
+        field,
+        max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        expected_sha256=held.sha256,
     )
     _assert_held_private_regular_storage(held, field)
     return _private_regular_storage_commitment(held.identity[:7], digest)
@@ -1091,14 +1246,17 @@ def _archive_held_private_regular(
         or int(opened.st_dev) != held.identity[0]
         or int(opened.st_ino) != held.identity[1]
         or int(opened.st_nlink) != 1
-        or _regular_snapshot(opened) != _regular_snapshot(linked)
+        or _regular_snapshot(opened)[:-1] != _regular_snapshot(linked)[:-1]
     ):
         raise ValueError(f"{field} held file changed during archival")
-    return _HeldPrivateRegularStorage(
+    archived = _HeldPrivateRegularStorage(
         path=archive,
         descriptor=held.descriptor,
         identity=_regular_snapshot(opened),
+        sha256=held.sha256,
     )
+    _assert_held_private_regular_storage(archived, field)
+    return archived
 
 
 def _require_private_generation_storage_tree(
@@ -2884,6 +3042,7 @@ def _write_transaction_journal(
     payload: Mapping[str, object],
     *,
     expected_identity: tuple[int, ...] | None = None,
+    expected_sha256: str | None = None,
     require_absent: bool = False,
 ) -> tuple[int, ...]:
     if (expected_identity is None) == (not require_absent):
@@ -2893,6 +3052,10 @@ def _write_transaction_journal(
     serialized = json.dumps(payload, sort_keys=True, allow_nan=False) + "\n"
     temporary_holds = ExitStack()
     try:
+        parent_descriptor = _open_nofollow_directory(
+            path.parent, "Mayo transaction journal parent",
+        )
+        temporary_holds.callback(os.close, parent_descriptor)
         descriptor = _open_exclusive_private_file(
             temporary, "Mayo transaction journal temporary",
         )
@@ -2901,12 +3064,22 @@ def _write_transaction_journal(
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
-        new_identity = _regular_snapshot(os.fstat(descriptor))
-        linked_temporary = os.lstat(temporary)
-        _require_private_regular_stat(
-            linked_temporary, "Mayo transaction journal temporary",
+        validation_descriptor, new_identity = _open_regular_at(
+            parent_descriptor,
+            temporary.name,
+            "Mayo transaction journal temporary",
         )
-        if _regular_snapshot(linked_temporary) != new_identity:
+        temporary_holds.callback(os.close, validation_descriptor)
+        new_sha256 = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        observed_sha256, new_identity = _snapshot_held_regular_digest(
+            validation_descriptor,
+            parent_descriptor=parent_descriptor,
+            name=temporary.name,
+            field="Mayo transaction journal temporary",
+            expected_identity=new_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+        if not hmac.compare_digest(observed_sha256, new_sha256):
             raise ValueError("Mayo transaction journal temporary changed")
         history_hold = None
         if require_absent:
@@ -2917,11 +3090,18 @@ def _write_transaction_journal(
                 expected_identity=new_identity[:7],
             )
         else:
-            old_descriptor, old_identity, _old_payload = (
+            old_descriptor, old_identity, old_sha256, _old_payload = (
                 _open_transaction_journal(path)
             )
             temporary_holds.callback(os.close, old_descriptor)
-            if old_identity != expected_identity:
+            old_identity_matches = old_identity == expected_identity
+            old_ctime_only = (
+                expected_sha256 is not None
+                and _SHA256.fullmatch(expected_sha256) is not None
+                and old_identity[:-1] == expected_identity[:-1]
+                and hmac.compare_digest(old_sha256, expected_sha256)
+            )
+            if not old_identity_matches and not old_ctime_only:
                 raise ValueError(
                     "Mayo transaction journal changed before phase update"
                 )
@@ -2965,9 +3145,16 @@ def _write_transaction_journal(
                 path=history,
                 descriptor=old_descriptor,
                 identity=history_identity,
+                sha256=old_sha256,
             )
-            _assert_held_private_regular_storage(
-                history_hold, "previous Mayo transaction journal history",
+            _revalidate_ctime_only_held_regular(
+                history_hold.descriptor,
+                parent_descriptor=parent_descriptor,
+                name=history.name,
+                field="previous Mayo transaction journal history",
+                expected_identity=history_hold.identity,
+                expected_sha256=old_sha256,
+                max_bytes=_MAX_MAYO_MANIFEST_BYTES,
             )
         published_stat = os.lstat(path)
         _require_private_regular_stat(published_stat, "Mayo transaction journal")
@@ -2979,15 +3166,27 @@ def _write_transaction_journal(
         ):
             raise ValueError("published Mayo transaction journal changed identity")
         _fsync_directory(path.parent)
-        final = os.lstat(path)
-        _require_private_regular_stat(final, "Mayo transaction journal")
-        if _regular_snapshot(final) != _regular_snapshot(published_stat):
+        final_sha256, final_identity = _snapshot_held_regular_digest(
+            validation_descriptor,
+            parent_descriptor=parent_descriptor,
+            name=path.name,
+            field="Mayo transaction journal",
+            expected_identity=_regular_snapshot(published_stat),
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+        if not hmac.compare_digest(final_sha256, new_sha256):
             raise ValueError("Mayo transaction journal changed after phase update")
         if history_hold is not None:
-            _assert_held_private_regular_storage(
-                history_hold, "previous Mayo transaction journal history",
+            _revalidate_ctime_only_held_regular(
+                history_hold.descriptor,
+                parent_descriptor=parent_descriptor,
+                name=history_hold.path.name,
+                field="previous Mayo transaction journal history",
+                expected_identity=history_hold.identity,
+                expected_sha256=old_sha256,
+                max_bytes=_MAX_MAYO_MANIFEST_BYTES,
             )
-        return _regular_snapshot(final)
+        return final_identity
     finally:
         # A failed private transaction is retained as owner-only evidence.
         # In particular, never unlink a name that may have been rebound after
@@ -3054,21 +3253,28 @@ def _assert_held_transaction_journal(
     descriptor: int,
     path: Path,
     identity: tuple[int, ...],
+    expected_sha256: str,
 ) -> None:
-    opened = os.fstat(descriptor)
-    linked = os.lstat(path)
-    _require_private_regular_stat(opened, "Mayo transaction journal")
-    _require_private_regular_stat(linked, "Mayo transaction journal")
-    if (
-        _regular_snapshot(opened) != identity
-        or _regular_snapshot(linked) != identity
-    ):
-        raise ValueError("Mayo transaction journal changed while held")
+    parent_descriptor = _open_nofollow_directory(
+        path.parent, "Mayo transaction journal parent",
+    )
+    try:
+        _revalidate_ctime_only_held_regular(
+            descriptor,
+            parent_descriptor=parent_descriptor,
+            name=path.name,
+            field="Mayo transaction journal",
+            expected_identity=identity,
+            expected_sha256=expected_sha256,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+    finally:
+        os.close(parent_descriptor)
 
 
 def _open_transaction_journal(
     path: Path,
-) -> tuple[int, tuple[int, ...], dict[str, object]]:
+) -> tuple[int, tuple[int, ...], str, dict[str, object]]:
     checked = _require_regular_file(path, "Mayo transaction journal")
     descriptor = os.open(
         checked,
@@ -3076,9 +3282,14 @@ def _open_transaction_journal(
         | getattr(os, "O_CLOEXEC", 0),
     )
     try:
-        identity = _regular_snapshot(os.fstat(descriptor))
-        _assert_held_transaction_journal(descriptor, checked, identity)
-        size = int(os.fstat(descriptor).st_size)
+        before = os.fstat(descriptor)
+        linked_before = os.lstat(checked)
+        _require_private_regular_stat(before, "Mayo transaction journal")
+        _require_private_regular_stat(linked_before, "Mayo transaction journal")
+        identity = _regular_snapshot(before)
+        if _regular_snapshot(linked_before)[:-1] != identity[:-1]:
+            raise ValueError("Mayo transaction journal changed while it was opened")
+        size = int(before.st_size)
         if size < 1 or size > _MAX_MAYO_MANIFEST_BYTES:
             raise ValueError("Mayo transaction journal exceeds its byte limit")
         payload = bytearray()
@@ -3089,10 +3300,20 @@ def _open_transaction_journal(
             payload.extend(chunk)
         if os.read(descriptor, 1):
             raise ValueError("Mayo transaction journal exceeds its byte limit")
-        _assert_held_transaction_journal(descriptor, checked, identity)
-        return descriptor, identity, _validate_transaction_journal_payload(
-            bytes(payload)
-        )
+        raw_payload = bytes(payload)
+        digest = hashlib.sha256(raw_payload).hexdigest()
+        after = os.fstat(descriptor)
+        linked_after = os.lstat(checked)
+        _require_private_regular_stat(after, "Mayo transaction journal")
+        _require_private_regular_stat(linked_after, "Mayo transaction journal")
+        after_identity = _regular_snapshot(after)
+        if (
+            after_identity[:-1] != identity[:-1]
+            or _regular_snapshot(linked_after)[:-1] != identity[:-1]
+        ):
+            raise ValueError("Mayo transaction journal changed while it was read")
+        journal = _validate_transaction_journal_payload(raw_payload)
+        return descriptor, after_identity, digest, journal
     except BaseException:
         os.close(descriptor)
         raise
@@ -3203,6 +3424,7 @@ def _retire_held_transaction_journal_durably(
     *,
     descriptor: int,
     identity: tuple[int, ...],
+    journal_sha256: str,
     path: Path,
     journal: Mapping[str, object],
     validate_final_state: Callable[[], None],
@@ -3216,7 +3438,9 @@ def _retire_held_transaction_journal_durably(
         or cleanup_state.terminal_cleanup_errors
     ):
         raise ValueError("Mayo journal cleanup state is invalid")
-    _assert_held_transaction_journal(descriptor, path, identity)
+    _assert_held_transaction_journal(
+        descriptor, path, identity, journal_sha256,
+    )
     validate_final_state()
     retired = False
     journal_token = journal.get("token")
@@ -3237,7 +3461,9 @@ def _retire_held_transaction_journal_durably(
     try:
         for directory in fsync_directories:
             _fsync_directory(directory)
-            _assert_held_transaction_journal(descriptor, path, identity)
+            _assert_held_transaction_journal(
+                descriptor, path, identity, journal_sha256,
+            )
             validate_final_state()
         _publish_private_path_no_replace(
             path,
@@ -3268,6 +3494,7 @@ def _retire_held_transaction_journal_durably(
                 path=retiring,
                 descriptor=descriptor,
                 identity=_regular_snapshot(os.fstat(descriptor)),
+                sha256=journal_sha256,
             ),
             complete,
             "completed Mayo transaction journal",
@@ -3287,7 +3514,7 @@ def _retire_held_transaction_journal_durably(
 
 
 def _load_transaction_journal(path: Path) -> dict[str, object]:
-    descriptor, _identity, payload = _open_transaction_journal(path)
+    descriptor, _identity, _sha256, payload = _open_transaction_journal(path)
     try:
         return payload
     finally:
@@ -3306,6 +3533,7 @@ def _recover_cache_exposure_transaction_held(
     journal_path: Path,
     journal_descriptor: int,
     journal_identity: tuple[int, ...],
+    journal_sha256: str,
     journal: dict[str, object],
     cleanup_state: _JournalCleanupState,
     salt: bytes | None = None,
@@ -3342,7 +3570,7 @@ def _recover_cache_exposure_transaction_held(
     )
     committed = journal["phase"] == "committed"
     _assert_held_transaction_journal(
-        journal_descriptor, journal_path, journal_identity,
+        journal_descriptor, journal_path, journal_identity, journal_sha256,
     )
 
     def present(path: Path) -> bool:
@@ -3371,11 +3599,69 @@ def _recover_cache_exposure_transaction_held(
     def require_private_tree_snapshot(
         path: Path,
         expected: tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+        expected_file_digests: tuple[tuple[tuple[str, ...], str], ...],
         field: str,
     ) -> None:
         _root, observed = _private_generation_storage_ledger(path, field)
-        if observed != expected:
+        if (
+            len(observed) != len(expected)
+            or any(
+                observed_kind != expected_kind
+                or observed_parts != expected_parts
+                or (
+                    observed_identity != expected_identity
+                    if expected_kind == "directory"
+                    else observed_identity[:-1] != expected_identity[:-1]
+                )
+                for (
+                    observed_kind,
+                    observed_parts,
+                    observed_identity,
+                ), (
+                    expected_kind,
+                    expected_parts,
+                    expected_identity,
+                ) in zip(observed, expected)
+            )
+        ):
             raise ValueError(f"{field} changed after recovery preflight")
+        expected_digests = dict(expected_file_digests)
+        expected_identities = {
+            parts: identity
+            for kind, parts, identity in expected
+            if kind == "file"
+        }
+        if set(expected_digests) != set(expected_identities):
+            raise ValueError(f"{field} digest closure is incomplete")
+        for parts, expected_digest in expected_file_digests:
+            file_path = path.joinpath(*parts)
+            parent_descriptor = _open_nofollow_directory(
+                file_path.parent, f"{field} file parent",
+            )
+            try:
+                descriptor, identity = _open_regular_at(
+                    parent_descriptor, file_path.name, field,
+                )
+                try:
+                    if identity[:-1] != expected_identities[parts][:-1]:
+                        raise ValueError(
+                            f"{field} changed after recovery preflight"
+                        )
+                    _payload, digest, _size = _read_regular_descriptor(
+                        descriptor,
+                        parent_descriptor=parent_descriptor,
+                        name=file_path.name,
+                        field=field,
+                        expected_identity=expected_identities[parts],
+                        expected_sha256=expected_digest,
+                        max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+                    )
+                finally:
+                    os.close(descriptor)
+            finally:
+                os.close(parent_descriptor)
+            if not hmac.compare_digest(digest, expected_digest):
+                raise ValueError(f"{field} changed after recovery preflight")
 
     def require_private_regular_snapshot(
         path: Path,
@@ -3399,7 +3685,7 @@ def _recover_cache_exposure_transaction_held(
     had_exposure = bool(journal["had_exposure"])
     if committed:
         _assert_held_transaction_journal(
-            journal_descriptor, journal_path, journal_identity,
+            journal_descriptor, journal_path, journal_identity, journal_sha256,
         )
         _require_directory(output, "committed output generation")
         _require_regular_file(exposure, "committed exposure manifest")
@@ -3469,14 +3755,18 @@ def _recover_cache_exposure_transaction_held(
         )
         output_ledger = None
         output_storage_commitment = None
+        output_file_digests = None
         if had_output:
-            (
-                _output_source,
-                output_ledger,
-                output_storage_commitment,
-            ) = _private_generation_storage_commitment(
+            with _hold_private_storage_tree(
                 output_source, "recoverable previous output generation",
-            )
+            ) as held_output_source:
+                (
+                    output_ledger,
+                    output_storage_commitment,
+                    output_file_digests,
+                ) = _held_private_generation_storage_snapshot(
+                    held_output_source, "recoverable previous output generation",
+                )
             if not hmac.compare_digest(
                 output_storage_commitment,
                 str(journal["previous_output_storage_commitment"]),
@@ -3506,7 +3796,7 @@ def _recover_cache_exposure_transaction_held(
 
         if output_ledger is not None:
             require_private_tree_snapshot(
-                output_source, output_ledger,
+                output_source, output_ledger, output_file_digests,
                 "recoverable previous output generation",
             )
         if exposure_stable is not None and exposure_digest is not None:
@@ -3516,7 +3806,7 @@ def _recover_cache_exposure_transaction_held(
                 require_full=exposure_full,
             )
         _assert_held_transaction_journal(
-            journal_descriptor, journal_path, journal_identity,
+            journal_descriptor, journal_path, journal_identity, journal_sha256,
         )
 
         new_output_is_canonical = (
@@ -3600,7 +3890,7 @@ def _recover_cache_exposure_transaction_held(
             else:
                 _require_directory(output, "unmoved previous output generation")
             require_private_tree_snapshot(
-                output, output_ledger,
+                output, output_ledger, output_file_digests,
                 "restored previous output generation",
             )
         elif present(output):
@@ -3634,7 +3924,7 @@ def _recover_cache_exposure_transaction_held(
 
         if output_ledger is not None:
             require_private_tree_snapshot(
-                output, output_ledger,
+                output, output_ledger, output_file_digests,
                 "restored previous output generation",
             )
         elif present(output):
@@ -3777,6 +4067,9 @@ def _recover_cache_exposure_transaction_held(
                         expected_identity=(
                             held_interrupted_generation.internal_exposure_identity
                         ),
+                        expected_sha256=(
+                            held_interrupted_generation.internal_exposure_sha256
+                        ),
                         max_bytes=_MAX_MAYO_MANIFEST_BYTES,
                     )
                 )
@@ -3804,18 +4097,20 @@ def _recover_cache_exposure_transaction_held(
                         "interrupted Mayo exposure temporary cleanup",
                     )
                 )
+                witness_entry = _HeldPrivateStorageEntry(
+                    kind="file",
+                    parts=(exposure_temporary.name,),
+                    descriptor=held_temporary_cleanup.descriptor,
+                    identity=held_temporary_cleanup.identity,
+                    sha256=held_temporary_cleanup.sha256,
+                )
                 if materialized_internal_witness:
-                    witness_entry = _HeldPrivateStorageEntry(
-                        kind="file",
-                        parts=(exposure_temporary.name,),
-                        descriptor=held_temporary_cleanup.descriptor,
-                        identity=held_temporary_cleanup.identity,
-                    )
                     witness_digest, _witness_size = (
                         _sha256_held_private_regular_file(
                             witness_entry,
                             "interrupted Mayo exposure witness",
                             max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                            expected_sha256=materialized_internal_digest,
                         )
                     )
                     if not hmac.compare_digest(
@@ -3824,13 +4119,28 @@ def _recover_cache_exposure_transaction_held(
                         raise ValueError(
                             "interrupted Mayo exposure witness changed"
                         )
-                elif (
-                    held_temporary_cleanup.identity
-                    != held_interrupted_generation.external_exposure_identity
-                ):
-                    raise ValueError(
-                        "interrupted Mayo exposure temporary identity changed"
+                else:
+                    witness_digest, _witness_size = (
+                        _sha256_held_private_regular_file(
+                            witness_entry,
+                            "interrupted Mayo exposure temporary",
+                            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                            expected_sha256=(
+                                held_interrupted_generation.external_exposure_sha256
+                            ),
+                        )
                     )
+                    if (
+                        held_temporary_cleanup.identity[:-1]
+                        != held_interrupted_generation.external_exposure_identity[:-1]
+                        or not hmac.compare_digest(
+                            witness_digest,
+                            held_interrupted_generation.external_exposure_sha256,
+                        )
+                    ):
+                        raise ValueError(
+                            "interrupted Mayo exposure temporary identity changed"
+                        )
             if output_ledger is not None:
                 held_output = final_holds.enter_context(
                     _hold_private_storage_tree(
@@ -3877,7 +4187,7 @@ def _recover_cache_exposure_transaction_held(
             if not committed:
                 if output_ledger is not None:
                     require_private_tree_snapshot(
-                        output, output_ledger,
+                        output, output_ledger, output_file_digests,
                         "final recovered output generation",
                     )
                     _assert_held_private_storage_tree(
@@ -3929,8 +4239,12 @@ def _recover_cache_exposure_transaction_held(
                     archived_staging, "aborted recovery staging",
                 )
             if archived_temporary is not None:
-                _assert_held_private_regular_storage(
-                    archived_temporary, "aborted recovery exposure temporary",
+                _assert_content_bound_held_private_regular_storage(
+                    archived_temporary,
+                    "aborted recovery exposure temporary",
+                    expected_sha256=str(
+                        expected_generation["exposure_manifest_sha256"]
+                    ),
                 )
 
         fsync_directories = tuple(dict.fromkeys((
@@ -3939,6 +4253,7 @@ def _recover_cache_exposure_transaction_held(
         _retire_held_transaction_journal_durably(
             descriptor=journal_descriptor,
             identity=journal_identity,
+            journal_sha256=journal_sha256,
             path=journal_path,
             journal=journal,
             validate_final_state=validate_final_state,
@@ -3970,7 +4285,9 @@ def _recover_cache_exposure_transaction(
     journal_path = _journal_path(output)
     if not journal_path.exists() and not _is_symlink(journal_path):
         return
-    descriptor, identity, journal = _open_transaction_journal(journal_path)
+    descriptor, identity, journal_sha256, journal = _open_transaction_journal(
+        journal_path
+    )
     cleanup_state = _JournalCleanupState()
     primary: BaseException | None = None
     try:
@@ -3980,6 +4297,7 @@ def _recover_cache_exposure_transaction(
             journal_path=journal_path,
             journal_descriptor=descriptor,
             journal_identity=identity,
+            journal_sha256=journal_sha256,
             journal=journal,
             cleanup_state=cleanup_state,
             salt=salt,
@@ -4246,17 +4564,32 @@ def _promote_generation_with_exposure(
         _require_private_regular_stat(
             os.lstat(checked_exposure), "previous exposure manifest",
         )
-        previous_exposure_identity = _regular_snapshot(
-            os.lstat(checked_exposure)
+        exposure_parent_descriptor = _open_nofollow_directory(
+            exposure.parent, "previous exposure parent",
         )
-        previous_exposure_stable_identity = _movement_stable_regular_snapshot(
-            os.lstat(checked_exposure)
-        )
-        _payload, previous_exposure_sha256, _size = _read_regular_bytes(
-            checked_exposure,
-            "previous exposure manifest",
-            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
-        )
+        try:
+            exposure_descriptor, previous_exposure_identity = _open_regular_at(
+                exposure_parent_descriptor,
+                exposure.name,
+                "previous exposure manifest",
+            )
+            try:
+                (
+                    previous_exposure_sha256,
+                    previous_exposure_identity,
+                ) = _snapshot_held_regular_digest(
+                    exposure_descriptor,
+                    parent_descriptor=exposure_parent_descriptor,
+                    name=exposure.name,
+                    field="previous exposure manifest",
+                    expected_identity=previous_exposure_identity,
+                    max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                )
+            finally:
+                os.close(exposure_descriptor)
+        finally:
+            os.close(exposure_parent_descriptor)
+        previous_exposure_stable_identity = previous_exposure_identity[:7]
         previous_exposure_storage_commitment = (
             _private_regular_storage_commitment(
                 previous_exposure_stable_identity,
@@ -4310,6 +4643,7 @@ def _promote_generation_with_exposure(
                     name=held_previous.exposure.name,
                     field="previous external exposure manifest",
                     expected_identity=held_previous.external_exposure_identity,
+                    expected_sha256=held_previous.external_exposure_sha256,
                 )
             )
             if not hmac.compare_digest(
@@ -4334,7 +4668,9 @@ def _promote_generation_with_exposure(
             output, "previous output generation",
         )
         if (
-            current_output_ledger != previous_output_ledger
+            not _private_storage_ledgers_match(
+                current_output_ledger, previous_output_ledger,
+            )
             or current_output_storage_commitment
             != previous_output_storage_commitment
         ):
@@ -4345,19 +4681,35 @@ def _promote_generation_with_exposure(
             raise ValueError("previous exposure topology changed before move")
         if not had_exposure:
             return
-        live_exposure = os.lstat(exposure)
-        _require_private_regular_stat(
-            live_exposure, "previous exposure manifest",
+        parent_descriptor = _open_nofollow_directory(
+            exposure.parent, "previous exposure parent",
         )
-        if _regular_snapshot(live_exposure) != previous_exposure_identity:
-            raise ValueError("previous exposure manifest changed before move")
-        _payload, live_digest, _size = _read_regular_bytes(
-            exposure,
-            "previous exposure manifest",
-            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
-        )
+        try:
+            descriptor, live_identity = _open_regular_at(
+                parent_descriptor,
+                exposure.name,
+                "previous exposure manifest",
+            )
+            try:
+                if live_identity[:-1] != previous_exposure_identity[:-1]:
+                    raise ValueError(
+                        "previous exposure manifest changed before move"
+                    )
+                _payload, live_digest, _size = _read_regular_descriptor(
+                    descriptor,
+                    parent_descriptor=parent_descriptor,
+                    name=exposure.name,
+                    field="previous exposure manifest",
+                    expected_identity=previous_exposure_identity,
+                    expected_sha256=previous_exposure_sha256,
+                    max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                )
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(parent_descriptor)
         live_commitment = _private_regular_storage_commitment(
-            _movement_stable_regular_snapshot(os.lstat(exposure)),
+            previous_exposure_stable_identity,
             live_digest,
         )
         if not hmac.compare_digest(
@@ -4394,9 +4746,14 @@ def _promote_generation_with_exposure(
         "indeterminate": False,
     }
     journal_storage_identity: tuple[int, ...] | None = None
+    journal_storage_sha256: str | None = None
+
+    def current_journal_sha256() -> str:
+        serialized = json.dumps(journal, sort_keys=True, allow_nan=False) + "\n"
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
     def set_phase(phase: str, *, invoke_hook: bool = True) -> None:
-        nonlocal journal_storage_identity, rollback_is_durable
+        nonlocal journal_storage_identity, journal_storage_sha256, rollback_is_durable
         journal["phase"] = phase
         try:
             if journal_storage_identity is None:
@@ -4408,15 +4765,17 @@ def _promote_generation_with_exposure(
                     journal_path,
                     journal,
                     expected_identity=journal_storage_identity,
+                    expected_sha256=journal_storage_sha256,
                 )
         except (ValueError, FileExistsError):
             rollback_is_durable = False
             raise
+        journal_storage_sha256 = current_journal_sha256()
         if invoke_hook and phase_hook is not None:
             phase_hook(phase)
 
     def retain_indeterminate_move(phase: str) -> None:
-        nonlocal rollback_is_durable, journal_storage_identity
+        nonlocal rollback_is_durable, journal_storage_identity, journal_storage_sha256
         if journal_storage_identity is None:
             raise ValueError("Mayo journal phase authority is missing")
         rollback_is_durable = False
@@ -4426,7 +4785,9 @@ def _promote_generation_with_exposure(
             journal_path,
             journal,
             expected_identity=journal_storage_identity,
+            expected_sha256=journal_storage_sha256,
         )
+        journal_storage_sha256 = current_journal_sha256()
 
     rollback_is_durable = True
     allow_indeterminate_recovery = False
@@ -4475,17 +4836,33 @@ def _promote_generation_with_exposure(
             shutil.copyfileobj(source, target)
             target.flush()
             os.fsync(target.fileno())
-        temporary_identity = _regular_snapshot(os.fstat(temporary_descriptor))
-        linked_temporary = os.lstat(exposure_temporary)
-        _require_private_regular_stat(
-            linked_temporary, "external exposure temporary",
+        exposure_parent_descriptor = _open_nofollow_directory(
+            exposure.parent, "external exposure parent",
         )
-        if _regular_snapshot(linked_temporary) != temporary_identity:
+        source_holds.callback(os.close, exposure_parent_descriptor)
+        temporary_read_descriptor, temporary_identity = _open_regular_at(
+            exposure_parent_descriptor,
+            exposure_temporary.name,
+            "external exposure temporary",
+        )
+        source_holds.callback(os.close, temporary_read_descriptor)
+        temporary_sha256, temporary_identity = _snapshot_held_regular_digest(
+            temporary_read_descriptor,
+            parent_descriptor=exposure_parent_descriptor,
+            name=exposure_temporary.name,
+            field="external exposure temporary",
+            expected_identity=temporary_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+        if not hmac.compare_digest(
+            temporary_sha256, held_staging.internal_exposure_sha256,
+        ):
             raise ValueError("external exposure temporary changed after copy")
         held_exposure_temporary = _HeldPrivateRegularStorage(
             path=exposure_temporary,
-            descriptor=temporary_descriptor,
+            descriptor=temporary_read_descriptor,
             identity=temporary_identity,
+            sha256=temporary_sha256,
         )
         _assert_held_private_regular_storage(
             held_exposure_temporary, "external exposure temporary",
@@ -4509,7 +4886,9 @@ def _promote_generation_with_exposure(
                         output_backup, "moved previous output generation",
                 )
                 if (
-                    moved_output_ledger != previous_output_ledger
+                    not _private_storage_ledgers_match(
+                        moved_output_ledger, previous_output_ledger,
+                    )
                     or moved_output_storage_commitment
                     != previous_output_storage_commitment
                 ):
@@ -4632,7 +5011,9 @@ def _promote_generation_with_exposure(
                     )
                 )
                 if (
-                    backup_ledger != previous_output_ledger
+                    not _private_storage_ledgers_match(
+                        backup_ledger, previous_output_ledger,
+                    )
                     or not hmac.compare_digest(
                         backup_commitment,
                         previous_output_storage_commitment,
@@ -4671,11 +5052,14 @@ def _promote_generation_with_exposure(
             (
                 committed_journal_descriptor,
                 committed_journal_identity,
+                committed_journal_sha256,
                 committed_journal,
             ) = _open_transaction_journal(journal_path)
             if (
                 committed_journal != journal
-                or committed_journal_identity != journal_storage_identity
+                or committed_journal_sha256 != journal_storage_sha256
+                or committed_journal_identity[:-1]
+                != journal_storage_identity[:-1]
             ):
                 raise ValueError("committed journal bytes changed after write")
             _assert_held_mayo_generation(held_generation)
@@ -4709,11 +5093,13 @@ def _promote_generation_with_exposure(
                             journal_path,
                             journal,
                             expected_identity=committed_journal_identity,
+                            expected_sha256=committed_journal_sha256,
                         )
                     except Exception as downgrade_error:
                         rollback_is_durable = False
                         raise primary_error from downgrade_error
                     allow_indeterminate_recovery = True
+                    journal_storage_sha256 = current_journal_sha256()
                     committed_boundary_started = False
                     raise
 
@@ -4768,6 +5154,7 @@ def _promote_generation_with_exposure(
             _retire_held_transaction_journal_durably(
                 descriptor=committed_journal_descriptor,
                 identity=committed_journal_identity,
+                journal_sha256=committed_journal_sha256,
                 path=journal_path,
                 journal=journal,
                 validate_final_state=validate_committed_final_state,
@@ -4996,19 +5383,120 @@ def _open_regular_at(
         _require_private_regular_stat(before, field)
         _require_private_regular_stat(opened, field)
         _require_private_regular_stat(current, field)
-        identity = _regular_snapshot(opened)
+        before_identity = _regular_snapshot(before)
+        opened_identity = _regular_snapshot(opened)
+        current_identity = _regular_snapshot(current)
+        identity = opened_identity
         if (
             not stat.S_ISREG(before.st_mode)
             or not stat.S_ISREG(opened.st_mode)
             or int(opened.st_nlink) != 1
-            or _regular_snapshot(before) != identity
-            or _regular_snapshot(current) != identity
+            or before_identity[:-1] != identity[:-1]
+            or current_identity[:-1] != identity[:-1]
         ):
             raise ValueError(f"{field} changed identity while it was opened")
         return descriptor, identity
     except BaseException:
         os.close(descriptor)
         raise
+
+
+def _snapshot_held_regular_digest(
+    descriptor: int,
+    *,
+    parent_descriptor: int,
+    name: str,
+    field: str,
+    expected_identity: tuple[int, ...],
+    max_bytes: int,
+) -> tuple[str, tuple[int, ...]]:
+    """Bind a held descriptor to complete bytes despite ctime-only metadata drift."""
+    before = os.fstat(descriptor)
+    linked = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    _require_private_regular_stat(before, field)
+    _require_private_regular_stat(linked, field)
+    before_identity = _regular_snapshot(before)
+    linked_identity = _regular_snapshot(linked)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or int(before.st_nlink) != 1
+        or before_identity[:-1] != expected_identity[:-1]
+        or linked_identity[:-1] != expected_identity[:-1]
+        or int(before.st_size) > max_bytes
+    ):
+        raise ValueError(f"{field} changed before its held bytes were snapshotted")
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < int(before.st_size):
+        block = os.pread(
+            descriptor, min(1024 * 1024, int(before.st_size) - offset), offset,
+        )
+        if not block:
+            raise ValueError(f"{field} was truncated while it was snapshotted")
+        digest.update(block)
+        offset += len(block)
+    after = os.fstat(descriptor)
+    current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    _require_private_regular_stat(after, field)
+    _require_private_regular_stat(current, field)
+    after_identity = _regular_snapshot(after)
+    current_identity = _regular_snapshot(current)
+    if (
+        after_identity[:-1] != expected_identity[:-1]
+        or current_identity[:-1] != expected_identity[:-1]
+    ):
+        raise ValueError(f"{field} changed while its held bytes were snapshotted")
+    return digest.hexdigest(), after_identity
+
+
+def _revalidate_ctime_only_held_regular(
+    descriptor: int,
+    *,
+    parent_descriptor: int,
+    name: str,
+    field: str,
+    expected_identity: tuple[int, ...],
+    expected_sha256: str,
+    max_bytes: int,
+) -> None:
+    """Accept only content-neutral ctime drift on one held private file."""
+    opened = os.fstat(descriptor)
+    linked = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    _require_private_regular_stat(opened, field)
+    _require_private_regular_stat(linked, field)
+    opened_identity = _regular_snapshot(opened)
+    linked_identity = _regular_snapshot(linked)
+    if opened_identity == expected_identity and linked_identity == expected_identity:
+        return
+    if (
+        _SHA256.fullmatch(expected_sha256) is None
+        or not stat.S_ISREG(opened.st_mode)
+        or int(opened.st_nlink) != 1
+        or opened_identity[:-1] != expected_identity[:-1]
+        or linked_identity[:-1] != expected_identity[:-1]
+        or int(opened.st_size) > max_bytes
+    ):
+        raise ValueError(f"{field} name no longer binds its held file")
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < int(opened.st_size):
+        block = os.pread(
+            descriptor, min(1024 * 1024, int(opened.st_size) - offset), offset,
+        )
+        if not block:
+            raise ValueError(f"{field} was truncated during ctime revalidation")
+        digest.update(block)
+        offset += len(block)
+    after = os.fstat(descriptor)
+    current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    _require_private_regular_stat(after, field)
+    _require_private_regular_stat(current, field)
+    if (
+        _regular_snapshot(after)[:-1] != expected_identity[:-1]
+        or _regular_snapshot(current)[:-1] != expected_identity[:-1]
+        or not hmac.compare_digest(digest.hexdigest(), expected_sha256)
+    ):
+        raise ValueError(f"{field} name no longer binds its held file")
 
 
 def _read_regular_descriptor(
@@ -5018,6 +5506,7 @@ def _read_regular_descriptor(
     name: str,
     field: str,
     expected_identity: tuple[int, ...],
+    expected_sha256: str | None = None,
     max_bytes: int | None = None,
 ) -> tuple[bytes, str, int]:
     if max_bytes is not None and (
@@ -5026,10 +5515,19 @@ def _read_regular_descriptor(
         raise ValueError(f"{field} byte limit must be a positive integer")
     before = os.fstat(descriptor)
     _require_private_regular_stat(before, field)
+    before_identity = _regular_snapshot(before)
+    ctime_revalidation = before_identity != expected_identity
     if (
         not stat.S_ISREG(before.st_mode)
         or int(before.st_nlink) != 1
-        or _regular_snapshot(before) != expected_identity
+        or (
+            ctime_revalidation
+            and (
+                expected_sha256 is None
+                or _SHA256.fullmatch(expected_sha256) is None
+                or before_identity[:-1] != expected_identity[:-1]
+            )
+        )
     ):
         raise ValueError(f"{field} held descriptor changed")
     if max_bytes is not None and int(before.st_size) > max_bytes:
@@ -5046,12 +5544,25 @@ def _read_regular_descriptor(
     current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
     _require_private_regular_stat(after, field)
     _require_private_regular_stat(current, field)
-    if (
-        _regular_snapshot(after) != expected_identity
-        or _regular_snapshot(current) != expected_identity
-    ):
+    observed_digest = digest.hexdigest()
+    after_identity = _regular_snapshot(after)
+    current_identity = _regular_snapshot(current)
+    exact = (
+        before_identity == expected_identity
+        and after_identity == expected_identity
+        and current_identity == expected_identity
+    )
+    ctime_only = (
+        expected_sha256 is not None
+        and _SHA256.fullmatch(expected_sha256) is not None
+        and before_identity[:-1] == expected_identity[:-1]
+        and after_identity[:-1] == expected_identity[:-1]
+        and current_identity[:-1] == expected_identity[:-1]
+        and hmac.compare_digest(observed_digest, expected_sha256)
+    )
+    if not exact and not ctime_only:
         raise ValueError(f"{field} changed while its held descriptor was read")
-    return bytes(payload), digest.hexdigest(), int(after.st_size)
+    return bytes(payload), observed_digest, int(after.st_size)
 
 
 def _read_regular_bytes(
@@ -5127,6 +5638,7 @@ def _load_public_json_descriptor(
     name: str,
     field: str,
     expected_identity: tuple[int, ...],
+    expected_sha256: str | None = None,
 ) -> tuple[dict[str, object], str]:
     payload, digest, _size = _read_regular_descriptor(
         descriptor,
@@ -5134,6 +5646,7 @@ def _load_public_json_descriptor(
         name=name,
         field=field,
         expected_identity=expected_identity,
+        expected_sha256=expected_sha256,
         max_bytes=_MAX_MAYO_MANIFEST_BYTES,
     )
     value = _decode_unique_json_object(payload, field)
@@ -5862,9 +6375,10 @@ def _validate_compact_cache(
     parent_descriptor: int | None = None,
     held_descriptor: int | None = None,
     held_identity: tuple[int, ...] | None = None,
+    held_sha256: str | None = None,
     forbidden_tokens: tuple[bytes, ...] = (),
 ) -> tuple[str, int, CompactCacheSummary]:
-    if (held_descriptor is None) != (held_identity is None):
+    if len({held_descriptor is None, held_identity is None, held_sha256 is None}) != 1:
         raise ValueError("compact cache held identity is incomplete")
     if held_descriptor is not None:
         if parent_descriptor is None or path.name != str(path):
@@ -5875,6 +6389,7 @@ def _validate_compact_cache(
             name=path.name,
             field="compact cache",
             expected_identity=held_identity,
+            expected_sha256=held_sha256,
             max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
         )
     else:
@@ -5941,6 +6456,7 @@ class _HeldCommittedMayoCache:
     name: str
     descriptor: int = dataclass_field(repr=False)
     identity: tuple[int, ...]
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -5953,8 +6469,10 @@ class _HeldCommittedMayoGeneration:
     output_identity: tuple[int, ...]
     collection_descriptor: int = dataclass_field(repr=False)
     collection_identity: tuple[int, ...]
+    collection_sha256: str
     internal_exposure_descriptor: int = dataclass_field(repr=False)
     internal_exposure_identity: tuple[int, ...]
+    internal_exposure_sha256: str
     media_descriptor: int = dataclass_field(repr=False)
     media_identity: tuple[int, ...]
     media_files: tuple[_HeldCommittedMayoCache, ...]
@@ -5965,6 +6483,7 @@ class _HeldCommittedMayoGeneration:
     external_parent_identity: tuple[int, ...]
     external_exposure_descriptor: int = dataclass_field(repr=False)
     external_exposure_identity: tuple[int, ...]
+    external_exposure_sha256: str
 
 
 @contextmanager
@@ -6014,12 +6533,31 @@ def _hold_committed_mayo_generation(
             "committed collection manifest",
         )
         descriptors.callback(os.close, collection_descriptor)
+        collection_sha256, collection_identity = _snapshot_held_regular_digest(
+            collection_descriptor,
+            parent_descriptor=output_descriptor,
+            name="collection_manifest.json",
+            field="committed collection manifest",
+            expected_identity=collection_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
         internal_exposure_descriptor, internal_exposure_identity = _open_regular_at(
             output_descriptor,
             "mayo_exposure_manifest.json",
             "committed internal exposure manifest",
         )
         descriptors.callback(os.close, internal_exposure_descriptor)
+        (
+            internal_exposure_sha256,
+            internal_exposure_identity,
+        ) = _snapshot_held_regular_digest(
+            internal_exposure_descriptor,
+            parent_descriptor=output_descriptor,
+            name="mayo_exposure_manifest.json",
+            field="committed internal exposure manifest",
+            expected_identity=internal_exposure_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
         media_descriptor, media_identity = _open_nofollow_directory_at(
             output_descriptor, "mediapipe", "committed Mayo MediaPipe cache",
         )
@@ -6047,10 +6585,19 @@ def _hold_committed_mayo_generation(
                     parent_descriptor, name, field,
                 )
                 descriptors.callback(os.close, descriptor)
+                sha256, identity = _snapshot_held_regular_digest(
+                    descriptor,
+                    parent_descriptor=parent_descriptor,
+                    name=name,
+                    field=field,
+                    expected_identity=identity,
+                    max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
+                )
                 held_files.append(_HeldCommittedMayoCache(
                     name=name,
                     descriptor=descriptor,
                     identity=identity,
+                    sha256=sha256,
                 ))
             return tuple(held_files)
 
@@ -6078,6 +6625,17 @@ def _hold_committed_mayo_generation(
             "committed external exposure manifest",
         )
         descriptors.callback(os.close, external_exposure_descriptor)
+        (
+            external_exposure_sha256,
+            external_exposure_identity,
+        ) = _snapshot_held_regular_digest(
+            external_exposure_descriptor,
+            parent_descriptor=external_parent_descriptor,
+            name=exposure.name,
+            field="committed external exposure manifest",
+            expected_identity=external_exposure_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
         regular_identities = (
             collection_identity,
             internal_exposure_identity,
@@ -6102,8 +6660,10 @@ def _hold_committed_mayo_generation(
             output_identity=output_identity,
             collection_descriptor=collection_descriptor,
             collection_identity=collection_identity,
+            collection_sha256=collection_sha256,
             internal_exposure_descriptor=internal_exposure_descriptor,
             internal_exposure_identity=internal_exposure_identity,
+            internal_exposure_sha256=internal_exposure_sha256,
             media_descriptor=media_descriptor,
             media_identity=media_identity,
             media_files=media_files,
@@ -6114,6 +6674,7 @@ def _hold_committed_mayo_generation(
             external_parent_identity=external_parent_identity,
             external_exposure_descriptor=external_exposure_descriptor,
             external_exposure_identity=external_exposure_identity,
+            external_exposure_sha256=external_exposure_sha256,
         )
         _assert_held_mayo_generation(held)
         yield held
@@ -6172,19 +6733,20 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
         parent_descriptor: int,
         name: str,
         expected: tuple[int, ...],
+        expected_sha256: str,
         field: str,
+        *,
+        max_bytes: int,
     ) -> None:
-        opened = os.fstat(descriptor)
-        linked = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-        _require_private_regular_stat(opened, field)
-        _require_private_regular_stat(linked, field)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or int(opened.st_nlink) != 1
-            or _regular_snapshot(opened) != expected
-            or _regular_snapshot(linked) != expected
-        ):
-            raise ValueError(f"{field} name no longer binds its held file")
+        _revalidate_ctime_only_held_regular(
+            descriptor,
+            parent_descriptor=parent_descriptor,
+            name=name,
+            field=field,
+            expected_identity=expected,
+            expected_sha256=expected_sha256,
+            max_bytes=max_bytes,
+        )
 
     require_parent_directory(
         held.output_parent_descriptor,
@@ -6206,14 +6768,18 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
         held.output_descriptor,
         "collection_manifest.json",
         held.collection_identity,
+        held.collection_sha256,
         "committed collection manifest",
+        max_bytes=_MAX_MAYO_MANIFEST_BYTES,
     )
     require_file(
         held.internal_exposure_descriptor,
         held.output_descriptor,
         "mayo_exposure_manifest.json",
         held.internal_exposure_identity,
+        held.internal_exposure_sha256,
         "committed internal exposure manifest",
+        max_bytes=_MAX_MAYO_MANIFEST_BYTES,
     )
     require_directory(
         held.media_descriptor, held.media_identity, "committed Mayo MediaPipe cache",
@@ -6239,7 +6805,9 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
             held.media_descriptor,
             item.name,
             item.identity,
+            item.sha256,
             "committed Mayo MediaPipe cache",
+            max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
         )
     for item in held.arkit_files:
         require_file(
@@ -6247,7 +6815,9 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
             held.arkit_descriptor,
             item.name,
             item.identity,
+            item.sha256,
             "committed Mayo ARKit cache",
+            max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
         )
     require_parent_directory(
         held.external_parent_descriptor,
@@ -6260,7 +6830,9 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
         held.external_parent_descriptor,
         held.exposure.name,
         held.external_exposure_identity,
+        held.external_exposure_sha256,
         "committed external exposure manifest",
+        max_bytes=_MAX_MAYO_MANIFEST_BYTES,
     )
 
 
@@ -6321,6 +6893,7 @@ def _validate_staging(
             name="collection_manifest.json",
             field="collection manifest",
             expected_identity=_held.collection_identity,
+            expected_sha256=_held.collection_sha256,
         )
         exposure, exposure_digest = _load_public_json_descriptor(
             _held.internal_exposure_descriptor,
@@ -6328,6 +6901,7 @@ def _validate_staging(
             name="mayo_exposure_manifest.json",
             field="exposure manifest",
             expected_identity=_held.internal_exposure_identity,
+            expected_sha256=_held.internal_exposure_sha256,
         )
     collection_counts = _validate_collection_top(collection)
     inventory_counts_sha256 = _inventory_counts_sha256(collection_counts)
@@ -6600,6 +7174,9 @@ def _validate_staging(
                     held_identity=(
                         None if held_file is None else held_file.identity
                     ),
+                    held_sha256=(
+                        None if held_file is None else held_file.sha256
+                    ),
                     forbidden_tokens=forbidden_tokens,
                 )
                 if dirname == "mediapipe":
@@ -6737,6 +7314,7 @@ def _assert_committed_generation(
             name=exposure.name,
             field="committed external exposure manifest",
             expected_identity=_held.external_exposure_identity,
+            expected_sha256=_held.external_exposure_sha256,
         )
     if not hmac.compare_digest(
         exposure_digest, str(expected["exposure_manifest_sha256"])
@@ -6799,15 +7377,26 @@ def _assert_descriptor_omits_private_tokens(
     identity: tuple[int, ...],
     tokens: tuple[bytes, ...],
     field: str,
+    *,
+    expected_sha256: str | None = None,
 ) -> None:
     if not tokens:
         return
     before = os.fstat(descriptor)
     _require_private_regular_stat(before, field)
-    if _regular_snapshot(before) != identity:
+    before_identity = _regular_snapshot(before)
+    if (
+        before_identity != identity
+        and (
+            expected_sha256 is None
+            or _SHA256.fullmatch(expected_sha256) is None
+            or before_identity[:-1] != identity[:-1]
+        )
+    ):
         raise ValueError(f"{field} changed before privacy scan")
     longest = max(len(token) for token in tokens)
     overlap = b""
+    digest = hashlib.sha256()
     offset = 0
     while offset < int(before.st_size):
         block = os.pread(
@@ -6815,12 +7404,22 @@ def _assert_descriptor_omits_private_tokens(
         )
         if not block:
             raise ValueError(f"{field} was truncated during privacy scan")
+        digest.update(block)
         candidate = overlap + block
         if any(token in candidate for token in tokens):
             raise ValueError(f"{field} contains a private root representation")
         overlap = candidate[-(longest - 1):] if longest > 1 else b""
         offset += len(block)
-    if _regular_snapshot(os.fstat(descriptor)) != identity:
+    after_identity = _regular_snapshot(os.fstat(descriptor))
+    exact = before_identity == identity and after_identity == identity
+    ctime_only = (
+        expected_sha256 is not None
+        and _SHA256.fullmatch(expected_sha256) is not None
+        and before_identity[:-1] == identity[:-1]
+        and after_identity[:-1] == identity[:-1]
+        and hmac.compare_digest(digest.hexdigest(), expected_sha256)
+    )
+    if not exact and not ctime_only:
         raise ValueError(f"{field} changed during privacy scan")
 
 
@@ -6852,15 +7451,19 @@ def _assert_resolved_transaction_evidence(
                 )
                 if match is None:
                     raise ValueError("terminal journal name is invalid")
-                descriptor, artifact_identity, payload = _open_transaction_journal(
-                    artifact,
-                )
+                (
+                    descriptor,
+                    artifact_identity,
+                    artifact_sha256,
+                    payload,
+                ) = _open_transaction_journal(artifact)
                 try:
                     _assert_descriptor_omits_private_tokens(
                         descriptor,
                         artifact_identity,
                         forbidden_tokens,
                         "terminal Mayo transaction journal evidence",
+                        expected_sha256=artifact_sha256,
                     )
                     if (
                         (kind == "complete" and payload["token"] != match.group(1))
@@ -6921,6 +7524,7 @@ def _assert_resolved_transaction_evidence(
                                 entry.identity,
                                 forbidden_tokens,
                                 "archived Mayo transaction tree evidence",
+                                expected_sha256=entry.sha256,
                             )
 
         regular_evidence: dict[tuple[str, str], Path] = {}
@@ -6958,6 +7562,7 @@ def _assert_resolved_transaction_evidence(
                         held.identity,
                         forbidden_tokens,
                         "archived Mayo transaction file evidence",
+                        expected_sha256=held.sha256,
                     )
 
         if salt is not None:
@@ -6983,30 +7588,38 @@ def _assert_resolved_transaction_evidence(
                         (
                             held_generation.collection_descriptor,
                             held_generation.collection_identity,
+                            held_generation.collection_sha256,
                         ),
                         (
                             held_generation.internal_exposure_descriptor,
                             held_generation.internal_exposure_identity,
+                            held_generation.internal_exposure_sha256,
                         ),
                         *tuple(
-                            (item.descriptor, item.identity)
+                            (item.descriptor, item.identity, item.sha256)
                             for item in held_generation.media_files
                         ),
                         *tuple(
-                            (item.descriptor, item.identity)
+                            (item.descriptor, item.identity, item.sha256)
                             for item in held_generation.arkit_files
                         ),
                         (
                             held_generation.external_exposure_descriptor,
                             held_generation.external_exposure_identity,
+                            held_generation.external_exposure_sha256,
                         ),
                     )
-                    for artifact_descriptor, artifact_identity in held_regular_files:
+                    for (
+                        artifact_descriptor,
+                        artifact_identity,
+                        artifact_sha256,
+                    ) in held_regular_files:
                         _assert_descriptor_omits_private_tokens(
                             artifact_descriptor,
                             artifact_identity,
                             forbidden_tokens,
                             "paired archived Mayo transaction evidence",
+                            expected_sha256=artifact_sha256,
                         )
                     commitment = _validate_staging(
                         archived_output,
@@ -7027,6 +7640,7 @@ def _assert_resolved_transaction_evidence(
                         name=held_generation.exposure.name,
                         field="archived external Mayo exposure manifest",
                         expected_identity=held_generation.external_exposure_identity,
+                        expected_sha256=held_generation.external_exposure_sha256,
                     )
                     if not hmac.compare_digest(
                         external_digest,
@@ -7089,6 +7703,29 @@ def _key_file_identity(path: Path) -> tuple[int, ...]:
     )
 
 
+def _assert_canonical_mayo_key_path_unchanged(
+    path: Path,
+    expected_identity: tuple[int, ...],
+    expected_key_bytes: bytes,
+) -> None:
+    descriptor = _open_canonical_mayo_key(path)
+    try:
+        payload, identity = _read_canonical_mayo_key_descriptor(
+            descriptor,
+            path=path,
+            owner_uid=os.geteuid(),
+            expected_identity=expected_identity,
+            expected_key_bytes=expected_key_bytes,
+        )
+    finally:
+        os.close(descriptor)
+    if (
+        identity[:-1] != expected_identity[:-1]
+        or not hmac.compare_digest(payload, expected_key_bytes)
+    ):
+        raise ValueError("Mayo private key changed")
+
+
 def _immutable_array(value: np.ndarray) -> np.ndarray:
     result = np.asarray(value).copy()
     result.flags.writeable = False
@@ -7124,8 +7761,9 @@ def authorize_committed_mayo_ssl_generation(
     salt = read_canonical_salt(key_path, project_root=PROJECT_ROOT)
     if len(salt) != 32:
         raise ValueError("Mayo authorization key must contain exactly 32 bytes")
-    if _key_file_identity(key_path) != before_key_identity:
-        raise ValueError("Mayo private key changed while it was read")
+    _assert_canonical_mayo_key_path_unchanged(
+        key_path, before_key_identity, salt,
+    )
     inventory = inventory_mayo_sources(data, exports, enforce_frozen=True)
     if not isinstance(inventory, MayoInventory) or inventory.counts != FROZEN_INVENTORY:
         raise ValueError("Mayo live inventory does not match the frozen contract")
@@ -7170,6 +7808,7 @@ def authorize_committed_mayo_ssl_generation(
             name=held.exposure.name,
             field="committed external exposure manifest",
             expected_identity=held.external_exposure_identity,
+            expected_sha256=held.external_exposure_sha256,
         )
         if not hmac.compare_digest(
             external_digest, str(commitment["exposure_manifest_sha256"])
@@ -7181,6 +7820,7 @@ def authorize_committed_mayo_ssl_generation(
             name="collection_manifest.json",
             field="committed collection manifest",
             expected_identity=held.collection_identity,
+            expected_sha256=held.collection_sha256,
         )
         if not hmac.compare_digest(
             collection_digest, str(commitment["collection_manifest_sha256"])
@@ -7213,6 +7853,7 @@ def authorize_committed_mayo_ssl_generation(
                     name=name,
                     field="committed Mayo MediaPipe cache",
                     expected_identity=held_file.identity,
+                    expected_sha256=held_file.sha256,
                     max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
                 )
                 expected_integrity = hmac_identifier(
@@ -7317,6 +7958,7 @@ def authorize_committed_mayo_ssl_generation(
             name=held.exposure.name,
             field="committed external exposure manifest",
             expected_identity=held.external_exposure_identity,
+            expected_sha256=held.external_exposure_sha256,
         )
         if not hmac.compare_digest(repeated_exposure_digest, external_digest):
             raise ValueError("Mayo exposure manifest changed during authorization")
@@ -7341,11 +7983,14 @@ def authorize_committed_mayo_ssl_generation(
         ):
             raise ValueError("Mayo live classification changed during authorization")
         final_salt = read_canonical_salt(key_path, project_root=PROJECT_ROOT)
-        if (
-            not hmac.compare_digest(final_salt, salt)
-            or _key_file_identity(key_path) != before_key_identity
-        ):
+        if not hmac.compare_digest(final_salt, salt):
             raise ValueError("Mayo private key changed during authorization")
+        try:
+            _assert_canonical_mayo_key_path_unchanged(
+                key_path, before_key_identity, salt,
+            )
+        except ValueError as exc:
+            raise ValueError("Mayo private key changed during authorization") from exc
         _assert_held_mayo_generation(held)
         _assert_no_unresolved_generation_state(
             output, exposure, **evidence_authority,
@@ -7476,13 +8121,22 @@ def _read_canonical_mayo_key_descriptor(
     *,
     path: Path,
     owner_uid: int,
+    expected_identity: tuple[int, ...] | None = None,
+    expected_key_bytes: bytes | None = None,
 ) -> tuple[bytes, tuple[int, ...]]:
     before = os.fstat(descriptor)
     linked_before = os.stat(path, follow_symlinks=False)
     _require_canonical_mayo_key_stat(before, owner_uid=owner_uid)
     _require_canonical_mayo_key_stat(linked_before, owner_uid=owner_uid)
     identity = _regular_snapshot(before)
-    if _regular_snapshot(linked_before) != identity:
+    linked_before_identity = _regular_snapshot(linked_before)
+    if (
+        linked_before_identity[:-1] != identity[:-1]
+        or (
+            expected_identity is not None
+            and identity[:-1] != expected_identity[:-1]
+        )
+    ):
         raise ValueError("canonical Mayo HMAC key path changed while it was opened")
     os.lseek(descriptor, 0, os.SEEK_SET)
     payload = bytearray()
@@ -7495,14 +8149,22 @@ def _read_canonical_mayo_key_descriptor(
     linked_after = os.stat(path, follow_symlinks=False)
     _require_canonical_mayo_key_stat(after, owner_uid=owner_uid)
     _require_canonical_mayo_key_stat(linked_after, owner_uid=owner_uid)
+    after_identity = _regular_snapshot(after)
+    linked_after_identity = _regular_snapshot(linked_after)
     if (
-        _regular_snapshot(after) != identity
-        or _regular_snapshot(linked_after) != identity
+        after_identity[:-1] != identity[:-1]
+        or linked_after_identity[:-1] != identity[:-1]
     ):
         raise ValueError("canonical Mayo HMAC key changed while it was read")
     if len(payload) != 32:
         raise ValueError("canonical Mayo HMAC key must contain exactly 32 bytes")
-    return bytes(payload), identity
+    key_bytes = bytes(payload)
+    if (
+        expected_key_bytes is not None
+        and not hmac.compare_digest(key_bytes, expected_key_bytes)
+    ):
+        raise ValueError("canonical Mayo HMAC key bytes changed while held")
+    return key_bytes, after_identity
 
 
 def _assert_canonical_mayo_key_unchanged(
@@ -7512,9 +8174,11 @@ def _assert_canonical_mayo_key_unchanged(
         held.descriptor,
         path=held.path,
         owner_uid=held.owner_uid,
+        expected_identity=held.identity,
+        expected_key_bytes=held.key_bytes,
     )
     if (
-        identity != held.identity
+        identity[:-1] != held.identity[:-1]
         or not hmac.compare_digest(payload, held.key_bytes)
     ):
         raise ValueError("canonical Mayo HMAC key changed while held")
@@ -7524,11 +8188,13 @@ def _assert_canonical_mayo_key_unchanged(
             reopened,
             path=held.path,
             owner_uid=held.owner_uid,
+            expected_identity=held.identity,
+            expected_key_bytes=held.key_bytes,
         )
     finally:
         os.close(reopened)
     if (
-        reopened_identity != held.identity
+        reopened_identity[:-1] != held.identity[:-1]
         or not hmac.compare_digest(reopened_payload, held.key_bytes)
     ):
         raise ValueError("canonical Mayo HMAC key changed at its live path")

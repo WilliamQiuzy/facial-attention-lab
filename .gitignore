@@ -90,5 +90,6 @@ facial_paralysis/outputs/.palsynet_identity_audit.backup-*/
 # remains trackable outside these exact paths.
 facial_paralysis/outputs/dynamic_landmark/pretraining/
 facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json
+facial_paralysis/outputs/dynamic_landmark/.mayo_exposure_manifest.json.*-*
 facial_paralysis/data_acquisition/youtube/clips/
 facial_paralysis/data_acquisition/youtube/faces/

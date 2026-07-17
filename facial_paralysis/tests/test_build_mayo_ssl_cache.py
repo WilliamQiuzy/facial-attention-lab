@@ -3845,7 +3845,7 @@ def test_committed_validation_is_bound_to_cleanup_holds(c: Check):
             def mutate_after_committed_journal_open(path):
                 nonlocal mutated
                 result = original_open(path)
-                if result[2]["phase"] == "committed" and not mutated:
+                if result[3]["phase"] == "committed" and not mutated:
                     mutated = True
                     changed = (
                         next((output / "mediapipe").glob("*.npz"))
@@ -4635,6 +4635,7 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
             builder._retire_held_transaction_journal_durably(
                 descriptor=descriptor,
                 identity=identity,
+                journal_sha256=_sha(journal.read_bytes()),
                 path=journal,
                 journal={},
                 validate_final_state=lambda: None,
@@ -4789,9 +4790,11 @@ def test_final_journal_check_is_followed_by_held_object_validation(c: Check):
         real_assert = builder._assert_held_transaction_journal
         mutated = False
 
-        def mutate_after_final_journal_check(descriptor, path, identity):
+        def mutate_after_final_journal_check(
+            descriptor, path, identity, expected_sha256,
+        ):
             nonlocal mutated
-            real_assert(descriptor, path, identity)
+            real_assert(descriptor, path, identity, expected_sha256)
             if output.is_dir() and (output / sentinel.name).is_file() and not mutated:
                 mutated = True
                 (output / sentinel.name).chmod(0o666)
@@ -4856,9 +4859,9 @@ def test_post_check_journal_swap_is_detected_after_unlink(c: Check):
         swapped = False
         victim_inode = None
 
-        def swap_after_final_check(descriptor, path, identity):
+        def swap_after_final_check(descriptor, path, identity, expected_sha256):
             nonlocal swapped, victim_inode
-            real_assert(descriptor, path, identity)
+            real_assert(descriptor, path, identity, expected_sha256)
             if output.is_dir() and (output / sentinel.name).is_file() and not swapped:
                 swapped = True
                 Path(path).rename(evidence)
@@ -6383,6 +6386,7 @@ def _assert_key_fault_blocks_publication(
     builder.snapshot_provenance = lambda *_args, **_kwargs: fake_provenance
     builder.assert_provenance_unchanged = lambda *_args, **_kwargs: None
     rejected = False
+    rejection: ValueError | None = None
     try:
         if with_existing_generation:
             builder._run_builder_impl(
@@ -6424,14 +6428,17 @@ def _assert_key_fault_blocks_publication(
                 expected_executable=expected_python,
                 provenance_python_executable=expected_python,
             )
-        except ValueError:
+        except ValueError as exc:
             rejected = True
+            rejection = exc
     finally:
         builder.snapshot_provenance = original_snapshot
         builder.assert_provenance_unchanged = original_assert
         builder.promote_generation = original_promote
         if key.exists():
             key.chmod(0o600)
+    if not fault_injected and rejection is not None:
+        raise rejection
     c.true(
         fault_injected,
         f"{fault} fault occurs at {injection_point}",
@@ -8008,6 +8015,153 @@ def test_committed_mayo_authorizer_holds_every_cache_mode_through_return(c: Chec
             finally:
                 cache.chmod(0o600)
             c.eq(inventory_calls, 2)
+
+
+def test_held_mayo_generation_revalidates_ctime_only_cache_drift(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            cache_path = next((fixture.output / "mediapipe").glob("*.npz"))
+            initial = cache_path.stat()
+            os.utime(
+                cache_path,
+                ns=(initial.st_atime_ns, initial.st_mtime_ns),
+                follow_symlinks=False,
+            )
+            with builder._hold_committed_mayo_generation(
+                fixture.output,
+                fixture.exposure,
+                assert_on_exit=False,
+            ) as held:
+                cache = held.media_files[0]
+                before = cache.identity
+                os.chmod(
+                    cache.name,
+                    0o600,
+                    dir_fd=held.media_descriptor,
+                    follow_symlinks=False,
+                )
+                after = builder._regular_snapshot(os.fstat(cache.descriptor))
+                c.true(
+                    after[:-1] == before[:-1] and after[-1] != before[-1],
+                    "fixture changes only ctime on a held compact cache",
+                )
+                builder._assert_held_mayo_generation(held)
+
+
+def test_held_mayo_generation_rejects_same_stat_cache_content_forgery(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            cache_path = next((fixture.output / "mediapipe").glob("*.npz"))
+            initial = cache_path.stat()
+            os.utime(
+                cache_path,
+                ns=(initial.st_atime_ns, initial.st_mtime_ns),
+                follow_symlinks=False,
+            )
+            with builder._hold_committed_mayo_generation(
+                fixture.output,
+                fixture.exposure,
+                assert_on_exit=False,
+            ) as held:
+                cache = held.media_files[0]
+                before = os.fstat(cache.descriptor)
+                payload = bytearray(os.pread(cache.descriptor, before.st_size, 0))
+                payload[0] ^= 1
+                writer = os.open(
+                    cache.name,
+                    os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=held.media_descriptor,
+                )
+                try:
+                    os.pwrite(writer, payload, 0)
+                    os.fsync(writer)
+                finally:
+                    os.close(writer)
+                os.utime(
+                    fixture.output / "mediapipe" / cache.name,
+                    ns=(before.st_atime_ns, before.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                after = builder._regular_snapshot(os.fstat(cache.descriptor))
+                c.true(
+                    after[:-1] == cache.identity[:-1]
+                    and after[-1] != cache.identity[-1],
+                    "forgery restores every contracted stat field except ctime",
+                )
+                c.raises(
+                    lambda: builder._assert_held_mayo_generation(held),
+                    ValueError,
+                    "complete held bytes reject content forgery behind ctime drift",
+                )
+
+
+def test_held_canonical_mayo_key_revalidates_ctime_only_drift(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        key = root / "outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key"
+        key.parent.mkdir(parents=True, mode=0o700)
+        (root / "outputs").chmod(0o755)
+        (root / "outputs/dynamic_landmark").chmod(0o700)
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        with builder._hold_canonical_mayo_key(key, project_root=root) as held:
+            key.chmod(0o600)
+            after = builder._regular_snapshot(key.stat())
+            c.true(
+                after[:-1] == held.identity[:-1]
+                and after[-1] != held.identity[-1],
+                "fixture changes only ctime on the canonical key",
+            )
+            held.assert_unchanged()
+
+
+def test_held_canonical_mayo_key_rejects_same_stat_content_forgery(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        key = root / "outputs/dynamic_landmark/pretraining/.mayo_ssl_hmac.key"
+        key.parent.mkdir(parents=True, mode=0o700)
+        (root / "outputs").chmod(0o755)
+        (root / "outputs/dynamic_landmark").chmod(0o700)
+        key.write_bytes(b"k" * 32)
+        key.chmod(0o600)
+        initial = key.stat()
+        os.utime(
+            key,
+            ns=(initial.st_atime_ns, initial.st_mtime_ns),
+            follow_symlinks=False,
+        )
+        with builder._hold_canonical_mayo_key(key, project_root=root) as held:
+            before = key.stat()
+            key.write_bytes(b"x" * 32)
+            key.chmod(0o600)
+            os.utime(
+                key,
+                ns=(before.st_atime_ns, before.st_mtime_ns),
+                follow_symlinks=False,
+            )
+            after = builder._regular_snapshot(key.stat())
+            c.true(
+                after[:-1] == held.identity[:-1]
+                and after[-1] != held.identity[-1],
+                "key forgery restores every contracted stat field except ctime",
+            )
+            try:
+                c.raises(
+                    held.assert_unchanged,
+                    ValueError,
+                    "canonical key bytes reject forgery behind ctime drift",
+                )
+            finally:
+                key.write_bytes(held.key_bytes)
+                key.chmod(0o600)
+                restored = key.stat()
+                os.utime(
+                    key,
+                    ns=(restored.st_atime_ns, held.identity[7]),
+                    follow_symlinks=False,
+                )
 
 
 if __name__ == "__main__":
