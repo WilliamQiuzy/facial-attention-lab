@@ -3126,6 +3126,22 @@ class _JournalCleanupState:
     terminal_resolved: bool = False
 
 
+def _finish_terminal_cleanup(
+    cleanup: Callable[[], object],
+    cleanup_state: _JournalCleanupState,
+    pending: tuple[object, BaseException | None, object],
+) -> None:
+    """Run pure close cleanup without losing an active validation failure."""
+    try:
+        cleanup()
+    except OSError as cleanup_error:
+        if not cleanup_state.terminal_resolved:
+            raise
+        primary = pending[1]
+        if primary is not None:
+            raise primary.with_traceback(pending[2]) from cleanup_error
+
+
 def _retire_held_transaction_journal_durably(
     *,
     descriptor: int,
@@ -3831,11 +3847,12 @@ def _recover_cache_exposure_transaction_held(
         if held_committed is not None:
             _assert_held_mayo_generation(held_committed)
     finally:
-        try:
-            final_holds.__exit__(*sys.exc_info())
-        except BaseException:
-            if not cleanup_state.terminal_resolved:
-                raise
+        pending = sys.exc_info()
+        _finish_terminal_cleanup(
+            lambda: final_holds.__exit__(*pending),
+            cleanup_state,
+            pending,
+        )
 
 
 def _recover_cache_exposure_transaction(
@@ -3880,9 +3897,11 @@ def _recover_cache_exposure_transaction(
     close_error: BaseException | None = None
     try:
         os.close(descriptor)
-    except BaseException as exc:
+    except OSError as exc:
         close_error = exc
     if cleanup_state.terminal_resolved:
+        if primary is not None and close_error is not None:
+            raise primary.with_traceback(primary.__traceback__) from close_error
         close_error = None
     if primary is not None or close_error is not None:
         compensation_failed = cleanup_state.compensation_attempted
@@ -4597,19 +4616,21 @@ def _promote_generation_with_exposure(
             )
             _assert_held_mayo_generation(held_generation)
         finally:
+            pending = sys.exc_info()
             try:
-                try:
-                    committed_holds.__exit__(*sys.exc_info())
-                except BaseException:
-                    if not cleanup_state.terminal_resolved:
-                        raise
+                _finish_terminal_cleanup(
+                    lambda: committed_holds.__exit__(*pending),
+                    cleanup_state,
+                    pending,
+                )
             finally:
                 if committed_journal_descriptor is not None:
-                    try:
-                        os.close(committed_journal_descriptor)
-                    except BaseException:
-                        if not cleanup_state.terminal_resolved:
-                            raise
+                    journal_pending = sys.exc_info()
+                    _finish_terminal_cleanup(
+                        lambda: os.close(committed_journal_descriptor),
+                        cleanup_state,
+                        journal_pending,
+                    )
     except Exception as primary_error:
         if (
             committed_boundary_started
@@ -4639,11 +4660,12 @@ def _promote_generation_with_exposure(
             )
         raise
     finally:
-        try:
-            source_holds.__exit__(*sys.exc_info())
-        except BaseException:
-            if not cleanup_state.terminal_resolved:
-                raise
+        pending = sys.exc_info()
+        _finish_terminal_cleanup(
+            lambda: source_holds.__exit__(*pending),
+            cleanup_state,
+            pending,
+        )
 
 
 def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:

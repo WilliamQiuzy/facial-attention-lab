@@ -4572,7 +4572,9 @@ def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
             b"post-terminal-drift-salt-0123456",
         )
         original_resolve = builder._resolve_private_path_no_replace_final
+        original_close = builder.os.close
         drifted = False
+        close_faulted = False
 
         def resolve_then_drift(held, destination, field):
             nonlocal drifted
@@ -4581,21 +4583,40 @@ def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
             cache.chmod(0o666)
             drifted = True
 
+        def close_after_drift_then_fail(descriptor):
+            nonlocal close_faulted
+            original_close(descriptor)
+            if drifted and not close_faulted:
+                close_faulted = True
+                raise OSError("combined-close-marker")
+
         builder._resolve_private_path_no_replace_final = resolve_then_drift
+        builder.os.close = close_after_drift_then_fail
+        caught: BaseException | None = None
         try:
-            with builder.output_parent_lock(output):
-                c.raises(
-                    lambda: builder.promote_generation(
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
                         staging,
                         output,
                         exposure_manifest_path=exposure,
-                    ),
-                    ValueError,
-                    "post-terminal canonical drift is not mistaken for close cleanup",
-                )
+                    )
+            except ValueError as exc:
+                caught = exc
+            else:
+                raise AssertionError("post-terminal canonical drift was ignored")
         finally:
+            builder.os.close = original_close
             builder._resolve_private_path_no_replace_final = original_resolve
         c.true(drifted)
+        c.true(close_faulted)
+        c.true(
+            caught is not None
+            and _exception_chain_contains(
+                caught, OSError, "combined-close-marker",
+            ),
+            "post-terminal validation remains primary and retains close cleanup cause",
+        )
         c.true(not (root / ".cache.transaction.json").exists())
         c.eq(
             len(tuple(root.glob("..cache.transaction.json.complete-*"))),
