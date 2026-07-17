@@ -3096,6 +3096,77 @@ def _journal_path(output: Path) -> Path:
     return output.parent / f".{output.name}.transaction.json"
 
 
+def _assert_transaction_evidence_topology(
+    output: Path,
+    exposure: Path,
+    token: str,
+    *,
+    committed: bool,
+    had_prior: bool,
+) -> None:
+    if (
+        not isinstance(token, str)
+        or re.fullmatch(r"[0-9a-f]{16}", token) is None
+        or type(committed) is not bool
+        or type(had_prior) is not bool
+    ):
+        raise ValueError("Mayo transaction evidence topology authority is invalid")
+
+    def present(path: Path) -> bool:
+        return path.exists() or _is_symlink(path)
+
+    prior_pairs = (
+        (
+            output.parent / f".{output.name}.retired-{token}-backup",
+            exposure.parent / f".{exposure.name}.retired-{token}-backup",
+        ),
+        (
+            output.parent / f".{output.name}.retired-{token}-output-backup",
+            exposure.parent / (
+                f".{exposure.name}.retired-{token}-exposure-backup"
+            ),
+        ),
+    )
+    prior_presence = tuple(
+        tuple(present(path) for path in pair) for pair in prior_pairs
+    )
+    prior_count = sum(
+        int(value) for pair in prior_presence for value in pair
+    )
+    complete_prior_pairs = sum(
+        int(all(pair)) for pair in prior_presence
+    )
+    aborted_pair = (
+        output.parent / f".{output.name}.aborted-{token}-staging",
+        exposure.parent / f".{exposure.name}.aborted-{token}-temporary",
+    )
+    aborted_count = sum(int(present(path)) for path in aborted_pair)
+
+    if committed:
+        if aborted_count != 0:
+            raise ValueError(
+                "committed Mayo transaction has unexpected aborted evidence"
+            )
+        if had_prior:
+            if prior_count != 2 or complete_prior_pairs != 1:
+                raise ValueError(
+                    "committed Mayo transaction lacks one exact prior pair"
+                )
+        elif prior_count != 0:
+            raise ValueError(
+                "no-prior Mayo transaction has unexpected prior evidence"
+            )
+    else:
+        if prior_count != 0:
+            raise ValueError(
+                "rolled-back Mayo transaction has unexpected prior evidence"
+            )
+        if aborted_count != 2:
+            raise ValueError(
+                "rolled-back Mayo transaction lacks one exact aborted pair"
+            )
+
+
 def _decode_unique_json_object(payload: bytes, field: str) -> dict[str, object]:
     """Decode one UTF-8 JSON object while rejecting duplicate keys recursively."""
     def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -4313,6 +4384,13 @@ def _recover_cache_exposure_transaction_held(
                 raise ValueError("recovery backup residue unexpectedly reappeared")
 
         def validate_final_state() -> None:
+            _assert_transaction_evidence_topology(
+                output,
+                exposure,
+                token,
+                committed=committed,
+                had_prior=had_output,
+            )
             if not committed:
                 if output_ledger is not None:
                     require_private_tree_snapshot(
@@ -5259,6 +5337,13 @@ def _promote_generation_with_exposure(
 
             def validate_committed_final_state() -> None:
                 _assert_held_mayo_generation(held_generation)
+                _assert_transaction_evidence_topology(
+                    output,
+                    exposure,
+                    token,
+                    committed=True,
+                    had_prior=had_output,
+                )
                 if (
                     output_backup.exists() or _is_symlink(output_backup)
                     or exposure_backup.exists() or _is_symlink(exposure_backup)
@@ -7698,7 +7783,22 @@ def _assert_resolved_transaction_evidence(
                         expected_sha256=held.sha256,
                     )
 
+        evidence_tokens = {
+            token for _kind, token in (*tree_evidence, *regular_evidence)
+        }
+        if not evidence_tokens.issubset(completed_journals):
+            raise ValueError(
+                "archived Mayo evidence has no same-token completed receipt"
+            )
+
         for transaction_token, payload in completed_journals.items():
+            _assert_transaction_evidence_topology(
+                output,
+                exposure,
+                transaction_token,
+                committed=payload["phase"] == "committed",
+                had_prior=bool(payload["had_output"]),
+            )
             candidate_keys = tuple(
                 key for key in (
                     ("committed-backup", transaction_token),

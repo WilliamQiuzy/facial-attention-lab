@@ -7229,6 +7229,7 @@ def test_completed_receipts_require_exact_prior_evidence_topology(c: Check):
             root.mkdir(mode=0o700)
             with _CommittedMayoAuthorizerFixture(root) as fixture:
                 token = f"{index + 1:016x}"
+                generation_commitment = fixture.authorize().commitment
                 output_commitment = "0" * 64
                 exposure_commitment = "1" * 64
                 retired_tree = fixture.output.parent / (
@@ -7264,7 +7265,6 @@ def test_completed_receipts_require_exact_prior_evidence_topology(c: Check):
                             _sha(retired_exposure.read_bytes()),
                         )
                     )
-                generation_commitment = fixture.authorize().commitment
                 if mutate_generation:
                     generation_commitment = dict(generation_commitment)
                     generation_commitment["generation_aggregate_sha256"] = (
@@ -7306,6 +7306,136 @@ def test_completed_receipts_require_exact_prior_evidence_topology(c: Check):
                     c.true(
                         retired_tree.is_dir() and retired_exposure.is_file()
                     )
+
+
+def test_authorizer_rejects_archived_pair_without_completed_receipt(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            token = "deadbeefdeadbeef"
+            retired_tree = fixture.output.parent / (
+                f".mayo_ssl_cache.retired-{token}-backup"
+            )
+            retired_exposure = fixture.exposure.parent / (
+                f".mayo_exposure_manifest.json.retired-{token}-backup"
+            )
+            shutil.copytree(fixture.output, retired_tree)
+            shutil.copy2(fixture.exposure, retired_exposure)
+            retired_tree.chmod(0o700)
+            retired_exposure.chmod(0o600)
+            c.raises(
+                fixture.authorize,
+                RuntimeError,
+                "archived pair without a same-token receipt is unresolved",
+            )
+            c.true(retired_tree.is_dir() and retired_exposure.is_file())
+
+
+def test_promotion_terminal_gate_rejects_extra_same_token_prior_pair(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-extra-terminal-pair",
+            b"x" * 32,
+        )
+        journal_path = root / ".cache.transaction.json"
+        injected: tuple[Path, Path] | None = None
+
+        def inject_same_token_pair(phase: str) -> None:
+            nonlocal injected
+            if phase != "committed":
+                return
+            journal = json.loads(journal_path.read_text())
+            token = str(journal["token"])
+            retired_tree = root / f".cache.retired-{token}-backup"
+            retired_exposure = root / (
+                f".mayo_exposure_manifest.json.retired-{token}-backup"
+            )
+            shutil.copytree(output, retired_tree)
+            shutil.copy2(exposure, retired_exposure)
+            retired_tree.chmod(0o700)
+            retired_exposure.chmod(0o600)
+            injected = retired_tree, retired_exposure
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=inject_same_token_pair,
+                ),
+                ValueError,
+                "terminal promotion rescans all same-token evidence names",
+            )
+        c.true(
+            injected is not None
+            and journal_path.is_file()
+            and all(path.exists() for path in injected),
+            "inconsistent terminal pair remains blocking evidence",
+        )
+
+
+def test_recovery_terminal_gate_rejects_extra_same_token_prior_pair(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-extra-recovery-pair",
+            b"extra-recovery-pair-salt-0123456",
+        )
+
+        def interrupt(phase: str) -> None:
+            if phase == "committed":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("fixture did not retain a committed journal")
+        journal_path = root / ".cache.transaction.json"
+        journal = json.loads(journal_path.read_text())
+        token = str(journal["token"])
+        retired_tree = root / f".cache.retired-{token}-backup"
+        retired_exposure = root / (
+            f".mayo_exposure_manifest.json.retired-{token}-backup"
+        )
+        shutil.copytree(output, retired_tree)
+        shutil.copy2(exposure, retired_exposure)
+        retired_tree.chmod(0o700)
+        retired_exposure.chmod(0o600)
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                ValueError,
+                "recovery terminal gate rejects an extra same-token prior pair",
+            )
+        c.true(
+            journal_path.is_file()
+            and retired_tree.is_dir()
+            and retired_exposure.is_file(),
+            "recovery retains the active journal and inconsistent pair",
+        )
 
 
 def test_transaction_journal_rejects_unpaired_had_flags(c: Check):
