@@ -3630,6 +3630,30 @@ def test_tree_commitment_debits_one_shared_streaming_budget(c: Check):
         c.eq(read_sizes, [], "held growth is rejected before any digest read")
 
 
+def test_exact_private_tree_budget_accepts_frozen_mayo_generation_scale(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        payload = root / "frozen-generation.payload"
+        with payload.open("wb") as handle:
+            handle.truncate(128 * 1024 * 1024 + 1)
+        payload.chmod(0o600)
+        _checked_root, ledger = builder._private_generation_storage_ledger(
+            root, "frozen Mayo generation scale",
+        )
+        c.eq(
+            sum(
+                int(identity[6])
+                for kind, _parts, identity in ledger
+                if kind == "file"
+            ),
+            128 * 1024 * 1024 + 1,
+            "frozen Mayo generation can exceed the obsolete 128 MiB limit",
+        )
+
+
 def test_held_digest_stops_at_first_byte_beyond_remaining_budget(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -8389,7 +8413,7 @@ def test_committed_mayo_generation_aggregate_budget_precedes_cache_read(c: Check
         with _CommittedMayoAuthorizerFixture(root) as fixture:
             cache = next((fixture.output / "mediapipe").glob("*.npz"))
             with cache.open("r+b") as handle:
-                handle.truncate(128 * 1024 * 1024 + 1)
+                handle.truncate(256 * 1024 * 1024 + 1)
             cache.chmod(0o600)
             original_read = builder._read_regular_descriptor
             cache_reads: list[str] = []
@@ -8406,7 +8430,7 @@ def test_committed_mayo_generation_aggregate_budget_precedes_cache_read(c: Check
                 c.raises(
                     fixture.authorize,
                     ValueError,
-                    "shared 128 MiB generation budget fails before cache reads",
+                    "shared 256 MiB generation budget fails before cache reads",
                 )
             finally:
                 builder._read_regular_descriptor = original_read
@@ -8425,7 +8449,7 @@ def test_staged_mayo_generation_aggregate_budget_precedes_cache_validation(c: Ch
         )
         cache = next((staging / "mediapipe").glob("*.npz"))
         with cache.open("r+b") as handle:
-            handle.truncate(128 * 1024 * 1024 + 1)
+            handle.truncate(256 * 1024 * 1024 + 1)
         cache.chmod(0o600)
         original_validate = builder._validate_compact_cache
         validation_calls = 0
