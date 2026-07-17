@@ -15,6 +15,7 @@ import stat
 import sys
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1131,10 +1132,10 @@ def test_extractor_lifecycle_lock_and_transaction_are_fail_closed(c: Check):
 
         original_publish = builder._publish_private_path_no_replace
 
-        def fail_exposure_install(src, dst, field):
+        def fail_exposure_install(src, dst, field, **kwargs):
             if Path(dst) == exposure and ".tmp-" in Path(src).name:
                 raise OSError("forced exposure install failure")
-            return original_publish(src, dst, field)
+            return original_publish(src, dst, field, **kwargs)
 
         builder._publish_private_path_no_replace = fail_exposure_install
         try:
@@ -2358,6 +2359,92 @@ def test_transaction_journal_recovers_simulated_process_interruptions(c: Check):
                    "successful recovery removes transaction staging/backups")
 
 
+def test_transaction_recovers_mutation_before_completed_phase_write(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    intent_phases = {
+        "old_output": "moving_old_output",
+        "old_exposure": "moving_old_exposure",
+        "new_output": "installing_new_output",
+        "new_exposure": "installing_new_exposure",
+    }
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target, intent_phase in intent_phases.items():
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root, f".cache.staging-before-phase-{target}",
+                b"mutation-before-phase-salt-0123456",
+            )
+            original_publish = builder._publish_private_path_no_replace
+
+            def interrupting_publish(source, destination, field, **kwargs):
+                original_publish(source, destination, field, **kwargs)
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if (
+                    (
+                        target == "old_output"
+                        and source_path == output
+                        and destination_path.name.startswith(".cache.backup-")
+                    )
+                    or (
+                        target == "old_exposure"
+                        and source_path == exposure
+                        and destination_path.name.startswith(
+                            ".mayo_exposure_manifest.json.backup-"
+                        )
+                    )
+                    or (target == "new_output" and Path(destination) == output)
+                    or (
+                        target == "new_exposure"
+                        and Path(destination) == exposure
+                    )
+                ):
+                    raise SimulatedProcessDeath(target)
+
+            builder._publish_private_path_no_replace = interrupting_publish
+            try:
+                try:
+                    with builder.output_parent_lock(output):
+                        builder.promote_generation(
+                            staging,
+                            output,
+                            exposure_manifest_path=exposure,
+                        )
+                except SimulatedProcessDeath:
+                    pass
+                else:
+                    raise AssertionError(
+                        "simulated process death did not interrupt mutation"
+                    )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+
+            journal = root / ".cache.transaction.json"
+            c.eq(
+                json.loads(journal.read_text())["phase"], intent_phase,
+                "the durable journal records intent before storage mutation",
+            )
+            with builder.output_parent_lock(output):
+                builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                )
+            c.eq((output / sentinel.name).read_text(), "old-cache")
+            c.eq(exposure.read_text(), "old-exposure")
+            c.true(not journal.exists(), "intent recovery removes its journal")
+
+
 def test_committed_key_drift_downgrade_write_failure_preserves_indeterminate_evidence(
     c: Check,
 ):
@@ -2660,29 +2747,33 @@ def test_coupled_promotion_rechecks_old_tree_after_move(c: Check):
             b"old-tree-race-storage-salt-01234",
         )
 
-        def mutate_during_old_output_move(source, destination):
+        original_publish = builder._publish_private_path_no_replace
+
+        def mutate_during_old_output_move(source, destination, field, **kwargs):
             if Path(source) == output and ".backup-" in Path(destination).name:
                 sentinel.chmod(0o666)
-            return os.replace(source, destination)
+            return original_publish(source, destination, field, **kwargs)
 
-        with builder.output_parent_lock(output):
-            c.raises(
-                lambda: builder.promote_generation(
-                    staging,
-                    output,
-                    exposure_manifest_path=exposure,
-                    replace_func=mutate_during_old_output_move,
-                ),
-                ValueError,
-                "old generation mode drift inside rename hook fails closed",
-            )
+        builder._publish_private_path_no_replace = mutate_during_old_output_move
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "old generation mode drift inside rename hook fails closed",
+                )
+        finally:
+            builder._publish_private_path_no_replace = original_publish
         journal = root / ".cache.transaction.json"
         c.true(journal.is_file(), "move drift retains a transaction journal")
         retained = json.loads(journal.read_text())
         c.true(retained["indeterminate"] is True)
         backup = root / f".cache.backup-{retained['token']}"
-        c.true(not output.exists(), "polluted generation is not restored canonical")
-        c.eq((backup / sentinel.name).read_text(), "old-cache")
+        c.true(not output.exists() and backup.is_dir())
         c.eq(stat.S_IMODE((backup / sentinel.name).stat().st_mode), 0o666)
         c.eq(exposure.read_text(), "old-exposure")
         with builder.output_parent_lock(output):
@@ -2713,46 +2804,52 @@ def test_coupled_promotion_rechecks_old_exposure_after_move(c: Check):
             b"old-exposure-race-storage-salt-0123",
         )
 
-        def mutate_during_old_exposure_move(source, destination):
+        original_publish = builder._publish_private_path_no_replace
+
+        def mutate_during_old_exposure_move(source, destination, field, **kwargs):
             if Path(source) == exposure and ".backup-" in Path(destination).name:
                 exposure.chmod(0o666)
-            return os.replace(source, destination)
+            return original_publish(source, destination, field, **kwargs)
 
-        with builder.output_parent_lock(output):
-            c.raises(
-                lambda: builder.promote_generation(
-                    staging,
-                    output,
-                    exposure_manifest_path=exposure,
-                    replace_func=mutate_during_old_exposure_move,
-                ),
-                ValueError,
-                "old exposure mode drift inside rename hook fails closed",
-            )
+        builder._publish_private_path_no_replace = mutate_during_old_exposure_move
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "old exposure mode drift inside rename hook fails closed",
+                )
+        finally:
+            builder._publish_private_path_no_replace = original_publish
         journal = root / ".cache.transaction.json"
         c.true(journal.is_file(), "move drift retains a transaction journal")
         retained = json.loads(journal.read_text())
-        c.true(retained["indeterminate"] is True)
+        c.true(retained["indeterminate"] is False)
         output_backup = root / f".cache.backup-{retained['token']}"
         exposure_backup = root / (
             f".mayo_exposure_manifest.json.backup-{retained['token']}"
         )
-        c.true(not output.exists() and not exposure.exists())
+        c.true(not output.exists() and exposure.is_file())
         c.eq((output_backup / sentinel.name).read_text(), "old-cache")
-        c.eq(exposure_backup.read_text(), "old-exposure")
-        c.eq(stat.S_IMODE(exposure_backup.stat().st_mode), 0o666)
+        c.true(not exposure_backup.exists())
+        c.eq(exposure.read_text(), "old-exposure")
+        c.eq(stat.S_IMODE(exposure.stat().st_mode), 0o666)
         with builder.output_parent_lock(output):
             c.raises(
                 lambda: builder.recover_interrupted_generations(
                     output, exposure_manifest_path=exposure,
                 ),
-                RuntimeError,
-                "automatic recovery refuses polluted retained evidence",
+                ValueError,
+                "automatic recovery refuses changed retained evidence",
             )
         c.true(
             journal.is_file()
             and output_backup.is_dir()
-            and exposure_backup.is_file()
+            and exposure.is_file()
         )
 
 
@@ -2774,22 +2871,27 @@ def test_coupled_promotion_retains_hardlinked_old_tree_evidence(c: Check):
         )
         alias = root / ".attacker-hardlink"
 
-        def hardlink_during_old_output_move(source, destination):
+        original_publish = builder._publish_private_path_no_replace
+
+        def hardlink_during_old_output_move(source, destination, field, **kwargs):
             if Path(source) == output and ".backup-" in Path(destination).name:
                 os.link(sentinel, alias)
-            return os.replace(source, destination)
+            return original_publish(source, destination, field, **kwargs)
 
-        with builder.output_parent_lock(output):
-            c.raises(
-                lambda: builder.promote_generation(
-                    staging,
-                    output,
-                    exposure_manifest_path=exposure,
-                    replace_func=hardlink_during_old_output_move,
-                ),
-                ValueError,
-                "old generation hardlink drift fails closed",
-            )
+        builder._publish_private_path_no_replace = hardlink_during_old_output_move
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "old generation hardlink drift fails closed",
+                )
+        finally:
+            builder._publish_private_path_no_replace = original_publish
         journal = root / ".cache.transaction.json"
         c.true(journal.is_file(), "hardlink drift retains transaction evidence")
         retained = json.loads(journal.read_text())
@@ -2997,16 +3099,16 @@ def test_recovery_rechecks_backup_after_restore_hook_mutation(c: Check):
             exposure_backup = root / (
                 f".mayo_exposure_manifest.json.backup-{token}"
             )
-            real_replace = builder.os.replace
+            original_publish = builder._publish_private_path_no_replace
 
-            def mutate_inside_restore(source, destination):
+            def mutate_inside_restore(source, destination, field, **kwargs):
                 if target == "output" and Path(source) == output_backup:
                     (output_backup / sentinel.name).chmod(0o666)
                 if target == "exposure" and Path(source) == exposure_backup:
                     exposure_backup.chmod(0o666)
-                return real_replace(source, destination)
+                return original_publish(source, destination, field, **kwargs)
 
-            builder.os.replace = mutate_inside_restore
+            builder._publish_private_path_no_replace = mutate_inside_restore
             try:
                 with builder.output_parent_lock(output):
                     c.raises(
@@ -3017,14 +3119,14 @@ def test_recovery_rechecks_backup_after_restore_hook_mutation(c: Check):
                         "post-preflight restore mutation fails closed",
                     )
             finally:
-                builder.os.replace = real_replace
+                builder._publish_private_path_no_replace = original_publish
             c.true(journal.is_file(), "restore drift retains its journal")
             if target == "output":
                 c.eq(stat.S_IMODE((output / sentinel.name).stat().st_mode), 0o666)
                 c.true(not output_backup.exists())
             else:
-                c.eq(stat.S_IMODE(exposure.stat().st_mode), 0o666)
-                c.true(not exposure_backup.exists())
+                c.eq(stat.S_IMODE(exposure_backup.stat().st_mode), 0o666)
+                c.true(not exposure.exists())
 
 
 def test_recovery_requires_journal_bound_previous_storage_commitments(c: Check):
@@ -3273,6 +3375,49 @@ def test_tree_commitment_debits_one_shared_streaming_budget(c: Check):
         c.eq(read_sizes, [], "held growth is rejected before any digest read")
 
 
+def test_held_digest_stops_at_first_byte_beyond_remaining_budget(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        payload = root / "payload"
+        mebibyte = 1024 * 1024
+        limit = mebibyte + mebibyte // 2
+        payload.write_bytes(b"x" * mebibyte)
+        payload.chmod(0o600)
+        descriptor = os.open(payload, os.O_RDONLY)
+        entry = builder._HeldPrivateStorageEntry(
+            "file", (payload.name,), descriptor,
+            builder._regular_snapshot(os.fstat(descriptor)),
+        )
+        original_read = builder.os.read
+        read_sizes: list[int] = []
+
+        def grow_after_first_read(fd, requested):
+            block = original_read(fd, requested)
+            read_sizes.append(len(block))
+            if len(read_sizes) == 1:
+                with payload.open("ab") as stream:
+                    stream.write(b"y" * mebibyte)
+            return block
+
+        builder.os.read = grow_after_first_read
+        try:
+            c.raises(
+                lambda: builder._sha256_held_private_regular_file(
+                    entry, "growing held payload", max_bytes=limit,
+                ),
+                ValueError,
+                "held digest stops at the first byte beyond its hard budget",
+            )
+        finally:
+            builder.os.read = original_read
+            os.close(descriptor)
+        c.eq(
+            read_sizes, [mebibyte, mebibyte // 2 + 1],
+            "the second read is capped to remaining budget plus one byte",
+        )
+
+
 def test_tree_commitment_hashes_one_held_tree_during_path_swap(c: Check):
     with tempfile.TemporaryDirectory() as td:
         parent = Path(td)
@@ -3431,6 +3576,132 @@ def test_committed_promotion_holds_outputs_and_journal_through_cleanup(c: Check)
                 c.true(evidence.is_file(), "the opened journal evidence remains")
 
 
+def test_committed_validation_is_bound_to_cleanup_holds(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-validation-hold-{target}",
+                b"validation-hold-binding-salt-01234",
+            )
+            original_open = builder._open_transaction_journal
+            mutated = False
+
+            def mutate_after_committed_journal_open(path):
+                nonlocal mutated
+                result = original_open(path)
+                if result[2]["phase"] == "committed" and not mutated:
+                    mutated = True
+                    changed = (
+                        next((output / "mediapipe").glob("*.npz"))
+                        if target == "output" else exposure
+                    )
+                    with changed.open("r+b") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        value = handle.read(1)
+                        handle.seek(-1, os.SEEK_END)
+                        handle.write(bytes((value[0] ^ 1,)))
+                return result
+
+            builder._open_transaction_journal = mutate_after_committed_journal_open
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.promote_generation(
+                            staging,
+                            output,
+                            exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "validated committed bytes stay bound through cleanup",
+                    )
+            finally:
+                builder._open_transaction_journal = original_open
+            c.true(mutated, "storage changes between validation and old hold point")
+            c.true(
+                (root / ".cache.transaction.json").is_file(),
+                "validation-to-hold drift retains transaction evidence",
+            )
+
+
+def test_committed_recovery_validates_from_its_cleanup_holds(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-recovery-validation-hold-{target}",
+                b"recovery-validation-hold-salt-012",
+            )
+
+            def interrupt(phase):
+                if phase == "committed":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not retain committed recovery")
+
+            original_hold = builder._hold_committed_mayo_generation
+            mutated = False
+
+            @contextmanager
+            def mutate_before_recovery_hold(out, external, **kwargs):
+                nonlocal mutated
+                if not mutated:
+                    mutated = True
+                    changed = (
+                        next((output / "mediapipe").glob("*.npz"))
+                        if target == "output" else exposure
+                    )
+                    with changed.open("r+b") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        value = handle.read(1)
+                        handle.seek(-1, os.SEEK_END)
+                        handle.write(bytes((value[0] ^ 1,)))
+                with original_hold(out, external, **kwargs) as held:
+                    yield held
+
+            builder._hold_committed_mayo_generation = mutate_before_recovery_hold
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.recover_interrupted_generations(
+                            output, exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "committed recovery validates bytes from held descriptors",
+                    )
+            finally:
+                builder._hold_committed_mayo_generation = original_hold
+            c.true(mutated)
+            c.true(
+                (root / ".cache.transaction.json").is_file(),
+                "held recovery validation failure retains its journal",
+            )
+
+
 def test_canonical_publication_never_replaces_a_racing_destination(c: Check):
     with tempfile.TemporaryDirectory() as td:
         outer = Path(td)
@@ -3470,6 +3741,275 @@ def test_canonical_publication_never_replaces_a_racing_destination(c: Check):
             victim = output if target == "output" else exposure
             c.eq(victim.stat().st_ino, victim_inode)
             c.true((root / ".cache.transaction.json").is_file())
+
+
+def test_backup_publication_never_replaces_a_prepared_racing_destination(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-backup-no-replace-{target}",
+                b"backup-no-replace-salt-012345678",
+            )
+            journal = root / ".cache.transaction.json"
+            victim = None
+            victim_inode = None
+
+            def create_backup_victim(phase):
+                nonlocal victim, victim_inode
+                if phase != "prepared":
+                    return
+                token = json.loads(journal.read_text())["token"]
+                victim = (
+                    root / f".cache.backup-{token}"
+                    if target == "output" else root / (
+                        f".mayo_exposure_manifest.json.backup-{token}"
+                    )
+                )
+                if target == "output":
+                    victim.mkdir(mode=0o700)
+                else:
+                    victim.write_text("racing-backup")
+                    victim.chmod(0o600)
+                victim_inode = victim.stat().st_ino
+
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=create_backup_victim,
+                    ),
+                    ValueError,
+                    "backup publication refuses a racing destination",
+                )
+            c.true(victim is not None and victim.exists())
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true(journal.is_file(), "backup collision retains its journal")
+
+
+def test_recovery_rejects_unbound_new_canonical_replacements(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-unbound-new-{target}",
+                b"unbound-new-canonical-salt-012345",
+            )
+            stop_phase = (
+                "new_output_installed"
+                if target == "output" else "new_exposure_installed"
+            )
+
+            def interrupt(phase):
+                if phase == stop_phase:
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not retain recovery state")
+
+            victim = output if target == "output" else exposure
+            if target == "output":
+                shutil.rmtree(victim)
+                victim.mkdir(mode=0o700)
+            else:
+                victim.unlink()
+                victim.write_text("unbound-new-exposure")
+                victim.chmod(0o600)
+            victim_inode = victim.stat().st_ino
+            journal = root / ".cache.transaction.json"
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "recovery never deletes an unbound canonical replacement",
+                )
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true(journal.is_file(), "unbound canonical keeps recovery evidence")
+
+
+def test_recovery_restore_never_replaces_a_racing_destination(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-restore-no-replace-{target}",
+                b"restore-no-replace-salt-012345678",
+            )
+
+            def interrupt(phase):
+                if phase == "new_exposure_installed":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not retain recovery state")
+
+            retained = json.loads(
+                (root / ".cache.transaction.json").read_text()
+            )
+            token = retained["token"]
+            source = (
+                root / f".cache.backup-{token}"
+                if target == "output" else root / (
+                    f".mayo_exposure_manifest.json.backup-{token}"
+                )
+            )
+            destination = output if target == "output" else exposure
+            original_publish = builder._publish_private_path_no_replace
+            victim_inode = None
+
+            def create_restore_victim(src, dst, field, **kwargs):
+                nonlocal victim_inode
+                if Path(src) == source and Path(dst) == destination:
+                    if target == "output":
+                        destination.mkdir(mode=0o700)
+                    else:
+                        destination.write_text("racing-restore")
+                        destination.chmod(0o600)
+                    victim_inode = destination.stat().st_ino
+                return original_publish(src, dst, field, **kwargs)
+
+            builder._publish_private_path_no_replace = create_restore_victim
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.recover_interrupted_generations(
+                            output, exposure_manifest_path=exposure,
+                        ),
+                        FileExistsError,
+                        "recovery restore refuses a racing destination",
+                    )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+            c.true(victim_inode is not None)
+            c.eq(destination.stat().st_ino, victim_inode)
+            c.true((root / ".cache.transaction.json").is_file())
+
+
+def test_committed_cleanup_binds_backup_and_temporary_residue(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output-backup", "exposure-backup", "temporary"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-cleanup-residue-{target}",
+                b"cleanup-residue-binding-salt-0123",
+            )
+            journal = root / ".cache.transaction.json"
+            victim = None
+            victim_inode = None
+
+            def replace_cleanup_residue(phase):
+                nonlocal victim, victim_inode
+                if phase != "committed":
+                    return
+                token = json.loads(journal.read_text())["token"]
+                if target == "output-backup":
+                    residue = root / f".cache.backup-{token}"
+                    residue.rename(root / ".held-output-backup-evidence")
+                    residue.mkdir(mode=0o700)
+                elif target == "exposure-backup":
+                    residue = root / (
+                        f".mayo_exposure_manifest.json.backup-{token}"
+                    )
+                    residue.rename(root / ".held-exposure-backup-evidence")
+                    residue.write_text("racing-exposure-backup")
+                    residue.chmod(0o600)
+                else:
+                    residue = root / (
+                        f".mayo_exposure_manifest.json.tmp-{token}"
+                    )
+                    residue.write_text("racing-temporary")
+                    residue.chmod(0o600)
+                victim = residue
+                victim_inode = residue.stat().st_ino
+
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=replace_cleanup_residue,
+                    ),
+                    ValueError,
+                    "committed cleanup refuses unbound transaction residue",
+                )
+            c.true(victim is not None and victim.exists())
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true(journal.is_file(), "cleanup collision retains its journal")
 
 
 def test_post_unlink_fsync_failure_restores_blocking_journal(c: Check):
@@ -3523,6 +4063,54 @@ def test_post_unlink_fsync_failure_restores_blocking_journal(c: Check):
             builder._fsync_directory = original_fsync
         c.true(faulted, "fault occurs only after journal unlink")
         c.true(journal.is_file(), "failed durable unlink restores the journal")
+
+
+def test_data_directories_are_durable_before_journal_unlink(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        journal_parent = root / "journal-parent"
+        exposure_parent = root / "exposure-parent"
+        journal_parent.mkdir(mode=0o700)
+        exposure_parent.mkdir(mode=0o700)
+        journal = journal_parent / ".cache.transaction.json"
+        journal.write_text("{}")
+        journal.chmod(0o600)
+        descriptor = os.open(journal, os.O_RDONLY)
+        identity = builder._regular_snapshot(os.fstat(descriptor))
+        original_fsync = builder._fsync_directory
+        original_unlink = builder.os.unlink
+        events: list[tuple[str, Path, bool]] = []
+
+        def observe_fsync(path):
+            events.append(("fsync", Path(path), journal.exists()))
+
+        def observe_unlink(path):
+            events.append(("unlink", Path(path), journal.exists()))
+            return original_unlink(path)
+
+        builder._fsync_directory = observe_fsync
+        builder.os.unlink = observe_unlink
+        try:
+            builder._unlink_held_transaction_journal_durably(
+                descriptor=descriptor,
+                identity=identity,
+                path=journal,
+                journal={},
+                validate_final_state=lambda: None,
+                fsync_directories=(journal_parent, exposure_parent),
+                cleanup_state=builder._JournalCleanupState(),
+            )
+        finally:
+            builder.os.unlink = original_unlink
+            builder._fsync_directory = original_fsync
+            os.close(descriptor)
+        c.eq(events, [
+            ("fsync", journal_parent, True),
+            ("fsync", exposure_parent, True),
+            ("unlink", journal, True),
+            ("fsync", journal_parent, False),
+        ], "all changed data directories are durable before journal removal")
 
 
 def test_final_journal_check_is_followed_by_held_object_validation(c: Check):
@@ -3762,6 +4350,40 @@ def test_failed_journal_compensation_is_attempted_once(c: Check):
             observed, OSError, "journal compensation failure 1",
         ))
         c.eq(compensation_attempts, 1, "compensation failure is not overwritten")
+
+
+def test_caller_exception_marker_cannot_suppress_journal_restoration(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-caller-marker",
+            b"caller-marker-salt-0123456789012",
+        )
+        journal = root / ".cache.transaction.json"
+
+        def forge_internal_marker(phase):
+            if phase == "committed":
+                journal.unlink()
+                forged = ValueError("caller-controlled committed hook failure")
+                setattr(forged, "_journal_compensation_attempted", True)
+                raise forged
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=forge_internal_marker,
+                ),
+                ValueError,
+                "caller exception attributes cannot suppress recovery evidence",
+            )
+        c.true(journal.is_file(), "caller failure restores a blocking journal")
 
 
 def test_recovery_post_unlink_fsync_failure_restores_journal(c: Check):
