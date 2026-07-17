@@ -945,6 +945,68 @@ def _held_private_regular_storage_commitment(
     return _private_regular_storage_commitment(held.identity[:7], digest)
 
 
+def _isolate_and_remove_held_private_tree(
+    held: _HeldPrivateStorageTree,
+    cleanup: Path,
+    field: str,
+) -> None:
+    _assert_held_private_storage_tree(held, field)
+    root_entry = next(
+        (entry for entry in held.entries if entry.parts == ()), None,
+    )
+    if root_entry is None or root_entry.kind != "directory":
+        raise ValueError(f"{field} has no held root directory")
+    _publish_private_path_no_replace(
+        held.root,
+        cleanup,
+        f"{field} cleanup isolation",
+        expected_identity=root_entry.identity,
+    )
+    isolated = os.lstat(cleanup)
+    _require_private_directory_stat(isolated, field)
+    if _directory_snapshot(isolated) != root_entry.identity:
+        raise ValueError(f"{field} cleanup isolation changed identity")
+    shutil.rmtree(cleanup)
+    if cleanup.exists() or _is_symlink(cleanup):
+        raise ValueError(f"{field} cleanup isolation remains")
+    opened = os.fstat(root_entry.descriptor)
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or int(opened.st_dev) != root_entry.identity[0]
+        or int(opened.st_ino) != root_entry.identity[1]
+    ):
+        raise ValueError(f"{field} held root identity changed during removal")
+
+
+def _isolate_and_remove_held_private_regular(
+    held: _HeldPrivateRegularStorage,
+    cleanup: Path,
+    field: str,
+) -> None:
+    _assert_held_private_regular_storage(held, field)
+    _publish_private_path_no_replace(
+        held.path,
+        cleanup,
+        f"{field} cleanup isolation",
+        expected_identity=held.identity[:7],
+    )
+    isolated = os.lstat(cleanup)
+    _require_private_regular_stat(isolated, field)
+    if _movement_stable_regular_snapshot(isolated) != held.identity[:7]:
+        raise ValueError(f"{field} cleanup isolation changed identity")
+    os.unlink(cleanup)
+    if cleanup.exists() or _is_symlink(cleanup):
+        raise ValueError(f"{field} cleanup isolation remains")
+    opened = os.fstat(held.descriptor)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or int(opened.st_dev) != held.identity[0]
+        or int(opened.st_ino) != held.identity[1]
+        or int(opened.st_nlink) != 0
+    ):
+        raise ValueError(f"{field} held file was not removed")
+
+
 def _require_private_generation_storage_tree(
     path: str | Path,
     field: str,
@@ -2698,7 +2760,15 @@ def _decode_unique_json_object(payload: bytes, field: str) -> dict[str, object]:
     return value
 
 
-def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> None:
+def _write_transaction_journal(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    expected_identity: tuple[int, ...] | None = None,
+    require_absent: bool = False,
+) -> tuple[int, ...]:
+    if (expected_identity is None) == (not require_absent):
+        raise ValueError("Mayo transaction journal write authority is invalid")
     _require_private_directory(path.parent, "Mayo transaction journal parent")
     temporary = path.parent / f".{path.name}.tmp-{secrets.token_hex(8)}"
     serialized = json.dumps(payload, sort_keys=True, allow_nan=False) + "\n"
@@ -2713,8 +2783,26 @@ def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> Non
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        if require_absent:
+            _publish_private_path_no_replace(
+                temporary, path, "Mayo transaction journal",
+            )
+        else:
+            current = os.lstat(path)
+            _require_private_regular_stat(current, "Mayo transaction journal")
+            if _regular_snapshot(current) != expected_identity:
+                raise ValueError(
+                    "Mayo transaction journal changed before phase update"
+                )
+            os.replace(temporary, path)
+        published = os.lstat(path)
+        _require_private_regular_stat(published, "Mayo transaction journal")
         _fsync_directory(path.parent)
+        final = os.lstat(path)
+        _require_private_regular_stat(final, "Mayo transaction journal")
+        if _regular_snapshot(final) != _regular_snapshot(published):
+            raise ValueError("Mayo transaction journal changed after phase update")
+        return _regular_snapshot(final)
     finally:
         if temporary.exists() and not _is_symlink(temporary):
             temporary.unlink()
@@ -2893,7 +2981,9 @@ def _unlink_held_transaction_journal_durably(
             cleanup_state.compensation_attempted = True
             try:
                 if not path.exists() and not _is_symlink(path):
-                    _write_transaction_journal(path, journal)
+                    _write_transaction_journal(
+                        path, journal, require_absent=True,
+                    )
             except BaseException as restoration_error:
                 raise primary from restoration_error
         raise
@@ -2941,6 +3031,18 @@ def _recover_cache_exposure_transaction_held(
     output_backup = output.parent / f".{output.name}.backup-{token}"
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
+    output_backup_cleanup = output.parent / (
+        f".{output.name}.cleanup-{token}-output-backup"
+    )
+    exposure_backup_cleanup = exposure.parent / (
+        f".{exposure.name}.cleanup-{token}-exposure-backup"
+    )
+    staging_cleanup = output.parent / (
+        f".{output.name}.cleanup-{token}-staging"
+    )
+    temporary_cleanup = exposure.parent / (
+        f".{exposure.name}.cleanup-{token}-temporary"
+    )
     committed = journal["phase"] == "committed"
     _assert_held_transaction_journal(
         journal_descriptor, journal_path, journal_identity,
@@ -3205,7 +3307,9 @@ def _recover_cache_exposure_transaction_held(
                 "restored previous output generation",
             )
         elif present(output):
-            _remove_real_tree(output)
+            raise ValueError(
+                "unexpected output generation appeared during recovery"
+            )
 
         if had_exposure:
             if present(exposure_backup):
@@ -3226,8 +3330,10 @@ def _recover_cache_exposure_transaction_held(
                 exposure, exposure_stable, exposure_digest,
                 "restored previous exposure manifest",
             )
-        else:
-            _unlink_regular_if_present(exposure, "interrupted new exposure")
+        elif present(exposure):
+            raise ValueError(
+                "unexpected exposure manifest appeared during recovery"
+            )
 
         if output_ledger is not None:
             require_private_tree_snapshot(
@@ -3249,6 +3355,10 @@ def _recover_cache_exposure_transaction_held(
         held_committed = None
         held_output = None
         held_exposure = None
+        held_output_backup = None
+        held_exposure_backup = None
+        held_staging_cleanup = None
+        held_temporary_cleanup = None
         if committed:
             expected_generation = _validate_generation_commitment(
                 journal["generation_commitment"]
@@ -3277,7 +3387,6 @@ def _recover_cache_exposure_transaction_held(
                 ),
                 _held=held_committed,
             )
-            held_output_backup = None
             if present(output_backup):
                 if not had_output:
                     raise ValueError(
@@ -3301,7 +3410,6 @@ def _recover_cache_exposure_transaction_held(
                     raise ValueError(
                         "committed recovery output backup changed"
                     )
-            held_exposure_backup = None
             if present(exposure_backup):
                 if not had_exposure:
                     raise ValueError(
@@ -3353,6 +3461,31 @@ def _recover_cache_exposure_transaction_held(
                 ),
                 _held=held_interrupted_generation,
             )
+            held_staging_cleanup = final_holds.enter_context(
+                _hold_private_storage_tree(
+                    staging, "interrupted Mayo staging cleanup",
+                )
+            )
+            staging_root = next(
+                entry for entry in held_staging_cleanup.entries
+                if entry.parts == ()
+            )
+            if staging_root.identity != held_interrupted_generation.output_identity:
+                raise ValueError("interrupted Mayo staging identity changed")
+            if present(exposure_temporary):
+                held_temporary_cleanup = final_holds.enter_context(
+                    _hold_private_regular_storage(
+                        exposure_temporary,
+                        "interrupted Mayo exposure temporary cleanup",
+                    )
+                )
+                if (
+                    held_temporary_cleanup.identity
+                    != held_interrupted_generation.external_exposure_identity
+                ):
+                    raise ValueError(
+                        "interrupted Mayo exposure temporary identity changed"
+                    )
             if output_ledger is not None:
                 held_output = final_holds.enter_context(
                     _hold_private_storage_tree(
@@ -3366,15 +3499,34 @@ def _recover_cache_exposure_transaction_held(
                     )
                 )
 
-        if not committed:
+        if committed:
+            if held_output_backup is not None:
+                _isolate_and_remove_held_private_tree(
+                    held_output_backup,
+                    output_backup_cleanup,
+                    "committed recovery output backup",
+                )
+            if held_exposure_backup is not None:
+                _isolate_and_remove_held_private_regular(
+                    held_exposure_backup,
+                    exposure_backup_cleanup,
+                    "committed recovery exposure backup",
+                )
+        else:
             _assert_held_mayo_generation(held_interrupted_generation)
-        _unlink_regular_if_present(
-            exposure_temporary, "interrupted exposure temporary",
-        )
-        if staging.exists() or _is_symlink(staging):
-            _remove_real_tree(staging)
-        _remove_real_tree(output_backup)
-        _unlink_regular_if_present(exposure_backup, "stale exposure backup")
+            if held_temporary_cleanup is not None:
+                _isolate_and_remove_held_private_regular(
+                    held_temporary_cleanup,
+                    temporary_cleanup,
+                    "interrupted Mayo exposure temporary cleanup",
+                )
+            _isolate_and_remove_held_private_tree(
+                held_staging_cleanup,
+                staging_cleanup,
+                "interrupted Mayo staging cleanup",
+            )
+            if present(output_backup) or present(exposure_backup):
+                raise ValueError("recovery backup residue unexpectedly reappeared")
 
         def validate_final_state() -> None:
             if not committed:
@@ -3402,6 +3554,11 @@ def _recover_cache_exposure_transaction_held(
                     raise ValueError(
                         "recovery retained an unexpected exposure manifest"
                     )
+                if (
+                    present(staging) or present(exposure_temporary)
+                    or present(output_backup) or present(exposure_backup)
+                ):
+                    raise ValueError("Mayo recovery residue reappeared")
             else:
                 _assert_held_mayo_generation(held_committed)
                 if (
@@ -3411,6 +3568,11 @@ def _recover_cache_exposure_transaction_held(
                     raise ValueError(
                         "committed recovery cleanup residue reappeared"
                     )
+            if any(present(path) for path in (
+                output_backup_cleanup, exposure_backup_cleanup,
+                staging_cleanup, temporary_cleanup,
+            )):
+                raise ValueError("Mayo recovery cleanup isolation remains")
 
         fsync_directories = tuple(dict.fromkeys((
             output.parent, exposure.parent,
@@ -3480,7 +3642,9 @@ def _recover_cache_exposure_transaction(
             and not _is_symlink(journal_path)
         ):
             try:
-                _write_transaction_journal(journal_path, journal)
+                _write_transaction_journal(
+                    journal_path, journal, require_absent=True,
+                )
             except BaseException as restoration_error:
                 if primary is not None:
                     raise primary.with_traceback(primary.__traceback__) from restoration_error
@@ -3519,21 +3683,15 @@ def recover_interrupted_generations(
                 expected_classification_integrity_id
             ),
         )
+        return
     staging = sorted(parent.glob(f".{output.name}.staging-*"), key=lambda item: item.name)
     backups = sorted(parent.glob(f".{output.name}.backup-*"), key=lambda item: item.name)
-    for candidate in (*staging, *backups):
-        if _is_symlink(candidate) or not candidate.is_dir():
-            raise ValueError("interrupted generation candidate must be a real directory")
-    for candidate in staging:
-        _remove_real_tree(candidate)
-    if output.exists():
+    if staging or backups:
+        raise RuntimeError(
+            "journal-free Mayo generation residue requires offline review"
+        )
+    if output.exists() or _is_symlink(output):
         _require_directory(output, "existing output generation")
-        for backup in backups:
-            _remove_real_tree(backup)
-    elif len(backups) == 1:
-        os.replace(backups[0], output)
-    elif len(backups) > 1:
-        raise ValueError("multiple interrupted backups are ambiguous")
 
 
 def promote_generation(
@@ -3732,6 +3890,10 @@ def _promote_generation_with_exposure(
     output_backup = output.parent / f".{output.name}.backup-{token}"
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
+    output_cleanup = output.parent / f".{output.name}.cleanup-{token}-backup"
+    exposure_cleanup = exposure.parent / (
+        f".{exposure.name}.cleanup-{token}-backup"
+    )
     journal: dict[str, object] = {
         "schema": "mayo_cache_exposure_transaction_v3",
         "token": token,
@@ -3749,39 +3911,103 @@ def _promote_generation_with_exposure(
         "phase": "prepared",
         "indeterminate": False,
     }
+    journal_storage_identity: tuple[int, ...] | None = None
 
     def set_phase(phase: str, *, invoke_hook: bool = True) -> None:
+        nonlocal journal_storage_identity, rollback_is_durable
         journal["phase"] = phase
-        _write_transaction_journal(journal_path, journal)
+        try:
+            if journal_storage_identity is None:
+                journal_storage_identity = _write_transaction_journal(
+                    journal_path, journal, require_absent=True,
+                )
+            else:
+                journal_storage_identity = _write_transaction_journal(
+                    journal_path,
+                    journal,
+                    expected_identity=journal_storage_identity,
+                )
+        except (ValueError, FileExistsError):
+            rollback_is_durable = False
+            raise
         if invoke_hook and phase_hook is not None:
             phase_hook(phase)
 
     def retain_indeterminate_move(phase: str) -> None:
-        nonlocal rollback_is_durable
+        nonlocal rollback_is_durable, journal_storage_identity
+        if journal_storage_identity is None:
+            raise ValueError("Mayo journal phase authority is missing")
         rollback_is_durable = False
         journal["phase"] = phase
         journal["indeterminate"] = True
-        _write_transaction_journal(journal_path, journal)
+        journal_storage_identity = _write_transaction_journal(
+            journal_path,
+            journal,
+            expected_identity=journal_storage_identity,
+        )
 
     rollback_is_durable = True
     allow_indeterminate_recovery = False
     committed_boundary_started = False
     cleanup_state = _JournalCleanupState()
-    if continuity_validator is not None:
-        continuity_validator()
-    assert_previous_output_unchanged()
-    assert_previous_exposure_unchanged()
-    set_phase("prepared")
+    source_holds = ExitStack()
     try:
+        held_staging = source_holds.enter_context(
+            _hold_committed_mayo_generation(
+                staging,
+                staged_exposure,
+                media_count=int(generation_commitment["mediapipe_file_count"]),
+                arkit_count=int(generation_commitment["arkit_file_count"]),
+                assert_on_exit=False,
+            )
+        )
+        _assert_committed_generation(
+            staging,
+            staged_exposure,
+            generation_commitment,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+            _held=held_staging,
+        )
+        if continuity_validator is not None:
+            continuity_validator()
+        assert_previous_output_unchanged()
+        assert_previous_exposure_unchanged()
+        set_phase("prepared")
         temporary_descriptor = _open_exclusive_private_file(
             exposure_temporary, "external exposure temporary",
         )
-        with staged_exposure.open("rb") as source, os.fdopen(
-            temporary_descriptor, "wb",
+        source_holds.callback(os.close, temporary_descriptor)
+        os.lseek(held_staging.internal_exposure_descriptor, 0, os.SEEK_SET)
+        with os.fdopen(
+            os.dup(held_staging.internal_exposure_descriptor), "rb",
+        ) as source, os.fdopen(
+            os.dup(temporary_descriptor), "wb",
         ) as target:
             shutil.copyfileobj(source, target)
             target.flush()
             os.fsync(target.fileno())
+        temporary_identity = _regular_snapshot(os.fstat(temporary_descriptor))
+        linked_temporary = os.lstat(exposure_temporary)
+        _require_private_regular_stat(
+            linked_temporary, "external exposure temporary",
+        )
+        if _regular_snapshot(linked_temporary) != temporary_identity:
+            raise ValueError("external exposure temporary changed after copy")
+        held_exposure_temporary = _HeldPrivateRegularStorage(
+            path=exposure_temporary,
+            descriptor=temporary_descriptor,
+            identity=temporary_identity,
+        )
+        _assert_held_private_regular_storage(
+            held_exposure_temporary, "external exposure temporary",
+        )
         _fsync_directory(exposure.parent)
         if had_output:
             assert_previous_output_unchanged()
@@ -3857,15 +4083,33 @@ def _promote_generation_with_exposure(
             _fsync_directory(exposure.parent)
             set_phase("old_exposure_moved")
         set_phase("installing_new_output", invoke_hook=False)
-        _publish_private_path_no_replace(
-            staging, output, "Mayo cache generation",
-        )
+        _assert_held_mayo_generation(held_staging)
+        try:
+            _publish_private_path_no_replace(
+                staging,
+                output,
+                "Mayo cache generation",
+                expected_identity=held_staging.output_identity,
+            )
+        except (ValueError, FileExistsError):
+            rollback_is_durable = False
+            raise
         _fsync_directory(output.parent)
         set_phase("new_output_installed")
         set_phase("installing_new_exposure", invoke_hook=False)
-        _publish_private_path_no_replace(
-            exposure_temporary, exposure, "Mayo exposure manifest",
+        _assert_held_private_regular_storage(
+            held_exposure_temporary, "external exposure temporary",
         )
+        try:
+            _publish_private_path_no_replace(
+                exposure_temporary,
+                exposure,
+                "Mayo exposure manifest",
+                expected_identity=held_exposure_temporary.identity[:7],
+            )
+        except (ValueError, FileExistsError):
+            rollback_is_durable = False
+            raise
         _fsync_directory(exposure.parent)
         set_phase("new_exposure_installed")
         committed_holds = ExitStack()
@@ -3946,7 +4190,10 @@ def _promote_generation_with_exposure(
                 committed_journal_identity,
                 committed_journal,
             ) = _open_transaction_journal(journal_path)
-            if committed_journal != journal:
+            if (
+                committed_journal != journal
+                or committed_journal_identity != journal_storage_identity
+            ):
                 raise ValueError("committed journal bytes changed after write")
             _assert_held_mayo_generation(held_generation)
             if phase_hook is not None:
@@ -3975,7 +4222,11 @@ def _promote_generation_with_exposure(
                     journal["phase"] = "new_exposure_installed"
                     journal["indeterminate"] = True
                     try:
-                        _write_transaction_journal(journal_path, journal)
+                        journal_storage_identity = _write_transaction_journal(
+                            journal_path,
+                            journal,
+                            expected_identity=committed_journal_identity,
+                        )
                     except Exception as downgrade_error:
                         rollback_is_durable = False
                         raise primary_error from downgrade_error
@@ -3983,13 +4234,24 @@ def _promote_generation_with_exposure(
                     committed_boundary_started = False
                     raise
 
-            _remove_real_tree(output_backup)
-            _unlink_regular_if_present(
-                exposure_backup, "committed exposure backup",
-            )
-            _unlink_regular_if_present(
-                exposure_temporary, "committed exposure temporary",
-            )
+            if held_output_backup is not None:
+                _isolate_and_remove_held_private_tree(
+                    held_output_backup,
+                    output_cleanup,
+                    "committed previous output backup",
+                )
+            elif output_backup.exists() or _is_symlink(output_backup):
+                raise ValueError("unexpected committed output backup appeared")
+            if held_exposure_backup is not None:
+                _isolate_and_remove_held_private_regular(
+                    held_exposure_backup,
+                    exposure_cleanup,
+                    "committed previous exposure backup",
+                )
+            elif exposure_backup.exists() or _is_symlink(exposure_backup):
+                raise ValueError("unexpected committed exposure backup appeared")
+            if exposure_temporary.exists() or _is_symlink(exposure_temporary):
+                raise ValueError("committed exposure temporary reappeared")
 
             def validate_committed_final_state() -> None:
                 _assert_held_mayo_generation(held_generation)
@@ -3998,6 +4260,8 @@ def _promote_generation_with_exposure(
                     or exposure_backup.exists() or _is_symlink(exposure_backup)
                     or exposure_temporary.exists()
                     or _is_symlink(exposure_temporary)
+                    or output_cleanup.exists() or _is_symlink(output_cleanup)
+                    or exposure_cleanup.exists() or _is_symlink(exposure_cleanup)
                 ):
                     raise ValueError(
                         "committed Mayo cleanup residue reappeared"
@@ -4031,7 +4295,9 @@ def _promote_generation_with_exposure(
             and not _is_symlink(journal_path)
         ):
             try:
-                _write_transaction_journal(journal_path, journal)
+                _write_transaction_journal(
+                    journal_path, journal, require_absent=True,
+                )
             except Exception as restoration_error:
                 raise primary_error from restoration_error
         if rollback_is_durable and not committed_boundary_started:
@@ -4048,6 +4314,8 @@ def _promote_generation_with_exposure(
                 allow_indeterminate=allow_indeterminate_recovery,
             )
         raise
+    finally:
+        source_holds.__exit__(*sys.exc_info())
 
 
 def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:

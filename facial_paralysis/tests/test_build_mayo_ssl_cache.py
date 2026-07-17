@@ -2476,16 +2476,17 @@ def test_committed_key_drift_downgrade_write_failure_preserves_indeterminate_evi
         real_write_journal = builder._write_transaction_journal
         committed_was_durable = False
 
-        def fail_only_downgrade(path, payload):
+        def fail_only_downgrade(path, payload, **kwargs):
             nonlocal committed_was_durable
             if (
                 committed_was_durable
                 and payload["phase"] == "new_exposure_installed"
             ):
                 raise OSError("forced journal downgrade write failure")
-            real_write_journal(path, payload)
+            result = real_write_journal(path, payload, **kwargs)
             if payload["phase"] == "committed":
                 committed_was_durable = True
+            return result
 
         def drift_key_after_committed(phase):
             if phase != "committed":
@@ -2966,6 +2967,33 @@ def test_recovery_rejects_old_backup_polluted_after_process_interruption(c: Chec
         c.eq(stat.S_IMODE(retained_sentinel.stat().st_mode), 0o666)
         c.true(journal.is_file() and backup.is_dir())
         c.eq(exposure.read_text(), "old-exposure")
+
+
+def test_recovery_without_a_journal_retains_all_matching_residue(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        staging = root / ".cache.staging-untrusted-without-journal"
+        backup = root / ".cache.backup-untrusted-without-journal"
+        staging.mkdir(mode=0o700)
+        backup.mkdir(mode=0o700)
+        (staging / "staging-victim").write_text("staging")
+        (staging / "staging-victim").chmod(0o600)
+        (backup / "backup-victim").write_text("backup")
+        (backup / "backup-victim").chmod(0o600)
+        staging_inode = staging.stat().st_ino
+        backup_inode = backup.stat().st_ino
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(output),
+                RuntimeError,
+                "uncommitted residue without a journal requires offline review",
+            )
+        c.eq(staging.stat().st_ino, staging_inode)
+        c.eq(backup.stat().st_ino, backup_inode)
+        c.true(not output.exists(), "journal-free recovery publishes nothing")
 
 
 def test_late_phase_recovery_requires_every_declared_old_backup(c: Check):
@@ -3735,12 +3763,75 @@ def test_canonical_publication_never_replaces_a_racing_destination(c: Check):
                         exposure_manifest_path=exposure,
                         phase_hook=create_racing_destination,
                     ),
-                    ValueError,
+                    FileExistsError,
                     "canonical publication refuses a racing destination",
                 )
             victim = output if target == "output" else exposure
             c.eq(victim.stat().st_ino, victim_inode)
             c.true((root / ".cache.transaction.json").is_file())
+
+
+def test_staging_and_temporary_identity_stay_bound_to_publication(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("staging", "temporary"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-publication-binding-{target}",
+                b"publication-binding-salt-0123456",
+            )
+            original_publish = builder._publish_private_path_no_replace
+            evidence = root / f".original-{target}-evidence"
+            replaced = False
+
+            def replace_source_with_identical_bytes(source, destination, field, **kwargs):
+                nonlocal replaced
+                source_path = Path(source)
+                destination_path = Path(destination)
+                should_replace = (
+                    target == "staging"
+                    and source_path == staging
+                    and destination_path == output
+                ) or (
+                    target == "temporary"
+                    and ".tmp-" in source_path.name
+                    and destination_path == exposure
+                )
+                if should_replace and not replaced:
+                    replaced = True
+                    source_path.rename(evidence)
+                    if target == "staging":
+                        shutil.copytree(evidence, source_path)
+                    else:
+                        shutil.copy2(evidence, source_path)
+                        source_path.chmod(0o600)
+                return original_publish(source, destination, field, **kwargs)
+
+            builder._publish_private_path_no_replace = (
+                replace_source_with_identical_bytes
+            )
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.promote_generation(
+                            staging,
+                            output,
+                            exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "validated source inode remains bound through publication",
+                    )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+            c.true(replaced and evidence.exists())
+            c.true(
+                (root / ".cache.transaction.json").is_file(),
+                "publication identity drift retains its journal",
+            )
 
 
 def test_backup_publication_never_replaces_a_prepared_racing_destination(c: Check):
@@ -3948,6 +4039,160 @@ def test_recovery_restore_never_replaces_a_racing_destination(c: Check):
             c.true((root / ".cache.transaction.json").is_file())
 
 
+def test_recovery_never_deletes_canonical_reappearing_after_owned_move(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-reappearing-canonical-{target}",
+                b"reappearing-canonical-salt-012345",
+            )
+
+            def interrupt(phase):
+                if phase == "new_exposure_installed":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not retain recovery state")
+
+            original_publish = builder._publish_private_path_no_replace
+            victim = output if target == "output" else exposure
+            victim_inode = None
+
+            def reappear_after_owned_move(source, destination, field, **kwargs):
+                nonlocal victim_inode
+                result = original_publish(source, destination, field, **kwargs)
+                moved_output = (
+                    target == "output"
+                    and Path(source) == output
+                    and Path(destination).name.startswith(".cache.staging-")
+                )
+                moved_exposure = (
+                    target == "exposure"
+                    and Path(source) == exposure
+                    and ".tmp-" in Path(destination).name
+                )
+                if moved_output:
+                    victim.mkdir(mode=0o700)
+                    victim_inode = victim.stat().st_ino
+                elif moved_exposure:
+                    victim.write_text("reappearing-canonical")
+                    victim.chmod(0o600)
+                    victim_inode = victim.stat().st_ino
+                return result
+
+            builder._publish_private_path_no_replace = reappear_after_owned_move
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.recover_interrupted_generations(
+                            output, exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "recovery retains a canonical that reappears after owned move",
+                    )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+            c.true(victim_inode is not None)
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true((root / ".cache.transaction.json").is_file())
+
+
+def test_recovery_cleanup_atomically_isolates_owned_residue(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("staging", "temporary"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-recovery-cleanup-{target}",
+                b"recovery-cleanup-isolation-salt-012",
+            )
+
+            def interrupt(phase):
+                if phase == "new_exposure_installed":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not retain recovery state")
+
+            original_publish = builder._publish_private_path_no_replace
+            victim = None
+            victim_inode = None
+
+            def reappear_after_recovery_isolation(source, destination, field, **kwargs):
+                nonlocal victim, victim_inode
+                result = original_publish(source, destination, field, **kwargs)
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if ".cleanup-" not in destination_path.name:
+                    return result
+                if target == "staging" and source_path.name.startswith(
+                    ".cache.staging-"
+                ):
+                    source_path.mkdir(mode=0o700)
+                    victim = source_path
+                elif target == "temporary" and ".tmp-" in source_path.name:
+                    source_path.write_text("reappearing-recovery-temporary")
+                    source_path.chmod(0o600)
+                    victim = source_path
+                if victim is not None:
+                    victim_inode = victim.stat().st_ino
+                return result
+
+            builder._publish_private_path_no_replace = (
+                reappear_after_recovery_isolation
+            )
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.recover_interrupted_generations(
+                            output, exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "recovery cleanup retains names rebound after isolation",
+                    )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+            c.true(victim is not None and victim_inode is not None)
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true((root / ".cache.transaction.json").is_file())
+
+
 def test_committed_cleanup_binds_backup_and_temporary_residue(c: Check):
     with tempfile.TemporaryDirectory() as td:
         outer = Path(td)
@@ -4010,6 +4255,73 @@ def test_committed_cleanup_binds_backup_and_temporary_residue(c: Check):
             c.true(victim is not None and victim.exists())
             c.eq(victim.stat().st_ino, victim_inode)
             c.true(journal.is_file(), "cleanup collision retains its journal")
+
+
+def test_committed_cleanup_atomically_isolates_held_residue(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-isolated-cleanup-{target}",
+                b"isolated-cleanup-salt-0123456789",
+            )
+            journal = root / ".cache.transaction.json"
+            original_publish = builder._publish_private_path_no_replace
+            victim = None
+            victim_inode = None
+
+            def reappear_after_cleanup_isolation(source, destination, field, **kwargs):
+                nonlocal victim, victim_inode
+                result = original_publish(source, destination, field, **kwargs)
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if ".cleanup-" not in destination_path.name:
+                    return result
+                if target == "output" and source_path.name.startswith(
+                    ".cache.backup-"
+                ):
+                    source_path.mkdir(mode=0o700)
+                    victim = source_path
+                elif target == "exposure" and source_path.name.startswith(
+                    ".mayo_exposure_manifest.json.backup-"
+                ):
+                    source_path.write_text("reappearing-cleanup-residue")
+                    source_path.chmod(0o600)
+                    victim = source_path
+                if victim is not None:
+                    victim_inode = victim.stat().st_ino
+                return result
+
+            builder._publish_private_path_no_replace = (
+                reappear_after_cleanup_isolation
+            )
+            try:
+                with builder.output_parent_lock(output):
+                    c.raises(
+                        lambda: builder.promote_generation(
+                            staging,
+                            output,
+                            exposure_manifest_path=exposure,
+                        ),
+                        ValueError,
+                        "cleanup never deletes a name rebound after isolation",
+                    )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+            c.true(victim is not None and victim_inode is not None)
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true(journal.is_file(), "isolated cleanup collision retains journal")
 
 
 def test_post_unlink_fsync_failure_restores_blocking_journal(c: Check):
@@ -4314,12 +4626,12 @@ def test_failed_journal_compensation_is_attempted_once(c: Check):
                 raise OSError("primary post-unlink fsync failure")
             return original_fsync(path)
 
-        def fail_compensation(path, payload):
+        def fail_compensation(path, payload, **kwargs):
             nonlocal compensation_attempts
             if primary_faulted and Path(path) == journal:
                 compensation_attempts += 1
                 raise OSError(f"journal compensation failure {compensation_attempts}")
-            return original_write(path, payload)
+            return original_write(path, payload, **kwargs)
 
         builder._fsync_directory = fail_primary_after_unlink
         builder._write_transaction_journal = fail_compensation
@@ -4350,6 +4662,104 @@ def test_failed_journal_compensation_is_attempted_once(c: Check):
             observed, OSError, "journal compensation failure 1",
         ))
         c.eq(compensation_attempts, 1, "compensation failure is not overwritten")
+
+
+def test_phase_updates_never_replace_an_unbound_journal(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-journal-version-binding",
+            b"journal-version-binding-salt-01234",
+        )
+        journal = root / ".cache.transaction.json"
+        evidence = root / ".original-prepared-journal"
+        victim_inode = None
+
+        def replace_prepared_journal(phase):
+            nonlocal victim_inode
+            if phase != "prepared":
+                return
+            journal.rename(evidence)
+            shutil.copy2(evidence, journal)
+            journal.chmod(0o600)
+            victim_inode = journal.stat().st_ino
+
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=replace_prepared_journal,
+                ),
+                ValueError,
+                "phase update authority stays bound to the prior journal inode",
+            )
+        c.true(victim_inode is not None and evidence.is_file())
+        c.eq(journal.stat().st_ino, victim_inode)
+
+
+def test_journal_compensation_never_replaces_a_reappearing_path(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-compensation-no-replace",
+            b"compensation-no-replace-salt-012345",
+        )
+        journal = root / ".cache.transaction.json"
+        original_fsync = builder._fsync_directory
+        original_write = builder._write_transaction_journal
+        armed = False
+        primary_faulted = False
+        victim_inode = None
+
+        def arm_committed(phase):
+            nonlocal armed
+            if phase == "committed":
+                armed = True
+
+        def fail_after_unlink(path):
+            nonlocal primary_faulted
+            if armed and not primary_faulted and not journal.exists():
+                primary_faulted = True
+                raise OSError("forced cleanup durability failure")
+            return original_fsync(path)
+
+        def reappear_before_compensation(path, payload, **kwargs):
+            nonlocal victim_inode
+            if primary_faulted and Path(path) == journal and not journal.exists():
+                journal.write_text("reappearing-journal")
+                journal.chmod(0o600)
+                victim_inode = journal.stat().st_ino
+            return original_write(path, payload, **kwargs)
+
+        builder._fsync_directory = fail_after_unlink
+        builder._write_transaction_journal = reappear_before_compensation
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=arm_committed,
+                    ),
+                    OSError,
+                    "journal compensation refuses a reappearing canonical path",
+                )
+        finally:
+            builder._write_transaction_journal = original_write
+            builder._fsync_directory = original_fsync
+        c.true(primary_faulted and victim_inode is not None)
+        c.eq(journal.stat().st_ino, victim_inode)
 
 
 def test_caller_exception_marker_cannot_suppress_journal_restoration(c: Check):
