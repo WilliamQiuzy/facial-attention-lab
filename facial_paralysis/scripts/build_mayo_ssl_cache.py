@@ -8364,14 +8364,6 @@ def _assert_resolved_transaction_evidence(
                     "terminal Mayo journal set changed during authorization"
                 )
 
-            for held_candidate, identity, digest in final_terminal_records:
-                _assert_held_transaction_journal(
-                    held_candidate.descriptor,
-                    held_candidate.path,
-                    identity,
-                    digest,
-                )
-
             latest_terminal_paths = {
                 artifact
                 for kind in ("history", "complete")
@@ -8382,6 +8374,14 @@ def _assert_resolved_transaction_evidence(
             if latest_terminal_paths != set(terminal_journals):
                 raise ValueError(
                     "terminal Mayo journal evidence names changed before return"
+                )
+
+            for held_candidate, identity, digest in final_terminal_records:
+                _assert_held_transaction_journal(
+                    held_candidate.descriptor,
+                    held_candidate.path,
+                    identity,
+                    digest,
                 )
     except (OSError, ValueError) as exc:
         raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc

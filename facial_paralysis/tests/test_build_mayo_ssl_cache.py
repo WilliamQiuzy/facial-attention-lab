@@ -7507,6 +7507,52 @@ def test_authorizer_finally_rechecks_all_held_terminal_journals(c: Check):
             c.true(drifted and stat.S_IMODE(first.stat().st_mode) == 0o666)
 
 
+def test_authorizer_revalidates_terminal_descriptors_after_final_name_scan(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "90abcdef12345678",
+            )
+            history = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            original_glob = Path.glob
+            history_scans = 0
+            drifted = False
+            history_pattern = (
+                "..mayo_ssl_cache.transaction.json.history-*"
+            )
+
+            def chmod_during_last_terminal_name_scan(path, pattern):
+                nonlocal history_scans, drifted
+                result = tuple(original_glob(path, pattern))
+                if path == fixture.output.parent and pattern == history_pattern:
+                    history_scans += 1
+                    if history_scans == 9 and not drifted:
+                        history.chmod(0o666)
+                        drifted = True
+                return iter(result)
+
+            Path.glob = chmod_during_last_terminal_name_scan
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "held terminal descriptors are revalidated after name scanning",
+                )
+            finally:
+                Path.glob = original_glob
+            c.true(
+                drifted and stat.S_IMODE(history.stat().st_mode) == 0o666
+            )
+
+
 def test_terminal_journal_aggregate_count_budget_precedes_parsing(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
