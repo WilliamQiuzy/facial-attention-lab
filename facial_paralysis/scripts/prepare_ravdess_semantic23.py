@@ -1269,6 +1269,53 @@ def _assert_owner_snapshot_at(
         raise ValueError(f"{field} changed before authorization returned")
 
 
+def _revalidate_ctime_only_owner_snapshot_at(
+    parent_descriptor: int,
+    name: str,
+    identity: tuple[int, ...],
+    expected_payload: bytes,
+    field: str,
+    *,
+    max_bytes: int,
+) -> tuple[int, ...]:
+    """Rebind one newly written file after a content-neutral ctime update.
+
+    macOS may asynchronously attach ``com.apple.provenance`` to a new file,
+    changing only ctime after the first held read.  Extended attributes are not
+    part of the RAVDESS artifact contract, but every contracted stat field and
+    the complete file bytes remain fail-closed here before the refreshed
+    identity can be used.
+    """
+    name = _safe_entry_name(name)
+    try:
+        current = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"{field} disappeared before authorization returned"
+        ) from exc
+    observed_identity = _owner_regular_identity(current)
+    if observed_identity == identity:
+        return identity
+    if observed_identity[:-1] != identity[:-1]:
+        raise ValueError(f"{field} changed before authorization returned")
+    payload, _, refreshed_identity = _read_owner_only_regular(
+        Path(name),
+        field,
+        max_bytes=max_bytes,
+        parent_descriptor=parent_descriptor,
+    )
+    if (
+        refreshed_identity[:-1] != identity[:-1]
+        or not hmac.compare_digest(payload, expected_payload)
+    ):
+        raise ValueError(f"{field} changed before authorization returned")
+    return refreshed_identity
+
+
 def _load_unique_json_object(payload: bytes, field: str) -> dict[str, Any]:
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -2957,11 +3004,13 @@ def build_generation_from_audited_sources(
                 cache_identity,
                 "staged RAVDESS semantic23 cache",
             )
-        _assert_owner_snapshot_at(
+        staged_manifest_identity = _revalidate_ctime_only_owner_snapshot_at(
             stage_descriptor,
             "manifest.json",
             staged_manifest_identity,
+            manifest_payload,
             "staged RAVDESS manifest",
+            max_bytes=_MAX_RAVDESS_MANIFEST_BYTES,
         )
         current_output_identity, _ = _snapshot_exact_owner_directory(
             stage_descriptor,

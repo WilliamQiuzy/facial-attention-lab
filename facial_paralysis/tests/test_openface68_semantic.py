@@ -2031,6 +2031,163 @@ def test_generator_rejects_post_write_private_manifest_injection(c: Check):
             )
 
 
+def test_generator_revalidates_ctime_only_manifest_metadata_drift(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        output = data_root / "derived_semantic23"
+        original_read = prep._read_owner_only_regular
+        injected = False
+        ctime_only = False
+
+        def inject_ctime_only_drift(path, field, **kwargs):
+            nonlocal injected, ctime_only
+            result = original_read(path, field, **kwargs)
+            if field != "staged RAVDESS manifest" or injected:
+                return result
+            parent_descriptor = kwargs["parent_descriptor"]
+            os.chmod(
+                str(path),
+                0o600,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            refreshed = prep._owner_regular_identity(os.stat(
+                str(path),
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            ))
+            injected = True
+            ctime_only = (
+                refreshed[:-1] == result[2][:-1]
+                and refreshed[-1] != result[2][-1]
+            )
+            return result
+
+        prep._read_owner_only_regular = inject_ctime_only_drift
+        try:
+            manifest = build_generation_from_audited_sources(
+                data_root,
+                output,
+                inventory,
+                expectation=expected,
+                id_key=TEST_ID_KEY,
+            )
+        finally:
+            prep._read_owner_only_regular = original_read
+
+        c.true(injected, "staged manifest receives a metadata-only ctime change")
+        c.true(ctime_only, "all contracted manifest storage fields stay exact")
+        c.true(output.is_dir(), "content-revalidated metadata drift can publish")
+        c.eq(manifest["inventory"]["csv_trials"], expected.csv_files)
+
+
+def test_generator_rejects_content_forgery_behind_ctime_only_stat_drift(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as temporary:
+        data_root = Path(temporary) / "ravdess"
+        expected, _ = _synthetic_tree(data_root)
+        inventory = audit_ravdess_inventory(data_root, expectation=expected)
+        output = data_root / "derived_semantic23"
+        original_read = prep._read_owner_only_regular
+        injected = False
+        contracted_stat_unchanged = False
+
+        def inject_same_stat_content_forgery(path, field, **kwargs):
+            nonlocal injected, contracted_stat_unchanged
+            result = original_read(path, field, **kwargs)
+            if field != "staged RAVDESS manifest" or injected:
+                return result
+            parent_descriptor = kwargs["parent_descriptor"]
+            before = os.stat(
+                str(path),
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            descriptor = os.open(
+                str(path),
+                os.O_WRONLY | os.O_NOFOLLOW,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                os.write(descriptor, b"[")
+                os.fsync(descriptor)
+                class Timespec(prep.ctypes.Structure):
+                    _fields_ = (
+                        ("tv_sec", prep.ctypes.c_long),
+                        ("tv_nsec", prep.ctypes.c_long),
+                    )
+
+                times = (Timespec * 2)(
+                    Timespec(
+                        before.st_atime_ns // 1_000_000_000,
+                        before.st_atime_ns % 1_000_000_000,
+                    ),
+                    Timespec(
+                        result[2][7] // 1_000_000_000,
+                        result[2][7] % 1_000_000_000,
+                    ),
+                )
+                library = prep.ctypes.CDLL(None, use_errno=True)
+                operation = library.futimens
+                operation.argtypes = (
+                    prep.ctypes.c_int,
+                    prep.ctypes.POINTER(Timespec),
+                )
+                operation.restype = prep.ctypes.c_int
+                if operation(descriptor, times) != 0:
+                    error = prep.ctypes.get_errno()
+                    raise OSError(error, os.strerror(error))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            refreshed = prep._owner_regular_identity(os.stat(
+                str(path),
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            ))
+            injected = True
+            contracted_stat_unchanged = (
+                refreshed[:-1] == result[2][:-1]
+                and refreshed[-1] != result[2][-1]
+            )
+            return result
+
+        prep._read_owner_only_regular = inject_same_stat_content_forgery
+        observed: BaseException | None = None
+        try:
+            try:
+                build_generation_from_audited_sources(
+                    data_root,
+                    output,
+                    inventory,
+                    expectation=expected,
+                    id_key=TEST_ID_KEY,
+                )
+            except BaseException as exc:  # noqa: BLE001 - inspect rejection
+                observed = exc
+        finally:
+            prep._read_owner_only_regular = original_read
+
+        c.true(injected, "same-stat staged manifest content forgery is injected")
+        c.true(
+            contracted_stat_unchanged,
+            "forgery restores every contracted stat field except ctime",
+        )
+        c.true(
+            isinstance(observed, RuntimeError),
+            "complete payload revalidation rejects hidden content forgery",
+        )
+        c.true(not output.exists(), "forged staged manifest is never canonical")
+        c.eq(
+            len(list(data_root.glob(f".{output.name}.staging-*"))),
+            1,
+            "forged staging remains as indeterminate evidence",
+        )
+
+
 def test_generator_rejects_private_extra_stage_artifact(c: Check):
     with tempfile.TemporaryDirectory() as temporary:
         data_root = Path(temporary) / "ravdess"
