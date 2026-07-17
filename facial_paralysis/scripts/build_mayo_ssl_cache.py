@@ -3123,6 +3123,7 @@ def _assert_retired_transaction_journal(
 @dataclass
 class _JournalCleanupState:
     compensation_attempted: bool = False
+    terminal_resolved: bool = False
 
 
 def _retire_held_transaction_journal_durably(
@@ -3138,6 +3139,7 @@ def _retire_held_transaction_journal_durably(
     if (
         not isinstance(cleanup_state, _JournalCleanupState)
         or cleanup_state.compensation_attempted
+        or cleanup_state.terminal_resolved
     ):
         raise ValueError("Mayo journal cleanup state is invalid")
     _assert_held_transaction_journal(descriptor, path, identity)
@@ -3196,6 +3198,7 @@ def _retire_held_transaction_journal_durably(
             complete,
             "completed Mayo transaction journal",
         )
+        cleanup_state.terminal_resolved = True
     except BaseException as primary:
         if retired:
             cleanup_state.compensation_attempted = True
@@ -3825,7 +3828,11 @@ def _recover_cache_exposure_transaction_held(
             cleanup_state=cleanup_state,
         )
     finally:
-        final_holds.__exit__(*sys.exc_info())
+        try:
+            final_holds.__exit__(*sys.exc_info())
+        except BaseException:
+            if not cleanup_state.terminal_resolved:
+                raise
 
 
 def _recover_cache_exposure_transaction(
@@ -3872,6 +3879,8 @@ def _recover_cache_exposure_transaction(
         os.close(descriptor)
     except BaseException as exc:
         close_error = exc
+    if cleanup_state.terminal_resolved:
+        close_error = None
     if primary is not None or close_error is not None:
         compensation_failed = cleanup_state.compensation_attempted
         if (
@@ -4583,10 +4592,18 @@ def _promote_generation_with_exposure(
             )
         finally:
             try:
-                committed_holds.__exit__(*sys.exc_info())
+                try:
+                    committed_holds.__exit__(*sys.exc_info())
+                except BaseException:
+                    if not cleanup_state.terminal_resolved:
+                        raise
             finally:
                 if committed_journal_descriptor is not None:
-                    os.close(committed_journal_descriptor)
+                    try:
+                        os.close(committed_journal_descriptor)
+                    except BaseException:
+                        if not cleanup_state.terminal_resolved:
+                            raise
     except Exception as primary_error:
         if (
             committed_boundary_started
@@ -4615,7 +4632,11 @@ def _promote_generation_with_exposure(
             )
         raise
     finally:
-        source_holds.__exit__(*sys.exc_info())
+        try:
+            source_holds.__exit__(*sys.exc_info())
+        except BaseException:
+            if not cleanup_state.terminal_resolved:
+                raise
 
 
 def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
@@ -6864,6 +6885,7 @@ def authorize_committed_mayo_ssl_generation(
         ),
         "expected_classification_integrity_id": expected_exposure_classification,
     }
+    forbidden_tokens = _private_root_forbidden_tokens((data, exports))
     with output_parent_lock(output, create_if_missing=False), \
             _hold_committed_mayo_generation(output, exposure) as held:
         _assert_no_unresolved_generation_state(
@@ -6879,6 +6901,7 @@ def authorize_committed_mayo_ssl_generation(
                 expected_collection_classification
             ),
             expected_classification_integrity_id=expected_exposure_classification,
+            forbidden_tokens=forbidden_tokens,
             _held=held,
         )
         _external_exposure, external_digest = _load_public_json_descriptor(
@@ -7023,6 +7046,7 @@ def authorize_committed_mayo_ssl_generation(
                 expected_collection_classification
             ),
             expected_classification_integrity_id=expected_exposure_classification,
+            forbidden_tokens=forbidden_tokens,
             _held=held,
         )
         if repeated != commitment:

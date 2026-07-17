@@ -5324,7 +5324,7 @@ def test_recovery_post_unlink_fsync_failure_restores_journal(c: Check):
         c.true(journal.is_file(), "recovery fsync failure restores journal")
 
 
-def test_recovery_journal_close_failure_restores_journal(c: Check):
+def test_recovery_journal_close_failure_does_not_reverse_terminal_success(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
 
@@ -5385,18 +5385,19 @@ def test_recovery_journal_close_failure_restores_journal(c: Check):
         builder.os.close = close_then_fail
         try:
             with builder.output_parent_lock(output):
-                c.raises(
-                    lambda: builder.recover_interrupted_generations(
-                        output, exposure_manifest_path=exposure,
-                    ),
-                    OSError,
-                    "journal close failure remains explicit",
+                builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
                 )
         finally:
             builder.os.close = original_close
             builder._open_transaction_journal = original_open
         c.true(faulted)
-        c.true(journal.is_file(), "close failure restores blocking journal")
+        c.true(not journal.exists(), "terminal success is not reported as failure")
+        c.eq(
+            len(tuple(root.glob("..cache.transaction.json.complete-*"))),
+            1,
+            "terminal completion evidence remains unique",
+        )
 
 
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
@@ -6591,6 +6592,39 @@ def test_committed_mayo_authorizer_scans_archived_npz_expanded_bytes(c: Check):
                 fixture.authorize,
                 RuntimeError,
                 "expanded archived NPZ payloads cannot encode a private root",
+            )
+
+
+def test_committed_mayo_authorizer_scans_canonical_npz_expanded_bytes(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            cache = next((fixture.output / "mediapipe").glob("*.npz"))
+            private_root = str(fixture.data).encode("utf-8")
+
+            def embed_private_root(payload: dict[str, np.ndarray]) -> None:
+                features = payload["features_source_rate"].copy()
+                row_bytes = features[1].view(np.uint8)
+                c.true(len(private_root) <= row_bytes.size)
+                row_bytes[:len(private_root)] = np.frombuffer(
+                    private_root, dtype=np.uint8,
+                )
+                c.true(np.isfinite(features).all())
+                payload["features_source_rate"] = features
+
+            _rewrite_npz(cache, embed_private_root)
+            _refresh_cache_integrity(fixture.output, fixture.salt_bytes, "mediapipe")
+            shutil.copy2(
+                fixture.output / "mayo_exposure_manifest.json",
+                fixture.exposure,
+            )
+            c.true(private_root not in cache.read_bytes())
+            with np.load(cache, allow_pickle=False) as loaded:
+                c.true(private_root in loaded["features_source_rate"].tobytes())
+            c.raises(
+                fixture.authorize,
+                ValueError,
+                "expanded canonical NPZ payloads cannot encode a private root",
             )
 
 
