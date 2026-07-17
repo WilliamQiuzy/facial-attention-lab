@@ -3302,6 +3302,7 @@ def _validate_transaction_journal_payload(
         or not isinstance(payload["had_output"], bool)
         or not isinstance(payload["had_exposure"], bool)
         or not isinstance(payload["indeterminate"], bool)
+        or payload["had_output"] != payload["had_exposure"]
         or payload["phase"] not in {
             "prepared", "moving_old_output", "old_output_moved",
             "moving_old_exposure", "old_exposure_moved",
@@ -7698,11 +7699,6 @@ def _assert_resolved_transaction_evidence(
                     )
 
         for transaction_token, payload in completed_journals.items():
-            if (
-                payload["phase"] != "committed"
-                or payload["had_output"] is not True
-            ):
-                continue
             candidate_keys = tuple(
                 key for key in (
                     ("committed-backup", transaction_token),
@@ -7710,6 +7706,62 @@ def _assert_resolved_transaction_evidence(
                 )
                 if key in tree_evidence or key in regular_evidence
             )
+            aborted_key = ("aborted-generation", transaction_token)
+            aborted_present = (
+                aborted_key in tree_evidence
+                or aborted_key in regular_evidence
+            )
+            if payload["phase"] != "committed":
+                if candidate_keys:
+                    raise ValueError(
+                        "rolled-back Mayo journal has unexpected prior evidence"
+                    )
+                if (
+                    not aborted_present
+                    or aborted_key not in tree_evidence
+                    or aborted_key not in regular_evidence
+                ):
+                    raise ValueError(
+                        "rolled-back Mayo journal lacks exact aborted evidence"
+                    )
+                expected_generation = _validate_generation_commitment(
+                    payload["generation_commitment"]
+                )
+                with _hold_committed_mayo_generation(
+                    tree_evidence[aborted_key],
+                    regular_evidence[aborted_key],
+                    media_count=int(
+                        expected_generation["mediapipe_file_count"]
+                    ),
+                    arkit_count=int(
+                        expected_generation["arkit_file_count"]
+                    ),
+                ) as held_aborted:
+                    _assert_committed_generation(
+                        tree_evidence[aborted_key],
+                        regular_evidence[aborted_key],
+                        expected_generation,
+                        salt=salt,
+                        expected_inventory_counts=expected_inventory_counts,
+                        expected_collection_classification_integrity_id=(
+                            expected_collection_classification_integrity_id
+                        ),
+                        expected_classification_integrity_id=(
+                            expected_classification_integrity_id
+                        ),
+                        _held=held_aborted,
+                    )
+                continue
+            if aborted_present:
+                raise ValueError(
+                    "committed Mayo journal has unexpected aborted evidence"
+                )
+            if payload["had_output"] is not True:
+                if candidate_keys:
+                    raise ValueError(
+                        "no-prior Mayo journal has unexpected prior evidence"
+                    )
+                continue
             if (
                 len(candidate_keys) != 1
                 or candidate_keys[0] not in tree_evidence

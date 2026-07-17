@@ -7117,31 +7117,12 @@ def test_committed_mayo_authorizer_validates_resolved_terminal_evidence(c: Check
         with _CommittedMayoAuthorizerFixture(root) as fixture:
             commitment = fixture.authorize().commitment
             token = "0123456789abcdef"
-            payload = {
-                "schema": "mayo_cache_exposure_transaction_v3",
-                "token": token,
-                "staging_name": ".mayo_ssl_cache.staging-terminal-evidence",
-                "exposure_name": fixture.exposure.name,
-                "had_output": False,
-                "had_exposure": False,
-                "phase": "committed",
-                "indeterminate": False,
-                "generation_commitment": commitment,
-                "previous_output_storage_commitment": None,
-                "previous_exposure_storage_commitment": None,
-            }
             history = fixture.output.parent / (
                 "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
             )
             complete = fixture.output.parent / (
                 "..mayo_ssl_cache.transaction.json.complete-"
                 f"{token}-bbbbbbbbbbbbbbbb"
-            )
-            builder._write_transaction_journal(
-                history, payload, require_absent=True,
-            )
-            builder._write_transaction_journal(
-                complete, payload, require_absent=True,
             )
             retired_tree = fixture.output.parent / (
                 ".mayo_ssl_cache.retired-0123456789abcdef-backup"
@@ -7154,6 +7135,45 @@ def test_committed_mayo_authorizer_validates_resolved_terminal_evidence(c: Check
             shutil.copy2(fixture.exposure, retired_exposure)
             retired_tree.chmod(0o700)
             retired_exposure.chmod(0o600)
+            (
+                _retired_root,
+                _retired_ledger,
+                retired_output_commitment,
+            ) = builder._private_generation_storage_commitment(
+                retired_tree, "terminal evidence fixture",
+            )
+            retired_exposure_info = os.lstat(retired_exposure)
+            retired_exposure_commitment = (
+                builder._private_regular_storage_commitment(
+                    builder._movement_stable_regular_snapshot(
+                        retired_exposure_info
+                    ),
+                    _sha(retired_exposure.read_bytes()),
+                )
+            )
+            payload = {
+                "schema": "mayo_cache_exposure_transaction_v4",
+                "token": token,
+                "staging_name": ".mayo_ssl_cache.staging-terminal-evidence",
+                "exposure_name": fixture.exposure.name,
+                "had_output": True,
+                "had_exposure": True,
+                "phase": "committed",
+                "indeterminate": False,
+                "generation_commitment": commitment,
+                "previous_output_storage_commitment": (
+                    retired_output_commitment
+                ),
+                "previous_exposure_storage_commitment": (
+                    retired_exposure_commitment
+                ),
+            }
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            builder._write_transaction_journal(
+                complete, payload, require_absent=True,
+            )
             c.eq(
                 fixture.authorize().commitment,
                 commitment,
@@ -7185,6 +7205,142 @@ def test_committed_mayo_authorizer_validates_resolved_terminal_evidence(c: Check
             finally:
                 history.write_bytes(original_history)
                 history.chmod(0o600)
+
+
+def test_completed_receipts_require_exact_prior_evidence_topology(c: Check):
+    cases = (
+        ("no-prior-extra", False, "committed", "prior", False),
+        ("committed-missing", True, "committed", "none", False),
+        ("rollback-wrong-prior", True, "old_output_moved", "prior", False),
+        ("rollback-missing-aborted", True, "old_output_moved", "none", False),
+        ("committed-extra-aborted", False, "committed", "aborted", False),
+        ("rollback-wrong-aborted", False, "prepared", "aborted", True),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for index, (
+            label,
+            had_prior,
+            phase,
+            evidence_kind,
+            mutate_generation,
+        ) in enumerate(cases):
+            root = outer / str(index)
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                token = f"{index + 1:016x}"
+                output_commitment = "0" * 64
+                exposure_commitment = "1" * 64
+                retired_tree = fixture.output.parent / (
+                    f".mayo_ssl_cache.retired-{token}-backup"
+                )
+                retired_exposure = fixture.exposure.parent / (
+                    f".mayo_exposure_manifest.json.retired-{token}-backup"
+                )
+                if evidence_kind == "aborted":
+                    retired_tree = fixture.output.parent / (
+                        f".mayo_ssl_cache.aborted-{token}-staging"
+                    )
+                    retired_exposure = fixture.exposure.parent / (
+                        f".mayo_exposure_manifest.json.aborted-{token}-temporary"
+                    )
+                if evidence_kind != "none":
+                    shutil.copytree(fixture.output, retired_tree)
+                    shutil.copy2(fixture.exposure, retired_exposure)
+                    retired_tree.chmod(0o700)
+                    retired_exposure.chmod(0o600)
+                    (
+                        _retired_root,
+                        _retired_ledger,
+                        output_commitment,
+                    ) = builder._private_generation_storage_commitment(
+                        retired_tree, f"{label} output evidence",
+                    )
+                    exposure_commitment = (
+                        builder._private_regular_storage_commitment(
+                            builder._movement_stable_regular_snapshot(
+                                os.lstat(retired_exposure)
+                            ),
+                            _sha(retired_exposure.read_bytes()),
+                        )
+                    )
+                generation_commitment = fixture.authorize().commitment
+                if mutate_generation:
+                    generation_commitment = dict(generation_commitment)
+                    generation_commitment["generation_aggregate_sha256"] = (
+                        "f" * 64
+                    )
+                payload = {
+                    "schema": "mayo_cache_exposure_transaction_v4",
+                    "token": token,
+                    "staging_name": (
+                        f".mayo_ssl_cache.staging-{label}"
+                    ),
+                    "exposure_name": fixture.exposure.name,
+                    "had_output": had_prior,
+                    "had_exposure": had_prior,
+                    "phase": phase,
+                    "indeterminate": False,
+                    "generation_commitment": generation_commitment,
+                    "previous_output_storage_commitment": (
+                        output_commitment if had_prior else None
+                    ),
+                    "previous_exposure_storage_commitment": (
+                        exposure_commitment if had_prior else None
+                    ),
+                }
+                complete = fixture.output.parent / (
+                    "..mayo_ssl_cache.transaction.json.complete-"
+                    f"{token}-aaaaaaaaaaaaaaaa"
+                )
+                builder._write_transaction_journal(
+                    complete, payload, require_absent=True,
+                )
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    f"{label} completed evidence topology is rejected",
+                )
+                c.true(complete.is_file())
+                if evidence_kind != "none":
+                    c.true(
+                        retired_tree.is_dir() and retired_exposure.is_file()
+                    )
+
+
+def test_transaction_journal_rejects_unpaired_had_flags(c: Check):
+    commitment = {
+        "schema": "mayo_cache_generation_commitment_v3",
+        "collection_manifest_sha256": "1" * 64,
+        "exposure_manifest_sha256": "2" * 64,
+        "mediapipe_file_count": 1,
+        "arkit_file_count": 1,
+        "cache_file_count": 2,
+        "cache_tree_aggregate_sha256": "3" * 64,
+        "generation_aggregate_sha256": "4" * 64,
+        "inventory_counts_sha256": "5" * 64,
+        "collection_classification_integrity_id": "agg_" + "6" * 64,
+        "exposure_classification_integrity_id": "agg_" + "7" * 64,
+    }
+    payload = {
+        "schema": "mayo_cache_exposure_transaction_v4",
+        "token": "0123456789abcdef",
+        "staging_name": ".cache.staging-unpaired",
+        "exposure_name": "mayo_exposure_manifest.json",
+        "had_output": True,
+        "had_exposure": False,
+        "phase": "prepared",
+        "indeterminate": False,
+        "generation_commitment": commitment,
+        "previous_output_storage_commitment": "8" * 64,
+        "previous_exposure_storage_commitment": None,
+    }
+    raw = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    c.raises(
+        lambda: builder._validate_transaction_journal_payload(raw),
+        ValueError,
+        "coupled Mayo journal cannot declare one prior artifact only",
+    )
 
 
 def test_committed_mayo_authorizer_rejects_unsafe_archived_evidence(c: Check):
