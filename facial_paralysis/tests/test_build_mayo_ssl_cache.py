@@ -7331,6 +7331,226 @@ def test_authorizer_rejects_archived_pair_without_completed_receipt(c: Check):
             c.true(retired_tree.is_dir() and retired_exposure.is_file())
 
 
+def _v4_no_prior_terminal_payload(
+    fixture: _CommittedMayoAuthorizerFixture,
+    token: str,
+) -> dict[str, object]:
+    return {
+        "schema": "mayo_cache_exposure_transaction_v4",
+        "token": token,
+        "staging_name": ".mayo_ssl_cache.staging-terminal-budget",
+        "exposure_name": fixture.exposure.name,
+        "had_output": False,
+        "had_exposure": False,
+        "phase": "committed",
+        "indeterminate": False,
+        "generation_commitment": fixture.authorize().commitment,
+        "previous_output_storage_commitment": None,
+        "previous_exposure_storage_commitment": None,
+    }
+
+
+def _require_runtime_cause(
+    operation,
+    expected_fragment: str,
+) -> None:
+    try:
+        operation()
+    except RuntimeError as exc:
+        if (
+            exc.__cause__ is None
+            or expected_fragment not in str(exc.__cause__)
+        ):
+            raise AssertionError(
+                f"expected RuntimeError cause containing {expected_fragment!r}, "
+                f"got {exc.__cause__!r}"
+            ) from exc
+    else:
+        raise AssertionError(
+            f"expected RuntimeError cause containing {expected_fragment!r}"
+        )
+
+
+def test_authorizer_finally_rechecks_history_journal_mode(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "0123456789abcdef",
+            )
+            history = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            original_scan = builder._assert_descriptor_omits_private_tokens
+            terminal_scans = 0
+            drifted = False
+
+            def chmod_after_final_history_scan(
+                descriptor, identity, tokens, field, **kwargs,
+            ):
+                nonlocal terminal_scans, drifted
+                result = original_scan(
+                    descriptor, identity, tokens, field, **kwargs,
+                )
+                if field == "terminal Mayo transaction journal evidence":
+                    terminal_scans += 1
+                    if terminal_scans == 3 and not drifted:
+                        history.chmod(0o666)
+                        drifted = True
+                return result
+
+            builder._assert_descriptor_omits_private_tokens = (
+                chmod_after_final_history_scan
+            )
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "history journal mode is rechecked immediately before return",
+                )
+            finally:
+                builder._assert_descriptor_omits_private_tokens = original_scan
+            c.true(
+                drifted and stat.S_IMODE(history.stat().st_mode) == 0o666
+            )
+
+
+def test_terminal_journal_aggregate_count_budget_precedes_parsing(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "1234567890abcdef",
+            )
+            for suffix in ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"):
+                builder._write_transaction_journal(
+                    fixture.output.parent / (
+                        "..mayo_ssl_cache.transaction.json.history-" + suffix
+                    ),
+                    payload,
+                    require_absent=True,
+                )
+            old_limit = getattr(
+                builder, "_MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS", None,
+            )
+            builder._MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS = 1
+            try:
+                _require_runtime_cause(
+                    lambda: builder._assert_resolved_transaction_evidence(
+                        fixture.output, fixture.exposure,
+                    ),
+                    "terminal Mayo journal evidence exceeds its aggregate count limit",
+                )
+            finally:
+                if old_limit is None:
+                    del builder._MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS
+                else:
+                    builder._MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS = old_limit
+
+
+def test_terminal_journal_aggregate_byte_budget_precedes_parsing(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "234567890abcdef1",
+            )
+            history = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            old_limit = getattr(
+                builder, "_MAX_MAYO_TERMINAL_EVIDENCE_BYTES", None,
+            )
+            builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES = 1
+            try:
+                _require_runtime_cause(
+                    lambda: builder._assert_resolved_transaction_evidence(
+                        fixture.output, fixture.exposure,
+                    ),
+                    "terminal Mayo journal evidence exceeds its aggregate byte limit",
+                )
+            finally:
+                if old_limit is None:
+                    del builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES
+                else:
+                    builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES = old_limit
+
+
+def test_archived_evidence_aggregate_count_budget_precedes_semantics(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            for token in ("34567890abcdef12", "4567890abcdef123"):
+                retired_tree = fixture.output.parent / (
+                    f".mayo_ssl_cache.retired-{token}-backup"
+                )
+                retired_exposure = fixture.exposure.parent / (
+                    f".mayo_exposure_manifest.json.retired-{token}-backup"
+                )
+                retired_tree.mkdir()
+                retired_tree.chmod(0o700)
+                retired_exposure.write_bytes(b"{}\n")
+                retired_exposure.chmod(0o600)
+            old_limit = getattr(
+                builder, "_MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS", None,
+            )
+            builder._MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS = 1
+            try:
+                _require_runtime_cause(
+                    lambda: builder._assert_resolved_transaction_evidence(
+                        fixture.output, fixture.exposure,
+                    ),
+                    "archived Mayo evidence exceeds its aggregate count limit",
+                )
+            finally:
+                if old_limit is None:
+                    del builder._MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS
+                else:
+                    builder._MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS = old_limit
+
+
+def test_archived_evidence_aggregate_byte_budget_precedes_semantics(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            token = "567890abcdef1234"
+            retired_tree = fixture.output.parent / (
+                f".mayo_ssl_cache.retired-{token}-backup"
+            )
+            retired_tree.mkdir()
+            retired_tree.chmod(0o700)
+            payload = retired_tree / "payload.bin"
+            payload.write_bytes(b"12")
+            payload.chmod(0o600)
+            retired_exposure = fixture.exposure.parent / (
+                f".mayo_exposure_manifest.json.retired-{token}-backup"
+            )
+            retired_exposure.write_bytes(b"{}\n")
+            retired_exposure.chmod(0o600)
+            old_limit = getattr(
+                builder, "_MAX_MAYO_ARCHIVED_EVIDENCE_BYTES", None,
+            )
+            builder._MAX_MAYO_ARCHIVED_EVIDENCE_BYTES = 1
+            try:
+                _require_runtime_cause(
+                    lambda: builder._assert_resolved_transaction_evidence(
+                        fixture.output, fixture.exposure,
+                    ),
+                    "archived Mayo evidence exceeds its aggregate byte limit",
+                )
+            finally:
+                if old_limit is None:
+                    del builder._MAX_MAYO_ARCHIVED_EVIDENCE_BYTES
+                else:
+                    builder._MAX_MAYO_ARCHIVED_EVIDENCE_BYTES = old_limit
+
+
 def test_authorizer_finally_rechecks_legacy_v3_retired_ctime(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

@@ -168,6 +168,12 @@ _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = 128 * 1024 * 1024
 _MAX_NPY_HEADER_BYTES = 4096
 _MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES = 1024
 _MAX_MAYO_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS = 64
+_MAX_MAYO_TERMINAL_EVIDENCE_BYTES = 4 * 1024 * 1024
+_MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS = 4
+_MAX_MAYO_ARCHIVED_EVIDENCE_BYTES = 4 * (
+    _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES + _MAX_MAYO_MANIFEST_BYTES
+)
 _MAYO_TRANSACTION_SCHEMA_V3 = "mayo_cache_exposure_transaction_v3"
 _MAYO_TRANSACTION_SCHEMA_V4 = "mayo_cache_exposure_transaction_v4"
 
@@ -7655,55 +7661,84 @@ def _assert_resolved_transaction_evidence(
     forbidden_tokens = _private_root_forbidden_tokens(private_roots)
     try:
         completed_journals: dict[str, dict[str, object]] = {}
+        terminal_journals: dict[
+            Path,
+            tuple[str, tuple[int, ...], str, dict[str, object]],
+        ] = {}
+        terminal_candidates: list[tuple[str, str, Path]] = []
         for kind in ("history", "complete"):
             prefix = f".{journal.name}.{kind}-"
-            for artifact in output.parent.glob(f"{prefix}*"):
-                suffix = artifact.name[len(prefix):]
-                match = re.fullmatch(
-                    (
-                        r"([0-9a-f]{16})"
-                        if kind == "history"
-                        else r"([0-9a-f]{16})-([0-9a-f]{16})"
-                    ),
-                    suffix,
-                )
-                if match is None:
-                    raise ValueError("terminal journal name is invalid")
+            terminal_candidates.extend(
+                (kind, prefix, artifact)
+                for artifact in sorted(output.parent.glob(f"{prefix}*"))
+            )
+        if (
+            len(terminal_candidates)
+            > _MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS
+        ):
+            raise ValueError(
+                "terminal Mayo journal evidence exceeds its aggregate count limit"
+            )
+        terminal_bytes = 0
+        for kind, prefix, artifact in terminal_candidates:
+            suffix = artifact.name[len(prefix):]
+            match = re.fullmatch(
                 (
+                    r"([0-9a-f]{16})"
+                    if kind == "history"
+                    else r"([0-9a-f]{16})-([0-9a-f]{16})"
+                ),
+                suffix,
+            )
+            if match is None:
+                raise ValueError("terminal journal name is invalid")
+            (
+                descriptor,
+                artifact_identity,
+                artifact_sha256,
+                payload,
+            ) = _open_transaction_journal(artifact)
+            try:
+                terminal_bytes += int(artifact_identity[6])
+                if terminal_bytes > _MAX_MAYO_TERMINAL_EVIDENCE_BYTES:
+                    raise ValueError(
+                        "terminal Mayo journal evidence exceeds its aggregate "
+                        "byte limit"
+                    )
+                _assert_descriptor_omits_private_tokens(
                     descriptor,
+                    artifact_identity,
+                    forbidden_tokens,
+                    "terminal Mayo transaction journal evidence",
+                    expected_sha256=artifact_sha256,
+                )
+                if (
+                    (kind == "complete" and payload["token"] != match.group(1))
+                    or payload["exposure_name"] != exposure.name
+                    or "/" in str(payload["staging_name"])
+                    or "\\" in str(payload["staging_name"])
+                    or Path(str(payload["staging_name"])).name
+                    != str(payload["staging_name"])
+                    or not str(payload["staging_name"]).startswith(
+                        f".{output.name}.staging-"
+                    )
+                ):
+                    raise ValueError("terminal journal evidence is unbound")
+                terminal_journals[artifact] = (
+                    kind,
                     artifact_identity,
                     artifact_sha256,
                     payload,
-                ) = _open_transaction_journal(artifact)
-                try:
-                    _assert_descriptor_omits_private_tokens(
-                        descriptor,
-                        artifact_identity,
-                        forbidden_tokens,
-                        "terminal Mayo transaction journal evidence",
-                        expected_sha256=artifact_sha256,
-                    )
-                    if (
-                        (kind == "complete" and payload["token"] != match.group(1))
-                        or payload["exposure_name"] != exposure.name
-                        or "/" in str(payload["staging_name"])
-                        or "\\" in str(payload["staging_name"])
-                        or Path(str(payload["staging_name"])).name
-                        != str(payload["staging_name"])
-                        or not str(payload["staging_name"]).startswith(
-                            f".{output.name}.staging-"
+                )
+                if kind == "complete":
+                    transaction_token = str(payload["token"])
+                    if transaction_token in completed_journals:
+                        raise ValueError(
+                            "terminal journal evidence generation is repeated"
                         )
-                    ):
-                        raise ValueError("terminal journal evidence is unbound")
-                    if kind == "complete":
-                        transaction_token = str(payload["token"])
-                        if transaction_token in completed_journals:
-                            raise ValueError(
-                                "terminal journal evidence generation is repeated"
-                            )
-                        completed_journals[transaction_token] = payload
-                finally:
-                    os.close(descriptor)
+                    completed_journals[transaction_token] = payload
+            finally:
+                os.close(descriptor)
 
         tree_evidence: dict[tuple[str, str], Path] = {}
         tree_specs = (
@@ -7720,31 +7755,11 @@ def _assert_resolved_transaction_evidence(
                 {"staging": "aborted-generation"},
             ),
         )
-        for parent, prefix, suffix_pattern, evidence_kinds in tree_specs:
-            for artifact in parent.glob(f"{prefix}*"):
-                match = re.fullmatch(suffix_pattern, artifact.name[len(prefix):])
-                if match is None:
-                    raise ValueError("archived tree evidence name is invalid")
-                evidence_key = (evidence_kinds[match.group(2)], match.group(1))
-                if evidence_key in tree_evidence:
-                    raise ValueError("archived tree evidence generation is repeated")
-                tree_evidence[evidence_key] = artifact
-                with _hold_private_storage_tree(
-                    artifact, "archived Mayo transaction tree evidence",
-                ) as held:
-                    _assert_held_private_storage_tree(
-                        held, "archived Mayo transaction tree evidence",
-                    )
-                    for entry in held.entries:
-                        if entry.kind == "file":
-                            _assert_descriptor_omits_private_tokens(
-                                entry.descriptor,
-                                entry.identity,
-                                forbidden_tokens,
-                                "archived Mayo transaction tree evidence",
-                                expected_sha256=entry.sha256,
-                            )
-
+        tree_candidates = [
+            (artifact, prefix, suffix_pattern, evidence_kinds)
+            for parent, prefix, suffix_pattern, evidence_kinds in tree_specs
+            for artifact in sorted(parent.glob(f"{prefix}*"))
+        ]
         regular_evidence: dict[tuple[str, str], Path] = {}
         regular_specs = (
             (
@@ -7760,28 +7775,93 @@ def _assert_resolved_transaction_evidence(
                 {"temporary": "aborted-generation"},
             ),
         )
-        for parent, prefix, suffix_pattern, evidence_kinds in regular_specs:
-            for artifact in parent.glob(f"{prefix}*"):
-                match = re.fullmatch(suffix_pattern, artifact.name[len(prefix):])
-                if match is None:
-                    raise ValueError("archived file evidence name is invalid")
-                evidence_key = (evidence_kinds[match.group(2)], match.group(1))
-                if evidence_key in regular_evidence:
-                    raise ValueError("archived file evidence generation is repeated")
-                regular_evidence[evidence_key] = artifact
-                with _hold_private_regular_storage(
-                    artifact, "archived Mayo transaction file evidence",
-                ) as held:
-                    _assert_held_private_regular_storage(
-                        held, "archived Mayo transaction file evidence",
-                    )
-                    _assert_descriptor_omits_private_tokens(
-                        held.descriptor,
-                        held.identity,
-                        forbidden_tokens,
-                        "archived Mayo transaction file evidence",
-                        expected_sha256=held.sha256,
-                    )
+        regular_candidates = [
+            (artifact, prefix, suffix_pattern, evidence_kinds)
+            for parent, prefix, suffix_pattern, evidence_kinds in regular_specs
+            for artifact in sorted(parent.glob(f"{prefix}*"))
+        ]
+        if (
+            max(len(tree_candidates), len(regular_candidates))
+            > _MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS
+        ):
+            raise ValueError(
+                "archived Mayo evidence exceeds its aggregate count limit"
+            )
+        archived_bytes = 0
+        for artifact, _prefix, _suffix_pattern, _evidence_kinds in tree_candidates:
+            _root, ledger = _private_generation_storage_ledger(
+                artifact, "archived Mayo transaction tree evidence budget",
+            )
+            archived_bytes += sum(
+                int(identity[6])
+                for kind, _parts, identity in ledger
+                if kind == "file"
+            )
+            if archived_bytes > _MAX_MAYO_ARCHIVED_EVIDENCE_BYTES:
+                raise ValueError(
+                    "archived Mayo evidence exceeds its aggregate byte limit"
+                )
+        for artifact, _prefix, _suffix_pattern, _evidence_kinds in (
+            regular_candidates
+        ):
+            checked = _require_regular_file(
+                artifact, "archived Mayo transaction file evidence budget",
+            )
+            info = os.lstat(checked)
+            _require_private_regular_stat(
+                info, "archived Mayo transaction file evidence budget",
+            )
+            archived_bytes += int(info.st_size)
+            if archived_bytes > _MAX_MAYO_ARCHIVED_EVIDENCE_BYTES:
+                raise ValueError(
+                    "archived Mayo evidence exceeds its aggregate byte limit"
+                )
+
+        for artifact, prefix, suffix_pattern, evidence_kinds in tree_candidates:
+            match = re.fullmatch(suffix_pattern, artifact.name[len(prefix):])
+            if match is None:
+                raise ValueError("archived tree evidence name is invalid")
+            evidence_key = (evidence_kinds[match.group(2)], match.group(1))
+            if evidence_key in tree_evidence:
+                raise ValueError("archived tree evidence generation is repeated")
+            tree_evidence[evidence_key] = artifact
+            with _hold_private_storage_tree(
+                artifact, "archived Mayo transaction tree evidence",
+            ) as held:
+                _assert_held_private_storage_tree(
+                    held, "archived Mayo transaction tree evidence",
+                )
+                for entry in held.entries:
+                    if entry.kind == "file":
+                        _assert_descriptor_omits_private_tokens(
+                            entry.descriptor,
+                            entry.identity,
+                            forbidden_tokens,
+                            "archived Mayo transaction tree evidence",
+                            expected_sha256=entry.sha256,
+                        )
+
+        for artifact, prefix, suffix_pattern, evidence_kinds in regular_candidates:
+            match = re.fullmatch(suffix_pattern, artifact.name[len(prefix):])
+            if match is None:
+                raise ValueError("archived file evidence name is invalid")
+            evidence_key = (evidence_kinds[match.group(2)], match.group(1))
+            if evidence_key in regular_evidence:
+                raise ValueError("archived file evidence generation is repeated")
+            regular_evidence[evidence_key] = artifact
+            with _hold_private_regular_storage(
+                artifact, "archived Mayo transaction file evidence",
+            ) as held:
+                _assert_held_private_regular_storage(
+                    held, "archived Mayo transaction file evidence",
+                )
+                _assert_descriptor_omits_private_tokens(
+                    held.descriptor,
+                    held.identity,
+                    forbidden_tokens,
+                    "archived Mayo transaction file evidence",
+                    expected_sha256=held.sha256,
+                )
 
         evidence_tokens = {
             token for _kind, token in (*tree_evidence, *regular_evidence)
@@ -8126,16 +8206,42 @@ def _assert_resolved_transaction_evidence(
                         "archived Mayo exposure evidence changed before return"
                     )
 
-        final_completed_tokens: set[str] = set()
-        complete_prefix = f".{journal.name}.complete-"
-        for artifact in output.parent.glob(f"{complete_prefix}*"):
+        final_terminal_candidates: list[tuple[str, str, Path]] = []
+        for kind in ("history", "complete"):
+            prefix = f".{journal.name}.{kind}-"
+            final_terminal_candidates.extend(
+                (kind, prefix, artifact)
+                for artifact in sorted(output.parent.glob(f"{prefix}*"))
+            )
+        if (
+            len(final_terminal_candidates)
+            > _MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS
+        ):
+            raise ValueError(
+                "terminal Mayo journal evidence exceeds its aggregate count limit"
+            )
+        if {
+            artifact for _kind, _prefix, artifact in final_terminal_candidates
+        } != set(terminal_journals):
+            raise ValueError(
+                "terminal Mayo journal evidence names changed during authorization"
+            )
+        final_terminal_bytes = 0
+        final_terminal_paths: set[Path] = set()
+        for kind, prefix, artifact in final_terminal_candidates:
+            suffix = artifact.name[len(prefix):]
             match = re.fullmatch(
-                r"([0-9a-f]{16})-([0-9a-f]{16})",
-                artifact.name[len(complete_prefix):],
+                (
+                    r"([0-9a-f]{16})"
+                    if kind == "history"
+                    else r"([0-9a-f]{16})-([0-9a-f]{16})"
+                ),
+                suffix,
             )
             if match is None:
-                raise ValueError("completed Mayo journal name changed before return")
-            token = match.group(1)
+                raise ValueError(
+                    "terminal Mayo journal name changed before return"
+                )
             (
                 descriptor,
                 artifact_identity,
@@ -8143,26 +8249,41 @@ def _assert_resolved_transaction_evidence(
                 payload,
             ) = _open_transaction_journal(artifact)
             try:
+                final_terminal_bytes += int(artifact_identity[6])
+                if (
+                    final_terminal_bytes
+                    > _MAX_MAYO_TERMINAL_EVIDENCE_BYTES
+                ):
+                    raise ValueError(
+                        "terminal Mayo journal evidence exceeds its aggregate "
+                        "byte limit"
+                    )
                 _assert_held_transaction_journal(
                     descriptor,
                     artifact,
                     artifact_identity,
                     artifact_sha256,
                 )
+                expected = terminal_journals.get(artifact)
                 if (
-                    token in final_completed_tokens
-                    or token not in completed_journals
-                    or payload != completed_journals[token]
+                    artifact in final_terminal_paths
+                    or expected is None
+                    or kind != expected[0]
+                    or artifact_identity[:-1] != expected[1][:-1]
+                    or not hmac.compare_digest(
+                        artifact_sha256, expected[2],
+                    )
+                    or payload != expected[3]
                 ):
                     raise ValueError(
-                        "completed Mayo journal changed during authorization"
+                        "terminal Mayo journal changed during authorization"
                     )
-                final_completed_tokens.add(token)
+                final_terminal_paths.add(artifact)
             finally:
                 os.close(descriptor)
-        if final_completed_tokens != set(completed_journals):
+        if final_terminal_paths != set(terminal_journals):
             raise ValueError(
-                "completed Mayo journal set changed during authorization"
+                "terminal Mayo journal set changed during authorization"
             )
     except (OSError, ValueError) as exc:
         raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc
