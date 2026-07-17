@@ -3036,6 +3036,61 @@ def test_every_active_journal_free_residue_blocks_recovery_and_authorization(c: 
             c.eq(residue.stat().st_ino, inode, "the residue remains untouched")
 
 
+def test_successful_journal_recovery_rescans_unrelated_active_residue(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-post-recovery-rescan",
+            b"post-recovery-rescan-salt-0123456",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain recovery state")
+
+        unrelated = root / ".cache.cleanup-unrelated"
+        unrelated.mkdir(mode=0o700)
+        unrelated_inode = unrelated.stat().st_ino
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                RuntimeError,
+                "journal recovery must rescan unrelated active residue",
+            )
+        c.eq((output / sentinel.name).read_text(), "old-cache")
+        c.eq(exposure.read_text(), "old-exposure")
+        c.eq(unrelated.stat().st_ino, unrelated_inode)
+        c.true(not (root / ".cache.transaction.json").exists())
+
+
 def test_late_phase_recovery_requires_every_declared_old_backup(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
@@ -4457,12 +4512,16 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
             builder._publish_private_path_no_replace = original_publish
             builder._fsync_directory = original_fsync
             os.close(descriptor)
-        c.eq(events, [
+        c.eq(events[:4], [
             ("fsync", journal_parent, True),
             ("fsync", exposure_parent, True),
             ("retire", journal, True),
             ("fsync", journal_parent, False),
         ], "all changed data directories are durable before journal retirement")
+        c.eq(len(events), 5, "the final resolving rename is the last operation")
+        c.eq(events[-1][0], "retire")
+        c.true(".retiring-" in events[-1][1].name)
+        c.true(events[-1][2] is False)
 
 
 def test_final_journal_check_is_followed_by_held_object_validation(c: Check):
@@ -4706,6 +4765,23 @@ def test_failed_journal_compensation_is_attempted_once(c: Check):
             observed, OSError, "journal compensation failure 1",
         ))
         c.eq(compensation_attempts, 1, "compensation failure is not overwritten")
+        c.true(any(root.glob("..cache.transaction.json.retiring-*")),
+               "failed terminal durability retains an active retirement guard")
+        c.raises(
+            lambda: builder._assert_no_unresolved_generation_state(
+                output, exposure,
+            ),
+            RuntimeError,
+            "failed terminal durability blocks read-only authorization",
+        )
+        with builder.output_parent_lock(output):
+            c.raises(
+                lambda: builder.recover_interrupted_generations(
+                    output, exposure_manifest_path=exposure,
+                ),
+                RuntimeError,
+                "failed terminal durability blocks retry",
+            )
 
 
 def test_phase_updates_never_replace_an_unbound_journal(c: Check):
@@ -4813,6 +4889,72 @@ def test_atomic_phase_exchange_preserves_a_post_check_journal_victim(c: Check):
         c.eq(victim_path.stat().st_ino, victim_inode)
 
 
+def test_history_path_is_rechecked_after_directory_sync(c: Check):
+    commitment = {
+        "schema": "mayo_cache_generation_commitment_v3",
+        "collection_manifest_sha256": "1" * 64,
+        "exposure_manifest_sha256": "2" * 64,
+        "mediapipe_file_count": 1,
+        "arkit_file_count": 1,
+        "cache_file_count": 2,
+        "cache_tree_aggregate_sha256": "3" * 64,
+        "generation_aggregate_sha256": "4" * 64,
+        "inventory_counts_sha256": "5" * 64,
+        "collection_classification_integrity_id": "agg_" + "6" * 64,
+        "exposure_classification_integrity_id": "agg_" + "7" * 64,
+    }
+    payload = {
+        "schema": "mayo_cache_exposure_transaction_v3",
+        "token": "0123456789abcdef",
+        "staging_name": ".cache.staging-0123456789abcdef",
+        "exposure_name": "mayo_exposure_manifest.json",
+        "had_output": False,
+        "had_exposure": False,
+        "phase": "prepared",
+        "indeterminate": False,
+        "generation_commitment": commitment,
+        "previous_output_storage_commitment": None,
+        "previous_exposure_storage_commitment": None,
+    }
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        journal = root / ".cache.transaction.json"
+        identity = builder._write_transaction_journal(
+            journal, payload, require_absent=True,
+        )
+        updated = dict(payload)
+        updated["phase"] = "moving_old_output"
+        evidence = root / ".held-history-evidence"
+        original_fsync = builder._fsync_directory
+        victim = None
+
+        def replace_history_before_sync(path):
+            nonlocal victim
+            histories = list(root.glob("..cache.transaction.json.history-*"))
+            if histories and victim is None:
+                histories[0].rename(evidence)
+                histories[0].write_text("/private/raw/mayo-root")
+                histories[0].chmod(0o666)
+                victim = histories[0]
+            return original_fsync(path)
+
+        builder._fsync_directory = replace_history_before_sync
+        try:
+            c.raises(
+                lambda: builder._write_transaction_journal(
+                    journal, updated, expected_identity=identity,
+                ),
+                ValueError,
+                "history replacement remains visible to the final held check",
+            )
+        finally:
+            builder._fsync_directory = original_fsync
+        c.true(evidence.is_file() and victim is not None)
+        c.eq(victim.read_text(), "/private/raw/mayo-root")
+        c.eq(stat.S_IMODE(victim.stat().st_mode), 0o666)
+
+
 def test_transaction_archival_never_calls_pathname_delete(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -4853,6 +4995,56 @@ def test_transaction_archival_never_calls_pathname_delete(c: Check):
         c.eq(regular_archive.read_text(), "file-evidence")
 
 
+def test_archived_backup_path_is_rechecked_through_final_validation(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-archive-final-binding",
+            b"archive-final-binding-salt-012345",
+        )
+        original_archive = builder._archive_held_private_tree
+        evidence = root / ".held-retired-output-evidence"
+        victim = None
+
+        def replace_after_archive(held, archive, field):
+            nonlocal victim
+            archived = original_archive(held, archive, field)
+            if victim is None:
+                archived.root.rename(evidence)
+                archived.root.mkdir(mode=0o777)
+                archived.root.chmod(0o777)
+                victim = archived.root
+            return archived
+
+        builder._archive_held_private_tree = replace_after_archive
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "an archived backup replacement fails final validation",
+                )
+        finally:
+            builder._archive_held_private_tree = original_archive
+        c.true(evidence.is_dir() and victim is not None and victim.is_dir())
+        c.eq(stat.S_IMODE(victim.stat().st_mode), 0o777)
+        c.true((root / ".cache.transaction.json").is_file())
+
+
 def test_fdopen_duplicate_closes_both_failed_acquisitions(c: Check):
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "held"
@@ -4889,6 +5081,52 @@ def test_fdopen_duplicate_closes_both_failed_acquisitions(c: Check):
                 lambda duplicate=duplicate: os.fstat(duplicate),
                 OSError,
                 "a failed fdopen construction closes its duplicate",
+            )
+
+
+def test_owned_fdopen_failures_close_npz_and_json_descriptors(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        original_open = builder._open_exclusive_private_file
+        original_fdopen = builder.os.fdopen
+        opened: list[int] = []
+
+        def record_open(path, field):
+            descriptor = original_open(path, field)
+            opened.append(descriptor)
+            return descriptor
+
+        def fail_fdopen(*_args, **_kwargs):
+            raise OSError("forced owned fdopen construction failure")
+
+        builder._open_exclusive_private_file = record_open
+        builder.os.fdopen = fail_fdopen
+        try:
+            c.raises(
+                lambda: builder._write_npz_atomic(
+                    root / "cache.npz",
+                    {"value": np.asarray([1], dtype=np.int64)},
+                ),
+                OSError,
+                "NPZ fdopen construction failure is explicit",
+            )
+            c.raises(
+                lambda: builder._write_json_exclusive(
+                    root / "manifest.json", {"value": "safe"},
+                ),
+                OSError,
+                "JSON fdopen construction failure is explicit",
+            )
+        finally:
+            builder.os.fdopen = original_fdopen
+            builder._open_exclusive_private_file = original_open
+        c.eq(len(opened), 2)
+        for descriptor in opened:
+            c.raises(
+                lambda descriptor=descriptor: os.fstat(descriptor),
+                OSError,
+                "an owned fdopen failure closes the original descriptor",
             )
 
 
@@ -6113,6 +6351,93 @@ def test_committed_mayo_authorizer_requires_exact_private_tree_modes(c: Check):
                     alias.unlink()
 
 
+def test_committed_mayo_authorizer_validates_resolved_terminal_evidence(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            commitment = fixture.authorize().commitment
+            token = "0123456789abcdef"
+            payload = {
+                "schema": "mayo_cache_exposure_transaction_v3",
+                "token": token,
+                "staging_name": ".mayo_ssl_cache.staging-terminal-evidence",
+                "exposure_name": fixture.exposure.name,
+                "had_output": False,
+                "had_exposure": False,
+                "phase": "committed",
+                "indeterminate": False,
+                "generation_commitment": commitment,
+                "previous_output_storage_commitment": None,
+                "previous_exposure_storage_commitment": None,
+            }
+            history = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            complete = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.complete-"
+                f"{token}-bbbbbbbbbbbbbbbb"
+            )
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            builder._write_transaction_journal(
+                complete, payload, require_absent=True,
+            )
+            c.eq(
+                fixture.authorize().commitment,
+                commitment,
+                "private bound history and completion evidence remains resolved",
+            )
+            for artifact in (history, complete):
+                artifact.chmod(0o666)
+                try:
+                    c.raises(
+                        fixture.authorize,
+                        RuntimeError,
+                        "unsafe terminal journal evidence blocks authorization",
+                    )
+                finally:
+                    artifact.chmod(0o600)
+
+
+def test_committed_mayo_authorizer_rejects_unsafe_archived_evidence(c: Check):
+    evidence_specs = (
+        ("output-tree", ".mayo_ssl_cache.retired-0123456789abcdef-backup"),
+        ("output-tree", ".mayo_ssl_cache.aborted-0123456789abcdef-staging"),
+        (
+            "exposure-file",
+            ".mayo_exposure_manifest.json.retired-0123456789abcdef-backup",
+        ),
+        (
+            "exposure-file",
+            ".mayo_exposure_manifest.json.aborted-0123456789abcdef-temporary",
+        ),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for index, (kind, name) in enumerate(evidence_specs):
+            root = outer / str(index)
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                parent = (
+                    fixture.output.parent
+                    if kind == "output-tree"
+                    else fixture.exposure.parent
+                )
+                evidence = parent / name
+                if kind == "output-tree":
+                    evidence.mkdir(mode=0o777)
+                    evidence.chmod(0o777)
+                else:
+                    evidence.write_text("/private/raw/mayo-root")
+                    evidence.chmod(0o666)
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    f"unsafe {name} blocks read-only authorization",
+                )
+                c.true(evidence.exists())
+
 def test_committed_mayo_authorizer_never_mixes_swapped_generation_roots(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -6715,6 +7040,47 @@ def test_committed_mayo_authorizer_rechecks_live_root_classification(c: Check):
                 "a live-root classification change during authorization fails closed",
             )
             c.eq(inventory_calls, 2, "the live roots are audited again before return")
+
+
+def test_committed_mayo_authorizer_rescans_late_active_residue(c: Check):
+    residue_names = (
+        ".mayo_ssl_cache.cleanup-late",
+        "..mayo_ssl_cache.transaction.json.tmp-late",
+        ".mayo_exposure_manifest.json.backup-late",
+        ".mayo_exposure_manifest.json.tmp-late",
+        ".mayo_exposure_manifest.json.cleanup-late",
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for index, residue_name in enumerate(residue_names):
+            root = outer / str(index)
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                inventory_calls = 0
+                residue_parent = (
+                    fixture.output.parent
+                    if "mayo_ssl_cache" in residue_name
+                    else fixture.exposure.parent
+                )
+                residue = residue_parent / residue_name
+
+                def inject_during_final_inventory(*_args, **_kwargs):
+                    nonlocal inventory_calls
+                    inventory_calls += 1
+                    if inventory_calls == 2:
+                        residue.write_text("late-active-residue")
+                        residue.chmod(0o600)
+                    return fixture.inventory
+
+                builder.inventory_mayo_sources = inject_during_final_inventory
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    f"late {residue_name} blocks authorization",
+                )
+                c.eq(inventory_calls, 2)
+                c.true(residue.is_file())
+                c.eq(residue.read_text(), "late-active-residue")
 
 
 def test_committed_mayo_authorizer_holds_every_cache_mode_through_return(c: Check):

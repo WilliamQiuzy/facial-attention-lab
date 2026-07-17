@@ -990,7 +990,7 @@ def _archive_held_private_tree(
     held: _HeldPrivateStorageTree,
     archive: Path,
     field: str,
-) -> None:
+) -> _HeldPrivateStorageTree:
     _assert_held_private_storage_tree(held, field)
     root_entry = next(
         (entry for entry in held.entries if entry.parts == ()), None,
@@ -1016,13 +1016,14 @@ def _archive_held_private_tree(
         or int(opened.st_ino) != root_entry.identity[1]
     ):
         raise ValueError(f"{field} held root identity changed during archival")
+    return archived
 
 
 def _archive_held_private_regular(
     held: _HeldPrivateRegularStorage,
     archive: Path,
     field: str,
-) -> None:
+) -> _HeldPrivateRegularStorage:
     _assert_held_private_regular_storage(held, field)
     _publish_private_path_no_replace(
         held.path,
@@ -1044,6 +1045,11 @@ def _archive_held_private_regular(
         or _regular_snapshot(opened) != _regular_snapshot(linked)
     ):
         raise ValueError(f"{field} held file changed during archival")
+    return _HeldPrivateRegularStorage(
+        path=archive,
+        descriptor=held.descriptor,
+        identity=_regular_snapshot(opened),
+    )
 
 
 def _require_private_generation_storage_tree(
@@ -2076,7 +2082,7 @@ def _write_npz_atomic(path: Path, payload: Mapping[str, np.ndarray]) -> None:
         descriptor = _open_exclusive_private_file(
             temporary, "temporary compact cache",
         )
-        with os.fdopen(descriptor, "wb") as handle:
+        with _fdopen_owned(descriptor, "wb") as handle:
             np.savez_compressed(handle, **payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -2853,6 +2859,7 @@ def _write_transaction_journal(
         )
         if _regular_snapshot(linked_temporary) != new_identity:
             raise ValueError("Mayo transaction journal temporary changed")
+        history_hold = None
         if require_absent:
             _publish_private_path_no_replace(
                 temporary,
@@ -2864,50 +2871,55 @@ def _write_transaction_journal(
             old_descriptor, old_identity, _old_payload = (
                 _open_transaction_journal(path)
             )
-            journal_holds = ExitStack()
-            journal_holds.callback(os.close, old_descriptor)
-            try:
-                if old_identity != expected_identity:
-                    raise ValueError(
-                        "Mayo transaction journal changed before phase update"
-                    )
-                _swap_private_paths_atomically(
-                    temporary, path, "Mayo transaction journal phase",
+            temporary_holds.callback(os.close, old_descriptor)
+            if old_identity != expected_identity:
+                raise ValueError(
+                    "Mayo transaction journal changed before phase update"
                 )
-                linked_new = os.lstat(path)
-                linked_old = os.lstat(temporary)
-                _require_private_regular_stat(
-                    linked_new, "updated Mayo transaction journal",
+            _swap_private_paths_atomically(
+                temporary, path, "Mayo transaction journal phase",
+            )
+            linked_new = os.lstat(path)
+            linked_old = os.lstat(temporary)
+            _require_private_regular_stat(
+                linked_new, "updated Mayo transaction journal",
+            )
+            _require_private_regular_stat(
+                linked_old, "previous Mayo transaction journal",
+            )
+            if (
+                _movement_stable_regular_snapshot(linked_new)
+                != new_identity[:7]
+                or _movement_stable_regular_snapshot(linked_old)
+                != old_identity[:7]
+                or _movement_stable_regular_snapshot(
+                    os.fstat(descriptor)
+                ) != new_identity[:7]
+                or _movement_stable_regular_snapshot(
+                    os.fstat(old_descriptor)
+                ) != old_identity[:7]
+            ):
+                raise ValueError(
+                    "Mayo transaction journal exchange changed identity"
                 )
-                _require_private_regular_stat(
-                    linked_old, "previous Mayo transaction journal",
-                )
-                if (
-                    _movement_stable_regular_snapshot(linked_new)
-                    != new_identity[:7]
-                    or _movement_stable_regular_snapshot(linked_old)
-                    != old_identity[:7]
-                    or _movement_stable_regular_snapshot(
-                        os.fstat(descriptor)
-                    ) != new_identity[:7]
-                    or _movement_stable_regular_snapshot(
-                        os.fstat(old_descriptor)
-                    ) != old_identity[:7]
-                ):
-                    raise ValueError(
-                        "Mayo transaction journal exchange changed identity"
-                    )
-                history = path.parent / (
-                    f".{path.name}.history-{secrets.token_hex(8)}"
-                )
-                _publish_private_path_no_replace(
-                    temporary,
-                    history,
-                    "previous Mayo transaction journal history",
-                    expected_identity=old_identity[:7],
-                )
-            finally:
-                journal_holds.__exit__(*sys.exc_info())
+            history = path.parent / (
+                f".{path.name}.history-{secrets.token_hex(8)}"
+            )
+            _publish_private_path_no_replace(
+                temporary,
+                history,
+                "previous Mayo transaction journal history",
+                expected_identity=old_identity[:7],
+            )
+            history_identity = _regular_snapshot(os.fstat(old_descriptor))
+            history_hold = _HeldPrivateRegularStorage(
+                path=history,
+                descriptor=old_descriptor,
+                identity=history_identity,
+            )
+            _assert_held_private_regular_storage(
+                history_hold, "previous Mayo transaction journal history",
+            )
         published_stat = os.lstat(path)
         _require_private_regular_stat(published_stat, "Mayo transaction journal")
         if (
@@ -2922,6 +2934,10 @@ def _write_transaction_journal(
         _require_private_regular_stat(final, "Mayo transaction journal")
         if _regular_snapshot(final) != _regular_snapshot(published_stat):
             raise ValueError("Mayo transaction journal changed after phase update")
+        if history_hold is not None:
+            _assert_held_private_regular_storage(
+                history_hold, "previous Mayo transaction journal history",
+            )
         return _regular_snapshot(final)
     finally:
         # A failed private transaction is retained as owner-only evidence.
@@ -3085,9 +3101,9 @@ def _retire_held_transaction_journal_durably(
         and re.fullmatch(r"[0-9a-f]{16}", journal_token) is not None
         else "unspecified"
     )
-    terminal = path.parent / (
-        f".{path.name}.complete-{terminal_token}-{secrets.token_hex(8)}"
-    )
+    terminal_suffix = f"{terminal_token}-{secrets.token_hex(8)}"
+    retiring = path.parent / f".{path.name}.retiring-{terminal_suffix}"
+    complete = path.parent / f".{path.name}.complete-{terminal_suffix}"
 
     def require_journal_absent() -> None:
         if path.exists() or _is_symlink(path):
@@ -3100,18 +3116,18 @@ def _retire_held_transaction_journal_durably(
             validate_final_state()
         _publish_private_path_no_replace(
             path,
-            terminal,
-            "completed Mayo transaction journal",
+            retiring,
+            "retiring Mayo transaction journal",
             expected_identity=identity[:7],
         )
         retired = True
         _assert_retired_transaction_journal(descriptor, identity)
-        linked_terminal = os.lstat(terminal)
+        linked_terminal = os.lstat(retiring)
         _require_private_regular_stat(
-            linked_terminal, "completed Mayo transaction journal",
+            linked_terminal, "retiring Mayo transaction journal",
         )
         if _movement_stable_regular_snapshot(linked_terminal) != identity[:7]:
-            raise ValueError("completed Mayo transaction journal changed")
+            raise ValueError("retiring Mayo transaction journal changed")
         require_journal_absent()
         validate_final_state()
         require_journal_absent()
@@ -3119,6 +3135,26 @@ def _retire_held_transaction_journal_durably(
         require_journal_absent()
         validate_final_state()
         require_journal_absent()
+        # The active retiring name is durable before this final resolving
+        # rename. A crash can therefore expose either the blocking guard or the
+        # completed receipt, never an unguarded ambiguous transaction.
+        _publish_private_path_no_replace(
+            retiring,
+            complete,
+            "completed Mayo transaction journal",
+            expected_identity=identity[:7],
+        )
+        require_journal_absent()
+        validate_final_state()
+        require_journal_absent()
+        complete_hold = _HeldPrivateRegularStorage(
+            path=complete,
+            descriptor=descriptor,
+            identity=_regular_snapshot(os.fstat(descriptor)),
+        )
+        _assert_held_private_regular_storage(
+            complete_hold, "completed Mayo transaction journal",
+        )
     except BaseException as primary:
         if retired:
             cleanup_state.compensation_attempted = True
@@ -3502,6 +3538,10 @@ def _recover_cache_exposure_transaction_held(
         held_exposure_backup = None
         held_staging_cleanup = None
         held_temporary_cleanup = None
+        archived_output_backup = None
+        archived_exposure_backup = None
+        archived_staging = None
+        archived_temporary = None
         if committed:
             expected_generation = _validate_generation_commitment(
                 journal["generation_commitment"]
@@ -3644,13 +3684,13 @@ def _recover_cache_exposure_transaction_held(
 
         if committed:
             if held_output_backup is not None:
-                _archive_held_private_tree(
+                archived_output_backup = _archive_held_private_tree(
                     held_output_backup,
                     output_backup_cleanup,
                     "committed recovery output backup",
                 )
             if held_exposure_backup is not None:
-                _archive_held_private_regular(
+                archived_exposure_backup = _archive_held_private_regular(
                     held_exposure_backup,
                     exposure_backup_cleanup,
                     "committed recovery exposure backup",
@@ -3658,12 +3698,12 @@ def _recover_cache_exposure_transaction_held(
         else:
             _assert_held_mayo_generation(held_interrupted_generation)
             if held_temporary_cleanup is not None:
-                _archive_held_private_regular(
+                archived_temporary = _archive_held_private_regular(
                     held_temporary_cleanup,
                     temporary_cleanup,
                     "interrupted Mayo exposure temporary cleanup",
                 )
-            _archive_held_private_tree(
+            archived_staging = _archive_held_private_tree(
                 held_staging_cleanup,
                 staging_cleanup,
                 "interrupted Mayo staging cleanup",
@@ -3712,8 +3752,24 @@ def _recover_cache_exposure_transaction_held(
                         "committed recovery cleanup residue reappeared"
                     )
             # Resolved retirement/rollback evidence is intentionally immutable.
-            # It is outside the canonical generation and never consumed by an
-            # authorizer; retaining it avoids pathname-based destructive cleanup.
+            # It remains outside the canonical generation, is revalidated by
+            # read-only authorization, and avoids pathname-based destruction.
+            if archived_output_backup is not None:
+                _assert_held_private_storage_tree(
+                    archived_output_backup, "retired recovery output backup",
+                )
+            if archived_exposure_backup is not None:
+                _assert_held_private_regular_storage(
+                    archived_exposure_backup, "retired recovery exposure backup",
+                )
+            if archived_staging is not None:
+                _assert_held_private_storage_tree(
+                    archived_staging, "aborted recovery staging",
+                )
+            if archived_temporary is not None:
+                _assert_held_private_regular_storage(
+                    archived_temporary, "aborted recovery exposure temporary",
+                )
 
         fsync_directories = tuple(dict.fromkeys((
             output.parent, exposure.parent,
@@ -3824,12 +3880,16 @@ def recover_interrupted_generations(
                 expected_classification_integrity_id
             ),
         )
-        return
+    if exposure_manifest_path is not None:
+        _assert_resolved_transaction_evidence(
+            output, _lexical_absolute(exposure_manifest_path),
+        )
     active_residue = [
         *parent.glob(f".{output.name}.staging-*"),
         *parent.glob(f".{output.name}.backup-*"),
         *parent.glob(f".{output.name}.cleanup-*"),
         *parent.glob(f".{journal.name}.tmp-*"),
+        *parent.glob(f".{journal.name}.retiring-*"),
     ]
     if exposure_manifest_path is not None:
         exposure = _lexical_absolute(exposure_manifest_path)
@@ -3844,6 +3904,10 @@ def recover_interrupted_generations(
         )
     if output.exists() or _is_symlink(output):
         _require_directory(output, "existing output generation")
+    if exposure_manifest_path is not None:
+        _assert_no_unresolved_generation_state(
+            output, _lexical_absolute(exposure_manifest_path),
+        )
 
 
 def promote_generation(
@@ -4386,8 +4450,10 @@ def _promote_generation_with_exposure(
                     committed_boundary_started = False
                     raise
 
+            archived_output_backup = None
+            archived_exposure_backup = None
             if held_output_backup is not None:
-                _archive_held_private_tree(
+                archived_output_backup = _archive_held_private_tree(
                     held_output_backup,
                     output_cleanup,
                     "committed previous output backup",
@@ -4395,7 +4461,7 @@ def _promote_generation_with_exposure(
             elif output_backup.exists() or _is_symlink(output_backup):
                 raise ValueError("unexpected committed output backup appeared")
             if held_exposure_backup is not None:
-                _archive_held_private_regular(
+                archived_exposure_backup = _archive_held_private_regular(
                     held_exposure_backup,
                     exposure_cleanup,
                     "committed previous exposure backup",
@@ -4418,6 +4484,16 @@ def _promote_generation_with_exposure(
                     )
                 if continuity_validator is not None:
                     continuity_validator()
+                if archived_output_backup is not None:
+                    _assert_held_private_storage_tree(
+                        archived_output_backup,
+                        "retired committed output backup",
+                    )
+                if archived_exposure_backup is not None:
+                    _assert_held_private_regular_storage(
+                        archived_exposure_backup,
+                        "retired committed exposure backup",
+                    )
 
             fsync_directories = tuple(dict.fromkeys((
                 output.parent, exposure.parent,
@@ -4473,7 +4549,7 @@ def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
     _require_private_directory(path.parent, "private manifest parent")
     serialized = json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n"
     descriptor = _open_exclusive_private_file(path, "private manifest")
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    with _fdopen_owned(descriptor, "w", encoding="utf-8") as handle:
         handle.write(serialized)
         handle.flush()
         os.fsync(handle.fileno())
@@ -6274,11 +6350,101 @@ def _assert_committed_generation(
         _assert_held_mayo_generation(_held)
 
 
+def _assert_resolved_transaction_evidence(
+    output: Path,
+    exposure: Path,
+) -> None:
+    journal = _journal_path(output)
+    try:
+        for kind in ("history", "complete"):
+            prefix = f".{journal.name}.{kind}-"
+            for artifact in output.parent.glob(f"{prefix}*"):
+                suffix = artifact.name[len(prefix):]
+                match = re.fullmatch(
+                    (
+                        r"([0-9a-f]{16})"
+                        if kind == "history"
+                        else r"([0-9a-f]{16})-([0-9a-f]{16})"
+                    ),
+                    suffix,
+                )
+                if match is None:
+                    raise ValueError("terminal journal name is invalid")
+                descriptor, _identity, payload = _open_transaction_journal(
+                    artifact,
+                )
+                try:
+                    if (
+                        (kind == "complete" and payload["token"] != match.group(1))
+                        or payload["exposure_name"] != exposure.name
+                        or not str(payload["staging_name"]).startswith(
+                            f".{output.name}.staging-"
+                        )
+                    ):
+                        raise ValueError("terminal journal evidence is unbound")
+                finally:
+                    os.close(descriptor)
+
+        tree_specs = (
+            (
+                output.parent,
+                f".{output.name}.retired-",
+                r"[0-9a-f]{16}-(?:backup|output-backup)",
+            ),
+            (
+                output.parent,
+                f".{output.name}.aborted-",
+                r"[0-9a-f]{16}-staging",
+            ),
+        )
+        for parent, prefix, suffix_pattern in tree_specs:
+            for artifact in parent.glob(f"{prefix}*"):
+                if re.fullmatch(
+                    suffix_pattern, artifact.name[len(prefix):],
+                ) is None:
+                    raise ValueError("archived tree evidence name is invalid")
+                with _hold_private_storage_tree(
+                    artifact, "archived Mayo transaction tree evidence",
+                ) as held:
+                    _assert_held_private_storage_tree(
+                        held, "archived Mayo transaction tree evidence",
+                    )
+
+        regular_specs = (
+            (
+                exposure.parent,
+                f".{exposure.name}.retired-",
+                r"[0-9a-f]{16}-(?:backup|exposure-backup)",
+            ),
+            (
+                exposure.parent,
+                f".{exposure.name}.aborted-",
+                r"[0-9a-f]{16}-temporary",
+            ),
+        )
+        for parent, prefix, suffix_pattern in regular_specs:
+            for artifact in parent.glob(f"{prefix}*"):
+                if re.fullmatch(
+                    suffix_pattern, artifact.name[len(prefix):],
+                ) is None:
+                    raise ValueError("archived file evidence name is invalid")
+                with _hold_private_regular_storage(
+                    artifact, "archived Mayo transaction file evidence",
+                ) as held:
+                    _assert_held_private_regular_storage(
+                        held, "archived Mayo transaction file evidence",
+                    )
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc
+
+
 def _assert_no_unresolved_generation_state(output: Path, exposure: Path) -> None:
+    _assert_resolved_transaction_evidence(output, exposure)
     journal = _journal_path(output)
     candidates = [
         journal,
         *output.parent.glob(f".{journal.name}.tmp-*"),
+        *output.parent.glob(f".{journal.name}.retiring-*"),
         *output.parent.glob(f".{output.name}.staging-*"),
         *output.parent.glob(f".{output.name}.backup-*"),
         *output.parent.glob(f".{output.name}.cleanup-*"),
@@ -6542,6 +6708,7 @@ def authorize_committed_mayo_ssl_generation(
         ):
             raise ValueError("Mayo private key changed during authorization")
         _assert_held_mayo_generation(held)
+        _assert_no_unresolved_generation_state(output, exposure)
         return AuthorizedMayoGeneration(
             schema=MEDIAPIPE_CACHE_SCHEMA,
             collection_manifest_sha256=collection_digest,
