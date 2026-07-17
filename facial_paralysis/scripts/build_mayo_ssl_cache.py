@@ -8007,6 +8007,163 @@ def _assert_resolved_transaction_evidence(
                             "archived external Mayo exposure is not bound to its cache"
                         )
                     _assert_held_mayo_generation(held_generation)
+
+        final_tree_paths = {
+            artifact
+            for parent, prefix, _suffix_pattern, _evidence_kinds in tree_specs
+            for artifact in parent.glob(f"{prefix}*")
+        }
+        final_regular_paths = {
+            artifact
+            for parent, prefix, _suffix_pattern, _evidence_kinds in regular_specs
+            for artifact in parent.glob(f"{prefix}*")
+        }
+        if (
+            final_tree_paths != set(tree_evidence.values())
+            or final_regular_paths != set(regular_evidence.values())
+        ):
+            raise ValueError(
+                "archived Mayo evidence names changed during authorization"
+            )
+
+        for transaction_token, payload in completed_journals.items():
+            _assert_transaction_evidence_topology(
+                output,
+                exposure,
+                transaction_token,
+                committed=payload["phase"] == "committed",
+                had_prior=bool(payload["had_output"]),
+            )
+            if payload["phase"] != "committed":
+                evidence_key = ("aborted-generation", transaction_token)
+                expected_generation = _validate_generation_commitment(
+                    payload["generation_commitment"]
+                )
+                with _hold_committed_mayo_generation(
+                    tree_evidence[evidence_key],
+                    regular_evidence[evidence_key],
+                    media_count=int(
+                        expected_generation["mediapipe_file_count"]
+                    ),
+                    arkit_count=int(
+                        expected_generation["arkit_file_count"]
+                    ),
+                ) as held_aborted:
+                    _assert_committed_generation(
+                        tree_evidence[evidence_key],
+                        regular_evidence[evidence_key],
+                        expected_generation,
+                        salt=salt,
+                        expected_inventory_counts=expected_inventory_counts,
+                        expected_collection_classification_integrity_id=(
+                            expected_collection_classification_integrity_id
+                        ),
+                        expected_classification_integrity_id=(
+                            expected_classification_integrity_id
+                        ),
+                        _held=held_aborted,
+                    )
+                continue
+            if payload["had_output"] is not True:
+                continue
+            candidate_keys = tuple(
+                key for key in (
+                    ("committed-backup", transaction_token),
+                    ("recovered-backup", transaction_token),
+                )
+                if key in tree_evidence and key in regular_evidence
+            )
+            if len(candidate_keys) != 1:
+                raise ValueError(
+                    "completed Mayo receipt lost its prior evidence pair"
+                )
+            evidence_key = candidate_keys[0]
+            with _hold_private_storage_tree(
+                tree_evidence[evidence_key],
+                "final journal-bound archived Mayo output evidence",
+            ) as held_tree:
+                (
+                    evidence_ledger,
+                    _current_evidence_commitment,
+                    evidence_file_digests,
+                ) = _held_private_generation_storage_snapshot(
+                    held_tree,
+                    "final journal-bound archived Mayo output evidence",
+                )
+                observed_output_commitment = (
+                    _private_generation_storage_commitment_from_snapshot(
+                        evidence_ledger,
+                        evidence_file_digests,
+                        transaction_schema=str(payload["schema"]),
+                    )
+                )
+                if not hmac.compare_digest(
+                    observed_output_commitment,
+                    str(payload["previous_output_storage_commitment"]),
+                ):
+                    raise ValueError(
+                        "archived Mayo output evidence changed before return"
+                    )
+                _assert_held_private_storage_tree(
+                    held_tree,
+                    "final journal-bound archived Mayo output evidence",
+                    require_file_ctime=(
+                        payload["schema"] == _MAYO_TRANSACTION_SCHEMA_V3
+                    ),
+                )
+            with _hold_private_regular_storage(
+                regular_evidence[evidence_key],
+                "final journal-bound archived Mayo exposure evidence",
+            ) as held_exposure:
+                if not hmac.compare_digest(
+                    _held_private_regular_storage_commitment(
+                        held_exposure,
+                        "final journal-bound archived Mayo exposure evidence",
+                    ),
+                    str(payload["previous_exposure_storage_commitment"]),
+                ):
+                    raise ValueError(
+                        "archived Mayo exposure evidence changed before return"
+                    )
+
+        final_completed_tokens: set[str] = set()
+        complete_prefix = f".{journal.name}.complete-"
+        for artifact in output.parent.glob(f"{complete_prefix}*"):
+            match = re.fullmatch(
+                r"([0-9a-f]{16})-([0-9a-f]{16})",
+                artifact.name[len(complete_prefix):],
+            )
+            if match is None:
+                raise ValueError("completed Mayo journal name changed before return")
+            token = match.group(1)
+            (
+                descriptor,
+                artifact_identity,
+                artifact_sha256,
+                payload,
+            ) = _open_transaction_journal(artifact)
+            try:
+                _assert_held_transaction_journal(
+                    descriptor,
+                    artifact,
+                    artifact_identity,
+                    artifact_sha256,
+                )
+                if (
+                    token in final_completed_tokens
+                    or token not in completed_journals
+                    or payload != completed_journals[token]
+                ):
+                    raise ValueError(
+                        "completed Mayo journal changed during authorization"
+                    )
+                final_completed_tokens.add(token)
+            finally:
+                os.close(descriptor)
+        if final_completed_tokens != set(completed_journals):
+            raise ValueError(
+                "completed Mayo journal set changed during authorization"
+            )
     except (OSError, ValueError) as exc:
         raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc
 

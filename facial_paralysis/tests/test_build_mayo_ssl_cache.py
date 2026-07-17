@@ -7331,6 +7331,220 @@ def test_authorizer_rejects_archived_pair_without_completed_receipt(c: Check):
             c.true(retired_tree.is_dir() and retired_exposure.is_file())
 
 
+def test_authorizer_finally_rechecks_legacy_v3_retired_ctime(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            commitment = fixture.authorize().commitment
+            token = "abcdefabcdefabcd"
+            retired_tree = fixture.output.parent / (
+                f".mayo_ssl_cache.retired-{token}-backup"
+            )
+            retired_exposure = fixture.exposure.parent / (
+                f".mayo_exposure_manifest.json.retired-{token}-backup"
+            )
+            shutil.copytree(fixture.output, retired_tree)
+            shutil.copy2(fixture.exposure, retired_exposure)
+            retired_tree.chmod(0o700)
+            retired_exposure.chmod(0o600)
+            retired_exposure_commitment = (
+                builder._private_regular_storage_commitment(
+                    builder._movement_stable_regular_snapshot(
+                        os.lstat(retired_exposure)
+                    ),
+                    _sha(retired_exposure.read_bytes()),
+                )
+            )
+            payload = {
+                "schema": "mayo_cache_exposure_transaction_v3",
+                "token": token,
+                "staging_name": ".mayo_ssl_cache.staging-late-v3-ctime",
+                "exposure_name": fixture.exposure.name,
+                "had_output": True,
+                "had_exposure": True,
+                "phase": "committed",
+                "indeterminate": False,
+                "generation_commitment": commitment,
+                "previous_output_storage_commitment": (
+                    _frozen_legacy_v3_private_tree_commitment(retired_tree)
+                ),
+                "previous_exposure_storage_commitment": (
+                    retired_exposure_commitment
+                ),
+            }
+            complete = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.complete-"
+                f"{token}-aaaaaaaaaaaaaaaa"
+            )
+            builder._write_transaction_journal(
+                complete, payload, require_absent=True,
+            )
+            victim = next((retired_tree / "mediapipe").glob("*.npz"))
+            before = builder._regular_snapshot(victim.stat())
+            original_validate = builder._validate_staging
+            drifted = False
+            archived_validation_count = 0
+
+            def drift_after_archived_semantic_validation(path, *args, **kwargs):
+                nonlocal drifted, archived_validation_count
+                result = original_validate(path, *args, **kwargs)
+                if Path(path) == retired_tree:
+                    archived_validation_count += 1
+                    if archived_validation_count == 3 and not drifted:
+                        victim.chmod(0o600)
+                        drifted = True
+                return result
+
+            builder._validate_staging = drift_after_archived_semantic_validation
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "legacy retired evidence is rechecked after semantic scanning",
+                )
+            finally:
+                builder._validate_staging = original_validate
+            after = builder._regular_snapshot(victim.stat())
+            c.true(
+                drifted
+                and before[:-1] == after[:-1]
+                and before[-1] != after[-1],
+                "late authorization fixture changes only legacy file ctime",
+            )
+
+
+def _install_v4_completed_prior_evidence(
+    fixture: _CommittedMayoAuthorizerFixture,
+    token: str,
+) -> tuple[Path, Path, Path]:
+    commitment = fixture.authorize().commitment
+    retired_tree = fixture.output.parent / (
+        f".mayo_ssl_cache.retired-{token}-backup"
+    )
+    retired_exposure = fixture.exposure.parent / (
+        f".mayo_exposure_manifest.json.retired-{token}-backup"
+    )
+    shutil.copytree(fixture.output, retired_tree)
+    shutil.copy2(fixture.exposure, retired_exposure)
+    retired_tree.chmod(0o700)
+    retired_exposure.chmod(0o600)
+    (
+        _retired_root,
+        _retired_ledger,
+        output_commitment,
+    ) = builder._private_generation_storage_commitment(
+        retired_tree, "v4 terminal evidence fixture",
+    )
+    exposure_commitment = builder._private_regular_storage_commitment(
+        builder._movement_stable_regular_snapshot(os.lstat(retired_exposure)),
+        _sha(retired_exposure.read_bytes()),
+    )
+    payload = {
+        "schema": "mayo_cache_exposure_transaction_v4",
+        "token": token,
+        "staging_name": ".mayo_ssl_cache.staging-v4-final-recheck",
+        "exposure_name": fixture.exposure.name,
+        "had_output": True,
+        "had_exposure": True,
+        "phase": "committed",
+        "indeterminate": False,
+        "generation_commitment": commitment,
+        "previous_output_storage_commitment": output_commitment,
+        "previous_exposure_storage_commitment": exposure_commitment,
+    }
+    complete = fixture.output.parent / (
+        "..mayo_ssl_cache.transaction.json.complete-"
+        f"{token}-aaaaaaaaaaaaaaaa"
+    )
+    builder._write_transaction_journal(
+        complete, payload, require_absent=True,
+    )
+    return retired_tree, retired_exposure, complete
+
+
+def test_authorizer_finally_rechecks_v4_retired_identity(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            retired_tree, _retired_exposure, _complete = (
+                _install_v4_completed_prior_evidence(
+                    fixture, "1234567890abcdef",
+                )
+            )
+            victim = next((retired_tree / "mediapipe").glob("*.npz"))
+            original_inode = victim.stat().st_ino
+            original_validate = builder._validate_staging
+            archived_validation_count = 0
+            replaced = False
+
+            def replace_after_final_archived_validation(path, *args, **kwargs):
+                nonlocal archived_validation_count, replaced
+                result = original_validate(path, *args, **kwargs)
+                if Path(path) == retired_tree:
+                    archived_validation_count += 1
+                    if archived_validation_count == 3 and not replaced:
+                        replacement = victim.with_name(
+                            f".{victim.name}.replacement"
+                        )
+                        replacement.write_bytes(victim.read_bytes())
+                        replacement.chmod(0o600)
+                        before = victim.stat()
+                        os.utime(
+                            replacement,
+                            ns=(before.st_atime_ns, before.st_mtime_ns),
+                            follow_symlinks=False,
+                        )
+                        os.replace(replacement, victim)
+                        replaced = True
+                return result
+
+            builder._validate_staging = replace_after_final_archived_validation
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "v4 retired identity is rechecked after semantic scanning",
+                )
+            finally:
+                builder._validate_staging = original_validate
+            c.true(replaced and victim.stat().st_ino != original_inode)
+
+
+def test_authorizer_finally_rechecks_completed_receipt_mode(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            retired_tree, _retired_exposure, complete = (
+                _install_v4_completed_prior_evidence(
+                    fixture, "fedcba0987654321",
+                )
+            )
+            original_validate = builder._validate_staging
+            archived_validation_count = 0
+            drifted = False
+
+            def chmod_receipt_after_final_parse(path, *args, **kwargs):
+                nonlocal archived_validation_count, drifted
+                result = original_validate(path, *args, **kwargs)
+                if Path(path) == retired_tree:
+                    archived_validation_count += 1
+                    if archived_validation_count == 3 and not drifted:
+                        complete.chmod(0o666)
+                        drifted = True
+                return result
+
+            builder._validate_staging = chmod_receipt_after_final_parse
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "completed receipt mode is rechecked immediately before return",
+                )
+            finally:
+                builder._validate_staging = original_validate
+            c.true(drifted and stat.S_IMODE(complete.stat().st_mode) == 0o666)
+
+
 def test_promotion_terminal_gate_rejects_extra_same_token_prior_pair(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
