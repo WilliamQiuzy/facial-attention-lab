@@ -4286,6 +4286,44 @@ def _linear_exception_chain_contains(error, exception_type, message):
     return False
 
 
+def test_cleanup_attachment_breaks_implicit_primary_cycle(c: Check):
+    primary = ValueError("bridge implicit primary")
+    observed = None
+
+    def fail_during_cleanup():
+        try:
+            raise primary
+        finally:
+            try:
+                raise OSError("bridge implicit cleanup")
+            except OSError as cleanup_error:
+                c.true(cleanup_error.__context__ is primary)
+                outcome = bridge_core._attach_cleanup_causes(
+                    primary, (cleanup_error,),
+                )
+                raise outcome.with_traceback(primary.__traceback__)
+
+    try:
+        fail_during_cleanup()
+    except BaseException as exc:
+        observed = exc
+    chain_ids: list[int] = []
+    current = observed
+    while current is not None and len(chain_ids) < 8:
+        chain_ids.append(id(current))
+        current = current.__cause__ or current.__context__
+    c.eq(len(chain_ids), len(set(chain_ids)))
+    c.true(
+        _linear_exception_chain_contains(
+            observed, ValueError, "bridge implicit primary",
+        )
+        and _linear_exception_chain_contains(
+            observed, OSError, "bridge implicit cleanup",
+        ),
+        "bridge attachment retains one acyclic primary-cleanup chain",
+    )
+
+
 def _fd_count() -> int | None:
     if not Path("/dev/fd").is_dir():
         return None

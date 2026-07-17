@@ -5521,6 +5521,53 @@ def test_terminal_cleanup_merge_preserves_nested_exitstack_failures(c: Check):
             f"terminal cleanup merge retains {message}",
         )
 
+    implicit_primary = ValueError("implicit-context primary failure")
+    observed = None
+
+    def raise_during_real_cleanup_context():
+        try:
+            raise implicit_primary
+        finally:
+            try:
+                raise OSError("implicit-context cleanup failure")
+            except OSError as cleanup_error:
+                c.true(
+                    cleanup_error.__context__ is implicit_primary,
+                    "Python attaches the propagating primary as cleanup context",
+                )
+                cleanup_state = builder._JournalCleanupState(
+                    terminal_resolved=True,
+                    terminal_cleanup_errors=[cleanup_error],
+                )
+                builder._raise_with_terminal_cleanup_errors(
+                    implicit_primary,
+                    implicit_primary.__traceback__,
+                    cleanup_state,
+                )
+
+    try:
+        raise_during_real_cleanup_context()
+    except BaseException as exc:
+        observed = exc
+    chain_ids: list[int] = []
+    current = observed
+    while current is not None and len(chain_ids) < 8:
+        chain_ids.append(id(current))
+        current = current.__cause__ or current.__context__
+    c.eq(
+        len(chain_ids), len(set(chain_ids)),
+        "terminal cleanup merge produces one acyclic ordinary exception chain",
+    )
+    c.true(
+        _exception_chain_contains(
+            observed, ValueError, "implicit-context primary failure",
+        )
+        and _exception_chain_contains(
+            observed, OSError, "implicit-context cleanup failure",
+        ),
+        "acyclic terminal chain retains the real primary and cleanup failures",
+    )
+
 
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
     class SimulatedProcessDeath(BaseException):

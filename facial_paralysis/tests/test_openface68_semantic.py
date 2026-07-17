@@ -4284,6 +4284,48 @@ def test_retained_generation_preserves_primary_and_cleanup_failures(c: Check):
         c.eq(release_calls, 1, "cleanup release is attempted exactly once")
 
 
+def test_ravdess_cleanup_attachment_breaks_implicit_primary_cycle(c: Check):
+    primary = ValueError("RAVDESS implicit primary")
+    observed = None
+
+    def fail_during_cleanup():
+        try:
+            raise primary
+        finally:
+            try:
+                raise OSError("RAVDESS implicit cleanup")
+            except OSError as cleanup_error:
+                c.true(cleanup_error.__context__ is primary)
+                outcome = prep._attach_cleanup_causes(
+                    primary, (cleanup_error,),
+                )
+                raise outcome.with_traceback(primary.__traceback__)
+
+    try:
+        fail_during_cleanup()
+    except BaseException as exc:
+        observed = exc
+    chain: list[BaseException] = []
+    current = observed
+    while current is not None and len(chain) < 8:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    c.eq(len(chain), len({id(error) for error in chain}))
+    c.true(
+        any(
+            isinstance(error, ValueError)
+            and "RAVDESS implicit primary" in str(error)
+            for error in chain
+        )
+        and any(
+            isinstance(error, OSError)
+            and "RAVDESS implicit cleanup" in str(error)
+            for error in chain
+        ),
+        "RAVDESS attachment retains one acyclic primary-cleanup chain",
+    )
+
+
 def test_committed_ravdess_generation_exposes_narrow_read_only_authorizer(c: Check):
     c.true(
         hasattr(prep, "authorize_committed_ravdess_semantic23"),

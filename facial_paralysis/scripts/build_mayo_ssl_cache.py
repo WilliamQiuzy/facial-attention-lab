@@ -3145,10 +3145,12 @@ def _finish_terminal_cleanup(
 def _linear_cleanup_cause(
     primary: BaseException | None,
     cleanup_errors: Sequence[BaseException],
+    *,
+    forbidden: Sequence[BaseException] = (),
 ) -> BaseException | None:
     """Preserve nested cleanup chains and append each one without a cycle."""
     cause = primary
-    seen: set[int] = set()
+    seen: set[int] = {id(error) for error in forbidden}
     current = primary
     while current is not None and id(current) not in seen:
         seen.add(id(current))
@@ -3186,7 +3188,9 @@ def _raise_with_terminal_cleanup_errors(
         raise primary.with_traceback(traceback)
     existing = primary.__cause__ or primary.__context__
     cause = _linear_cleanup_cause(
-        existing, cleanup_state.terminal_cleanup_errors,
+        existing,
+        cleanup_state.terminal_cleanup_errors,
+        forbidden=(primary,),
     )
     assert cause is not None
     primary.__cause__ = cause

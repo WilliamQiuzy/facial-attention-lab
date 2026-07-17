@@ -2601,10 +2601,12 @@ def _assert_output_path_safe_under_root(
 def _linear_cleanup_cause(
     primary: BaseException | None,
     cleanup_errors: Sequence[BaseException],
+    *,
+    forbidden: Sequence[BaseException] = (),
 ) -> BaseException | None:
     """Preserve nested cleanup chains and append each one without a cycle."""
     cause = primary
-    seen: set[int] = set()
+    seen: set[int] = {id(error) for error in forbidden}
     current = primary
     while current is not None and id(current) not in seen:
         seen.add(id(current))
@@ -2637,7 +2639,9 @@ def _attach_cleanup_causes(
     cleanup_errors: Sequence[BaseException],
 ) -> BaseException:
     existing = outcome.__cause__ or outcome.__context__
-    outcome.__cause__ = _linear_cleanup_cause(existing, cleanup_errors)
+    outcome.__cause__ = _linear_cleanup_cause(
+        existing, cleanup_errors, forbidden=(outcome,),
+    )
     outcome.__context__ = None
     outcome.__suppress_context__ = outcome.__cause__ is not None
     return outcome
