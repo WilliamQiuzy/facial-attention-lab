@@ -2598,6 +2598,51 @@ def _assert_output_path_safe_under_root(
             )
 
 
+def _linear_cleanup_cause(
+    primary: BaseException | None,
+    cleanup_errors: Sequence[BaseException],
+) -> BaseException | None:
+    """Preserve nested cleanup chains and append each one without a cycle."""
+    cause = primary
+    seen: set[int] = set()
+    current = primary
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    for error in cleanup_errors:
+        if id(error) in seen:
+            continue
+        unique_nodes: list[BaseException] = []
+        local_seen: set[int] = set()
+        current = error
+        while (
+            current is not None
+            and id(current) not in seen
+            and id(current) not in local_seen
+        ):
+            local_seen.add(id(current))
+            unique_nodes.append(current)
+            current = current.__cause__ or current.__context__
+        for node in reversed(unique_nodes):
+            node.__cause__ = cause
+            node.__context__ = None
+            node.__suppress_context__ = True
+            cause = node
+            seen.add(id(node))
+    return cause
+
+
+def _attach_cleanup_causes(
+    outcome: BaseException,
+    cleanup_errors: Sequence[BaseException],
+) -> BaseException:
+    existing = outcome.__cause__ or outcome.__context__
+    outcome.__cause__ = _linear_cleanup_cause(existing, cleanup_errors)
+    outcome.__context__ = None
+    outcome.__suppress_context__ = outcome.__cause__ is not None
+    return outcome
+
+
 def build_generation_from_audited_sources(
     data_root: str | Path,
     output_root: str | Path,
@@ -3158,7 +3203,7 @@ def build_generation_from_audited_sources(
         pending_error = caught
         raise
     finally:
-        cleanup_error: BaseException | None = None
+        cleanup_errors: list[BaseException] = []
         try:
             if lock_descriptor is not None and lock_identity is not None:
                 _release_output_lock(
@@ -3170,28 +3215,28 @@ def build_generation_from_audited_sources(
                     lock_identity,
                 )
         except BaseException as caught:
-            cleanup_error = caught
+            cleanup_errors.append(caught)
         try:
             descriptors.close()
         except BaseException as caught:
-            if cleanup_error is None:
-                cleanup_error = caught
+            cleanup_errors.append(caught)
         if pending_error is not None and stage_identity is not None and not committed:
-            retained_cause = pending_error
-            if cleanup_error is not None:
-                combined = RuntimeError(
-                    "RAVDESS generation validation and cleanup both failed"
-                )
-                combined.__cause__ = pending_error
-                combined.__context__ = cleanup_error
-                retained_cause = combined
+            retained_cause = _linear_cleanup_cause(
+                pending_error, cleanup_errors,
+            )
+            assert retained_cause is not None
             raise RuntimeError(
                 "RAVDESS generation storage is retained as indeterminate"
             ) from retained_cause
-        if pending_error is not None and cleanup_error is not None:
-            raise pending_error from cleanup_error
-        if pending_error is None and cleanup_error is not None:
-            raise cleanup_error
+        if cleanup_errors:
+            if pending_error is not None:
+                outcome = _attach_cleanup_causes(
+                    pending_error, cleanup_errors,
+                )
+                raise outcome.with_traceback(pending_error.__traceback__)
+            cleanup_cause = _linear_cleanup_cause(None, cleanup_errors)
+            assert cleanup_cause is not None
+            raise cleanup_cause
 
 
 def prepare_ravdess_semantic23(
@@ -3229,20 +3274,25 @@ def prepare_ravdess_semantic23(
     )
 
 
-def _parse_args() -> argparse.Namespace:
+class _PathRedactingArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        self.exit(2, '{"error":"RAVDESS command arguments invalid","status":"error"}\n')
+
+
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     default_root = ROOT / "data" / "external" / "ravdess_facial_tracking"
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _PathRedactingArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=default_root)
     parser.add_argument("--output-root", type=Path)
     parser.add_argument(
         "--execute", action="store_true",
         help="create the derived generation; without this flag the command is read-only",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> int:
-    args = _parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
     if args.execute:
         manifest = prepare_ravdess_semantic23(
             args.data_root, output_root=args.output_root
@@ -3264,9 +3314,9 @@ def main() -> int:
     return 0
 
 
-def _run_cli() -> int:
+def _run_cli(argv: Sequence[str] | None = None) -> int:
     try:
-        return main()
+        return main(argv)
     except Exception:  # noqa: BLE001 - public CLI emits one fixed safe failure
         print(
             json.dumps(

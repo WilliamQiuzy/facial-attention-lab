@@ -2804,6 +2804,51 @@ def _write_generation_fd(
         os.close(bundles_fd)
 
 
+def _linear_cleanup_cause(
+    primary: BaseException | None,
+    cleanup_errors: Sequence[BaseException],
+) -> BaseException | None:
+    """Preserve nested cleanup chains and append each one without a cycle."""
+    cause = primary
+    seen: set[int] = set()
+    current = primary
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    for error in cleanup_errors:
+        if id(error) in seen:
+            continue
+        unique_nodes: list[BaseException] = []
+        local_seen: set[int] = set()
+        current = error
+        while (
+            current is not None
+            and id(current) not in seen
+            and id(current) not in local_seen
+        ):
+            local_seen.add(id(current))
+            unique_nodes.append(current)
+            current = current.__cause__ or current.__context__
+        for node in reversed(unique_nodes):
+            node.__cause__ = cause
+            node.__context__ = None
+            node.__suppress_context__ = True
+            cause = node
+            seen.add(id(node))
+    return cause
+
+
+def _attach_cleanup_causes(
+    outcome: BaseException,
+    cleanup_errors: Sequence[BaseException],
+) -> BaseException:
+    existing = outcome.__cause__ or outcome.__context__
+    outcome.__cause__ = _linear_cleanup_cause(existing, cleanup_errors)
+    outcome.__context__ = None
+    outcome.__suppress_context__ = outcome.__cause__ is not None
+    return outcome
+
+
 def _build_bridge_bundles_at(
     parent: _DirectoryAnchor,
     output_name: str,
@@ -2889,31 +2934,46 @@ def _build_bridge_bundles_at(
         pending_error = caught
         raise
     finally:
-        close_error: BaseException | None = None
+        cleanup_errors: list[BaseException] = []
         try:
             if staging_fd is not None:
                 os.close(staging_fd)
         except BaseException as caught:
-            close_error = caught
+            cleanup_errors.append(caught)
+        retained_error: RuntimeError | None = None
         if staging_identity is not None:
-            state = _classify_owned_publication(
-                parent.descriptor,
-                staging_name,
-                output_name,
-                staging_identity,
-            )
+            try:
+                state = _classify_owned_publication(
+                    parent.descriptor,
+                    staging_name,
+                    output_name,
+                    staging_identity,
+                )
+            except BaseException as caught:
+                cleanup_errors.append(caught)
+                state = "indeterminate"
             if pending_error is not None and state == "staged":
-                raise RuntimeError(
+                retained_error = RuntimeError(
                     "bridge transaction staging is retained as indeterminate"
-                ) from pending_error
-            if state == "indeterminate":
-                raise RuntimeError(
+                )
+            elif state == "indeterminate":
+                retained_error = RuntimeError(
                     "bridge transaction storage is retained as indeterminate"
-                ) from pending_error
-        if close_error is not None:
+                )
+        if retained_error is not None:
+            cause = _linear_cleanup_cause(pending_error, cleanup_errors)
+            if cause is None:
+                raise retained_error
+            raise retained_error from cause
+        if cleanup_errors:
             if pending_error is not None:
-                raise pending_error from close_error
-            raise close_error
+                outcome = _attach_cleanup_causes(
+                    pending_error, cleanup_errors,
+                )
+                raise outcome.with_traceback(pending_error.__traceback__)
+            cleanup_cause = _linear_cleanup_cause(None, cleanup_errors)
+            assert cleanup_cause is not None
+            raise cleanup_cause
 
 
 def build_bridge_bundles(
@@ -3170,18 +3230,50 @@ def _initialize_owner_only_key_at_destination(destination: Path) -> bool:
             pending_error = caught
             raise
         finally:
+            close_error: BaseException | None = None
             if descriptor is not None:
-                os.close(descriptor)
+                try:
+                    os.close(descriptor)
+                except BaseException as caught:
+                    close_error = caught
             if pending_error is not None and staging_created and not committed:
-                raise RuntimeError(
+                retained_error = RuntimeError(
                     "canonical key staging is retained as indeterminate"
-                ) from pending_error
+                )
+                cause = _linear_cleanup_cause(
+                    pending_error,
+                    () if close_error is None else (close_error,),
+                )
+                assert cause is not None
+                raise retained_error from cause
+            if close_error is not None:
+                if pending_error is not None:
+                    outcome = _attach_cleanup_causes(
+                        pending_error, (close_error,),
+                    )
+                    raise outcome.with_traceback(pending_error.__traceback__)
+                raise close_error
     finally:
-        try:
-            if lock_fd is not None:
+        pending = sys.exc_info()
+        cleanup_errors: list[BaseException] = []
+        if lock_fd is not None:
+            try:
                 os.close(lock_fd)
-        finally:
+            except BaseException as caught:
+                cleanup_errors.append(caught)
+        try:
             _close_anchor(parent)
+        except BaseException as caught:
+            cleanup_errors.append(caught)
+        if cleanup_errors:
+            if pending[1] is not None:
+                outcome = _attach_cleanup_causes(
+                    pending[1], cleanup_errors,
+                )
+                raise outcome.with_traceback(pending[2])
+            cleanup_cause = _linear_cleanup_cause(None, cleanup_errors)
+            assert cleanup_cause is not None
+            raise cleanup_cause
 
 
 def _prepare_owner_only_key_path(
@@ -3555,51 +3647,70 @@ def freeze_bridge_stage(
         raise
     finally:
         retained_error: RuntimeError | None = None
-        try:
+        cleanup_errors: list[BaseException] = []
+        if staging_fd is not None:
             try:
-                if staging_fd is not None:
-                    os.close(staging_fd)
-            finally:
-                if staging_identity is not None and run_anchor is not None:
-                    state = _classify_owned_publication(
-                        run_anchor.descriptor,
-                        staging_name,
-                        "inputs",
-                        staging_identity,
-                    )
-                    if pending_error is not None and state == "staged":
-                        retained_error = RuntimeError(
-                            "frozen input staging is retained as indeterminate"
-                        )
-                    elif state == "indeterminate":
-                        retained_error = RuntimeError(
-                            "frozen input transaction is retained as indeterminate"
-                        )
-        finally:
+                os.close(staging_fd)
+            except BaseException as caught:
+                cleanup_errors.append(caught)
+        if staging_identity is not None and run_anchor is not None:
             try:
-                if inputs_lock is not None:
-                    _release_destination_lock(inputs_lock)
-            finally:
+                state = _classify_owned_publication(
+                    run_anchor.descriptor,
+                    staging_name,
+                    "inputs",
+                    staging_identity,
+                )
+            except BaseException as caught:
+                cleanup_errors.append(caught)
+                state = "indeterminate"
+            if pending_error is not None and state == "staged":
+                retained_error = RuntimeError(
+                    "frozen input staging is retained as indeterminate"
+                )
+            elif state == "indeterminate":
+                retained_error = RuntimeError(
+                    "frozen input transaction is retained as indeterminate"
+                )
+        for cleanup in (
+            (() if inputs_lock is None else (
+                lambda: _release_destination_lock(inputs_lock),
+            )),
+            (() if run_anchor is None else (
+                lambda: _close_anchor(run_anchor),
+            )),
+            (() if run_parent is None else (
+                lambda: _close_anchor(run_parent),
+            )),
+            (() if bridge_anchor is None else (
+                lambda: _close_anchor(bridge_anchor),
+            )),
+            (() if bridge_lock is None else (
+                lambda: _release_destination_lock(bridge_lock),
+            )),
+            (() if bridge_parent is None else (
+                lambda: _close_anchor(bridge_parent),
+            )),
+        ):
+            for operation in cleanup:
                 try:
-                    if run_anchor is not None:
-                        _close_anchor(run_anchor)
-                finally:
-                    try:
-                        if run_parent is not None:
-                            _close_anchor(run_parent)
-                    finally:
-                        try:
-                            if bridge_anchor is not None:
-                                _close_anchor(bridge_anchor)
-                        finally:
-                            try:
-                                if bridge_lock is not None:
-                                    _release_destination_lock(bridge_lock)
-                            finally:
-                                if bridge_parent is not None:
-                                    _close_anchor(bridge_parent)
+                    operation()
+                except BaseException as caught:
+                    cleanup_errors.append(caught)
         if retained_error is not None:
-            raise retained_error from pending_error
+            cause = _linear_cleanup_cause(pending_error, cleanup_errors)
+            if cause is None:
+                raise retained_error
+            raise retained_error from cause
+        if cleanup_errors:
+            if pending_error is not None:
+                outcome = _attach_cleanup_causes(
+                    pending_error, cleanup_errors,
+                )
+                raise outcome.with_traceback(pending_error.__traceback__)
+            cleanup_cause = _linear_cleanup_cause(None, cleanup_errors)
+            assert cleanup_cause is not None
+            raise cleanup_cause
 
 
 def verify_frozen_bridge_stage(

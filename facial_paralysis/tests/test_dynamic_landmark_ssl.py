@@ -3246,6 +3246,45 @@ def test_descriptor_cleanup_attempts_every_close_and_propagates_failure(c: Check
         c.eq(set(calls), {101, 102, 103})
 
 
+def test_two_stage_parser_failure_never_echoes_mayo_roots(c: Check):
+    module = _load_runner()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        mayo_root = root / "mayo-private-root-sentinel"
+        legacy_root = root / "mayo-legacy-root-sentinel"
+        extra_root = root / "unexpected-private-root-sentinel"
+        arguments = [
+            "two-stage",
+            "--mode", "smoke",
+            "--run-root", str(root / "run"),
+            "--bridge-root", str(root / "bridge"),
+            "--ravdess-data-root", str(root / "ravdess"),
+            "--ravdess-key", str(root / "ravdess-key"),
+            "--mayo-data-root", str(mayo_root),
+            "--mayo-existing-export-root", str(legacy_root),
+            "--mayo-cache-root", str(root / "mayo-cache"),
+            "--mayo-exposure-manifest", str(root / "mayo-exposure.json"),
+            "--mayo-key", str(root / "mayo-key"),
+            str(extra_root),
+        ]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            c.raises(
+                lambda: module.main(arguments),
+                SystemExit,
+                "unknown two-stage arguments fail before any training action",
+            )
+        c.eq(stdout.getvalue(), "")
+        emitted = stderr.getvalue()
+        for private_root in (mayo_root, legacy_root, extra_root):
+            c.true(
+                str(private_root) not in emitted
+                and private_root.name not in emitted,
+                "two-stage parser failures never echo a Mayo root",
+            )
+
+
 def test_receipt_bound_smoke_runner_publishes_one_private_atomic_result(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

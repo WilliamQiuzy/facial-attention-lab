@@ -6639,6 +6639,7 @@ def _assert_resolved_transaction_evidence(
     journal = _journal_path(output)
     forbidden_tokens = _private_root_forbidden_tokens(private_roots)
     try:
+        completed_journals: dict[str, dict[str, object]] = {}
         for kind in ("history", "complete"):
             prefix = f".{journal.name}.{kind}-"
             for artifact in output.parent.glob(f"{prefix}*"):
@@ -6675,6 +6676,13 @@ def _assert_resolved_transaction_evidence(
                         )
                     ):
                         raise ValueError("terminal journal evidence is unbound")
+                    if kind == "complete":
+                        transaction_token = str(payload["token"])
+                        if transaction_token in completed_journals:
+                            raise ValueError(
+                                "terminal journal evidence generation is repeated"
+                            )
+                        completed_journals[transaction_token] = payload
                 finally:
                     os.close(descriptor)
 
@@ -6755,7 +6763,14 @@ def _assert_resolved_transaction_evidence(
                     )
 
         if salt is not None:
-            if set(tree_evidence) != set(regular_evidence):
+            missing_trees = set(regular_evidence) - set(tree_evidence)
+            missing_exposures = set(tree_evidence) - set(regular_evidence)
+            if missing_trees or any(
+                evidence_kind != "aborted-generation"
+                or evidence_token not in completed_journals
+                or completed_journals[evidence_token].get("phase") != "prepared"
+                for evidence_kind, evidence_token in missing_exposures
+            ):
                 raise ValueError(
                     "archived Mayo output and exposure evidence are not paired"
                 )
@@ -6766,7 +6781,12 @@ def _assert_resolved_transaction_evidence(
                 arkit_count = expected_inventory_counts.get("arkit_trajectories")
             for evidence_key in sorted(tree_evidence):
                 archived_output = tree_evidence[evidence_key]
-                archived_exposure = regular_evidence[evidence_key]
+                archived_exposure = regular_evidence.get(evidence_key)
+                exposure_is_internal = archived_exposure is None
+                if exposure_is_internal:
+                    archived_exposure = (
+                        archived_output / "mayo_exposure_manifest.json"
+                    )
                 with _hold_committed_mayo_generation(
                     archived_output,
                     archived_exposure,
@@ -6819,7 +6839,11 @@ def _assert_resolved_transaction_evidence(
                         held_generation.external_exposure_descriptor,
                         parent_descriptor=held_generation.external_parent_descriptor,
                         name=held_generation.exposure.name,
-                        field="archived external Mayo exposure manifest",
+                        field=(
+                            "archived internal Mayo exposure manifest"
+                            if exposure_is_internal
+                            else "archived external Mayo exposure manifest"
+                        ),
                         expected_identity=held_generation.external_exposure_identity,
                     )
                     if not hmac.compare_digest(
@@ -7662,7 +7686,9 @@ def _run_builder_impl(
             )
             _key_guard.assert_unchanged()
         finally:
-            if staging.exists():
+            journal = _journal_path(output)
+            journal_owns_staging = journal.exists() or _is_symlink(journal)
+            if staging.exists() and not journal_owns_staging:
                 _remove_real_tree(staging)
     return collection
 
@@ -7686,8 +7712,13 @@ def run_builder(
     )
 
 
+class _PathRedactingArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        self.exit(2, "Mayo cache command arguments are invalid\n")
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _PathRedactingArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawTextHelpFormatter,
         epilog=(
@@ -7706,9 +7737,9 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = _parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.inventory_only:
         inventory = inventory_mayo_sources(
             args.data_root, args.existing_export_root, enforce_frozen=True
@@ -7741,5 +7772,14 @@ def main() -> None:
                      sort_keys=True))
 
 
+def _run_cli(argv: Sequence[str] | None = None) -> int:
+    try:
+        main(argv)
+    except (FileExistsError, OSError, RuntimeError, ValueError):
+        print("Mayo cache command failed closed", file=sys.stderr)
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_run_cli())

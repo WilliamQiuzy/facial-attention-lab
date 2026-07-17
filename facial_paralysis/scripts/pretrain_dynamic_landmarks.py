@@ -94,8 +94,13 @@ def _quiet_call(function, /, *args, **kwargs):
     return value
 
 
+class _PathRedactingArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        self.exit(2, "pretraining command arguments are invalid\n")
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _PathRedactingArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     command = commands.add_parser("two-stage")
     command.add_argument("--mode", choices=("smoke", "formal"), required=True)

@@ -1543,8 +1543,13 @@ def _add_authorization_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mayo-key", type=Path, required=True)
 
 
+class _PathRedactingArgumentParser(argparse.ArgumentParser):
+    def error(self, _message: str) -> None:
+        self.exit(2, "bridge command arguments are invalid\n")
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _PathRedactingArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     initialize = subparsers.add_parser("initialize-mayo-key")

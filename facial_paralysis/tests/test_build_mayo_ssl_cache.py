@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import base64
+import contextlib
 import hashlib
 import io
 import inspect
@@ -5799,6 +5800,212 @@ def test_run_builder_uses_pinned_homogeneous_sources_and_exact_runtime(c: Check)
                "ignored generation JSON contains no raw source/cache digest or salt")
 
 
+def test_builder_soft_interrupt_retains_journal_owned_staging(c: Check):
+    class SimulatedSoftInterrupt(BaseException):
+        pass
+
+    class OneFrameCapture:
+        def __init__(self):
+            self.read_count = 0
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {
+                cv2.CAP_PROP_FPS: 60.0,
+                cv2.CAP_PROP_FRAME_COUNT: 1.0,
+                cv2.CAP_PROP_FRAME_WIDTH: 5.0,
+                cv2.CAP_PROP_FRAME_HEIGHT: 4.0,
+            }.get(prop, 0.0)
+
+        def read(self):
+            if self.read_count:
+                return False, None
+            self.read_count += 1
+            return True, np.zeros((4, 5, 3), np.uint8)
+
+        def release(self):
+            return None
+
+    class OneFrameExtractor:
+        feature_schema = DYNAMIC_FEATURE_SCHEMA
+        feature_names = list(DYNAMIC_FEATURE_NAMES)
+
+        def extract_video_frame(self, _frame, _timestamp_ms):
+            return (
+                np.ones(95, dtype=np.float32),
+                None,
+                np.eye(4, dtype=np.float32),
+            )
+
+        def close(self):
+            return None
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        data = root / "data" / "livelinkface_data"
+        exports = root / "data" / "mediapipe_out"
+        session = data / "PHI_session"
+        session.mkdir(parents=True)
+        exports.mkdir(parents=True)
+        source = session / "private.mov"
+        source.write_bytes(b"one-frame-video")
+        asset = builder.VideoAsset(
+            session,
+            source,
+            builder.VideoMetadata(1, 60.0, 5, 4),
+            _sha(source.read_bytes()),
+            None,
+        )
+        counts = {
+            "total_sessions": 1, "video_bearing_sessions": 1,
+            "without_video_sessions": 0,
+            "exact_duplicate_copies_excluded": 0,
+            "short_qc_clips_excluded": 0, "long_unique_videos": 1,
+            "existing_complete_v2_exports": 0,
+            "remaining_long_videos": 1, "remaining_long_video_frames": 1,
+            "arkit_only_sessions": 0, "arkit_trajectories": 0,
+            "arkit_rows": 0, "arkit_timecode_gaps": 0,
+            "metadata_only_sessions": 0,
+        }
+        inventory = builder.MayoInventory(
+            data, exports, counts, (asset,), (asset,), (), (asset,),
+            (), (), (), (), (),
+        )
+        model = root / "face_landmarker.task"
+        model.write_bytes(b"model")
+        expected_python = root / "isolated" / "bin" / "python"
+        expected_python.parent.mkdir(parents=True)
+        expected_python.write_bytes(b"python-runtime")
+        output = (
+            root / "outputs" / "dynamic_landmark" / "pretraining"
+            / "mayo_ssl_cache"
+        )
+        exposure = (
+            root / "outputs" / "dynamic_landmark"
+            / "mayo_exposure_manifest.json"
+        )
+        key = output.parent / ".mayo_ssl_hmac.key"
+        key.parent.mkdir(parents=True)
+        (root / "outputs" / "dynamic_landmark").chmod(0o700)
+        key.parent.chmod(0o700)
+        key_bytes = b"k" * 32
+        key.write_bytes(key_bytes)
+        key.chmod(0o600)
+        dependency_specs = (
+            ("mediapipe", "mediapipe", "mediapipe==0.10.35"),
+            ("numpy", "numpy", "numpy==1.26.4"),
+            ("opencv", "opencv-python", "opencv-python==4.11.0"),
+            ("python", "python", "python==3.10.2"),
+        )
+        fake_provenance = builder.ProvenanceSnapshot(
+            source_files=((source, asset.source_sha256),),
+            model_file=(model, _sha(model.read_bytes())),
+            producer_files=tuple(
+                (name, SCRIPT, str(index + 5) * 64)
+                for index, name in enumerate((
+                    "builder", "action_bundle", "clinical_landmarks",
+                    "dynamic_landmark_schema", "feature_registry",
+                ))
+            ),
+            dependencies={
+                logical_name: requirement
+                for logical_name, _distribution, requirement in dependency_specs
+            },
+            dependency_distributions={
+                logical_name: distribution
+                for logical_name, distribution, _requirement in dependency_specs
+            },
+            dependency_files=tuple(
+                builder.DependencyFileSnapshot(
+                    logical_name=logical_name,
+                    distribution=distribution,
+                    record_name=f"{distribution}/fixture.py",
+                    path=model,
+                    sha256=str(index + 1) * 64,
+                    device=1,
+                    inode=index + 1,
+                    size=1,
+                    mtime_ns=1,
+                )
+                for index, (logical_name, distribution, _requirement)
+                in enumerate(dependency_specs)
+            ),
+            dependency_aggregate_sha256="a" * 64,
+            producer_aggregate_sha256="b" * 64,
+            source_aggregate_sha256="c" * 64,
+        )
+        collection, exposure_value = builder.build_public_manifests(
+            inventory, key_bytes,
+        )
+        original_snapshot = builder.snapshot_provenance
+        original_assert = builder.assert_provenance_unchanged
+        original_promote = builder.promote_generation
+
+        def interrupt_after_durable_prepared(*args, **kwargs):
+            def phase_hook(phase):
+                if phase == "prepared":
+                    raise SimulatedSoftInterrupt(phase)
+
+            kwargs["phase_hook"] = phase_hook
+            return original_promote(*args, **kwargs)
+
+        builder.snapshot_provenance = lambda *_args, **_kwargs: fake_provenance
+        builder.assert_provenance_unchanged = lambda *_args, **_kwargs: None
+        builder.promote_generation = interrupt_after_durable_prepared
+        interrupted = False
+        try:
+            try:
+                builder._run_builder_impl(
+                    data,
+                    exports,
+                    model,
+                    key,
+                    output,
+                    exposure,
+                    extractor_factory=lambda **_kwargs: OneFrameExtractor(),
+                    capture_factory=lambda _path: OneFrameCapture(),
+                    inventory_factory=lambda *_args, **_kwargs: inventory,
+                    project_root=root,
+                    current_executable=expected_python,
+                    expected_executable=expected_python,
+                    provenance_python_executable=expected_python,
+                )
+            except SimulatedSoftInterrupt:
+                interrupted = True
+        finally:
+            builder.snapshot_provenance = original_snapshot
+            builder.assert_provenance_unchanged = original_assert
+            builder.promote_generation = original_promote
+        c.true(interrupted, "the end-to-end builder reaches durable prepared")
+        journal = builder._journal_path(output)
+        staging = tuple(output.parent.glob(f".{output.name}.staging-*"))
+        c.true(journal.is_file(), "soft interrupt retains the recovery journal")
+        c.eq(len(staging), 1,
+             "soft interrupt retains journal-owned staging storage")
+
+        with builder.output_parent_lock(output):
+            builder.recover_interrupted_generations(
+                output,
+                exposure_manifest_path=exposure,
+                salt=key_bytes,
+                expected_inventory_counts=counts,
+                expected_collection_classification_integrity_id=str(
+                    collection["classification_integrity_id"]
+                ),
+                expected_classification_integrity_id=str(
+                    exposure_value["classification_integrity_id"]
+                ),
+                private_roots=(data, exports),
+            )
+        c.true(not journal.exists() and not staging[0].exists(),
+               "the next locked run resolves the retained transaction")
+        c.eq(len(tuple(output.parent.glob(
+            f".{output.name}.aborted-*-staging"
+        ))), 1, "recovery archives the complete interrupted generation")
+
+
 def _assert_key_fault_blocks_publication(
     c: Check,
     root: Path,
@@ -6194,6 +6401,48 @@ def test_canonical_salt_permissions_runtime_and_inventory_only_cli(c: Check):
         c.true(str(builder.PINNED_MEDIAPIPE_PYTHON) in parser.format_help(),
                "real CLI help pins the isolated MediaPipe runtime")
 
+        private_root = root / "mayo-private-root-sentinel"
+        legacy_root = root / "mayo-legacy-root-sentinel"
+        extra_root = root / "unexpected-private-root-sentinel"
+        parser_stderr = io.StringIO()
+        with contextlib.redirect_stderr(parser_stderr):
+            c.raises(
+                lambda: parser.parse_args([
+                    "--data-root", str(private_root),
+                    "--existing-export-root", str(legacy_root),
+                    "--inventory-only", str(extra_root),
+                ]),
+                SystemExit,
+                "unknown direct-builder arguments fail before inventory",
+            )
+        for path in (private_root, legacy_root, extra_root):
+            c.true(
+                str(path) not in parser_stderr.getvalue()
+                and path.name not in parser_stderr.getvalue(),
+                "direct-builder parser failure never echoes a Mayo root",
+            )
+
+        cli_stdout = io.StringIO()
+        cli_stderr = io.StringIO()
+        with contextlib.redirect_stdout(cli_stdout), \
+                contextlib.redirect_stderr(cli_stderr):
+            c.eq(
+                builder._run_cli([
+                    "--data-root", str(private_root),
+                    "--existing-export-root", str(legacy_root),
+                    "--inventory-only",
+                ]),
+                2,
+                "direct-builder runtime failure is path-redacted",
+            )
+        c.eq(cli_stdout.getvalue(), "")
+        for path in (private_root, legacy_root):
+            c.true(
+                str(path) not in cli_stderr.getvalue()
+                and path.name not in cli_stderr.getvalue(),
+                "direct-builder runtime failure never echoes a Mayo root",
+            )
+
         expected_python = root / "isolated" / "bin" / "python"
         expected_python.parent.mkdir(parents=True)
         expected_python.write_bytes(b"python")
@@ -6414,6 +6663,87 @@ class _CommittedMayoAuthorizerFixture:
         return builder.authorize_committed_mayo_ssl_generation(
             self.data, self.exports, self.key, self.output, self.exposure,
         )
+
+
+def test_prepared_crash_recovers_with_internal_aborted_exposure(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            staging = _semantic_staging(
+                fixture.output.parent,
+                ".mayo_ssl_cache.staging-prepared-crash",
+                fixture.salt_bytes,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            collection_classification = str(
+                fixture.collection["classification_integrity_id"]
+            )
+            exposure_classification = str(
+                fixture.exposure_value["classification_integrity_id"]
+            )
+
+            def interrupt(phase):
+                if phase == "prepared":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(fixture.output):
+                    builder.promote_generation(
+                        staging,
+                        fixture.output,
+                        exposure_manifest_path=fixture.exposure,
+                        phase_hook=interrupt,
+                        salt=fixture.salt_bytes,
+                        expected_inventory_counts=fixture.counts,
+                        expected_collection_classification_integrity_id=(
+                            collection_classification
+                        ),
+                        expected_classification_integrity_id=(
+                            exposure_classification
+                        ),
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("prepared phase did not retain recovery state")
+
+            journal = fixture.output.parent / (
+                f".{fixture.output.name}.transaction.json"
+            )
+            c.true(journal.is_file() and staging.is_dir())
+            with builder.output_parent_lock(fixture.output):
+                builder.recover_interrupted_generations(
+                    fixture.output,
+                    exposure_manifest_path=fixture.exposure,
+                    salt=fixture.salt_bytes,
+                    expected_inventory_counts=fixture.counts,
+                    expected_collection_classification_integrity_id=(
+                        collection_classification
+                    ),
+                    expected_classification_integrity_id=exposure_classification,
+                    private_roots=(fixture.data, fixture.exports),
+                )
+            archived = tuple(fixture.output.parent.glob(
+                f".{fixture.output.name}.aborted-*-staging"
+            ))
+            c.eq(len(archived), 1)
+            c.true(not journal.exists() and not staging.exists())
+            c.eq(
+                tuple(fixture.exposure.parent.glob(
+                    f".{fixture.exposure.name}.aborted-*-temporary"
+                )),
+                (),
+                "prepared crash has no external temporary to archive",
+            )
+            c.eq(
+                fixture.authorize().commitment["schema"],
+                "mayo_cache_generation_commitment_v3",
+                "prepared recovery remains read-only authorizable",
+            )
 
 
 def test_committed_mayo_authorizer_requires_exact_private_tree_modes(c: Check):

@@ -2610,26 +2610,36 @@ def test_inventory_cli_emits_exact_v2_topology_json(c: Check):
 
 def test_cli_subprocess_stderr_never_echoes_private_input(c: Check):
     with tempfile.TemporaryDirectory() as temporary:
-        sentinel = "private-cli-stderr-sentinel"
-        missing_root = Path(temporary) / sentinel
-        completed = subprocess.run(
+        sentinels = (
+            "private-cli-stderr-sentinel",
+            "private-cli-unknown-argument-sentinel",
+        )
+        missing_root = Path(temporary) / sentinels[0]
+        invocations = (
+            ["--data-root", str(missing_root)],
             [
-                "/Users/williamqiu/opt/anaconda3/bin/python3",
-                str(ROOT / "scripts" / "prepare_ravdess_semantic23.py"),
-                "--data-root",
-                str(missing_root),
+                "--data-root", str(missing_root),
+                str(Path(temporary) / sentinels[1]),
             ],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
         )
-        captured = completed.stdout + completed.stderr
-        c.true(completed.returncode != 0, "invalid CLI input fails closed")
-        c.true(
-            sentinel.encode("utf-8") not in captured,
-            "real subprocess fd stdout/stderr never echo private input",
-        )
-        c.true(b"Traceback" not in captured, "CLI failure emits no traceback")
+        for arguments in invocations:
+            completed = subprocess.run(
+                [
+                    "/Users/williamqiu/opt/anaconda3/bin/python3",
+                    str(ROOT / "scripts" / "prepare_ravdess_semantic23.py"),
+                    *arguments,
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            captured = completed.stdout + completed.stderr
+            c.true(completed.returncode != 0, "invalid CLI input fails closed")
+            c.true(
+                all(sentinel.encode("utf-8") not in captured for sentinel in sentinels),
+                "real subprocess fd stdout/stderr never echo private input",
+            )
+            c.true(b"Traceback" not in captured, "CLI failure emits no traceback")
 
 
 def test_archive_audit_uses_one_nofollow_fd_across_transient_path_swap(c: Check):
@@ -4256,6 +4266,20 @@ def test_retained_generation_preserves_primary_and_cleanup_failures(c: Check):
         c.true(
             b"synthetic generation cleanup failure" in graph,
             "retained-storage graph preserves the cleanup failure",
+        )
+        linear: list[str] = []
+        current = observed
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            linear.append(str(current))
+            current = current.__cause__ or current.__context__
+        c.true(
+            any("synthetic primary generation validation failure" in item
+                for item in linear)
+            and any("synthetic generation cleanup failure" in item
+                    for item in linear),
+            "ordinary exception chaining retains primary and cleanup failures",
         )
         c.eq(release_calls, 1, "cleanup release is attempted exactly once")
 

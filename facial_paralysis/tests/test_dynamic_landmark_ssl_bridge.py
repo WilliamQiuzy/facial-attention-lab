@@ -536,6 +536,8 @@ def test_bundle_transaction_reauthorizes_and_retains_failed_private_staging(c: C
         parent = Path(temporary)
         output = parent / "bridge"
         calls = 0
+        original_close = bridge_core.os.close
+        close_injected = False
 
         def changed_ravdess():
             nonlocal calls
@@ -546,17 +548,36 @@ def test_bundle_transaction_reauthorizes_and_retains_failed_private_staging(c: C
             changed["generation_closure_hmac"] = "0" * 64
             return SimpleNamespace(**changed)
 
-        observed = _caught(lambda: bridge_core.build_bridge_bundles(
-            output,
-            ravdess_authorizer=changed_ravdess,
-            mayo_authorizer=lambda: mayo,
-            producer_sha256="f" * 64,
-        ))
+        def close_after_primary(descriptor):
+            nonlocal close_injected
+            original_close(descriptor)
+            if calls >= 2 and not close_injected:
+                close_injected = True
+                raise OSError("synthetic retained staging close failure")
+
+        bridge_core.os.close = close_after_primary
+        try:
+            observed = _caught(lambda: bridge_core.build_bridge_bundles(
+                output,
+                ravdess_authorizer=changed_ravdess,
+                mayo_authorizer=lambda: mayo,
+                producer_sha256="f" * 64,
+            ))
+        finally:
+            bridge_core.os.close = original_close
         c.true(isinstance(observed, RuntimeError))
         c.true("retained" in str(observed) and "indeterminate" in str(observed),
                "failed owned staging is retained for audit instead of deleted")
-        c.true(isinstance(observed.__cause__, ValueError),
-               "retained-state error chains the authorization failure")
+        c.true(close_injected)
+        c.true(
+            _linear_exception_chain_contains(
+                observed, ValueError, "upstream authorization changed",
+            )
+            and _linear_exception_chain_contains(
+                observed, OSError, "synthetic retained staging close failure",
+            ),
+            "retained-state error chains primary and staging close failures",
+        )
         c.true(not output.exists(), "failed transaction publishes no generation")
         residue = [path for path in parent.iterdir() if ".bridge.staging-" in path.name]
         c.eq(len(residue), 1)
@@ -966,6 +987,70 @@ def test_freeze_stage_reauthorizes_and_retains_failed_private_staging(c: Check):
             producer_sha256=producer,
         ), "retained frozen-input residue blocks retry")
 
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary)
+        bridge = parent / "bridge"
+        run_root = parent / "smoke" / "cleanup-fault"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        calls = 0
+        staging_descriptor = None
+        close_injected = False
+        original_mkdir = bridge_core._mkdir_private_directory_at
+        original_close = bridge_core.os.close
+
+        def changed_mayo():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return mayo
+            changed = dict(vars(mayo))
+            changed["generation_closure_hmac"] = "0" * 64
+            return SimpleNamespace(**changed)
+
+        def record_staging_descriptor(parent_fd, name, field):
+            nonlocal staging_descriptor
+            opened = original_mkdir(parent_fd, name, field)
+            if name.startswith(".inputs.staging-"):
+                staging_descriptor = opened[0]
+            return opened
+
+        def fail_staging_close(descriptor):
+            nonlocal close_injected
+            original_close(descriptor)
+            if descriptor == staging_descriptor and not close_injected:
+                close_injected = True
+                raise OSError("synthetic frozen staging close failure")
+
+        bridge_core._mkdir_private_directory_at = record_staging_descriptor
+        bridge_core.os.close = fail_staging_close
+        try:
+            observed = _caught(lambda: bridge_core.freeze_bridge_stage(
+                run_root,
+                bridge,
+                mode="smoke",
+                ravdess_authorizer=lambda: ravdess,
+                mayo_authorizer=changed_mayo,
+                producer_sha256=producer,
+            ))
+        finally:
+            bridge_core._mkdir_private_directory_at = original_mkdir
+            bridge_core.os.close = original_close
+        c.true(close_injected)
+        c.true(
+            _linear_exception_chain_contains(
+                observed, ValueError, "upstream authorization changed",
+            )
+            and _linear_exception_chain_contains(
+                observed, OSError, "synthetic frozen staging close failure",
+            ),
+            "freeze retained-state error chains primary and cleanup failures",
+        )
+
 
 def _cli_common_args(parent: Path) -> tuple[list[str], Path, Path]:
     ravdess_root = parent / "ravdess-public-source"
@@ -1079,6 +1164,23 @@ def test_cli_has_exact_subcommands_and_live_mayo_roots_are_preoutput_required(c:
                            "missing-root parser stderr contains no supplied root representation")
                 c.true(not target.exists())
                 c.true(not cli.PRETRAINING_ROOT.exists())
+
+        extra_private_root = parent / "mayo-private-root-sentinel"
+        observed, emitted_stdout, emitted_stderr = _captured_cli_native_call(
+            cli,
+            ["inventory", *common, str(extra_private_root)],
+        )
+        c.true(isinstance(observed, SystemExit))
+        c.eq(emitted_stdout, "", "unknown private path emits no stdout")
+        for private_root in (mayo_root, legacy_root, extra_private_root):
+            c.true(
+                all(
+                    value not in emitted_stderr
+                    for value in _private_root_representations(private_root)
+                ),
+                "parser failures never echo a supplied Mayo root",
+            )
+        c.true(not target.exists() and not cli.PRETRAINING_ROOT.exists())
 
         key_path = parent / "standalone-key"
         args = parser.parse_args([
@@ -3238,6 +3340,59 @@ def test_key_initialization_retains_prepublication_write_and_sync_failures(c: Ch
             c.eq(len(residue), 1, f"{label} retains one auditable staging inode")
             c.eq(stat.S_IMODE(residue[0].stat().st_mode), 0o600)
 
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary).resolve()
+        key = parent / "key"
+        original_open = bridge_core.os.open
+        original_write = bridge_core.os.write
+        original_close = bridge_core.os.close
+        staging_descriptor = None
+        write_calls = 0
+        close_injected = False
+
+        def record_staging_open(path, flags, *args, **kwargs):
+            nonlocal staging_descriptor
+            descriptor = original_open(path, flags, *args, **kwargs)
+            if flags & os.O_CREAT and str(path).startswith(".key.staging-"):
+                staging_descriptor = descriptor
+            return descriptor
+
+        def fail_after_partial_write(descriptor, payload):
+            nonlocal write_calls
+            write_calls += 1
+            if write_calls == 1:
+                return original_write(descriptor, memoryview(payload)[:1])
+            raise OSError("synthetic key primary write failure")
+
+        def fail_staging_close(descriptor):
+            nonlocal close_injected
+            original_close(descriptor)
+            if descriptor == staging_descriptor and not close_injected:
+                close_injected = True
+                raise OSError("synthetic key staging close failure")
+
+        bridge_core.os.open = record_staging_open
+        bridge_core.os.write = fail_after_partial_write
+        bridge_core.os.close = fail_staging_close
+        try:
+            observed = _caught(
+                lambda: bridge_core.initialize_owner_only_key(key)
+            )
+        finally:
+            bridge_core.os.open = original_open
+            bridge_core.os.write = original_write
+            bridge_core.os.close = original_close
+        c.true(close_injected)
+        c.true(
+            _linear_exception_chain_contains(
+                observed, OSError, "synthetic key primary write failure",
+            )
+            and _linear_exception_chain_contains(
+                observed, OSError, "synthetic key staging close failure",
+            ),
+            "key retained-state error chains primary and cleanup failures",
+        )
+
 
 def test_verify_failure_is_read_only_and_creates_no_sibling(c: Check):
     ravdess, mayo = _synthetic_authorizations()
@@ -4118,6 +4273,17 @@ def _caught(operation):
     except BaseException as exc:
         return exc
     return None
+
+
+def _linear_exception_chain_contains(error, exception_type, message):
+    current = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, exception_type) and message in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _fd_count() -> int | None:
