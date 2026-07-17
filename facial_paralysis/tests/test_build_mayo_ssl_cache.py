@@ -3021,6 +3021,217 @@ def test_recovery_rechecks_backup_after_restore_hook_mutation(c: Check):
                 c.true(not exposure_backup.exists())
 
 
+def test_recovery_requires_journal_bound_previous_storage_commitments(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            sentinel = output / "old-generation-sentinel"
+            sentinel.write_text("old-cache")
+            sentinel.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-journal-commitment-{target}",
+                b"journal-storage-commitment-salt-012",
+            )
+            stop_phase = (
+                "old_output_moved" if target == "output"
+                else "old_exposure_moved"
+            )
+
+            def interrupt(phase):
+                if phase == stop_phase:
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(output):
+                    builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=interrupt,
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("promotion did not retain a moved backup")
+
+            journal = root / ".cache.transaction.json"
+            retained = json.loads(journal.read_text())
+            token = retained["token"]
+            output_backup = root / f".cache.backup-{token}"
+            exposure_backup = root / (
+                f".mayo_exposure_manifest.json.backup-{token}"
+            )
+            if target == "output":
+                shutil.rmtree(output_backup)
+                output_backup.mkdir(mode=0o700)
+                replacement = output_backup / sentinel.name
+                replacement.write_text("replacement-cache")
+                replacement.chmod(0o600)
+            else:
+                exposure_backup.unlink()
+                exposure_backup.write_text("replacement-exposure")
+                exposure_backup.chmod(0o600)
+
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "same-mode replacement cannot replace journal-bound history",
+                )
+            c.true(journal.is_file(), "commitment mismatch retains the journal")
+            if target == "output":
+                c.eq((output_backup / sentinel.name).read_text(), "replacement-cache")
+                c.true(not output.exists())
+            else:
+                c.eq(exposure_backup.read_text(), "replacement-exposure")
+                c.true(not exposure.exists())
+
+
+def test_recovery_holds_the_exact_journal_inode_through_cleanup(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-held-journal-inode",
+            b"held-journal-inode-salt-0123456789",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain a recovery journal")
+
+        journal = root / ".cache.transaction.json"
+        evidence = root / ".cache.transaction.original-evidence.json"
+        real_open = builder._open_transaction_journal
+
+        def swap_after_open(path):
+            opened = real_open(path)
+            path.rename(evidence)
+            path.write_bytes(evidence.read_bytes())
+            path.chmod(0o600)
+            return opened
+
+        builder._open_transaction_journal = swap_after_open
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "recovery authority remains bound to the opened journal inode",
+                )
+        finally:
+            builder._open_transaction_journal = real_open
+        c.true(journal.is_file() and evidence.is_file())
+        c.true(not output.exists(), "journal swap fails before recovery mutation")
+
+
+def test_recovery_holds_final_objects_before_journal_cleanup(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-held-final-objects",
+            b"held-final-object-salt-0123456789",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain recovery state")
+
+        journal = root / ".cache.transaction.json"
+        real_ledger = builder._private_generation_storage_ledger
+        mutated = False
+
+        def mutate_after_final_snapshot(path, field):
+            nonlocal mutated
+            observed = real_ledger(path, field)
+            if field == "final recovered output generation" and not mutated:
+                mutated = True
+                (Path(path) / sentinel.name).chmod(0o666)
+            return observed
+
+        builder._private_generation_storage_ledger = mutate_after_final_snapshot
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "final object drift is rejected before journal cleanup",
+                )
+        finally:
+            builder._private_generation_storage_ledger = real_ledger
+        c.true(mutated, "fault occurs after the final pathname snapshot")
+        c.true(journal.is_file(), "final descriptor failure retains the journal")
+        c.eq(stat.S_IMODE((output / sentinel.name).stat().st_mode), 0o666)
+
+
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
@@ -3840,7 +4051,7 @@ def test_mayo_transaction_journal_and_nested_commitment_reject_duplicate_keys(c:
         "exposure_classification_integrity_id": "agg_" + "7" * 64,
     }
     journal = {
-        "schema": "mayo_cache_exposure_transaction_v2",
+        "schema": "mayo_cache_exposure_transaction_v3",
         "token": "0123456789abcdef",
         "staging_name": ".cache.staging-0123456789abcdef",
         "exposure_name": "mayo_exposure_manifest.json",
@@ -3849,6 +4060,8 @@ def test_mayo_transaction_journal_and_nested_commitment_reject_duplicate_keys(c:
         "phase": "prepared",
         "indeterminate": False,
         "generation_commitment": commitment,
+        "previous_output_storage_commitment": None,
+        "previous_exposure_storage_commitment": None,
     }
     serialized = json.dumps(journal, sort_keys=True, separators=(",", ":"))
     payloads = (

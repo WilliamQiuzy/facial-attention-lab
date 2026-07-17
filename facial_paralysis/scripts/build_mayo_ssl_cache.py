@@ -589,6 +589,156 @@ def _private_generation_storage_ledger(
     return root, tuple(sorted(records, key=lambda item: (item[1], item[0])))
 
 
+def _private_generation_storage_commitment(
+    path: str | Path,
+    field: str,
+) -> tuple[
+    Path,
+    tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+    str,
+]:
+    root, ledger = _private_generation_storage_ledger(path, field)
+    file_digests: list[tuple[tuple[str, ...], str]] = []
+    for kind, parts, _identity in ledger:
+        if kind != "file":
+            continue
+        _payload, digest, _size = _read_regular_bytes(
+            root.joinpath(*parts),
+            field,
+            max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+        )
+        file_digests.append((parts, digest))
+    _current_root, current_ledger = _private_generation_storage_ledger(
+        root, field,
+    )
+    if current_ledger != ledger:
+        raise ValueError(f"{field} changed while its closure was computed")
+    encoded = json.dumps(
+        {
+            "ledger": ledger,
+            "file_sha256": tuple(file_digests),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return root, ledger, hashlib.sha256(encoded).hexdigest()
+
+
+def _private_regular_storage_commitment(
+    stable_identity: tuple[int, ...],
+    digest: str,
+) -> str:
+    encoded = json.dumps(
+        {"identity": stable_identity, "sha256": digest},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class _HeldPrivateStorageEntry:
+    kind: str
+    parts: tuple[str, ...]
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _HeldPrivateStorageTree:
+    root: Path
+    entries: tuple[_HeldPrivateStorageEntry, ...]
+
+
+def _assert_held_private_storage_tree(
+    held: _HeldPrivateStorageTree,
+    field: str,
+) -> None:
+    for entry in held.entries:
+        opened = os.fstat(entry.descriptor)
+        linked = os.lstat(held.root.joinpath(*entry.parts))
+        snapshot = (
+            _directory_snapshot if entry.kind == "directory"
+            else _regular_snapshot
+        )
+        if entry.kind == "directory":
+            _require_private_directory_stat(opened, field)
+            _require_private_directory_stat(linked, field)
+        else:
+            _require_private_regular_stat(opened, field)
+            _require_private_regular_stat(linked, field)
+        if snapshot(opened) != entry.identity or snapshot(linked) != entry.identity:
+            raise ValueError(f"{field} changed while held")
+
+
+@contextmanager
+def _hold_private_storage_tree(path: Path, field: str):
+    root, ledger = _private_generation_storage_ledger(path, field)
+    descriptors = ExitStack()
+    entries: list[_HeldPrivateStorageEntry] = []
+    try:
+        for kind, parts, identity in ledger:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            if kind == "directory":
+                flags |= getattr(os, "O_DIRECTORY", 0)
+            descriptor = os.open(root.joinpath(*parts), flags)
+            descriptors.callback(os.close, descriptor)
+            entries.append(_HeldPrivateStorageEntry(
+                kind=kind,
+                parts=parts,
+                descriptor=descriptor,
+                identity=identity,
+            ))
+        held = _HeldPrivateStorageTree(root=root, entries=tuple(entries))
+        _assert_held_private_storage_tree(held, field)
+        yield held
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
+@dataclass(frozen=True)
+class _HeldPrivateRegularStorage:
+    path: Path
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+
+
+def _assert_held_private_regular_storage(
+    held: _HeldPrivateRegularStorage,
+    field: str,
+) -> None:
+    opened = os.fstat(held.descriptor)
+    linked = os.lstat(held.path)
+    _require_private_regular_stat(opened, field)
+    _require_private_regular_stat(linked, field)
+    if (
+        _regular_snapshot(opened) != held.identity
+        or _regular_snapshot(linked) != held.identity
+    ):
+        raise ValueError(f"{field} changed while held")
+
+
+@contextmanager
+def _hold_private_regular_storage(path: Path, field: str):
+    checked = _require_regular_file(path, field)
+    descriptor = os.open(
+        checked,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        identity = _regular_snapshot(os.fstat(descriptor))
+        held = _HeldPrivateRegularStorage(
+            path=checked, descriptor=descriptor, identity=identity,
+        )
+        _assert_held_private_regular_storage(held, field)
+        yield held
+    finally:
+        os.close(descriptor)
+
+
 def _require_private_generation_storage_tree(
     path: str | Path,
     field: str,
@@ -2364,26 +2514,25 @@ def _write_transaction_journal(path: Path, payload: Mapping[str, object]) -> Non
             temporary.unlink()
 
 
-def _load_transaction_journal(path: Path) -> dict[str, object]:
-    checked = _require_regular_file(path, "Mayo transaction journal")
-    _require_private_regular_stat(
-        os.lstat(checked), "Mayo transaction journal",
-    )
+def _validate_transaction_journal_payload(
+    raw_payload: bytes,
+) -> dict[str, object]:
     try:
         payload = _decode_unique_json_object(
-            checked.read_bytes(), "Mayo transaction journal"
+            raw_payload, "Mayo transaction journal"
         )
     except (OSError, ValueError) as exc:
         raise ValueError("Mayo transaction journal is invalid") from exc
     required = {
         "schema", "token", "staging_name", "exposure_name",
         "had_output", "had_exposure", "phase", "generation_commitment",
-        "indeterminate",
+        "indeterminate", "previous_output_storage_commitment",
+        "previous_exposure_storage_commitment",
     }
     if not isinstance(payload, dict) or set(payload) != required:
         raise ValueError("Mayo transaction journal has a noncanonical schema")
     if (
-        payload["schema"] != "mayo_cache_exposure_transaction_v2"
+        payload["schema"] != "mayo_cache_exposure_transaction_v3"
         or not isinstance(payload["token"], str)
         or re.fullmatch(r"[0-9a-f]{16}", payload["token"]) is None
         or not isinstance(payload["staging_name"], str)
@@ -2397,10 +2546,81 @@ def _load_transaction_journal(path: Path) -> dict[str, object]:
         }
     ):
         raise ValueError("Mayo transaction journal contains invalid values")
+    output_commitment = payload["previous_output_storage_commitment"]
+    exposure_commitment = payload["previous_exposure_storage_commitment"]
+    if (
+        (payload["had_output"] is True) != (
+            isinstance(output_commitment, str)
+            and re.fullmatch(r"[0-9a-f]{64}", output_commitment) is not None
+        )
+        or (payload["had_exposure"] is True) != (
+            isinstance(exposure_commitment, str)
+            and re.fullmatch(r"[0-9a-f]{64}", exposure_commitment) is not None
+        )
+        or (payload["had_output"] is False and output_commitment is not None)
+        or (payload["had_exposure"] is False and exposure_commitment is not None)
+    ):
+        raise ValueError("Mayo transaction journal storage closure is invalid")
     payload["generation_commitment"] = _validate_generation_commitment(
         payload["generation_commitment"]
     )
     return payload
+
+
+def _assert_held_transaction_journal(
+    descriptor: int,
+    path: Path,
+    identity: tuple[int, ...],
+) -> None:
+    opened = os.fstat(descriptor)
+    linked = os.lstat(path)
+    _require_private_regular_stat(opened, "Mayo transaction journal")
+    _require_private_regular_stat(linked, "Mayo transaction journal")
+    if (
+        _regular_snapshot(opened) != identity
+        or _regular_snapshot(linked) != identity
+    ):
+        raise ValueError("Mayo transaction journal changed while held")
+
+
+def _open_transaction_journal(
+    path: Path,
+) -> tuple[int, tuple[int, ...], dict[str, object]]:
+    checked = _require_regular_file(path, "Mayo transaction journal")
+    descriptor = os.open(
+        checked,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        identity = _regular_snapshot(os.fstat(descriptor))
+        _assert_held_transaction_journal(descriptor, checked, identity)
+        size = int(os.fstat(descriptor).st_size)
+        if size < 1 or size > _MAX_MAYO_MANIFEST_BYTES:
+            raise ValueError("Mayo transaction journal exceeds its byte limit")
+        payload = bytearray()
+        while len(payload) < size:
+            chunk = os.read(descriptor, min(1024 * 1024, size - len(payload)))
+            if not chunk:
+                raise ValueError("Mayo transaction journal is truncated")
+            payload.extend(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("Mayo transaction journal exceeds its byte limit")
+        _assert_held_transaction_journal(descriptor, checked, identity)
+        return descriptor, identity, _validate_transaction_journal_payload(
+            bytes(payload)
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _load_transaction_journal(path: Path) -> dict[str, object]:
+    descriptor, _identity, payload = _open_transaction_journal(path)
+    try:
+        return payload
+    finally:
+        os.close(descriptor)
 
 
 def _unlink_regular_if_present(path: Path, field: str) -> None:
@@ -2408,22 +2628,20 @@ def _unlink_regular_if_present(path: Path, field: str) -> None:
         _require_regular_file(path, field).unlink()
 
 
-def _recover_cache_exposure_transaction(
+def _recover_cache_exposure_transaction_held(
     output: Path,
     exposure: Path,
     *,
+    journal_path: Path,
+    journal_descriptor: int,
+    journal_identity: tuple[int, ...],
+    journal: dict[str, object],
     salt: bytes | None = None,
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
     allow_indeterminate: bool = False,
 ) -> None:
-    if type(allow_indeterminate) is not bool:
-        raise ValueError("indeterminate recovery authority must be boolean")
-    journal_path = _journal_path(output)
-    if not journal_path.exists() and not _is_symlink(journal_path):
-        return
-    journal = _load_transaction_journal(journal_path)
     if bool(journal["indeterminate"]) and not allow_indeterminate:
         raise RuntimeError(
             "Mayo transaction is retained for explicit offline review"
@@ -2439,6 +2657,9 @@ def _recover_cache_exposure_transaction(
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
     committed = journal["phase"] == "committed"
+    _assert_held_transaction_journal(
+        journal_descriptor, journal_path, journal_identity,
+    )
 
     def present(path: Path) -> bool:
         return path.exists() or _is_symlink(path)
@@ -2491,6 +2712,9 @@ def _recover_cache_exposure_transaction(
             raise ValueError(f"{field} changed after recovery preflight")
 
     if committed:
+        _assert_held_transaction_journal(
+            journal_descriptor, journal_path, journal_identity,
+        )
         _require_directory(output, "committed output generation")
         _require_regular_file(exposure, "committed exposure manifest")
         _assert_committed_generation(
@@ -2545,10 +2769,22 @@ def _recover_cache_exposure_transaction(
             exposure_backup if present(exposure_backup) else exposure
         )
         output_ledger = None
+        output_storage_commitment = None
         if had_output:
-            _output_source, output_ledger = _private_generation_storage_ledger(
+            (
+                _output_source,
+                output_ledger,
+                output_storage_commitment,
+            ) = _private_generation_storage_commitment(
                 output_source, "recoverable previous output generation",
             )
+            if not hmac.compare_digest(
+                output_storage_commitment,
+                str(journal["previous_output_storage_commitment"]),
+            ):
+                raise ValueError(
+                    "recoverable previous output does not match its journal"
+                )
         exposure_full = None
         exposure_stable = None
         exposure_digest = None
@@ -2558,6 +2794,16 @@ def _recover_cache_exposure_transaction(
                     exposure_source, "recoverable previous exposure manifest",
                 )
             )
+            exposure_storage_commitment = _private_regular_storage_commitment(
+                exposure_stable, exposure_digest,
+            )
+            if not hmac.compare_digest(
+                exposure_storage_commitment,
+                str(journal["previous_exposure_storage_commitment"]),
+            ):
+                raise ValueError(
+                    "recoverable previous exposure does not match its journal"
+                )
 
         if output_ledger is not None:
             require_private_tree_snapshot(
@@ -2570,6 +2816,9 @@ def _recover_cache_exposure_transaction(
                 "recoverable previous exposure manifest",
                 require_full=exposure_full,
             )
+        _assert_held_transaction_journal(
+            journal_descriptor, journal_path, journal_identity,
+        )
 
         if had_output:
             if present(output_backup):
@@ -2615,30 +2864,110 @@ def _recover_cache_exposure_transaction(
         elif present(exposure):
             raise ValueError("recovery created an unexpected exposure manifest")
 
-    _unlink_regular_if_present(exposure_temporary, "interrupted exposure temporary")
-    if staging.exists() or _is_symlink(staging):
-        _remove_real_tree(staging)
-    _remove_real_tree(output_backup)
-    _unlink_regular_if_present(exposure_backup, "stale exposure backup")
-    if not committed:
-        if output_ledger is not None:
-            require_private_tree_snapshot(
-                output, output_ledger,
-                "final recovered output generation",
+    final_holds = ExitStack()
+    try:
+        held_committed = None
+        held_output = None
+        held_exposure = None
+        if committed:
+            held_committed = final_holds.enter_context(
+                _hold_committed_mayo_generation(output, exposure)
             )
-        elif present(output):
-            raise ValueError("recovery retained an unexpected output generation")
-        if exposure_stable is not None and exposure_digest is not None:
-            require_private_regular_snapshot(
-                exposure, exposure_stable, exposure_digest,
-                "final recovered exposure manifest",
-            )
-        elif present(exposure):
-            raise ValueError("recovery retained an unexpected exposure manifest")
-    _require_regular_file(journal_path, "completed transaction journal").unlink()
-    _fsync_directory(output.parent)
-    if exposure.parent != output.parent:
-        _fsync_directory(exposure.parent)
+        else:
+            if output_ledger is not None:
+                held_output = final_holds.enter_context(
+                    _hold_private_storage_tree(
+                        output, "final recovered output generation",
+                    )
+                )
+            if exposure_stable is not None and exposure_digest is not None:
+                held_exposure = final_holds.enter_context(
+                    _hold_private_regular_storage(
+                        exposure, "final recovered exposure manifest",
+                    )
+                )
+
+        _unlink_regular_if_present(
+            exposure_temporary, "interrupted exposure temporary",
+        )
+        if staging.exists() or _is_symlink(staging):
+            _remove_real_tree(staging)
+        _remove_real_tree(output_backup)
+        _unlink_regular_if_present(exposure_backup, "stale exposure backup")
+        if not committed:
+            if output_ledger is not None:
+                require_private_tree_snapshot(
+                    output, output_ledger,
+                    "final recovered output generation",
+                )
+                _assert_held_private_storage_tree(
+                    held_output, "final recovered output generation",
+                )
+            elif present(output):
+                raise ValueError(
+                    "recovery retained an unexpected output generation"
+                )
+            if exposure_stable is not None and exposure_digest is not None:
+                require_private_regular_snapshot(
+                    exposure, exposure_stable, exposure_digest,
+                    "final recovered exposure manifest",
+                )
+                _assert_held_private_regular_storage(
+                    held_exposure, "final recovered exposure manifest",
+                )
+            elif present(exposure):
+                raise ValueError(
+                    "recovery retained an unexpected exposure manifest"
+                )
+        else:
+            _assert_held_mayo_generation(held_committed)
+        _assert_held_transaction_journal(
+            journal_descriptor, journal_path, journal_identity,
+        )
+        os.unlink(journal_path)
+        _fsync_directory(output.parent)
+        if exposure.parent != output.parent:
+            _fsync_directory(exposure.parent)
+    finally:
+        final_holds.__exit__(*sys.exc_info())
+
+
+def _recover_cache_exposure_transaction(
+    output: Path,
+    exposure: Path,
+    *,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+    allow_indeterminate: bool = False,
+) -> None:
+    if type(allow_indeterminate) is not bool:
+        raise ValueError("indeterminate recovery authority must be boolean")
+    journal_path = _journal_path(output)
+    if not journal_path.exists() and not _is_symlink(journal_path):
+        return
+    descriptor, identity, journal = _open_transaction_journal(journal_path)
+    try:
+        _recover_cache_exposure_transaction_held(
+            output,
+            exposure,
+            journal_path=journal_path,
+            journal_descriptor=descriptor,
+            journal_identity=identity,
+            journal=journal,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+            allow_indeterminate=allow_indeterminate,
+        )
+    finally:
+        os.close(descriptor)
 
 
 def recover_interrupted_generations(
@@ -2790,15 +3119,19 @@ def _promote_generation_with_exposure(
     _require_private_directory(exposure.parent, "external exposure parent")
     _assert_no_symlink_components(exposure.parent)
     previous_output_ledger = None
+    previous_output_storage_commitment = None
     if output.exists() or _is_symlink(output):
-        _previous_output, previous_output_ledger = (
-            _private_generation_storage_ledger(
+        (
+            _previous_output,
+            previous_output_ledger,
+            previous_output_storage_commitment,
+        ) = _private_generation_storage_commitment(
                 output, "previous output generation",
-            )
         )
     previous_exposure_identity = None
     previous_exposure_stable_identity = None
     previous_exposure_sha256 = None
+    previous_exposure_storage_commitment = None
     if exposure.exists() or _is_symlink(exposure):
         checked_exposure = _require_regular_file(
             exposure, "previous exposure manifest",
@@ -2817,6 +3150,12 @@ def _promote_generation_with_exposure(
             "previous exposure manifest",
             max_bytes=_MAX_MAYO_MANIFEST_BYTES,
         )
+        previous_exposure_storage_commitment = (
+            _private_regular_storage_commitment(
+                previous_exposure_stable_identity,
+                previous_exposure_sha256,
+            )
+        )
 
     journal_path = _journal_path(output)
     if journal_path.exists() or _is_symlink(journal_path):
@@ -2826,13 +3165,19 @@ def _promote_generation_with_exposure(
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
     journal: dict[str, object] = {
-        "schema": "mayo_cache_exposure_transaction_v2",
+        "schema": "mayo_cache_exposure_transaction_v3",
         "token": token,
         "staging_name": staging.name,
         "exposure_name": exposure.name,
         "had_output": output.exists(),
         "had_exposure": exposure.exists(),
         "generation_commitment": generation_commitment,
+        "previous_output_storage_commitment": (
+            previous_output_storage_commitment
+        ),
+        "previous_exposure_storage_commitment": (
+            previous_exposure_storage_commitment
+        ),
         "phase": "prepared",
         "indeterminate": False,
     }
@@ -2867,21 +3212,33 @@ def _promote_generation_with_exposure(
             os.fsync(target.fileno())
         _fsync_directory(exposure.parent)
         if output.exists():
-            _current_output, current_output_ledger = (
-                _private_generation_storage_ledger(
+            (
+                _current_output,
+                current_output_ledger,
+                current_output_storage_commitment,
+            ) = _private_generation_storage_commitment(
                     output, "previous output generation",
-                )
             )
-            if current_output_ledger != previous_output_ledger:
+            if (
+                current_output_ledger != previous_output_ledger
+                or current_output_storage_commitment
+                != previous_output_storage_commitment
+            ):
                 raise ValueError("previous output generation changed before move")
             replace_func(output, output_backup)
             try:
-                _moved_output, moved_output_ledger = (
-                    _private_generation_storage_ledger(
+                (
+                    _moved_output,
+                    moved_output_ledger,
+                    moved_output_storage_commitment,
+                ) = _private_generation_storage_commitment(
                         output_backup, "moved previous output generation",
-                    )
                 )
-                if moved_output_ledger != previous_output_ledger:
+                if (
+                    moved_output_ledger != previous_output_ledger
+                    or moved_output_storage_commitment
+                    != previous_output_storage_commitment
+                ):
                     raise ValueError(
                         "previous output generation changed during move"
                     )
