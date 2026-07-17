@@ -3124,22 +3124,38 @@ def _assert_retired_transaction_journal(
 class _JournalCleanupState:
     compensation_attempted: bool = False
     terminal_resolved: bool = False
+    terminal_cleanup_errors: list[OSError] = dataclass_field(
+        default_factory=list, repr=False,
+    )
 
 
 def _finish_terminal_cleanup(
     cleanup: Callable[[], object],
     cleanup_state: _JournalCleanupState,
-    pending: tuple[object, BaseException | None, object],
 ) -> None:
-    """Run pure close cleanup without losing an active validation failure."""
+    """Run pure close cleanup and retain every post-terminal close error."""
     try:
         cleanup()
     except OSError as cleanup_error:
         if not cleanup_state.terminal_resolved:
             raise
-        primary = pending[1]
-        if primary is not None:
-            raise primary.with_traceback(pending[2]) from cleanup_error
+        cleanup_state.terminal_cleanup_errors.append(cleanup_error)
+
+
+def _raise_with_terminal_cleanup_errors(
+    primary: BaseException,
+    traceback: object,
+    cleanup_state: _JournalCleanupState,
+) -> None:
+    """Raise one primary with all accumulated close errors in its cause chain."""
+    if not cleanup_state.terminal_cleanup_errors:
+        raise primary.with_traceback(traceback)
+    cause = cleanup_state.terminal_cleanup_errors[0]
+    for cleanup_error in cleanup_state.terminal_cleanup_errors[1:]:
+        cleanup_error.__cause__ = cause
+        cleanup_error.__suppress_context__ = True
+        cause = cleanup_error
+    raise primary.with_traceback(traceback) from cause
 
 
 def _retire_held_transaction_journal_durably(
@@ -3156,6 +3172,7 @@ def _retire_held_transaction_journal_durably(
         not isinstance(cleanup_state, _JournalCleanupState)
         or cleanup_state.compensation_attempted
         or cleanup_state.terminal_resolved
+        or cleanup_state.terminal_cleanup_errors
     ):
         raise ValueError("Mayo journal cleanup state is invalid")
     _assert_held_transaction_journal(descriptor, path, identity)
@@ -3851,7 +3868,6 @@ def _recover_cache_exposure_transaction_held(
         _finish_terminal_cleanup(
             lambda: final_holds.__exit__(*pending),
             cleanup_state,
-            pending,
         )
 
 
@@ -3898,11 +3914,16 @@ def _recover_cache_exposure_transaction(
     try:
         os.close(descriptor)
     except OSError as exc:
-        close_error = exc
+        if cleanup_state.terminal_resolved:
+            cleanup_state.terminal_cleanup_errors.append(exc)
+        else:
+            close_error = exc
     if cleanup_state.terminal_resolved:
-        if primary is not None and close_error is not None:
-            raise primary.with_traceback(primary.__traceback__) from close_error
-        close_error = None
+        if primary is not None:
+            _raise_with_terminal_cleanup_errors(
+                primary, primary.__traceback__, cleanup_state,
+            )
+        return
     if primary is not None or close_error is not None:
         compensation_failed = cleanup_state.compensation_attempted
         if (
@@ -4621,15 +4642,12 @@ def _promote_generation_with_exposure(
                 _finish_terminal_cleanup(
                     lambda: committed_holds.__exit__(*pending),
                     cleanup_state,
-                    pending,
                 )
             finally:
                 if committed_journal_descriptor is not None:
-                    journal_pending = sys.exc_info()
                     _finish_terminal_cleanup(
                         lambda: os.close(committed_journal_descriptor),
                         cleanup_state,
-                        journal_pending,
                     )
     except Exception as primary_error:
         if (
@@ -4664,8 +4682,15 @@ def _promote_generation_with_exposure(
         _finish_terminal_cleanup(
             lambda: source_holds.__exit__(*pending),
             cleanup_state,
-            pending,
         )
+        if (
+            cleanup_state.terminal_resolved
+            and pending[1] is not None
+            and cleanup_state.terminal_cleanup_errors
+        ):
+            _raise_with_terminal_cleanup_errors(
+                pending[1], pending[2], cleanup_state,
+            )
 
 
 def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:

@@ -4573,8 +4573,11 @@ def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
         )
         original_resolve = builder._resolve_private_path_no_replace_final
         original_close = builder.os.close
+        original_open = builder._open_transaction_journal
         drifted = False
-        close_faulted = False
+        held_close_faulted = False
+        journal_close_faulted = False
+        journal_descriptor = None
 
         def resolve_then_drift(held, destination, field):
             nonlocal drifted
@@ -4583,14 +4586,26 @@ def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
             cache.chmod(0o666)
             drifted = True
 
+        def record_journal_descriptor(path):
+            nonlocal journal_descriptor
+            opened = original_open(path)
+            journal_descriptor = opened[0]
+            return opened
+
         def close_after_drift_then_fail(descriptor):
-            nonlocal close_faulted
+            nonlocal held_close_faulted, journal_close_faulted
             original_close(descriptor)
-            if drifted and not close_faulted:
-                close_faulted = True
-                raise OSError("combined-close-marker")
+            if not drifted:
+                return
+            if descriptor == journal_descriptor and not journal_close_faulted:
+                journal_close_faulted = True
+                raise OSError("cleanup-marker-two")
+            if not held_close_faulted:
+                held_close_faulted = True
+                raise OSError("cleanup-marker-one")
 
         builder._resolve_private_path_no_replace_final = resolve_then_drift
+        builder._open_transaction_journal = record_journal_descriptor
         builder.os.close = close_after_drift_then_fail
         caught: BaseException | None = None
         try:
@@ -4607,15 +4622,19 @@ def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
                 raise AssertionError("post-terminal canonical drift was ignored")
         finally:
             builder.os.close = original_close
+            builder._open_transaction_journal = original_open
             builder._resolve_private_path_no_replace_final = original_resolve
         c.true(drifted)
-        c.true(close_faulted)
+        c.true(held_close_faulted and journal_close_faulted)
         c.true(
             caught is not None
             and _exception_chain_contains(
-                caught, OSError, "combined-close-marker",
+                caught, OSError, "cleanup-marker-one",
+            )
+            and _exception_chain_contains(
+                caught, OSError, "cleanup-marker-two",
             ),
-            "post-terminal validation remains primary and retains close cleanup cause",
+            "post-terminal validation retains every independent cleanup cause",
         )
         c.true(not (root / ".cache.transaction.json").exists())
         c.eq(
