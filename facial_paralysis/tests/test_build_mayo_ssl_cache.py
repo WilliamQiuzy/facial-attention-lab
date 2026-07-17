@@ -7418,6 +7418,95 @@ def test_authorizer_finally_rechecks_history_journal_mode(c: Check):
             )
 
 
+def test_authorizer_finally_reenumerates_terminal_journal_names(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "67890abcdef12345",
+            )
+            history = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            added = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-bbbbbbbbbbbbbbbb"
+            )
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            original_open = builder._open_transaction_journal
+            opened = 0
+            injected = False
+
+            def add_after_final_terminal_open(path):
+                nonlocal opened, injected
+                result = original_open(path)
+                opened += 1
+                if opened == 6 and not injected:
+                    builder._write_transaction_journal(
+                        added, payload, require_absent=True,
+                    )
+                    injected = True
+                return result
+
+            builder._open_transaction_journal = add_after_final_terminal_open
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "terminal names are re-enumerated after the final held audit",
+                )
+            finally:
+                builder._open_transaction_journal = original_open
+            c.true(injected and added.is_file())
+
+
+def test_authorizer_finally_rechecks_all_held_terminal_journals(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "7890abcdef123456",
+            )
+            first = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            second = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-bbbbbbbbbbbbbbbb"
+            )
+            builder._write_transaction_journal(
+                first, payload, require_absent=True,
+            )
+            builder._write_transaction_journal(
+                second, payload, require_absent=True,
+            )
+            original_open = builder._open_transaction_journal
+            opened = 0
+            drifted = False
+
+            def chmod_first_after_last_terminal_open(path):
+                nonlocal opened, drifted
+                result = original_open(path)
+                opened += 1
+                if opened == 12 and not drifted:
+                    first.chmod(0o666)
+                    drifted = True
+                return result
+
+            builder._open_transaction_journal = (
+                chmod_first_after_last_terminal_open
+            )
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "all terminal descriptors remain held through final revalidation",
+                )
+            finally:
+                builder._open_transaction_journal = original_open
+            c.true(drifted and stat.S_IMODE(first.stat().st_mode) == 0o666)
+
+
 def test_terminal_journal_aggregate_count_budget_precedes_parsing(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -7480,6 +7569,46 @@ def test_terminal_journal_aggregate_byte_budget_precedes_parsing(c: Check):
                     del builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES
                 else:
                     builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES = old_limit
+
+
+def test_terminal_journal_aggregate_byte_budget_precedes_json_parser(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            payload = _v4_no_prior_terminal_payload(
+                fixture, "890abcdef1234567",
+            )
+            history = fixture.output.parent / (
+                "..mayo_ssl_cache.transaction.json.history-aaaaaaaaaaaaaaaa"
+            )
+            builder._write_transaction_journal(
+                history, payload, require_absent=True,
+            )
+            old_limit = builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES
+            original_parser = builder._validate_transaction_journal_payload
+            parser_calls = 0
+
+            def unexpected_parser(raw_payload):
+                nonlocal parser_calls
+                parser_calls += 1
+                return original_parser(raw_payload)
+
+            builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES = 1
+            builder._validate_transaction_journal_payload = unexpected_parser
+            try:
+                _require_runtime_cause(
+                    lambda: builder._assert_resolved_transaction_evidence(
+                        fixture.output, fixture.exposure,
+                    ),
+                    "terminal Mayo journal evidence exceeds its aggregate byte limit",
+                )
+            finally:
+                builder._validate_transaction_journal_payload = original_parser
+                builder._MAX_MAYO_TERMINAL_EVIDENCE_BYTES = old_limit
+            c.eq(
+                parser_calls, 0,
+                "aggregate terminal byte budget must precede JSON parsing",
+            )
 
 
 def test_archived_evidence_aggregate_count_budget_precedes_semantics(c: Check):

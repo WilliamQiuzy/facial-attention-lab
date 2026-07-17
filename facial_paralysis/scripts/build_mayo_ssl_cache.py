@@ -3432,9 +3432,16 @@ def _assert_held_transaction_journal(
         os.close(parent_descriptor)
 
 
-def _open_transaction_journal(
+@dataclass(frozen=True)
+class _HeldTransactionJournalCandidate:
+    path: Path
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+
+
+def _open_transaction_journal_candidate(
     path: Path,
-) -> tuple[int, tuple[int, ...], str, dict[str, object]]:
+) -> _HeldTransactionJournalCandidate:
     checked = _require_regular_file(path, "Mayo transaction journal")
     descriptor = os.open(
         checked,
@@ -3452,30 +3459,72 @@ def _open_transaction_journal(
         size = int(before.st_size)
         if size < 1 or size > _MAX_MAYO_MANIFEST_BYTES:
             raise ValueError("Mayo transaction journal exceeds its byte limit")
-        payload = bytearray()
-        while len(payload) < size:
-            chunk = os.read(descriptor, min(1024 * 1024, size - len(payload)))
-            if not chunk:
-                raise ValueError("Mayo transaction journal is truncated")
-            payload.extend(chunk)
-        if os.read(descriptor, 1):
-            raise ValueError("Mayo transaction journal exceeds its byte limit")
-        raw_payload = bytes(payload)
-        digest = hashlib.sha256(raw_payload).hexdigest()
-        after = os.fstat(descriptor)
-        linked_after = os.lstat(checked)
-        _require_private_regular_stat(after, "Mayo transaction journal")
-        _require_private_regular_stat(linked_after, "Mayo transaction journal")
-        after_identity = _regular_snapshot(after)
-        if (
-            after_identity[:-1] != identity[:-1]
-            or _regular_snapshot(linked_after)[:-1] != identity[:-1]
-        ):
-            raise ValueError("Mayo transaction journal changed while it was read")
-        journal = _validate_transaction_journal_payload(raw_payload)
-        return descriptor, after_identity, digest, journal
+        return _HeldTransactionJournalCandidate(
+            path=checked,
+            descriptor=descriptor,
+            identity=identity,
+        )
     except BaseException:
         os.close(descriptor)
+        raise
+
+
+def _read_held_transaction_journal(
+    held: _HeldTransactionJournalCandidate,
+) -> tuple[int, tuple[int, ...], str, dict[str, object]]:
+    descriptor = held.descriptor
+    checked = held.path
+    before = os.fstat(descriptor)
+    linked_before = os.lstat(checked)
+    _require_private_regular_stat(before, "Mayo transaction journal")
+    _require_private_regular_stat(linked_before, "Mayo transaction journal")
+    before_identity = _regular_snapshot(before)
+    if (
+        before_identity[:-1] != held.identity[:-1]
+        or _regular_snapshot(linked_before)[:-1] != held.identity[:-1]
+    ):
+        raise ValueError("Mayo transaction journal changed before it was read")
+    size = int(before.st_size)
+    if size < 1 or size > _MAX_MAYO_MANIFEST_BYTES:
+        raise ValueError("Mayo transaction journal exceeds its byte limit")
+    payload = bytearray()
+    offset = 0
+    while offset < size:
+        chunk = os.pread(
+            descriptor, min(1024 * 1024, size - offset), offset,
+        )
+        if not chunk:
+            raise ValueError("Mayo transaction journal is truncated")
+        payload.extend(chunk)
+        offset += len(chunk)
+    if os.pread(descriptor, 1, size):
+        raise ValueError("Mayo transaction journal exceeds its byte limit")
+    raw_payload = bytes(payload)
+    digest = hashlib.sha256(raw_payload).hexdigest()
+    after = os.fstat(descriptor)
+    linked_after = os.lstat(checked)
+    _require_private_regular_stat(after, "Mayo transaction journal")
+    _require_private_regular_stat(linked_after, "Mayo transaction journal")
+    after_identity = _regular_snapshot(after)
+    if (
+        after_identity[:-1] != held.identity[:-1]
+        or _regular_snapshot(linked_after)[:-1] != held.identity[:-1]
+    ):
+        raise ValueError("Mayo transaction journal changed while it was read")
+    journal = _validate_transaction_journal_payload(raw_payload)
+    return descriptor, after_identity, digest, journal
+
+
+def _open_transaction_journal(
+    path: Path | _HeldTransactionJournalCandidate,
+) -> tuple[int, tuple[int, ...], str, dict[str, object]]:
+    if isinstance(path, _HeldTransactionJournalCandidate):
+        return _read_held_transaction_journal(path)
+    held = _open_transaction_journal_candidate(path)
+    try:
+        return _read_held_transaction_journal(held)
+    except BaseException:
+        os.close(held.descriptor)
         raise
 
 
@@ -7679,32 +7728,42 @@ def _assert_resolved_transaction_evidence(
             raise ValueError(
                 "terminal Mayo journal evidence exceeds its aggregate count limit"
             )
-        terminal_bytes = 0
-        for kind, prefix, artifact in terminal_candidates:
-            suffix = artifact.name[len(prefix):]
-            match = re.fullmatch(
+        with ExitStack() as terminal_holds:
+            held_terminal_candidates: list[
+                tuple[str, str, _HeldTransactionJournalCandidate]
+            ] = []
+            terminal_bytes = 0
+            for kind, prefix, artifact in terminal_candidates:
+                held_candidate = _open_transaction_journal_candidate(artifact)
+                terminal_holds.callback(os.close, held_candidate.descriptor)
+                held_terminal_candidates.append(
+                    (kind, prefix, held_candidate)
+                )
+                terminal_bytes += int(held_candidate.identity[6])
+            if terminal_bytes > _MAX_MAYO_TERMINAL_EVIDENCE_BYTES:
+                raise ValueError(
+                    "terminal Mayo journal evidence exceeds its aggregate "
+                    "byte limit"
+                )
+            for kind, prefix, held_candidate in held_terminal_candidates:
+                artifact = held_candidate.path
+                suffix = artifact.name[len(prefix):]
+                match = re.fullmatch(
+                    (
+                        r"([0-9a-f]{16})"
+                        if kind == "history"
+                        else r"([0-9a-f]{16})-([0-9a-f]{16})"
+                    ),
+                    suffix,
+                )
+                if match is None:
+                    raise ValueError("terminal journal name is invalid")
                 (
-                    r"([0-9a-f]{16})"
-                    if kind == "history"
-                    else r"([0-9a-f]{16})-([0-9a-f]{16})"
-                ),
-                suffix,
-            )
-            if match is None:
-                raise ValueError("terminal journal name is invalid")
-            (
-                descriptor,
-                artifact_identity,
-                artifact_sha256,
-                payload,
-            ) = _open_transaction_journal(artifact)
-            try:
-                terminal_bytes += int(artifact_identity[6])
-                if terminal_bytes > _MAX_MAYO_TERMINAL_EVIDENCE_BYTES:
-                    raise ValueError(
-                        "terminal Mayo journal evidence exceeds its aggregate "
-                        "byte limit"
-                    )
+                    descriptor,
+                    artifact_identity,
+                    artifact_sha256,
+                    payload,
+                ) = _open_transaction_journal(held_candidate)
                 _assert_descriptor_omits_private_tokens(
                     descriptor,
                     artifact_identity,
@@ -7737,8 +7796,6 @@ def _assert_resolved_transaction_evidence(
                             "terminal journal evidence generation is repeated"
                         )
                     completed_journals[transaction_token] = payload
-            finally:
-                os.close(descriptor)
 
         tree_evidence: dict[tuple[str, str], Path] = {}
         tree_specs = (
@@ -8226,38 +8283,56 @@ def _assert_resolved_transaction_evidence(
             raise ValueError(
                 "terminal Mayo journal evidence names changed during authorization"
             )
-        final_terminal_bytes = 0
-        final_terminal_paths: set[Path] = set()
-        for kind, prefix, artifact in final_terminal_candidates:
-            suffix = artifact.name[len(prefix):]
-            match = re.fullmatch(
-                (
-                    r"([0-9a-f]{16})"
-                    if kind == "history"
-                    else r"([0-9a-f]{16})-([0-9a-f]{16})"
-                ),
-                suffix,
-            )
-            if match is None:
-                raise ValueError(
-                    "terminal Mayo journal name changed before return"
+        with ExitStack() as final_terminal_holds:
+            held_final_candidates: list[
+                tuple[str, str, _HeldTransactionJournalCandidate]
+            ] = []
+            final_terminal_bytes = 0
+            for kind, prefix, artifact in final_terminal_candidates:
+                held_candidate = _open_transaction_journal_candidate(artifact)
+                final_terminal_holds.callback(
+                    os.close, held_candidate.descriptor,
                 )
-            (
-                descriptor,
-                artifact_identity,
-                artifact_sha256,
-                payload,
-            ) = _open_transaction_journal(artifact)
-            try:
-                final_terminal_bytes += int(artifact_identity[6])
-                if (
-                    final_terminal_bytes
-                    > _MAX_MAYO_TERMINAL_EVIDENCE_BYTES
-                ):
+                held_final_candidates.append((kind, prefix, held_candidate))
+                final_terminal_bytes += int(held_candidate.identity[6])
+            if (
+                final_terminal_bytes
+                > _MAX_MAYO_TERMINAL_EVIDENCE_BYTES
+            ):
+                raise ValueError(
+                    "terminal Mayo journal evidence exceeds its aggregate "
+                    "byte limit"
+                )
+
+            final_terminal_paths: set[Path] = set()
+            final_terminal_records: list[
+                tuple[
+                    _HeldTransactionJournalCandidate,
+                    tuple[int, ...],
+                    str,
+                ]
+            ] = []
+            for kind, prefix, held_candidate in held_final_candidates:
+                artifact = held_candidate.path
+                suffix = artifact.name[len(prefix):]
+                match = re.fullmatch(
+                    (
+                        r"([0-9a-f]{16})"
+                        if kind == "history"
+                        else r"([0-9a-f]{16})-([0-9a-f]{16})"
+                    ),
+                    suffix,
+                )
+                if match is None:
                     raise ValueError(
-                        "terminal Mayo journal evidence exceeds its aggregate "
-                        "byte limit"
+                        "terminal Mayo journal name changed before return"
                     )
+                (
+                    descriptor,
+                    artifact_identity,
+                    artifact_sha256,
+                    payload,
+                ) = _open_transaction_journal(held_candidate)
                 _assert_held_transaction_journal(
                     descriptor,
                     artifact,
@@ -8279,12 +8354,35 @@ def _assert_resolved_transaction_evidence(
                         "terminal Mayo journal changed during authorization"
                     )
                 final_terminal_paths.add(artifact)
-            finally:
-                os.close(descriptor)
-        if final_terminal_paths != set(terminal_journals):
-            raise ValueError(
-                "terminal Mayo journal set changed during authorization"
-            )
+                final_terminal_records.append((
+                    held_candidate,
+                    artifact_identity,
+                    artifact_sha256,
+                ))
+            if final_terminal_paths != set(terminal_journals):
+                raise ValueError(
+                    "terminal Mayo journal set changed during authorization"
+                )
+
+            for held_candidate, identity, digest in final_terminal_records:
+                _assert_held_transaction_journal(
+                    held_candidate.descriptor,
+                    held_candidate.path,
+                    identity,
+                    digest,
+                )
+
+            latest_terminal_paths = {
+                artifact
+                for kind in ("history", "complete")
+                for artifact in output.parent.glob(
+                    f".{journal.name}.{kind}-*"
+                )
+            }
+            if latest_terminal_paths != set(terminal_journals):
+                raise ValueError(
+                    "terminal Mayo journal evidence names changed before return"
+                )
     except (OSError, ValueError) as exc:
         raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc
 
