@@ -4560,6 +4560,55 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
         c.true(events[-1][2] is False)
 
 
+def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-post-terminal-drift",
+            b"post-terminal-drift-salt-0123456",
+        )
+        original_resolve = builder._resolve_private_path_no_replace_final
+        drifted = False
+
+        def resolve_then_drift(held, destination, field):
+            nonlocal drifted
+            original_resolve(held, destination, field)
+            cache = next((output / "mediapipe").glob("*.npz"))
+            cache.chmod(0o666)
+            drifted = True
+
+        builder._resolve_private_path_no_replace_final = resolve_then_drift
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "post-terminal canonical drift is not mistaken for close cleanup",
+                )
+        finally:
+            builder._resolve_private_path_no_replace_final = original_resolve
+        c.true(drifted)
+        c.true(not (root / ".cache.transaction.json").exists())
+        c.eq(
+            len(tuple(root.glob("..cache.transaction.json.complete-*"))),
+            1,
+            "completed transaction retains one terminal receipt",
+        )
+        c.eq(
+            stat.S_IMODE(next((output / "mediapipe").glob("*.npz")).stat().st_mode),
+            0o666,
+            "reported drift remains visible for offline diagnosis",
+        )
+
+
 def test_final_journal_check_is_followed_by_held_object_validation(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass

@@ -3598,6 +3598,7 @@ def _recover_cache_exposure_transaction_held(
                         expected_generation["mediapipe_file_count"]
                     ),
                     arkit_count=int(expected_generation["arkit_file_count"]),
+                    assert_on_exit=False,
                 )
             )
             _assert_committed_generation(
@@ -3827,6 +3828,8 @@ def _recover_cache_exposure_transaction_held(
             fsync_directories=fsync_directories,
             cleanup_state=cleanup_state,
         )
+        if held_committed is not None:
+            _assert_held_mayo_generation(held_committed)
     finally:
         try:
             final_holds.__exit__(*sys.exc_info())
@@ -3885,6 +3888,7 @@ def _recover_cache_exposure_transaction(
         compensation_failed = cleanup_state.compensation_attempted
         if (
             not compensation_failed
+            and not cleanup_state.terminal_resolved
             and not journal_path.exists()
             and not _is_symlink(journal_path)
         ):
@@ -4420,6 +4424,7 @@ def _promote_generation_with_exposure(
                     exposure,
                     media_count=int(generation_commitment["mediapipe_file_count"]),
                     arkit_count=int(generation_commitment["arkit_file_count"]),
+                    assert_on_exit=False,
                 )
             )
             _assert_committed_generation(
@@ -4590,6 +4595,7 @@ def _promote_generation_with_exposure(
                 fsync_directories=fsync_directories,
                 cleanup_state=cleanup_state,
             )
+            _assert_held_mayo_generation(held_generation)
         finally:
             try:
                 try:
@@ -4608,6 +4614,7 @@ def _promote_generation_with_exposure(
         if (
             committed_boundary_started
             and not cleanup_state.compensation_attempted
+            and not cleanup_state.terminal_resolved
             and not journal_path.exists()
             and not _is_symlink(journal_path)
         ):
