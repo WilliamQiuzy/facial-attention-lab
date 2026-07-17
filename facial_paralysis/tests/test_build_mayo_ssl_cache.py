@@ -4629,9 +4629,9 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
             events.append(("retire", Path(source), journal.exists()))
             return original_publish(source, destination, field, **kwargs)
 
-        def observe_resolve(held, destination, field):
+        def observe_resolve(held, destination, field, **kwargs):
             events.append(("resolve", Path(held.path), journal.exists()))
-            return original_resolve(held, destination, field)
+            return original_resolve(held, destination, field, **kwargs)
 
         builder._fsync_directory = observe_fsync
         builder._publish_private_path_no_replace = observe_publish
@@ -4683,9 +4683,9 @@ def test_terminal_resolution_reports_post_boundary_generation_drift(c: Check):
         journal_close_faulted = False
         journal_descriptor = None
 
-        def resolve_then_drift(held, destination, field):
+        def resolve_then_drift(held, destination, field, **kwargs):
             nonlocal drifted
-            original_resolve(held, destination, field)
+            original_resolve(held, destination, field, **kwargs)
             cache = next((output / "mediapipe").glob("*.npz"))
             cache.chmod(0o666)
             drifted = True
@@ -8760,6 +8760,174 @@ def test_legacy_v3_rejects_ctime_drift_after_committed_preflight(c: Check):
                 journal_path.is_file() and previous_output.is_dir(),
                 "mid-cleanup legacy drift retains journal and backup evidence",
             )
+
+
+def _mutate_retired_output_evidence(
+    fixture: _CommittedMayoAuthorizerFixture,
+    token: str,
+    mutation: str,
+) -> None:
+    candidates = (
+        *fixture.output.parent.glob(
+            f".{fixture.output.name}.retired-{token}-backup"
+        ),
+        *fixture.output.parent.glob(
+            f".{fixture.output.name}.retired-{token}-output-backup"
+        ),
+    )
+    if len(candidates) != 1:
+        raise AssertionError("terminal fixture has no unique retired output evidence")
+    victim = next((candidates[0] / "mediapipe").glob("*.npz"))
+    before = victim.stat()
+    if mutation == "ctime":
+        victim.chmod(0o600)
+    elif mutation == "content":
+        payload = bytearray(victim.read_bytes())
+        payload[-1] ^= 1
+        victim.write_bytes(payload)
+        victim.chmod(0o600)
+        os.utime(
+            victim,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+            follow_symlinks=False,
+        )
+    elif mutation == "identity":
+        replacement = victim.with_name(f".{victim.name}.replacement")
+        replacement.write_bytes(victim.read_bytes())
+        replacement.chmod(0o600)
+        os.utime(
+            replacement,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+            follow_symlinks=False,
+        )
+        os.replace(replacement, victim)
+    else:
+        raise AssertionError("unknown terminal evidence mutation")
+
+
+def test_terminal_resolve_revalidates_schema_bound_output_evidence(c: Check):
+    cases = (
+        ("v3-ctime", "v3", "ctime"),
+        ("v3-content", "v3", "content"),
+        ("v3-identity", "v3", "identity"),
+        ("v4-content", "v4", "content"),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for label, schema, mutation in cases:
+            root = outer / label
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                journal_path = _interrupt_fixture_transaction(
+                    fixture,
+                    f"{label}-terminal-pre-resolve",
+                    hook_phase="committed",
+                )
+                journal = json.loads(journal_path.read_text())
+                previous_output = _previous_output_for_journal(fixture, journal)
+                if schema == "v3":
+                    _rewrite_journal_previous_output_commitment(
+                        journal_path,
+                        schema="mayo_cache_exposure_transaction_v3",
+                        commitment=_frozen_legacy_v3_private_tree_commitment(
+                            previous_output
+                        ),
+                    )
+                token = str(journal["token"])
+                original_resolve = builder._resolve_private_path_no_replace_final
+                drifted = False
+
+                def mutate_before_internal_validation(
+                    held, destination, field, **kwargs
+                ):
+                    nonlocal drifted
+                    if not drifted:
+                        _mutate_retired_output_evidence(
+                            fixture, token, mutation,
+                        )
+                        drifted = True
+                    return original_resolve(
+                        held, destination, field, **kwargs,
+                    )
+
+                builder._resolve_private_path_no_replace_final = (
+                    mutate_before_internal_validation
+                )
+                try:
+                    c.raises(
+                        lambda: _recover_fixture_transaction(fixture),
+                        ValueError,
+                        f"{label} fails before completed-journal resolution",
+                    )
+                finally:
+                    builder._resolve_private_path_no_replace_final = (
+                        original_resolve
+                    )
+                c.true(drifted and journal_path.is_file())
+
+
+def test_completed_receipt_rejects_later_archived_evidence_drift(c: Check):
+    cases = (
+        ("v3-ctime", "v3", "ctime"),
+        ("v4-content", "v4", "content"),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for label, schema, mutation in cases:
+            root = outer / label
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                journal_path = _interrupt_fixture_transaction(
+                    fixture,
+                    f"{label}-post-completion",
+                    hook_phase="committed",
+                )
+                journal = json.loads(journal_path.read_text())
+                previous_output = _previous_output_for_journal(fixture, journal)
+                if schema == "v3":
+                    _rewrite_journal_previous_output_commitment(
+                        journal_path,
+                        schema="mayo_cache_exposure_transaction_v3",
+                        commitment=_frozen_legacy_v3_private_tree_commitment(
+                            previous_output
+                        ),
+                    )
+                token = str(journal["token"])
+                original_resolve = builder._resolve_private_path_no_replace_final
+                drifted = False
+
+                def mutate_after_completed_resolve(
+                    held, destination, field, **kwargs
+                ):
+                    nonlocal drifted
+                    result = original_resolve(
+                        held, destination, field, **kwargs,
+                    )
+                    _mutate_retired_output_evidence(
+                        fixture, token, mutation,
+                    )
+                    drifted = True
+                    return result
+
+                builder._resolve_private_path_no_replace_final = (
+                    mutate_after_completed_resolve
+                )
+                try:
+                    c.raises(
+                        lambda: _recover_fixture_transaction(fixture),
+                        RuntimeError,
+                        f"{label} completed receipt blocks the same recovery call",
+                    )
+                finally:
+                    builder._resolve_private_path_no_replace_final = (
+                        original_resolve
+                    )
+                c.true(drifted and not journal_path.exists())
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    f"{label} completed receipt keeps evidence drift blocking",
+                )
 
 
 def test_new_transaction_writer_and_terminal_evidence_use_v4(c: Check):

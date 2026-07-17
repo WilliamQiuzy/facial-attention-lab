@@ -912,8 +912,12 @@ def _resolve_private_path_no_replace_final(
     held: _HeldPrivateRegularStorage,
     destination: Path,
     field: str,
+    *,
+    pre_resolve_validator: Callable[[], None] | None = None,
 ) -> None:
     """Resolve one terminal name; syscall success is the non-failing boundary."""
+    if pre_resolve_validator is not None and not callable(pre_resolve_validator):
+        raise ValueError(f"{field} pre-resolve validator is invalid")
     _assert_held_private_regular_storage(held, field)
     source = held.path
     if source.parent != destination.parent or source.name == destination.name:
@@ -947,6 +951,11 @@ def _resolve_private_path_no_replace_final(
     )
     operation.restype = ctypes.c_int
     at_fdcwd = -2  # POSIX AT_FDCWD; Python does not export it on every platform.
+    if pre_resolve_validator is not None:
+        pre_resolve_validator()
+        _assert_held_private_regular_storage(held, field)
+        if destination.exists() or _is_symlink(destination):
+            raise FileExistsError(f"{field} destination appeared before resolve")
     if operation(at_fdcwd, old, at_fdcwd, new, flag) != 0:
         error = ctypes.get_errno()
         if error in {errno.EEXIST, errno.ENOTEMPTY}:
@@ -3571,6 +3580,7 @@ def _retire_held_transaction_journal_durably(
             ),
             complete,
             "completed Mayo transaction journal",
+            pre_resolve_validator=validate_final_state,
         )
         cleanup_state.terminal_resolved = True
     except BaseException as primary:
@@ -7685,6 +7695,79 @@ def _assert_resolved_transaction_evidence(
                         forbidden_tokens,
                         "archived Mayo transaction file evidence",
                         expected_sha256=held.sha256,
+                    )
+
+        for transaction_token, payload in completed_journals.items():
+            if (
+                payload["phase"] != "committed"
+                or payload["had_output"] is not True
+            ):
+                continue
+            candidate_keys = tuple(
+                key for key in (
+                    ("committed-backup", transaction_token),
+                    ("recovered-backup", transaction_token),
+                )
+                if key in tree_evidence or key in regular_evidence
+            )
+            if (
+                len(candidate_keys) != 1
+                or candidate_keys[0] not in tree_evidence
+                or candidate_keys[0] not in regular_evidence
+            ):
+                raise ValueError(
+                    "completed Mayo journal lacks its exact prior-generation evidence"
+                )
+            evidence_key = candidate_keys[0]
+            with _hold_private_storage_tree(
+                tree_evidence[evidence_key],
+                "journal-bound archived Mayo output evidence",
+            ) as held_tree:
+                (
+                    evidence_ledger,
+                    _current_evidence_commitment,
+                    evidence_file_digests,
+                ) = _held_private_generation_storage_snapshot(
+                    held_tree,
+                    "journal-bound archived Mayo output evidence",
+                )
+                observed_output_commitment = (
+                    _private_generation_storage_commitment_from_snapshot(
+                        evidence_ledger,
+                        evidence_file_digests,
+                        transaction_schema=str(payload["schema"]),
+                    )
+                )
+                if not hmac.compare_digest(
+                    observed_output_commitment,
+                    str(payload["previous_output_storage_commitment"]),
+                ):
+                    raise ValueError(
+                        "archived Mayo output evidence changed after completion"
+                    )
+                _assert_held_private_storage_tree(
+                    held_tree,
+                    "journal-bound archived Mayo output evidence",
+                    require_file_ctime=(
+                        payload["schema"] == _MAYO_TRANSACTION_SCHEMA_V3
+                    ),
+                )
+            with _hold_private_regular_storage(
+                regular_evidence[evidence_key],
+                "journal-bound archived Mayo exposure evidence",
+            ) as held_exposure:
+                observed_exposure_commitment = (
+                    _held_private_regular_storage_commitment(
+                        held_exposure,
+                        "journal-bound archived Mayo exposure evidence",
+                    )
+                )
+                if not hmac.compare_digest(
+                    observed_exposure_commitment,
+                    str(payload["previous_exposure_storage_commitment"]),
+                ):
+                    raise ValueError(
+                        "archived Mayo exposure evidence changed after completion"
                     )
 
         if salt is not None:
