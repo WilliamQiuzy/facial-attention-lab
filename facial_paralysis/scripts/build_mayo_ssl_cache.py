@@ -6806,31 +6806,12 @@ def _hold_committed_mayo_generation(
             "committed collection manifest",
         )
         descriptors.callback(os.close, collection_descriptor)
-        collection_sha256, collection_identity = _snapshot_held_regular_digest(
-            collection_descriptor,
-            parent_descriptor=output_descriptor,
-            name="collection_manifest.json",
-            field="committed collection manifest",
-            expected_identity=collection_identity,
-            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
-        )
         internal_exposure_descriptor, internal_exposure_identity = _open_regular_at(
             output_descriptor,
             "mayo_exposure_manifest.json",
             "committed internal exposure manifest",
         )
         descriptors.callback(os.close, internal_exposure_descriptor)
-        (
-            internal_exposure_sha256,
-            internal_exposure_identity,
-        ) = _snapshot_held_regular_digest(
-            internal_exposure_descriptor,
-            parent_descriptor=output_descriptor,
-            name="mayo_exposure_manifest.json",
-            field="committed internal exposure manifest",
-            expected_identity=internal_exposure_identity,
-            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
-        )
         media_descriptor, media_identity = _open_nofollow_directory_at(
             output_descriptor, "mediapipe", "committed Mayo MediaPipe cache",
         )
@@ -6844,7 +6825,7 @@ def _hold_committed_mayo_generation(
             parent_descriptor: int,
             field: str,
             expected_count: int,
-        ) -> tuple[_HeldCommittedMayoCache, ...]:
+        ) -> tuple[tuple[str, int, tuple[int, ...]], ...]:
             names = sorted(os.listdir(parent_descriptor))
             if (
                 len(names) != expected_count
@@ -6852,34 +6833,21 @@ def _hold_committed_mayo_generation(
                        for name in names)
             ):
                 raise ValueError(f"{field} file set is incomplete or unsafe")
-            held_files: list[_HeldCommittedMayoCache] = []
+            held_files: list[tuple[str, int, tuple[int, ...]]] = []
             for name in names:
                 descriptor, identity = _open_regular_at(
                     parent_descriptor, name, field,
                 )
                 descriptors.callback(os.close, descriptor)
-                sha256, identity = _snapshot_held_regular_digest(
-                    descriptor,
-                    parent_descriptor=parent_descriptor,
-                    name=name,
-                    field=field,
-                    expected_identity=identity,
-                    max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
-                )
-                held_files.append(_HeldCommittedMayoCache(
-                    name=name,
-                    descriptor=descriptor,
-                    identity=identity,
-                    sha256=sha256,
-                ))
+                held_files.append((name, descriptor, identity))
             return tuple(held_files)
 
-        media_files = hold_cache_files(
+        media_candidates = hold_cache_files(
             media_descriptor,
             "committed Mayo MediaPipe cache",
             expected_media_count,
         )
-        arkit_files = hold_cache_files(
+        arkit_candidates = hold_cache_files(
             arkit_descriptor,
             "committed Mayo ARKit cache",
             expected_arkit_count,
@@ -6898,6 +6866,75 @@ def _hold_committed_mayo_generation(
             "committed external exposure manifest",
         )
         descriptors.callback(os.close, external_exposure_descriptor)
+        regular_identities = (
+            collection_identity,
+            internal_exposure_identity,
+            *(identity for _name, _descriptor, identity in media_candidates),
+            *(identity for _name, _descriptor, identity in arkit_candidates),
+            external_exposure_identity,
+        )
+        if (
+            len(regular_identities) + 2 > 64
+            or sum(int(identity[6]) for identity in regular_identities)
+            > _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
+        ):
+            raise ValueError(
+                "committed Mayo generation exceeds its exact-tree budget"
+            )
+
+        collection_sha256, collection_identity = _snapshot_held_regular_digest(
+            collection_descriptor,
+            parent_descriptor=output_descriptor,
+            name="collection_manifest.json",
+            field="committed collection manifest",
+            expected_identity=collection_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+        (
+            internal_exposure_sha256,
+            internal_exposure_identity,
+        ) = _snapshot_held_regular_digest(
+            internal_exposure_descriptor,
+            parent_descriptor=output_descriptor,
+            name="mayo_exposure_manifest.json",
+            field="committed internal exposure manifest",
+            expected_identity=internal_exposure_identity,
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+
+        def snapshot_cache_files(
+            candidates: tuple[tuple[str, int, tuple[int, ...]], ...],
+            parent_descriptor: int,
+            field: str,
+        ) -> tuple[_HeldCommittedMayoCache, ...]:
+            held_files: list[_HeldCommittedMayoCache] = []
+            for name, descriptor, identity in candidates:
+                sha256, identity = _snapshot_held_regular_digest(
+                    descriptor,
+                    parent_descriptor=parent_descriptor,
+                    name=name,
+                    field=field,
+                    expected_identity=identity,
+                    max_bytes=_MAX_MAYO_CACHE_RAW_BYTES,
+                )
+                held_files.append(_HeldCommittedMayoCache(
+                    name=name,
+                    descriptor=descriptor,
+                    identity=identity,
+                    sha256=sha256,
+                ))
+            return tuple(held_files)
+
+        media_files = snapshot_cache_files(
+            media_candidates,
+            media_descriptor,
+            "committed Mayo MediaPipe cache",
+        )
+        arkit_files = snapshot_cache_files(
+            arkit_candidates,
+            arkit_descriptor,
+            "committed Mayo ARKit cache",
+        )
         (
             external_exposure_sha256,
             external_exposure_identity,
@@ -6909,21 +6946,6 @@ def _hold_committed_mayo_generation(
             expected_identity=external_exposure_identity,
             max_bytes=_MAX_MAYO_MANIFEST_BYTES,
         )
-        regular_identities = (
-            collection_identity,
-            internal_exposure_identity,
-            *(item.identity for item in media_files),
-            *(item.identity for item in arkit_files),
-            external_exposure_identity,
-        )
-        if (
-            len(regular_identities) + 2 > 64
-            or sum(int(identity[6]) for identity in regular_identities)
-            > _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
-        ):
-            raise ValueError(
-                "committed Mayo generation exceeds its exact-tree budget"
-            )
         held = _HeldCommittedMayoGeneration(
             output=output,
             exposure=exposure,

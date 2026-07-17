@@ -2444,6 +2444,26 @@ def test_exact_tree_snapshot_has_shared_depth_entry_and_byte_budgets(c: Check):
         bridge_core._MAX_EXACT_TREE_TOTAL_BYTES = original_bytes
 
 
+def test_exact_tree_snapshot_accepts_frozen_mayo_generation_scale(c: Check):
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary).resolve() / "tree"
+        root.mkdir(mode=0o700)
+        for name in ("first.bin", "second.bin"):
+            path = root / name
+            with path.open("wb") as handle:
+                handle.truncate(65 * 1024 * 1024)
+            path.chmod(0o600)
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            snapshot = bridge_core._snapshot_exact_private_tree_fd(descriptor)
+        finally:
+            os.close(descriptor)
+        c.eq(
+            len(snapshot.files), 2,
+            "bridge exact-tree budget accepts a legitimate aggregate above 128 MiB",
+        )
+
+
 def test_producer_lineage_includes_feature_adapter_sources(c: Check):
     cli = _load_cli()
     required_producers = {

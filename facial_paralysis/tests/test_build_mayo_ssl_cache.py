@@ -8437,6 +8437,59 @@ def test_committed_mayo_generation_aggregate_budget_precedes_cache_read(c: Check
             c.eq(cache_reads, [], "aggregate overflow reaches no cache read")
 
 
+def test_committed_mayo_multifile_budget_precedes_every_generation_read(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            caches = (
+                next((fixture.output / "mediapipe").glob("*.npz")),
+                next((fixture.output / "arkit").glob("*.npz")),
+            )
+            for cache in caches:
+                with cache.open("r+b") as handle:
+                    handle.truncate(128 * 1024 * 1024 + 1)
+                cache.chmod(0o600)
+            generation_files = (
+                fixture.output / "collection_manifest.json",
+                fixture.output / "mayo_exposure_manifest.json",
+                fixture.exposure,
+                *tuple((fixture.output / "mediapipe").glob("*.npz")),
+                *tuple((fixture.output / "arkit").glob("*.npz")),
+            )
+            generation_inodes = {
+                (int(path.stat().st_dev), int(path.stat().st_ino))
+                for path in generation_files
+            }
+            original_pread = builder.os.pread
+            generation_reads: list[tuple[int, int]] = []
+
+            def reject_generation_pread(descriptor, count, offset):
+                info = os.fstat(descriptor)
+                identity = (int(info.st_dev), int(info.st_ino))
+                if identity in generation_inodes:
+                    generation_reads.append(identity)
+                    raise AssertionError(
+                        "aggregate-overflow generation reached os.pread"
+                    )
+                return original_pread(descriptor, count, offset)
+
+            builder.os.pread = reject_generation_pread
+            try:
+                c.raises(
+                    fixture.authorize,
+                    ValueError,
+                    "multi-file 256 MiB overflow fails before generation reads",
+                )
+            finally:
+                builder.os.pread = original_pread
+            c.eq(
+                generation_reads, [],
+                "multi-file aggregate overflow reaches no generation pread",
+            )
+
+
 def test_staged_mayo_generation_aggregate_budget_precedes_cache_validation(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
