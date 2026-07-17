@@ -2735,6 +2735,103 @@ def test_coupled_promotion_rejects_unsafe_existing_storage(c: Check):
                 alias.unlink()
 
 
+def test_coupled_promotion_requires_one_valid_existing_pair(c: Check):
+    for scenario in ("output-only", "exposure-only", "mismatched-pair"):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            root.chmod(0o700)
+            salt = b"existing-pair-validation-salt-01"
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            new_staging = _semantic_staging(
+                root,
+                ".cache.staging-new-valid-pair",
+                salt,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            previous = _semantic_staging(
+                root,
+                ".cache.previous-valid-pair",
+                salt,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            alternate = _semantic_staging(
+                root,
+                ".cache.alternate-valid-pair",
+                b"different-existing-pair-salt-000",
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            previous_collection = json.loads(
+                (previous / "collection_manifest.json").read_text()
+            )
+            previous_exposure_value = json.loads(
+                (previous / "mayo_exposure_manifest.json").read_text()
+            )
+            if scenario != "exposure-only":
+                os.replace(previous, output)
+            if scenario == "output-only":
+                pass
+            elif scenario == "exposure-only":
+                exposure.write_bytes(
+                    (previous / "mayo_exposure_manifest.json").read_bytes()
+                )
+                exposure.chmod(0o600)
+            else:
+                exposure.write_bytes(
+                    (alternate / "mayo_exposure_manifest.json").read_bytes()
+                )
+                exposure.chmod(0o600)
+            before_output = (
+                None
+                if not output.exists()
+                else {
+                    path.relative_to(output).as_posix(): path.read_bytes()
+                    for path in output.rglob("*") if path.is_file()
+                }
+            )
+            before_exposure = (
+                None if not exposure.exists() else exposure.read_bytes()
+            )
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        new_staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        salt=salt,
+                        expected_inventory_counts=previous_collection["counts"],
+                        expected_collection_classification_integrity_id=str(
+                            previous_collection["classification_integrity_id"]
+                        ),
+                        expected_classification_integrity_id=str(
+                            previous_exposure_value["classification_integrity_id"]
+                        ),
+                    ),
+                    ValueError,
+                    f"{scenario} fails before coupled replacement",
+                )
+            c.true(new_staging.is_dir(), f"{scenario} leaves staging untouched")
+            c.true(not builder._journal_path(output).exists())
+            c.eq(
+                None
+                if not output.exists()
+                else {
+                    path.relative_to(output).as_posix(): path.read_bytes()
+                    for path in output.rglob("*") if path.is_file()
+                },
+                before_output,
+                f"{scenario} leaves existing output bytes untouched",
+            )
+            c.eq(
+                None if not exposure.exists() else exposure.read_bytes(),
+                before_exposure,
+                f"{scenario} leaves existing exposure bytes untouched",
+            )
+
+
 def test_coupled_promotion_rechecks_old_tree_after_move(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -6093,7 +6190,7 @@ def _assert_key_fault_blocks_publication(
     *,
     with_existing_generation: bool = False,
 ) -> None:
-    class OneFrameCapture:
+    class SixFrameCapture:
         def __init__(self):
             self.read_count = 0
 
@@ -6103,13 +6200,13 @@ def _assert_key_fault_blocks_publication(
         def get(self, prop):
             return {
                 cv2.CAP_PROP_FPS: 60.0,
-                cv2.CAP_PROP_FRAME_COUNT: 1.0,
+                cv2.CAP_PROP_FRAME_COUNT: 6.0,
                 cv2.CAP_PROP_FRAME_WIDTH: 5.0,
                 cv2.CAP_PROP_FRAME_HEIGHT: 4.0,
             }.get(prop, 0.0)
 
         def read(self):
-            if self.read_count:
+            if self.read_count >= 6:
                 return False, None
             self.read_count += 1
             return True, np.zeros((4, 5, 3), np.uint8)
@@ -6127,7 +6224,7 @@ def _assert_key_fault_blocks_publication(
     asset = builder.VideoAsset(
         session,
         source,
-        builder.VideoMetadata(1, 60.0, 5, 4),
+        builder.VideoMetadata(6, 60.0, 5, 4),
         _sha(source.read_bytes()),
         None,
     )
@@ -6136,7 +6233,7 @@ def _assert_key_fault_blocks_publication(
         "without_video_sessions": 0, "exact_duplicate_copies_excluded": 0,
         "short_qc_clips_excluded": 0, "long_unique_videos": 1,
         "existing_complete_v2_exports": 0, "remaining_long_videos": 1,
-        "remaining_long_video_frames": 1, "arkit_only_sessions": 0,
+        "remaining_long_video_frames": 6, "arkit_only_sessions": 0,
         "arkit_trajectories": 0, "arkit_rows": 0,
         "arkit_timecode_gaps": 0, "metadata_only_sessions": 0,
     }
@@ -6162,12 +6259,8 @@ def _assert_key_fault_blocks_publication(
     key.parent.chmod(0o700)
     key.write_bytes(b"k" * 32)
     key.chmod(0o600)
-    if with_existing_generation:
-        output.mkdir(mode=0o700)
-        (output / "old-generation-sentinel").write_text("old-cache")
-        (output / "old-generation-sentinel").chmod(0o600)
-        exposure.write_text("old-exposure")
-        exposure.chmod(0o600)
+    previous_output_bytes = None
+    previous_exposure_bytes = None
 
     dependency_specs = (
         ("mediapipe", "mediapipe", "mediapipe==0.10.35"),
@@ -6263,6 +6356,14 @@ def _assert_key_fault_blocks_publication(
         def close(self):
             return None
 
+    class StableExtractor(FaultInjectingExtractor):
+        def extract_video_frame(self, _frame, _timestamp_ms):
+            return (
+                np.ones(95, dtype=np.float32),
+                None,
+                np.eye(4, dtype=np.float32),
+            )
+
     original_snapshot = builder.snapshot_provenance
     original_assert = builder.assert_provenance_unchanged
     original_promote = builder.promote_generation
@@ -6281,10 +6382,32 @@ def _assert_key_fault_blocks_publication(
 
     builder.snapshot_provenance = lambda *_args, **_kwargs: fake_provenance
     builder.assert_provenance_unchanged = lambda *_args, **_kwargs: None
-    if injection_point != "extraction":
-        builder.promote_generation = promote_with_boundary_fault
     rejected = False
     try:
+        if with_existing_generation:
+            builder._run_builder_impl(
+                data,
+                exports,
+                model,
+                key,
+                output,
+                exposure,
+                extractor_factory=lambda **_kwargs: StableExtractor(),
+                capture_factory=lambda _path: SixFrameCapture(),
+                inventory_factory=lambda *_args, **_kwargs: inventory,
+                project_root=root,
+                current_executable=expected_python,
+                expected_executable=expected_python,
+                provenance_python_executable=expected_python,
+            )
+            previous_output_bytes = {
+                path.relative_to(output).as_posix(): path.read_bytes()
+                for path in output.rglob("*")
+                if path.is_file()
+            }
+            previous_exposure_bytes = exposure.read_bytes()
+        if injection_point != "extraction":
+            builder.promote_generation = promote_with_boundary_fault
         try:
             builder._run_builder_impl(
                 data,
@@ -6294,7 +6417,7 @@ def _assert_key_fault_blocks_publication(
                 output,
                 exposure,
                 extractor_factory=lambda **_kwargs: FaultInjectingExtractor(),
-                capture_factory=lambda _path: OneFrameCapture(),
+                capture_factory=lambda _path: SixFrameCapture(),
                 inventory_factory=lambda *_args, **_kwargs: inventory,
                 project_root=root,
                 current_executable=expected_python,
@@ -6316,13 +6439,17 @@ def _assert_key_fault_blocks_publication(
     c.true(rejected, f"{fault} of the canonical key fails the build closed")
     if with_existing_generation:
         c.eq(
-            (output / "old-generation-sentinel").read_text(),
-            "old-cache",
+            {
+                path.relative_to(output).as_posix(): path.read_bytes()
+                for path in output.rglob("*")
+                if path.is_file()
+            },
+            previous_output_bytes,
             f"{fault} restores the prior canonical Mayo cache",
         )
         c.eq(
-            exposure.read_text(),
-            "old-exposure",
+            exposure.read_bytes(),
+            previous_exposure_bytes,
             f"{fault} restores the prior canonical Mayo exposure",
         )
     else:

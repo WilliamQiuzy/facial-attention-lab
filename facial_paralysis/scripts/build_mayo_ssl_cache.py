@@ -4265,6 +4265,61 @@ def _promote_generation_with_exposure(
         )
     had_output = previous_output_storage_commitment is not None
     had_exposure = previous_exposure_storage_commitment is not None
+    if had_output != had_exposure:
+        raise ValueError(
+            "previous Mayo output and exposure topology must be paired"
+        )
+    if (
+        had_output
+        and salt is not None
+        and expected_inventory_counts is not None
+        and expected_collection_classification_integrity_id is not None
+        and expected_classification_integrity_id is not None
+    ):
+        previous_collection, _previous_collection_digest = _load_public_json(
+            output / "collection_manifest.json",
+            "previous collection manifest",
+        )
+        previous_counts = _validate_collection_top(previous_collection)
+        previous_media_count = int(previous_counts["long_unique_videos"])
+        previous_arkit_count = int(previous_counts["arkit_trajectories"])
+        with _hold_committed_mayo_generation(
+            output,
+            exposure,
+            media_count=previous_media_count,
+            arkit_count=previous_arkit_count,
+        ) as held_previous:
+            previous_generation_commitment = _validate_staging(
+                output,
+                previous_media_count,
+                previous_arkit_count,
+                salt=salt,
+                expected_inventory_counts=expected_inventory_counts,
+                expected_collection_classification_integrity_id=(
+                    expected_collection_classification_integrity_id
+                ),
+                expected_classification_integrity_id=(
+                    expected_classification_integrity_id
+                ),
+                _held=held_previous,
+            )
+            _previous_external, previous_external_digest = (
+                _load_public_json_descriptor(
+                    held_previous.external_exposure_descriptor,
+                    parent_descriptor=held_previous.external_parent_descriptor,
+                    name=held_previous.exposure.name,
+                    field="previous external exposure manifest",
+                    expected_identity=held_previous.external_exposure_identity,
+                )
+            )
+            if not hmac.compare_digest(
+                previous_external_digest,
+                str(previous_generation_commitment["exposure_manifest_sha256"]),
+            ):
+                raise ValueError(
+                    "previous Mayo output and exposure manifests are unpaired"
+                )
+            _assert_held_mayo_generation(held_previous)
 
     def assert_previous_output_unchanged() -> None:
         if (output.exists() or _is_symlink(output)) != had_output:
