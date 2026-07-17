@@ -4516,6 +4516,7 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
         identity = builder._regular_snapshot(os.fstat(descriptor))
         original_fsync = builder._fsync_directory
         original_publish = builder._publish_private_path_no_replace
+        original_resolve = builder._resolve_private_path_no_replace_final
         events: list[tuple[str, Path, bool]] = []
 
         def observe_fsync(path):
@@ -4525,8 +4526,13 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
             events.append(("retire", Path(source), journal.exists()))
             return original_publish(source, destination, field, **kwargs)
 
+        def observe_resolve(held, destination, field):
+            events.append(("resolve", Path(held.path), journal.exists()))
+            return original_resolve(held, destination, field)
+
         builder._fsync_directory = observe_fsync
         builder._publish_private_path_no_replace = observe_publish
+        builder._resolve_private_path_no_replace_final = observe_resolve
         try:
             builder._retire_held_transaction_journal_durably(
                 descriptor=descriptor,
@@ -4538,6 +4544,7 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
                 cleanup_state=builder._JournalCleanupState(),
             )
         finally:
+            builder._resolve_private_path_no_replace_final = original_resolve
             builder._publish_private_path_no_replace = original_publish
             builder._fsync_directory = original_fsync
             os.close(descriptor)
@@ -4548,7 +4555,7 @@ def test_data_directories_are_durable_before_journal_retirement(c: Check):
             ("fsync", journal_parent, False),
         ], "all changed data directories are durable before journal retirement")
         c.eq(len(events), 5, "the final resolving rename is the last operation")
-        c.eq(events[-1][0], "retire")
+        c.eq(events[-1][0], "resolve")
         c.true(".retiring-" in events[-1][1].name)
         c.true(events[-1][2] is False)
 
@@ -6505,6 +6512,87 @@ def test_committed_mayo_authorizer_rejects_unsafe_archived_evidence(c: Check):
                     RuntimeError,
                     f"private content in {name} blocks authorization",
                 )
+
+
+def test_committed_mayo_authorizer_exactly_binds_archived_exposure(c: Check):
+    evidence_specs = (
+        (
+            ".mayo_ssl_cache.retired-0123456789abcdef-backup",
+            ".mayo_exposure_manifest.json.retired-0123456789abcdef-backup",
+        ),
+        (
+            ".mayo_ssl_cache.aborted-0123456789abcdef-staging",
+            ".mayo_exposure_manifest.json.aborted-0123456789abcdef-temporary",
+        ),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for index, (tree_name, exposure_name) in enumerate(evidence_specs):
+            root = outer / str(index)
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                archived_tree = fixture.output.parent / tree_name
+                archived_exposure = fixture.exposure.parent / exposure_name
+                shutil.copytree(fixture.output, archived_tree)
+                archived_tree.chmod(0o700)
+                archived_exposure.write_bytes(b"safe-but-not-json")
+                archived_exposure.chmod(0o600)
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "mode-safe exposure evidence must exactly parse and bind to its tree",
+                )
+                c.true(archived_tree.is_dir() and archived_exposure.is_file())
+
+
+def test_committed_mayo_authorizer_scans_archived_npz_expanded_bytes(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            archived_tree = fixture.output.parent / (
+                ".mayo_ssl_cache.retired-0123456789abcdef-backup"
+            )
+            archived_exposure = fixture.exposure.parent / (
+                ".mayo_exposure_manifest.json.retired-"
+                "0123456789abcdef-backup"
+            )
+            shutil.copytree(fixture.output, archived_tree)
+            archived_tree.chmod(0o700)
+            cache = next((archived_tree / "mediapipe").glob("*.npz"))
+            private_root = str(fixture.data).encode("utf-8")
+
+            def embed_private_root(payload: dict[str, np.ndarray]) -> None:
+                features = payload["features_source_rate"].copy()
+                row_bytes = features[1].view(np.uint8)
+                c.true(len(private_root) <= row_bytes.size)
+                row_bytes[:len(private_root)] = np.frombuffer(
+                    private_root, dtype=np.uint8,
+                )
+                c.true(np.isfinite(features).all())
+                payload["features_source_rate"] = features
+
+            _rewrite_npz(cache, embed_private_root)
+            _refresh_cache_integrity(archived_tree, fixture.salt_bytes, "mediapipe")
+            shutil.copy2(
+                archived_tree / "mayo_exposure_manifest.json",
+                archived_exposure,
+            )
+            archived_exposure.chmod(0o600)
+            c.true(
+                private_root not in cache.read_bytes(),
+                "the regression payload is hidden by NPZ compression",
+            )
+            with np.load(cache, allow_pickle=False) as loaded:
+                c.true(
+                    private_root in loaded["features_source_rate"].tobytes(),
+                    "the private root is present in the expanded array payload",
+                )
+            c.raises(
+                fixture.authorize,
+                RuntimeError,
+                "expanded archived NPZ payloads cannot encode a private root",
+            )
+
 
 def test_committed_mayo_authorizer_never_mixes_swapped_generation_roots(c: Check):
     with tempfile.TemporaryDirectory() as td:

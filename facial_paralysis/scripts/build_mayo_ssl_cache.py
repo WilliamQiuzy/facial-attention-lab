@@ -837,6 +837,55 @@ def _swap_private_paths_atomically(
         os.close(parent_descriptor)
 
 
+def _resolve_private_path_no_replace_final(
+    held: _HeldPrivateRegularStorage,
+    destination: Path,
+    field: str,
+) -> None:
+    """Resolve one terminal name; syscall success is the non-failing boundary."""
+    _assert_held_private_regular_storage(held, field)
+    source = held.path
+    if source.parent != destination.parent or source.name == destination.name:
+        raise ValueError(f"{field} resolving paths are inconsistent")
+    checked_parent = _require_private_directory(
+        source.parent, f"{field} resolving parent",
+    )
+    resolved_parent = checked_parent.resolve(strict=True)
+    if _directory_snapshot(os.lstat(checked_parent)) != _directory_snapshot(
+        os.lstat(resolved_parent)
+    ):
+        raise ValueError(f"{field} resolving parent identity is inconsistent")
+    if destination.exists() or _is_symlink(destination):
+        raise FileExistsError(f"{field} destination already exists")
+    library = ctypes.CDLL(None, use_errno=True)
+    old = os.fsencode(resolved_parent / source.name)
+    new = os.fsencode(resolved_parent / destination.name)
+    ctypes.set_errno(0)
+    if sys.platform == "darwin" and hasattr(library, "renameatx_np"):
+        operation = library.renameatx_np
+        flag = 0x00000004 | 0x00000010
+    elif hasattr(library, "renameat2"):
+        operation = library.renameat2
+        flag = 0x00000001
+    else:
+        raise OSError(f"{field} atomic final resolution is unavailable")
+    operation.argtypes = (
+        ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    operation.restype = ctypes.c_int
+    at_fdcwd = -2  # POSIX AT_FDCWD; Python does not export it on every platform.
+    if operation(at_fdcwd, old, at_fdcwd, new, flag) != 0:
+        error = ctypes.get_errno()
+        if error in {errno.EEXIST, errno.ENOTEMPTY}:
+            raise FileExistsError(f"{field} destination already exists")
+        raise OSError(error, os.strerror(error), destination.name)
+    # Deliberately return immediately. No stat, close, validation, or fsync may
+    # turn the already-resolved terminal rename into a reported failure.
+    return
+
+
 @dataclass(frozen=True)
 class _HeldPrivateStorageEntry:
     kind: str
@@ -3138,11 +3187,14 @@ def _retire_held_transaction_journal_durably(
         # The active retiring name is durable before this final resolving
         # rename. A crash can therefore expose either the blocking guard or the
         # completed receipt, never an unguarded ambiguous transaction.
-        _publish_private_path_no_replace(
-            retiring,
+        _resolve_private_path_no_replace_final(
+            _HeldPrivateRegularStorage(
+                path=retiring,
+                descriptor=descriptor,
+                identity=_regular_snapshot(os.fstat(descriptor)),
+            ),
             complete,
             "completed Mayo transaction journal",
-            expected_identity=identity[:7],
         )
     except BaseException as primary:
         if retired:
@@ -5480,6 +5532,49 @@ def _require_mayo_npz_headers(
             raise ValueError(f"compact cache {name} NPY header is noncanonical")
 
 
+def _assert_npz_expanded_omits_private_tokens(
+    payload: bytes,
+    tokens: tuple[bytes, ...],
+    field: str,
+) -> None:
+    """Scan each bounded decompressed NPY member, including chunk boundaries."""
+    if (
+        type(tokens) is not tuple
+        or any(type(token) is not bytes or not token for token in tokens)
+    ):
+        raise ValueError(f"{field} privacy tokens are invalid")
+    if not tokens:
+        return
+    longest = max(len(token) for token in tokens)
+    expanded_total = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload), "r") as archive:
+            for info in archive.infolist():
+                expanded_total += int(info.file_size)
+                if expanded_total > _MAX_MAYO_NPZ_EXPANDED_BYTES:
+                    raise ValueError(f"{field} exceeds its expanded byte limit")
+                remaining = int(info.file_size)
+                overlap = b""
+                with archive.open(info, "r") as member:
+                    while remaining:
+                        block = member.read(min(1024 * 1024, remaining))
+                        if not block:
+                            raise ValueError(f"{field} member is truncated")
+                        remaining -= len(block)
+                        candidate = overlap + block
+                        if any(token in candidate for token in tokens):
+                            raise ValueError(
+                                f"{field} contains a private root representation"
+                            )
+                        overlap = (
+                            candidate[-(longest - 1):] if longest > 1 else b""
+                        )
+                    if member.read(1):
+                        raise ValueError(f"{field} member exceeds its declared size")
+    except (OSError, EOFError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"{field} cannot be scanned safely") from exc
+
+
 def _validate_compact_cache(
     path: Path,
     *,
@@ -5494,6 +5589,7 @@ def _validate_compact_cache(
     parent_descriptor: int | None = None,
     held_descriptor: int | None = None,
     held_identity: tuple[int, ...] | None = None,
+    forbidden_tokens: tuple[bytes, ...] = (),
 ) -> tuple[str, int, CompactCacheSummary]:
     if (held_descriptor is None) != (held_identity is None):
         raise ValueError("compact cache held identity is incomplete")
@@ -5528,6 +5624,9 @@ def _validate_compact_cache(
         source_integrity_id=source_integrity_id,
         source_fingerprint=source_fingerprint,
         expected_schema=expected_schema,
+    )
+    _assert_npz_expanded_omits_private_tokens(
+        payload, forbidden_tokens, "compact cache expanded payload",
     )
     try:
         with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
@@ -5914,6 +6013,7 @@ def _validate_staging(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    forbidden_tokens: tuple[bytes, ...] = (),
     _held: _HeldCommittedMayoGeneration | None = None,
 ) -> dict[str, object]:
     allowed_top = {"collection_manifest.json", "mayo_exposure_manifest.json",
@@ -6227,6 +6327,7 @@ def _validate_staging(
                     held_identity=(
                         None if held_file is None else held_file.identity
                     ),
+                    forbidden_tokens=forbidden_tokens,
                 )
                 if dirname == "mediapipe":
                     if row["legacy_export_audit_status"] == "no_complete_legacy_export":
@@ -6401,16 +6502,22 @@ def _private_root_forbidden_tokens(
         )
         for value in dict.fromkeys(values):
             raw = value.encode("utf-8")
-            variants = (
-                raw,
-                raw.hex().encode("ascii"),
-                raw.hex().upper().encode("ascii"),
-                base64.b64encode(raw),
-                base64.urlsafe_b64encode(raw),
-                base64.b64encode(raw).rstrip(b"="),
-                base64.urlsafe_b64encode(raw).rstrip(b"="),
+            representations = (
+                value,
+                raw.hex(),
+                raw.hex().upper(),
+                base64.b64encode(raw).decode("ascii"),
+                base64.urlsafe_b64encode(raw).decode("ascii"),
+                base64.b64encode(raw).rstrip(b"=").decode("ascii"),
+                base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii"),
             )
-            tokens.update(token for token in variants if len(token) >= 4)
+            for representation in representations:
+                for encoding in (
+                    "utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be",
+                ):
+                    token = representation.encode(encoding)
+                    if len(token) >= 4:
+                        tokens.add(token)
     return tuple(sorted(tokens, key=lambda token: (-len(token), token)))
 
 
@@ -6496,24 +6603,30 @@ def _assert_resolved_transaction_evidence(
                 finally:
                     os.close(descriptor)
 
+        tree_evidence: dict[tuple[str, str], Path] = {}
         tree_specs = (
             (
                 output.parent,
                 f".{output.name}.retired-",
-                r"[0-9a-f]{16}-(?:backup|output-backup)",
+                r"([0-9a-f]{16})-(backup|output-backup)",
+                {"backup": "committed-backup", "output-backup": "recovered-backup"},
             ),
             (
                 output.parent,
                 f".{output.name}.aborted-",
-                r"[0-9a-f]{16}-staging",
+                r"([0-9a-f]{16})-(staging)",
+                {"staging": "aborted-generation"},
             ),
         )
-        for parent, prefix, suffix_pattern in tree_specs:
+        for parent, prefix, suffix_pattern, evidence_kinds in tree_specs:
             for artifact in parent.glob(f"{prefix}*"):
-                if re.fullmatch(
-                    suffix_pattern, artifact.name[len(prefix):],
-                ) is None:
+                match = re.fullmatch(suffix_pattern, artifact.name[len(prefix):])
+                if match is None:
                     raise ValueError("archived tree evidence name is invalid")
+                evidence_key = (evidence_kinds[match.group(2)], match.group(1))
+                if evidence_key in tree_evidence:
+                    raise ValueError("archived tree evidence generation is repeated")
+                tree_evidence[evidence_key] = artifact
                 with _hold_private_storage_tree(
                     artifact, "archived Mayo transaction tree evidence",
                 ) as held:
@@ -6528,37 +6641,31 @@ def _assert_resolved_transaction_evidence(
                                 forbidden_tokens,
                                 "archived Mayo transaction tree evidence",
                             )
-                if salt is not None:
-                    _validate_staging(
-                        artifact,
-                        salt=salt,
-                        expected_inventory_counts=expected_inventory_counts,
-                        expected_collection_classification_integrity_id=(
-                            expected_collection_classification_integrity_id
-                        ),
-                        expected_classification_integrity_id=(
-                            expected_classification_integrity_id
-                        ),
-                    )
 
+        regular_evidence: dict[tuple[str, str], Path] = {}
         regular_specs = (
             (
                 exposure.parent,
                 f".{exposure.name}.retired-",
-                r"[0-9a-f]{16}-(?:backup|exposure-backup)",
+                r"([0-9a-f]{16})-(backup|exposure-backup)",
+                {"backup": "committed-backup", "exposure-backup": "recovered-backup"},
             ),
             (
                 exposure.parent,
                 f".{exposure.name}.aborted-",
-                r"[0-9a-f]{16}-temporary",
+                r"([0-9a-f]{16})-(temporary)",
+                {"temporary": "aborted-generation"},
             ),
         )
-        for parent, prefix, suffix_pattern in regular_specs:
+        for parent, prefix, suffix_pattern, evidence_kinds in regular_specs:
             for artifact in parent.glob(f"{prefix}*"):
-                if re.fullmatch(
-                    suffix_pattern, artifact.name[len(prefix):],
-                ) is None:
+                match = re.fullmatch(suffix_pattern, artifact.name[len(prefix):])
+                if match is None:
                     raise ValueError("archived file evidence name is invalid")
+                evidence_key = (evidence_kinds[match.group(2)], match.group(1))
+                if evidence_key in regular_evidence:
+                    raise ValueError("archived file evidence generation is repeated")
+                regular_evidence[evidence_key] = artifact
                 with _hold_private_regular_storage(
                     artifact, "archived Mayo transaction file evidence",
                 ) as held:
@@ -6571,6 +6678,83 @@ def _assert_resolved_transaction_evidence(
                         forbidden_tokens,
                         "archived Mayo transaction file evidence",
                     )
+
+        if salt is not None:
+            if set(tree_evidence) != set(regular_evidence):
+                raise ValueError(
+                    "archived Mayo output and exposure evidence are not paired"
+                )
+            media_count = None
+            arkit_count = None
+            if expected_inventory_counts is not None:
+                media_count = expected_inventory_counts.get("long_unique_videos")
+                arkit_count = expected_inventory_counts.get("arkit_trajectories")
+            for evidence_key in sorted(tree_evidence):
+                archived_output = tree_evidence[evidence_key]
+                archived_exposure = regular_evidence[evidence_key]
+                with _hold_committed_mayo_generation(
+                    archived_output,
+                    archived_exposure,
+                    media_count=media_count,
+                    arkit_count=arkit_count,
+                ) as held_generation:
+                    held_regular_files = (
+                        (
+                            held_generation.collection_descriptor,
+                            held_generation.collection_identity,
+                        ),
+                        (
+                            held_generation.internal_exposure_descriptor,
+                            held_generation.internal_exposure_identity,
+                        ),
+                        *tuple(
+                            (item.descriptor, item.identity)
+                            for item in held_generation.media_files
+                        ),
+                        *tuple(
+                            (item.descriptor, item.identity)
+                            for item in held_generation.arkit_files
+                        ),
+                        (
+                            held_generation.external_exposure_descriptor,
+                            held_generation.external_exposure_identity,
+                        ),
+                    )
+                    for artifact_descriptor, artifact_identity in held_regular_files:
+                        _assert_descriptor_omits_private_tokens(
+                            artifact_descriptor,
+                            artifact_identity,
+                            forbidden_tokens,
+                            "paired archived Mayo transaction evidence",
+                        )
+                    commitment = _validate_staging(
+                        archived_output,
+                        salt=salt,
+                        expected_inventory_counts=expected_inventory_counts,
+                        expected_collection_classification_integrity_id=(
+                            expected_collection_classification_integrity_id
+                        ),
+                        expected_classification_integrity_id=(
+                            expected_classification_integrity_id
+                        ),
+                        forbidden_tokens=forbidden_tokens,
+                        _held=held_generation,
+                    )
+                    _external_value, external_digest = _load_public_json_descriptor(
+                        held_generation.external_exposure_descriptor,
+                        parent_descriptor=held_generation.external_parent_descriptor,
+                        name=held_generation.exposure.name,
+                        field="archived external Mayo exposure manifest",
+                        expected_identity=held_generation.external_exposure_identity,
+                    )
+                    if not hmac.compare_digest(
+                        external_digest,
+                        str(commitment["exposure_manifest_sha256"]),
+                    ):
+                        raise ValueError(
+                            "archived external Mayo exposure is not bound to its cache"
+                        )
+                    _assert_held_mayo_generation(held_generation)
     except (OSError, ValueError) as exc:
         raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc
 
