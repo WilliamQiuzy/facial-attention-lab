@@ -796,6 +796,47 @@ def _publish_private_path_no_replace(
         os.close(parent_descriptor)
 
 
+def _swap_private_paths_atomically(
+    first: Path,
+    second: Path,
+    field: str,
+) -> None:
+    """Atomically exchange two existing sibling names without deleting either."""
+    if first.parent != second.parent or first.name == second.name:
+        raise ValueError(f"{field} exchange paths are inconsistent")
+    parent_descriptor = _open_nofollow_directory(
+        first.parent, f"{field} exchange parent",
+    )
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        old = os.fsencode(first.name)
+        new = os.fsencode(second.name)
+        ctypes.set_errno(0)
+        if sys.platform == "darwin" and hasattr(library, "renameatx_np"):
+            operation = library.renameatx_np
+            flag = 0x00000002 | 0x00000010
+        elif hasattr(library, "renameat2"):
+            operation = library.renameat2
+            flag = 0x00000002
+        else:
+            raise OSError(f"{field} atomic exchange is unavailable")
+        operation.argtypes = (
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        operation.restype = ctypes.c_int
+        if operation(
+            parent_descriptor, old,
+            parent_descriptor, new,
+            flag,
+        ) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), second.name)
+    finally:
+        os.close(parent_descriptor)
+
+
 @dataclass(frozen=True)
 class _HeldPrivateStorageEntry:
     kind: str
@@ -945,9 +986,9 @@ def _held_private_regular_storage_commitment(
     return _private_regular_storage_commitment(held.identity[:7], digest)
 
 
-def _isolate_and_remove_held_private_tree(
+def _archive_held_private_tree(
     held: _HeldPrivateStorageTree,
-    cleanup: Path,
+    archive: Path,
     field: str,
 ) -> None:
     _assert_held_private_storage_tree(held, field)
@@ -958,53 +999,51 @@ def _isolate_and_remove_held_private_tree(
         raise ValueError(f"{field} has no held root directory")
     _publish_private_path_no_replace(
         held.root,
-        cleanup,
-        f"{field} cleanup isolation",
+        archive,
+        f"{field} archival",
         expected_identity=root_entry.identity,
     )
-    isolated = os.lstat(cleanup)
+    isolated = os.lstat(archive)
     _require_private_directory_stat(isolated, field)
     if _directory_snapshot(isolated) != root_entry.identity:
-        raise ValueError(f"{field} cleanup isolation changed identity")
-    shutil.rmtree(cleanup)
-    if cleanup.exists() or _is_symlink(cleanup):
-        raise ValueError(f"{field} cleanup isolation remains")
+        raise ValueError(f"{field} archive changed identity")
+    archived = _HeldPrivateStorageTree(root=archive, entries=held.entries)
+    _assert_held_private_storage_tree(archived, field)
     opened = os.fstat(root_entry.descriptor)
     if (
         not stat.S_ISDIR(opened.st_mode)
         or int(opened.st_dev) != root_entry.identity[0]
         or int(opened.st_ino) != root_entry.identity[1]
     ):
-        raise ValueError(f"{field} held root identity changed during removal")
+        raise ValueError(f"{field} held root identity changed during archival")
 
 
-def _isolate_and_remove_held_private_regular(
+def _archive_held_private_regular(
     held: _HeldPrivateRegularStorage,
-    cleanup: Path,
+    archive: Path,
     field: str,
 ) -> None:
     _assert_held_private_regular_storage(held, field)
     _publish_private_path_no_replace(
         held.path,
-        cleanup,
-        f"{field} cleanup isolation",
+        archive,
+        f"{field} archival",
         expected_identity=held.identity[:7],
     )
-    isolated = os.lstat(cleanup)
+    isolated = os.lstat(archive)
     _require_private_regular_stat(isolated, field)
     if _movement_stable_regular_snapshot(isolated) != held.identity[:7]:
-        raise ValueError(f"{field} cleanup isolation changed identity")
-    os.unlink(cleanup)
-    if cleanup.exists() or _is_symlink(cleanup):
-        raise ValueError(f"{field} cleanup isolation remains")
+        raise ValueError(f"{field} archive changed identity")
     opened = os.fstat(held.descriptor)
+    linked = os.lstat(archive)
     if (
         not stat.S_ISREG(opened.st_mode)
         or int(opened.st_dev) != held.identity[0]
         or int(opened.st_ino) != held.identity[1]
-        or int(opened.st_nlink) != 0
+        or int(opened.st_nlink) != 1
+        or _regular_snapshot(opened) != _regular_snapshot(linked)
     ):
-        raise ValueError(f"{field} held file was not removed")
+        raise ValueError(f"{field} held file changed during archival")
 
 
 def _require_private_generation_storage_tree(
@@ -1049,6 +1088,31 @@ def _open_exclusive_private_file(path: Path, field: str) -> int:
     except BaseException:
         os.close(descriptor)
         raise
+
+
+@contextmanager
+def _fdopen_owned(descriptor: int, mode: str, **kwargs):
+    """Wrap an owned fd while guaranteeing close if construction fails."""
+    try:
+        handle = os.fdopen(descriptor, mode, **kwargs)
+    except BaseException as primary:
+        try:
+            os.close(descriptor)
+        except BaseException as close_error:
+            raise primary from close_error
+        raise
+    try:
+        yield handle
+    finally:
+        handle.close()
+
+
+@contextmanager
+def _fdopen_duplicate(descriptor: int, mode: str, **kwargs):
+    """Duplicate an fd while guaranteeing close even if fdopen construction fails."""
+    duplicate = os.dup(descriptor)
+    with _fdopen_owned(duplicate, mode, **kwargs) as handle:
+        yield handle
 
 
 def sha256_file(path: str | Path) -> str:
@@ -2772,40 +2836,98 @@ def _write_transaction_journal(
     _require_private_directory(path.parent, "Mayo transaction journal parent")
     temporary = path.parent / f".{path.name}.tmp-{secrets.token_hex(8)}"
     serialized = json.dumps(payload, sort_keys=True, allow_nan=False) + "\n"
+    temporary_holds = ExitStack()
     try:
-        descriptor = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
+        descriptor = _open_exclusive_private_file(
+            temporary, "Mayo transaction journal temporary",
         )
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        temporary_holds.callback(os.close, descriptor)
+        with _fdopen_duplicate(descriptor, "w", encoding="utf-8") as handle:
             handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
+        new_identity = _regular_snapshot(os.fstat(descriptor))
+        linked_temporary = os.lstat(temporary)
+        _require_private_regular_stat(
+            linked_temporary, "Mayo transaction journal temporary",
+        )
+        if _regular_snapshot(linked_temporary) != new_identity:
+            raise ValueError("Mayo transaction journal temporary changed")
         if require_absent:
             _publish_private_path_no_replace(
-                temporary, path, "Mayo transaction journal",
+                temporary,
+                path,
+                "Mayo transaction journal",
+                expected_identity=new_identity[:7],
             )
         else:
-            current = os.lstat(path)
-            _require_private_regular_stat(current, "Mayo transaction journal")
-            if _regular_snapshot(current) != expected_identity:
-                raise ValueError(
-                    "Mayo transaction journal changed before phase update"
+            old_descriptor, old_identity, _old_payload = (
+                _open_transaction_journal(path)
+            )
+            journal_holds = ExitStack()
+            journal_holds.callback(os.close, old_descriptor)
+            try:
+                if old_identity != expected_identity:
+                    raise ValueError(
+                        "Mayo transaction journal changed before phase update"
+                    )
+                _swap_private_paths_atomically(
+                    temporary, path, "Mayo transaction journal phase",
                 )
-            os.replace(temporary, path)
-        published = os.lstat(path)
-        _require_private_regular_stat(published, "Mayo transaction journal")
+                linked_new = os.lstat(path)
+                linked_old = os.lstat(temporary)
+                _require_private_regular_stat(
+                    linked_new, "updated Mayo transaction journal",
+                )
+                _require_private_regular_stat(
+                    linked_old, "previous Mayo transaction journal",
+                )
+                if (
+                    _movement_stable_regular_snapshot(linked_new)
+                    != new_identity[:7]
+                    or _movement_stable_regular_snapshot(linked_old)
+                    != old_identity[:7]
+                    or _movement_stable_regular_snapshot(
+                        os.fstat(descriptor)
+                    ) != new_identity[:7]
+                    or _movement_stable_regular_snapshot(
+                        os.fstat(old_descriptor)
+                    ) != old_identity[:7]
+                ):
+                    raise ValueError(
+                        "Mayo transaction journal exchange changed identity"
+                    )
+                history = path.parent / (
+                    f".{path.name}.history-{secrets.token_hex(8)}"
+                )
+                _publish_private_path_no_replace(
+                    temporary,
+                    history,
+                    "previous Mayo transaction journal history",
+                    expected_identity=old_identity[:7],
+                )
+            finally:
+                journal_holds.__exit__(*sys.exc_info())
+        published_stat = os.lstat(path)
+        _require_private_regular_stat(published_stat, "Mayo transaction journal")
+        if (
+            _movement_stable_regular_snapshot(published_stat)
+            != new_identity[:7]
+            or _movement_stable_regular_snapshot(os.fstat(descriptor))
+            != new_identity[:7]
+        ):
+            raise ValueError("published Mayo transaction journal changed identity")
         _fsync_directory(path.parent)
         final = os.lstat(path)
         _require_private_regular_stat(final, "Mayo transaction journal")
-        if _regular_snapshot(final) != _regular_snapshot(published):
+        if _regular_snapshot(final) != _regular_snapshot(published_stat):
             raise ValueError("Mayo transaction journal changed after phase update")
         return _regular_snapshot(final)
     finally:
-        if temporary.exists() and not _is_symlink(temporary):
-            temporary.unlink()
+        # A failed private transaction is retained as owner-only evidence.
+        # In particular, never unlink a name that may have been rebound after
+        # an identity check. Successful publication leaves no temporary name.
+        temporary_holds.__exit__(*sys.exc_info())
 
 
 def _validate_transaction_journal_payload(
@@ -2911,7 +3033,7 @@ def _open_transaction_journal(
         raise
 
 
-def _assert_unlinked_transaction_journal(
+def _assert_retired_transaction_journal(
     descriptor: int,
     identity: tuple[int, ...],
 ) -> None:
@@ -2920,7 +3042,7 @@ def _assert_unlinked_transaction_journal(
         not stat.S_ISREG(opened.st_mode)
         or stat.S_IMODE(opened.st_mode) != 0o600
         or int(opened.st_uid) != os.geteuid()
-        or int(opened.st_nlink) != 0
+        or int(opened.st_nlink) != 1
         or (
             int(opened.st_dev), int(opened.st_ino), int(opened.st_mode),
             int(opened.st_uid), int(opened.st_gid), int(opened.st_size),
@@ -2930,7 +3052,7 @@ def _assert_unlinked_transaction_journal(
             identity[4], identity[6], identity[7],
         )
     ):
-        raise ValueError("the held Mayo transaction journal was not unlinked")
+        raise ValueError("the held Mayo transaction journal changed during retirement")
 
 
 @dataclass
@@ -2938,7 +3060,7 @@ class _JournalCleanupState:
     compensation_attempted: bool = False
 
 
-def _unlink_held_transaction_journal_durably(
+def _retire_held_transaction_journal_durably(
     *,
     descriptor: int,
     identity: tuple[int, ...],
@@ -2955,20 +3077,41 @@ def _unlink_held_transaction_journal_durably(
         raise ValueError("Mayo journal cleanup state is invalid")
     _assert_held_transaction_journal(descriptor, path, identity)
     validate_final_state()
-    unlinked = False
+    retired = False
+    journal_token = journal.get("token")
+    terminal_token = (
+        journal_token
+        if isinstance(journal_token, str)
+        and re.fullmatch(r"[0-9a-f]{16}", journal_token) is not None
+        else "unspecified"
+    )
+    terminal = path.parent / (
+        f".{path.name}.complete-{terminal_token}-{secrets.token_hex(8)}"
+    )
 
     def require_journal_absent() -> None:
         if path.exists() or _is_symlink(path):
-            raise ValueError("Mayo transaction journal path reappeared after unlink")
+            raise ValueError("Mayo transaction journal path reappeared after retirement")
 
     try:
         for directory in fsync_directories:
             _fsync_directory(directory)
             _assert_held_transaction_journal(descriptor, path, identity)
             validate_final_state()
-        os.unlink(path)
-        unlinked = True
-        _assert_unlinked_transaction_journal(descriptor, identity)
+        _publish_private_path_no_replace(
+            path,
+            terminal,
+            "completed Mayo transaction journal",
+            expected_identity=identity[:7],
+        )
+        retired = True
+        _assert_retired_transaction_journal(descriptor, identity)
+        linked_terminal = os.lstat(terminal)
+        _require_private_regular_stat(
+            linked_terminal, "completed Mayo transaction journal",
+        )
+        if _movement_stable_regular_snapshot(linked_terminal) != identity[:7]:
+            raise ValueError("completed Mayo transaction journal changed")
         require_journal_absent()
         validate_final_state()
         require_journal_absent()
@@ -2977,7 +3120,7 @@ def _unlink_held_transaction_journal_durably(
         validate_final_state()
         require_journal_absent()
     except BaseException as primary:
-        if unlinked:
+        if retired:
             cleanup_state.compensation_attempted = True
             try:
                 if not path.exists() and not _is_symlink(path):
@@ -3032,16 +3175,16 @@ def _recover_cache_exposure_transaction_held(
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
     output_backup_cleanup = output.parent / (
-        f".{output.name}.cleanup-{token}-output-backup"
+        f".{output.name}.retired-{token}-output-backup"
     )
     exposure_backup_cleanup = exposure.parent / (
-        f".{exposure.name}.cleanup-{token}-exposure-backup"
+        f".{exposure.name}.retired-{token}-exposure-backup"
     )
     staging_cleanup = output.parent / (
-        f".{output.name}.cleanup-{token}-staging"
+        f".{output.name}.aborted-{token}-staging"
     )
     temporary_cleanup = exposure.parent / (
-        f".{exposure.name}.cleanup-{token}-temporary"
+        f".{exposure.name}.aborted-{token}-temporary"
     )
     committed = journal["phase"] == "committed"
     _assert_held_transaction_journal(
@@ -3501,13 +3644,13 @@ def _recover_cache_exposure_transaction_held(
 
         if committed:
             if held_output_backup is not None:
-                _isolate_and_remove_held_private_tree(
+                _archive_held_private_tree(
                     held_output_backup,
                     output_backup_cleanup,
                     "committed recovery output backup",
                 )
             if held_exposure_backup is not None:
-                _isolate_and_remove_held_private_regular(
+                _archive_held_private_regular(
                     held_exposure_backup,
                     exposure_backup_cleanup,
                     "committed recovery exposure backup",
@@ -3515,12 +3658,12 @@ def _recover_cache_exposure_transaction_held(
         else:
             _assert_held_mayo_generation(held_interrupted_generation)
             if held_temporary_cleanup is not None:
-                _isolate_and_remove_held_private_regular(
+                _archive_held_private_regular(
                     held_temporary_cleanup,
                     temporary_cleanup,
                     "interrupted Mayo exposure temporary cleanup",
                 )
-            _isolate_and_remove_held_private_tree(
+            _archive_held_private_tree(
                 held_staging_cleanup,
                 staging_cleanup,
                 "interrupted Mayo staging cleanup",
@@ -3568,16 +3711,14 @@ def _recover_cache_exposure_transaction_held(
                     raise ValueError(
                         "committed recovery cleanup residue reappeared"
                     )
-            if any(present(path) for path in (
-                output_backup_cleanup, exposure_backup_cleanup,
-                staging_cleanup, temporary_cleanup,
-            )):
-                raise ValueError("Mayo recovery cleanup isolation remains")
+            # Resolved retirement/rollback evidence is intentionally immutable.
+            # It is outside the canonical generation and never consumed by an
+            # authorizer; retaining it avoids pathname-based destructive cleanup.
 
         fsync_directories = tuple(dict.fromkeys((
             output.parent, exposure.parent,
         )))
-        _unlink_held_transaction_journal_durably(
+        _retire_held_transaction_journal_durably(
             descriptor=journal_descriptor,
             identity=journal_identity,
             path=journal_path,
@@ -3684,9 +3825,20 @@ def recover_interrupted_generations(
             ),
         )
         return
-    staging = sorted(parent.glob(f".{output.name}.staging-*"), key=lambda item: item.name)
-    backups = sorted(parent.glob(f".{output.name}.backup-*"), key=lambda item: item.name)
-    if staging or backups:
+    active_residue = [
+        *parent.glob(f".{output.name}.staging-*"),
+        *parent.glob(f".{output.name}.backup-*"),
+        *parent.glob(f".{output.name}.cleanup-*"),
+        *parent.glob(f".{journal.name}.tmp-*"),
+    ]
+    if exposure_manifest_path is not None:
+        exposure = _lexical_absolute(exposure_manifest_path)
+        active_residue.extend((
+            *exposure.parent.glob(f".{exposure.name}.backup-*"),
+            *exposure.parent.glob(f".{exposure.name}.tmp-*"),
+            *exposure.parent.glob(f".{exposure.name}.cleanup-*"),
+        ))
+    if any(path.exists() or _is_symlink(path) for path in active_residue):
         raise RuntimeError(
             "journal-free Mayo generation residue requires offline review"
         )
@@ -3890,9 +4042,9 @@ def _promote_generation_with_exposure(
     output_backup = output.parent / f".{output.name}.backup-{token}"
     exposure_backup = exposure.parent / f".{exposure.name}.backup-{token}"
     exposure_temporary = exposure.parent / f".{exposure.name}.tmp-{token}"
-    output_cleanup = output.parent / f".{output.name}.cleanup-{token}-backup"
+    output_cleanup = output.parent / f".{output.name}.retired-{token}-backup"
     exposure_cleanup = exposure.parent / (
-        f".{exposure.name}.cleanup-{token}-backup"
+        f".{exposure.name}.retired-{token}-backup"
     )
     journal: dict[str, object] = {
         "schema": "mayo_cache_exposure_transaction_v3",
@@ -3985,10 +4137,10 @@ def _promote_generation_with_exposure(
         )
         source_holds.callback(os.close, temporary_descriptor)
         os.lseek(held_staging.internal_exposure_descriptor, 0, os.SEEK_SET)
-        with os.fdopen(
-            os.dup(held_staging.internal_exposure_descriptor), "rb",
-        ) as source, os.fdopen(
-            os.dup(temporary_descriptor), "wb",
+        with _fdopen_duplicate(
+            held_staging.internal_exposure_descriptor, "rb",
+        ) as source, _fdopen_duplicate(
+            temporary_descriptor, "wb",
         ) as target:
             shutil.copyfileobj(source, target)
             target.flush()
@@ -4235,7 +4387,7 @@ def _promote_generation_with_exposure(
                     raise
 
             if held_output_backup is not None:
-                _isolate_and_remove_held_private_tree(
+                _archive_held_private_tree(
                     held_output_backup,
                     output_cleanup,
                     "committed previous output backup",
@@ -4243,7 +4395,7 @@ def _promote_generation_with_exposure(
             elif output_backup.exists() or _is_symlink(output_backup):
                 raise ValueError("unexpected committed output backup appeared")
             if held_exposure_backup is not None:
-                _isolate_and_remove_held_private_regular(
+                _archive_held_private_regular(
                     held_exposure_backup,
                     exposure_cleanup,
                     "committed previous exposure backup",
@@ -4260,8 +4412,6 @@ def _promote_generation_with_exposure(
                     or exposure_backup.exists() or _is_symlink(exposure_backup)
                     or exposure_temporary.exists()
                     or _is_symlink(exposure_temporary)
-                    or output_cleanup.exists() or _is_symlink(output_cleanup)
-                    or exposure_cleanup.exists() or _is_symlink(exposure_cleanup)
                 ):
                     raise ValueError(
                         "committed Mayo cleanup residue reappeared"
@@ -4272,7 +4422,7 @@ def _promote_generation_with_exposure(
             fsync_directories = tuple(dict.fromkeys((
                 output.parent, exposure.parent,
             )))
-            _unlink_held_transaction_journal_durably(
+            _retire_held_transaction_journal_durably(
                 descriptor=committed_journal_descriptor,
                 identity=committed_journal_identity,
                 path=journal_path,
@@ -6125,12 +6275,16 @@ def _assert_committed_generation(
 
 
 def _assert_no_unresolved_generation_state(output: Path, exposure: Path) -> None:
+    journal = _journal_path(output)
     candidates = [
-        _journal_path(output),
+        journal,
+        *output.parent.glob(f".{journal.name}.tmp-*"),
         *output.parent.glob(f".{output.name}.staging-*"),
         *output.parent.glob(f".{output.name}.backup-*"),
+        *output.parent.glob(f".{output.name}.cleanup-*"),
         *exposure.parent.glob(f".{exposure.name}.backup-*"),
         *exposure.parent.glob(f".{exposure.name}.tmp-*"),
+        *exposure.parent.glob(f".{exposure.name}.cleanup-*"),
     ]
     if any(path.exists() or _is_symlink(path) for path in candidates):
         raise RuntimeError(

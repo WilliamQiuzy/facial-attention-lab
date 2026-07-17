@@ -2355,8 +2355,11 @@ def test_transaction_journal_recovers_simulated_process_interruptions(c: Check):
             c.eq(exposure.read_text(), "old-exposure",
                  f"{phase_to_interrupt} restores the matching exposure ledger")
             c.true(not journal.exists(), "successful recovery removes the journal")
-            c.true(not any(root.glob(".cache.*-*")),
-                   "successful recovery removes transaction staging/backups")
+            c.true(not any(root.glob(".cache.staging-*")))
+            c.true(not any(root.glob(".cache.backup-*")))
+            c.true(not any(root.glob(".cache.cleanup-*")))
+            c.true(any(root.glob("..cache.transaction.json.complete-*")),
+                   "successful recovery retains immutable terminal evidence")
 
 
 def test_transaction_recovers_mutation_before_completed_phase_write(c: Check):
@@ -2994,6 +2997,43 @@ def test_recovery_without_a_journal_retains_all_matching_residue(c: Check):
         c.eq(staging.stat().st_ino, staging_inode)
         c.eq(backup.stat().st_ino, backup_inode)
         c.true(not output.exists(), "journal-free recovery publishes nothing")
+
+
+def test_every_active_journal_free_residue_blocks_recovery_and_authorization(c: Check):
+    residue_names = (
+        ".cache.cleanup-untrusted",
+        "..cache.transaction.json.tmp-untrusted",
+        ".mayo_exposure_manifest.json.backup-untrusted",
+        ".mayo_exposure_manifest.json.tmp-untrusted",
+        ".mayo_exposure_manifest.json.cleanup-untrusted",
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for index, residue_name in enumerate(residue_names):
+            root = outer / str(index)
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            residue = root / residue_name
+            residue.write_text("untrusted-residue")
+            residue.chmod(0o600)
+            inode = residue.stat().st_ino
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    RuntimeError,
+                    f"{residue_name} blocks journal-free recovery",
+                )
+            c.raises(
+                lambda: builder._assert_no_unresolved_generation_state(
+                    output, exposure,
+                ),
+                RuntimeError,
+                f"{residue_name} blocks read-only authorization",
+            )
+            c.eq(residue.stat().st_ino, inode, "the residue remains untouched")
 
 
 def test_late_phase_recovery_requires_every_declared_old_backup(c: Check):
@@ -4159,7 +4199,7 @@ def test_recovery_cleanup_atomically_isolates_owned_residue(c: Check):
                 result = original_publish(source, destination, field, **kwargs)
                 source_path = Path(source)
                 destination_path = Path(destination)
-                if ".cleanup-" not in destination_path.name:
+                if ".aborted-" not in destination_path.name:
                     return result
                 if target == "staging" and source_path.name.startswith(
                     ".cache.staging-"
@@ -4286,7 +4326,7 @@ def test_committed_cleanup_atomically_isolates_held_residue(c: Check):
                 result = original_publish(source, destination, field, **kwargs)
                 source_path = Path(source)
                 destination_path = Path(destination)
-                if ".cleanup-" not in destination_path.name:
+                if ".retired-" not in destination_path.name:
                     return result
                 if target == "output" and source_path.name.startswith(
                     ".cache.backup-"
@@ -4377,7 +4417,7 @@ def test_post_unlink_fsync_failure_restores_blocking_journal(c: Check):
         c.true(journal.is_file(), "failed durable unlink restores the journal")
 
 
-def test_data_directories_are_durable_before_journal_unlink(c: Check):
+def test_data_directories_are_durable_before_journal_retirement(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         root.chmod(0o700)
@@ -4391,20 +4431,20 @@ def test_data_directories_are_durable_before_journal_unlink(c: Check):
         descriptor = os.open(journal, os.O_RDONLY)
         identity = builder._regular_snapshot(os.fstat(descriptor))
         original_fsync = builder._fsync_directory
-        original_unlink = builder.os.unlink
+        original_publish = builder._publish_private_path_no_replace
         events: list[tuple[str, Path, bool]] = []
 
         def observe_fsync(path):
             events.append(("fsync", Path(path), journal.exists()))
 
-        def observe_unlink(path):
-            events.append(("unlink", Path(path), journal.exists()))
-            return original_unlink(path)
+        def observe_publish(source, destination, field, **kwargs):
+            events.append(("retire", Path(source), journal.exists()))
+            return original_publish(source, destination, field, **kwargs)
 
         builder._fsync_directory = observe_fsync
-        builder.os.unlink = observe_unlink
+        builder._publish_private_path_no_replace = observe_publish
         try:
-            builder._unlink_held_transaction_journal_durably(
+            builder._retire_held_transaction_journal_durably(
                 descriptor=descriptor,
                 identity=identity,
                 path=journal,
@@ -4414,15 +4454,15 @@ def test_data_directories_are_durable_before_journal_unlink(c: Check):
                 cleanup_state=builder._JournalCleanupState(),
             )
         finally:
-            builder.os.unlink = original_unlink
+            builder._publish_private_path_no_replace = original_publish
             builder._fsync_directory = original_fsync
             os.close(descriptor)
         c.eq(events, [
             ("fsync", journal_parent, True),
             ("fsync", exposure_parent, True),
-            ("unlink", journal, True),
+            ("retire", journal, True),
             ("fsync", journal_parent, False),
-        ], "all changed data directories are durable before journal removal")
+        ], "all changed data directories are durable before journal retirement")
 
 
 def test_final_journal_check_is_followed_by_held_object_validation(c: Check):
@@ -4532,15 +4572,17 @@ def test_post_check_journal_swap_is_detected_after_unlink(c: Check):
         evidence = root / ".post-check-original-journal"
         real_assert = builder._assert_held_transaction_journal
         swapped = False
+        victim_inode = None
 
         def swap_after_final_check(descriptor, path, identity):
-            nonlocal swapped
+            nonlocal swapped, victim_inode
             real_assert(descriptor, path, identity)
             if output.is_dir() and (output / sentinel.name).is_file() and not swapped:
                 swapped = True
                 Path(path).rename(evidence)
                 Path(path).write_bytes(evidence.read_bytes())
                 Path(path).chmod(0o600)
+                victim_inode = Path(path).stat().st_ino
 
         builder._assert_held_transaction_journal = swap_after_final_check
         try:
@@ -4556,6 +4598,8 @@ def test_post_check_journal_swap_is_detected_after_unlink(c: Check):
             builder._assert_held_transaction_journal = real_assert
         c.true(swapped and evidence.is_file())
         c.true(journal.is_file(), "conditional-unlink failure restores journal")
+        c.eq(journal.stat().st_ino, victim_inode,
+             "terminal retirement preserves the post-check victim")
 
 
 def test_journal_path_must_remain_absent_after_exact_unlink(c: Check):
@@ -4570,7 +4614,7 @@ def test_journal_path_must_remain_absent_after_exact_unlink(c: Check):
             b"journal-reappears-salt-0123456789",
         )
         journal = root / ".cache.transaction.json"
-        original_unlinked_assert = builder._assert_unlinked_transaction_journal
+        original_unlinked_assert = builder._assert_retired_transaction_journal
         recreated = False
 
         def recreate_after_exact_unlink(descriptor, identity):
@@ -4580,7 +4624,7 @@ def test_journal_path_must_remain_absent_after_exact_unlink(c: Check):
             journal.chmod(0o600)
             recreated = True
 
-        builder._assert_unlinked_transaction_journal = recreate_after_exact_unlink
+        builder._assert_retired_transaction_journal = recreate_after_exact_unlink
         try:
             with builder.output_parent_lock(output):
                 c.raises(
@@ -4591,7 +4635,7 @@ def test_journal_path_must_remain_absent_after_exact_unlink(c: Check):
                     "journal path reappearance fails committed cleanup",
                 )
         finally:
-            builder._assert_unlinked_transaction_journal = original_unlinked_assert
+            builder._assert_retired_transaction_journal = original_unlinked_assert
         c.true(recreated)
         c.true(journal.is_file(), "reappeared journal remains blocking evidence")
 
@@ -4701,6 +4745,151 @@ def test_phase_updates_never_replace_an_unbound_journal(c: Check):
             )
         c.true(victim_inode is not None and evidence.is_file())
         c.eq(journal.stat().st_ino, victim_inode)
+
+
+def test_atomic_phase_exchange_preserves_a_post_check_journal_victim(c: Check):
+    commitment = {
+        "schema": "mayo_cache_generation_commitment_v3",
+        "collection_manifest_sha256": "1" * 64,
+        "exposure_manifest_sha256": "2" * 64,
+        "mediapipe_file_count": 1,
+        "arkit_file_count": 1,
+        "cache_file_count": 2,
+        "cache_tree_aggregate_sha256": "3" * 64,
+        "generation_aggregate_sha256": "4" * 64,
+        "inventory_counts_sha256": "5" * 64,
+        "collection_classification_integrity_id": "agg_" + "6" * 64,
+        "exposure_classification_integrity_id": "agg_" + "7" * 64,
+    }
+    payload = {
+        "schema": "mayo_cache_exposure_transaction_v3",
+        "token": "0123456789abcdef",
+        "staging_name": ".cache.staging-0123456789abcdef",
+        "exposure_name": "mayo_exposure_manifest.json",
+        "had_output": False,
+        "had_exposure": False,
+        "phase": "prepared",
+        "indeterminate": False,
+        "generation_commitment": commitment,
+        "previous_output_storage_commitment": None,
+        "previous_exposure_storage_commitment": None,
+    }
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        journal = root / ".cache.transaction.json"
+        identity = builder._write_transaction_journal(
+            journal, payload, require_absent=True,
+        )
+        evidence = root / ".held-original-journal"
+        original_swap = builder._swap_private_paths_atomically
+        victim_path = None
+        victim_inode = None
+
+        def inject_after_checks(first, second, field):
+            nonlocal victim_path, victim_inode
+            journal.rename(evidence)
+            journal.write_text("post-check-journal-victim")
+            journal.chmod(0o600)
+            victim_inode = journal.stat().st_ino
+            original_swap(first, second, field)
+            victim_path = Path(first)
+
+        updated = dict(payload)
+        updated["phase"] = "moving_old_output"
+        builder._swap_private_paths_atomically = inject_after_checks
+        try:
+            c.raises(
+                lambda: builder._write_transaction_journal(
+                    journal, updated, expected_identity=identity,
+                ),
+                ValueError,
+                "atomic phase exchange never overwrites a post-check victim",
+            )
+        finally:
+            builder._swap_private_paths_atomically = original_swap
+        c.true(evidence.is_file() and victim_path is not None)
+        c.true(victim_path.is_file(), "the exchanged victim remains named evidence")
+        c.eq(victim_path.stat().st_ino, victim_inode)
+
+
+def test_transaction_archival_never_calls_pathname_delete(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        tree = root / "tree"
+        tree.mkdir(mode=0o700)
+        member = tree / "member"
+        member.write_text("tree-evidence")
+        member.chmod(0o600)
+        regular = root / "regular"
+        regular.write_text("file-evidence")
+        regular.chmod(0o600)
+        tree_archive = root / ".tree.retired"
+        regular_archive = root / ".regular.retired"
+        original_rmtree = builder.shutil.rmtree
+        original_unlink = builder.os.unlink
+
+        def forbidden_delete(*_args, **_kwargs):
+            raise AssertionError("transaction archival attempted pathname deletion")
+
+        builder.shutil.rmtree = forbidden_delete
+        builder.os.unlink = forbidden_delete
+        try:
+            with builder._hold_private_storage_tree(tree, "tree evidence") as held:
+                builder._archive_held_private_tree(
+                    held, tree_archive, "tree evidence",
+                )
+            with builder._hold_private_regular_storage(
+                regular, "regular evidence",
+            ) as held:
+                builder._archive_held_private_regular(
+                    held, regular_archive, "regular evidence",
+                )
+        finally:
+            builder.os.unlink = original_unlink
+            builder.shutil.rmtree = original_rmtree
+        c.eq((tree_archive / "member").read_text(), "tree-evidence")
+        c.eq(regular_archive.read_text(), "file-evidence")
+
+
+def test_fdopen_duplicate_closes_both_failed_acquisitions(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "held"
+        path.write_bytes(b"held")
+        descriptor = os.open(path, os.O_RDONLY)
+        original_dup = builder.os.dup
+        original_fdopen = builder.os.fdopen
+        duplicated: list[int] = []
+
+        def record_dup(value):
+            result = original_dup(value)
+            duplicated.append(result)
+            return result
+
+        def fail_fdopen(*_args, **_kwargs):
+            raise OSError("forced fdopen construction failure")
+
+        builder.os.dup = record_dup
+        builder.os.fdopen = fail_fdopen
+        try:
+            for mode in ("rb", "wb"):
+                def acquire():
+                    with builder._fdopen_duplicate(descriptor, mode):
+                        pass
+
+                c.raises(acquire, OSError, f"failed {mode} acquisition is explicit")
+        finally:
+            builder.os.fdopen = original_fdopen
+            builder.os.dup = original_dup
+            os.close(descriptor)
+        c.eq(len(duplicated), 2)
+        for duplicate in duplicated:
+            c.raises(
+                lambda duplicate=duplicate: os.fstat(duplicate),
+                OSError,
+                "a failed fdopen construction closes its duplicate",
+            )
 
 
 def test_journal_compensation_never_replaces_a_reappearing_path(c: Check):
