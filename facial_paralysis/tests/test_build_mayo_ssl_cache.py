@@ -1129,16 +1129,22 @@ def test_extractor_lifecycle_lock_and_transaction_are_fail_closed(c: Check):
             b"failed-exposure-salt-012345678901",
         )
 
-        def fail_exposure_install(src, dst):
+        original_publish = builder._publish_private_path_no_replace
+
+        def fail_exposure_install(src, dst, field):
             if Path(dst) == exposure and ".tmp-" in Path(src).name:
                 raise OSError("forced exposure install failure")
-            return os.replace(src, dst)
+            return original_publish(src, dst, field)
 
-        with builder.output_parent_lock(output):
-            c.raises(lambda: builder.promote_generation(
-                staging3, output, exposure_manifest_path=exposure,
-                replace_func=fail_exposure_install), OSError,
-                "cache and ignored exposure manifest promote as one transaction")
+        builder._publish_private_path_no_replace = fail_exposure_install
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(lambda: builder.promote_generation(
+                    staging3, output, exposure_manifest_path=exposure,
+                ), OSError,
+                    "cache and ignored exposure manifest promote as one transaction")
+        finally:
+            builder._publish_private_path_no_replace = original_publish
         c.eq((output / "sentinel").read_text(), "new")
         c.eq(exposure.read_text(), "old-exposure")
 
@@ -3314,7 +3320,10 @@ def test_prepared_journal_binds_had_flags_to_original_snapshot(c: Check):
 def test_committed_promotion_holds_outputs_and_journal_through_cleanup(c: Check):
     with tempfile.TemporaryDirectory() as td:
         outer = Path(td)
-        for target in ("output", "exposure", "journal"):
+        for target in (
+            "output", "exposure", "output-content", "exposure-content",
+            "journal",
+        ):
             root = outer / target
             root.mkdir(mode=0o700)
             output = root / "cache"
@@ -3340,6 +3349,19 @@ def test_committed_promotion_holds_outputs_and_journal_through_cleanup(c: Check)
                     next((output / "mediapipe").glob("*.npz")).chmod(0o666)
                 elif target == "exposure":
                     exposure.chmod(0o666)
+                elif target == "output-content":
+                    cache = next((output / "mediapipe").glob("*.npz"))
+                    with cache.open("r+b") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        value = handle.read(1)
+                        handle.seek(-1, os.SEEK_END)
+                        handle.write(bytes((value[0] ^ 1,)))
+                elif target == "exposure-content":
+                    with exposure.open("r+b") as handle:
+                        handle.seek(-2, os.SEEK_END)
+                        value = handle.read(1)
+                        handle.seek(-2, os.SEEK_END)
+                        handle.write(b" " if value != b" " else b"\t")
                 else:
                     journal.rename(evidence)
                     journal.write_bytes(evidence.read_bytes())
@@ -3359,6 +3381,47 @@ def test_committed_promotion_holds_outputs_and_journal_through_cleanup(c: Check)
             c.true(journal.is_file(), "late committed failure stays blocking")
             if target == "journal":
                 c.true(evidence.is_file(), "the opened journal evidence remains")
+
+
+def test_canonical_publication_never_replaces_a_racing_destination(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            exposure = root / "mayo_exposure_manifest.json"
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-no-replace-{target}",
+                b"canonical-no-replace-salt-01234567",
+            )
+            victim_inode = None
+
+            def create_racing_destination(phase):
+                nonlocal victim_inode
+                if target == "output" and phase == "prepared":
+                    output.mkdir(mode=0o700)
+                    victim_inode = output.stat().st_ino
+                if target == "exposure" and phase == "new_output_installed":
+                    exposure.write_text("racing-exposure")
+                    exposure.chmod(0o600)
+                    victim_inode = exposure.stat().st_ino
+
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=create_racing_destination,
+                    ),
+                    ValueError,
+                    "canonical publication refuses a racing destination",
+                )
+            victim = output if target == "output" else exposure
+            c.eq(victim.stat().st_ino, victim_inode)
+            c.true((root / ".cache.transaction.json").is_file())
 
 
 def test_post_unlink_fsync_failure_restores_blocking_journal(c: Check):
@@ -3610,6 +3673,81 @@ def test_recovery_post_unlink_fsync_failure_restores_journal(c: Check):
             builder._fsync_directory = original_fsync
         c.true(faulted)
         c.true(journal.is_file(), "recovery fsync failure restores journal")
+
+
+def test_recovery_journal_close_failure_restores_journal(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-recovery-close-failure",
+            b"recovery-close-failure-salt-012345",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain recovery state")
+
+        journal = root / ".cache.transaction.json"
+        original_open = builder._open_transaction_journal
+        original_close = builder.os.close
+        journal_descriptor = None
+        faulted = False
+
+        def record_journal_descriptor(path):
+            nonlocal journal_descriptor
+            opened = original_open(path)
+            journal_descriptor = opened[0]
+            return opened
+
+        def close_then_fail(descriptor):
+            nonlocal faulted
+            original_close(descriptor)
+            if descriptor == journal_descriptor and not faulted:
+                faulted = True
+                raise OSError("forced final journal descriptor close failure")
+
+        builder._open_transaction_journal = record_journal_descriptor
+        builder.os.close = close_then_fail
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    OSError,
+                    "journal close failure remains explicit",
+                )
+        finally:
+            builder.os.close = original_close
+            builder._open_transaction_journal = original_open
+        c.true(faulted)
+        c.true(journal.is_file(), "close failure restores blocking journal")
 
 
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):

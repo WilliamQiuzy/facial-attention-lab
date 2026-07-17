@@ -11,7 +11,9 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import ctypes
 import csv
+import errno
 import fcntl
 import hashlib
 import hmac
@@ -688,6 +690,88 @@ def _private_regular_storage_commitment(
         allow_nan=False,
     ).encode("ascii")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _publish_private_path_no_replace(
+    source: Path,
+    destination: Path,
+    field: str,
+) -> None:
+    if source.parent != destination.parent or source.name == destination.name:
+        raise ValueError(f"{field} publication paths are inconsistent")
+    parent_descriptor = _open_nofollow_directory(
+        source.parent, f"{field} publication parent",
+    )
+    try:
+        staged = os.stat(
+            source.name, dir_fd=parent_descriptor, follow_symlinks=False,
+        )
+        if stat.S_ISDIR(staged.st_mode):
+            _require_private_directory_stat(staged, field)
+            expected_identity = _directory_snapshot(staged)
+            snapshot = _directory_snapshot
+        elif stat.S_ISREG(staged.st_mode):
+            _require_private_regular_stat(staged, field)
+            expected_identity = _movement_stable_regular_snapshot(staged)
+            snapshot = _movement_stable_regular_snapshot
+        else:
+            raise ValueError(f"{field} staged object is unsafe")
+        try:
+            os.stat(
+                destination.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"{field} destination already exists")
+        library = ctypes.CDLL(None, use_errno=True)
+        old = os.fsencode(source.name)
+        new = os.fsencode(destination.name)
+        ctypes.set_errno(0)
+        if sys.platform == "darwin" and hasattr(library, "renameatx_np"):
+            operation = library.renameatx_np
+            flag = 0x00000004 | 0x00000010
+        elif hasattr(library, "renameat2"):
+            operation = library.renameat2
+            flag = 0x00000001
+        else:
+            raise OSError(f"{field} atomic no-replace publication is unavailable")
+        operation.argtypes = (
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        operation.restype = ctypes.c_int
+        if operation(
+            parent_descriptor, old,
+            parent_descriptor, new,
+            flag,
+        ) != 0:
+            error = ctypes.get_errno()
+            if error in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise FileExistsError(f"{field} destination already exists")
+            raise OSError(error, os.strerror(error), destination.name)
+        published = os.stat(
+            destination.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if snapshot(published) != expected_identity:
+            raise ValueError(f"{field} changed during no-replace publication")
+        try:
+            os.stat(
+                source.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(f"{field} staging name remains after publication")
+    finally:
+        os.close(parent_descriptor)
 
 
 @dataclass(frozen=True)
@@ -3059,34 +3143,45 @@ def _recover_cache_exposure_transaction(
     if not journal_path.exists() and not _is_symlink(journal_path):
         return
     descriptor, identity, journal = _open_transaction_journal(journal_path)
+    primary: BaseException | None = None
     try:
-        try:
-            _recover_cache_exposure_transaction_held(
-                output,
-                exposure,
-                journal_path=journal_path,
-                journal_descriptor=descriptor,
-                journal_identity=identity,
-                journal=journal,
-                salt=salt,
-                expected_inventory_counts=expected_inventory_counts,
-                expected_collection_classification_integrity_id=(
-                    expected_collection_classification_integrity_id
-                ),
-                expected_classification_integrity_id=(
-                    expected_classification_integrity_id
-                ),
-                allow_indeterminate=allow_indeterminate,
-            )
-        except BaseException as primary:
-            if not journal_path.exists() and not _is_symlink(journal_path):
-                try:
-                    _write_transaction_journal(journal_path, journal)
-                except BaseException as restoration_error:
-                    raise primary from restoration_error
-            raise
-    finally:
+        _recover_cache_exposure_transaction_held(
+            output,
+            exposure,
+            journal_path=journal_path,
+            journal_descriptor=descriptor,
+            journal_identity=identity,
+            journal=journal,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
+            allow_indeterminate=allow_indeterminate,
+        )
+    except BaseException as exc:
+        primary = exc
+    close_error: BaseException | None = None
+    try:
         os.close(descriptor)
+    except BaseException as exc:
+        close_error = exc
+    if primary is not None or close_error is not None:
+        if not journal_path.exists() and not _is_symlink(journal_path):
+            try:
+                _write_transaction_journal(journal_path, journal)
+            except BaseException as restoration_error:
+                if primary is not None:
+                    raise primary.with_traceback(primary.__traceback__) from restoration_error
+                raise close_error from restoration_error
+        if primary is not None:
+            if close_error is not None:
+                raise primary.with_traceback(primary.__traceback__) from close_error
+            raise primary.with_traceback(primary.__traceback__)
+        raise close_error
 
 
 def recover_interrupted_generations(
@@ -3440,10 +3535,14 @@ def _promote_generation_with_exposure(
                 raise
             _fsync_directory(exposure.parent)
             set_phase("old_exposure_moved")
-        replace_func(staging, output)
+        _publish_private_path_no_replace(
+            staging, output, "Mayo cache generation",
+        )
         _fsync_directory(output.parent)
         set_phase("new_output_installed")
-        replace_func(exposure_temporary, exposure)
+        _publish_private_path_no_replace(
+            exposure_temporary, exposure, "Mayo exposure manifest",
+        )
         _fsync_directory(exposure.parent)
         set_phase("new_exposure_installed")
         if continuity_validator is not None:
@@ -3468,9 +3567,20 @@ def _promote_generation_with_exposure(
             committed_journal_identity,
             committed_journal,
         ) = _open_transaction_journal(journal_path)
+        committed_holds = ExitStack()
         try:
             if committed_journal != journal:
                 raise ValueError("committed journal bytes changed after write")
+            held_output = committed_holds.enter_context(
+                _hold_private_storage_tree(
+                    output, "committed Mayo generation cleanup",
+                )
+            )
+            held_exposure = committed_holds.enter_context(
+                _hold_private_regular_storage(
+                    exposure, "committed Mayo exposure cleanup",
+                )
+            )
             if phase_hook is not None:
                 phase_hook("committed")
             if continuity_validator is not None:
@@ -3492,49 +3602,41 @@ def _promote_generation_with_exposure(
                     committed_boundary_started = False
                     raise
 
-            with ExitStack() as committed_holds:
-                held_output = committed_holds.enter_context(
-                    _hold_private_storage_tree(
-                        output, "committed Mayo generation cleanup",
-                    )
-                )
-                held_exposure = committed_holds.enter_context(
-                    _hold_private_regular_storage(
-                        exposure, "committed Mayo exposure cleanup",
-                    )
-                )
-                _remove_real_tree(output_backup)
-                _unlink_regular_if_present(
-                    exposure_backup, "committed exposure backup",
-                )
-                _unlink_regular_if_present(
-                    exposure_temporary, "committed exposure temporary",
-                )
+            _remove_real_tree(output_backup)
+            _unlink_regular_if_present(
+                exposure_backup, "committed exposure backup",
+            )
+            _unlink_regular_if_present(
+                exposure_temporary, "committed exposure temporary",
+            )
 
-                def validate_committed_final_state() -> None:
-                    _assert_held_private_storage_tree(
-                        held_output, "committed Mayo generation cleanup",
-                    )
-                    _assert_held_private_regular_storage(
-                        held_exposure, "committed Mayo exposure cleanup",
-                    )
-                    if continuity_validator is not None:
-                        continuity_validator()
-
-                fsync_directories = tuple(dict.fromkeys((
-                    output.parent, exposure.parent,
-                )))
-                _unlink_held_transaction_journal_durably(
-                    descriptor=committed_journal_descriptor,
-                    identity=committed_journal_identity,
-                    path=journal_path,
-                    journal=journal,
-                    validate_final_state=validate_committed_final_state,
-                    fsync_directories=fsync_directories,
+            def validate_committed_final_state() -> None:
+                _assert_held_private_storage_tree(
+                    held_output, "committed Mayo generation cleanup",
                 )
+                _assert_held_private_regular_storage(
+                    held_exposure, "committed Mayo exposure cleanup",
+                )
+                if continuity_validator is not None:
+                    continuity_validator()
+
+            fsync_directories = tuple(dict.fromkeys((
+                output.parent, exposure.parent,
+            )))
+            _unlink_held_transaction_journal_durably(
+                descriptor=committed_journal_descriptor,
+                identity=committed_journal_identity,
+                path=journal_path,
+                journal=journal,
+                validate_final_state=validate_committed_final_state,
+                fsync_directories=fsync_directories,
+            )
         finally:
-            if committed_journal_descriptor is not None:
-                os.close(committed_journal_descriptor)
+            try:
+                committed_holds.__exit__(*sys.exc_info())
+            finally:
+                if committed_journal_descriptor is not None:
+                    os.close(committed_journal_descriptor)
     except Exception as primary_error:
         if (
             committed_boundary_started
