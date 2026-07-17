@@ -1026,7 +1026,11 @@ class _HeldPrivateStorageTree:
 def _assert_held_private_storage_tree(
     held: _HeldPrivateStorageTree,
     field: str,
+    *,
+    require_file_ctime: bool = False,
 ) -> None:
+    if type(require_file_ctime) is not bool:
+        raise ValueError(f"{field} ctime authority is invalid")
     for entry in held.entries:
         entry_path = held.root.joinpath(*entry.parts)
         opened = os.fstat(entry.descriptor)
@@ -1046,15 +1050,53 @@ def _assert_held_private_storage_tree(
                 entry_path.parent, f"{field} file parent",
             )
             try:
-                _revalidate_ctime_only_held_regular(
-                    entry.descriptor,
-                    parent_descriptor=parent_descriptor,
-                    name=entry_path.name,
-                    field=field,
-                    expected_identity=entry.identity,
-                    expected_sha256=entry.sha256,
-                    max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
-                )
+                if require_file_ctime:
+                    linked_before = os.stat(
+                        entry_path.name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                    _require_private_regular_stat(opened, field)
+                    _require_private_regular_stat(linked_before, field)
+                    if (
+                        _regular_snapshot(opened) != entry.identity
+                        or _regular_snapshot(linked_before) != entry.identity
+                    ):
+                        raise ValueError(f"{field} changed while held")
+                    observed_sha256, _size = (
+                        _sha256_held_private_regular_file(
+                            entry,
+                            field,
+                            max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+                            expected_sha256=entry.sha256,
+                        )
+                    )
+                    opened_after = os.fstat(entry.descriptor)
+                    linked_after = os.stat(
+                        entry_path.name,
+                        dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                    _require_private_regular_stat(opened_after, field)
+                    _require_private_regular_stat(linked_after, field)
+                    if (
+                        _regular_snapshot(opened_after) != entry.identity
+                        or _regular_snapshot(linked_after) != entry.identity
+                        or not hmac.compare_digest(
+                            observed_sha256, entry.sha256,
+                        )
+                    ):
+                        raise ValueError(f"{field} changed while held")
+                else:
+                    _revalidate_ctime_only_held_regular(
+                        entry.descriptor,
+                        parent_descriptor=parent_descriptor,
+                        name=entry_path.name,
+                        field=field,
+                        expected_identity=entry.identity,
+                        expected_sha256=entry.sha256,
+                        max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+                    )
             finally:
                 os.close(parent_descriptor)
         elif snapshot(opened) != entry.identity or snapshot(linked) != entry.identity:
@@ -1216,8 +1258,12 @@ def _archive_held_private_tree(
     held: _HeldPrivateStorageTree,
     archive: Path,
     field: str,
+    *,
+    require_file_ctime: bool = False,
 ) -> _HeldPrivateStorageTree:
-    _assert_held_private_storage_tree(held, field)
+    _assert_held_private_storage_tree(
+        held, field, require_file_ctime=require_file_ctime,
+    )
     root_entry = next(
         (entry for entry in held.entries if entry.parts == ()), None,
     )
@@ -1234,7 +1280,9 @@ def _archive_held_private_tree(
     if _directory_snapshot(isolated) != root_entry.identity:
         raise ValueError(f"{field} archive changed identity")
     archived = _HeldPrivateStorageTree(root=archive, entries=held.entries)
-    _assert_held_private_storage_tree(archived, field)
+    _assert_held_private_storage_tree(
+        archived, field, require_file_ctime=require_file_ctime,
+    )
     opened = os.fstat(root_entry.descriptor)
     if (
         not stat.S_ISDIR(opened.st_mode)
@@ -3594,6 +3642,9 @@ def _recover_cache_exposure_transaction_held(
         f".{exposure.name}.aborted-{token}-temporary"
     )
     committed = journal["phase"] == "committed"
+    require_legacy_file_ctime = (
+        journal["schema"] == _MAYO_TRANSACTION_SCHEMA_V3
+    )
     _assert_held_transaction_journal(
         journal_descriptor, journal_path, journal_identity, journal_sha256,
     )
@@ -3635,7 +3686,10 @@ def _recover_cache_exposure_transaction_held(
                 or observed_parts != expected_parts
                 or (
                     observed_identity != expected_identity
-                    if expected_kind == "directory"
+                    if (
+                        expected_kind == "directory"
+                        or require_legacy_file_ctime
+                    )
                     else observed_identity[:-1] != expected_identity[:-1]
                 )
                 for (
@@ -3668,7 +3722,13 @@ def _recover_cache_exposure_transaction_held(
                     parent_descriptor, file_path.name, field,
                 )
                 try:
-                    if identity[:-1] != expected_identities[parts][:-1]:
+                    expected_identity = expected_identities[parts]
+                    identity_matches = (
+                        identity == expected_identity
+                        if require_legacy_file_ctime
+                        else identity[:-1] == expected_identity[:-1]
+                    )
+                    if not identity_matches:
                         raise ValueError(
                             f"{field} changed after recovery preflight"
                         )
@@ -3681,6 +3741,22 @@ def _recover_cache_exposure_transaction_held(
                         expected_sha256=expected_digest,
                         max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
                     )
+                    if require_legacy_file_ctime:
+                        opened_after = _regular_snapshot(
+                            os.fstat(descriptor)
+                        )
+                        linked_after = _regular_snapshot(os.stat(
+                            file_path.name,
+                            dir_fd=parent_descriptor,
+                            follow_symlinks=False,
+                        ))
+                        if (
+                            opened_after != expected_identity
+                            or linked_after != expected_identity
+                        ):
+                            raise ValueError(
+                                f"{field} changed after recovery preflight"
+                            )
                 finally:
                     os.close(descriptor)
             finally:
@@ -4201,6 +4277,7 @@ def _recover_cache_exposure_transaction_held(
                     held_output_backup,
                     output_backup_cleanup,
                     "committed recovery output backup",
+                    require_file_ctime=require_legacy_file_ctime,
                 )
             if held_exposure_backup is not None:
                 archived_exposure_backup = _archive_held_private_regular(
@@ -4232,7 +4309,9 @@ def _recover_cache_exposure_transaction_held(
                         "final recovered output generation",
                     )
                     _assert_held_private_storage_tree(
-                        held_output, "final recovered output generation",
+                        held_output,
+                        "final recovered output generation",
+                        require_file_ctime=require_legacy_file_ctime,
                     )
                 elif present(output):
                     raise ValueError(
@@ -4269,7 +4348,9 @@ def _recover_cache_exposure_transaction_held(
             # read-only authorization, and avoids pathname-based destruction.
             if archived_output_backup is not None:
                 _assert_held_private_storage_tree(
-                    archived_output_backup, "retired recovery output backup",
+                    archived_output_backup,
+                    "retired recovery output backup",
+                    require_file_ctime=require_legacy_file_ctime,
                 )
             if archived_exposure_backup is not None:
                 _assert_held_private_regular_storage(

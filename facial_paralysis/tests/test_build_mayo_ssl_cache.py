@@ -8656,6 +8656,112 @@ def test_legacy_v3_identity_drift_fails_closed(c: Check):
             c.eq(journal_path.stat().st_ino, journal_inode)
 
 
+def test_legacy_v3_rejects_ctime_drift_after_rollback_preflight(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            journal_path = _interrupt_fixture_transaction(
+                fixture,
+                "v3-mid-rollback-ctime",
+                hook_phase="old_output_moved",
+            )
+            journal = json.loads(journal_path.read_text())
+            previous_output = _previous_output_for_journal(fixture, journal)
+            _rewrite_journal_previous_output_commitment(
+                journal_path,
+                schema="mayo_cache_exposure_transaction_v3",
+                commitment=_frozen_legacy_v3_private_tree_commitment(
+                    previous_output
+                ),
+            )
+            victim = next((previous_output / "mediapipe").glob("*.npz"))
+            before = builder._regular_snapshot(victim.stat())
+            original_publish = builder._publish_private_path_no_replace
+            drifted = False
+
+            def drift_before_restore(source, destination, field, **kwargs):
+                nonlocal drifted
+                if field == "restored previous output generation" and not drifted:
+                    victim.chmod(0o600)
+                    drifted = True
+                return original_publish(source, destination, field, **kwargs)
+
+            builder._publish_private_path_no_replace = drift_before_restore
+            try:
+                c.raises(
+                    lambda: _recover_fixture_transaction(fixture),
+                    ValueError,
+                    "v3 rechecks full identity after rollback storage mutation",
+                )
+            finally:
+                builder._publish_private_path_no_replace = original_publish
+            after = builder._regular_snapshot(
+                next((fixture.output / "mediapipe").glob("*.npz")).stat()
+            )
+            c.true(
+                drifted
+                and before[:-1] == after[:-1]
+                and before[-1] != after[-1],
+                "rollback adversary changes only ctime after legacy preflight",
+            )
+            c.true(
+                journal_path.is_file(),
+                "mid-rollback legacy drift retains blocking journal evidence",
+            )
+
+
+def test_legacy_v3_rejects_ctime_drift_after_committed_preflight(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            journal_path = _interrupt_fixture_transaction(
+                fixture,
+                "v3-mid-committed-ctime",
+                hook_phase="committed",
+            )
+            journal = json.loads(journal_path.read_text())
+            previous_output = _previous_output_for_journal(fixture, journal)
+            _rewrite_journal_previous_output_commitment(
+                journal_path,
+                schema="mayo_cache_exposure_transaction_v3",
+                commitment=_frozen_legacy_v3_private_tree_commitment(
+                    previous_output
+                ),
+            )
+            victim = next((previous_output / "mediapipe").glob("*.npz"))
+            before = builder._regular_snapshot(victim.stat())
+            original_archive = builder._archive_held_private_tree
+            drifted = False
+
+            def drift_before_committed_archive(held, archive, field, **kwargs):
+                nonlocal drifted
+                if field == "committed recovery output backup" and not drifted:
+                    victim.chmod(0o600)
+                    drifted = True
+                return original_archive(held, archive, field, **kwargs)
+
+            builder._archive_held_private_tree = drift_before_committed_archive
+            try:
+                c.raises(
+                    lambda: _recover_fixture_transaction(fixture),
+                    ValueError,
+                    "v3 rechecks full identity before committed backup cleanup",
+                )
+            finally:
+                builder._archive_held_private_tree = original_archive
+            after = builder._regular_snapshot(victim.stat())
+            c.true(
+                drifted
+                and before[:-1] == after[:-1]
+                and before[-1] != after[-1],
+                "committed adversary changes only ctime after legacy preflight",
+            )
+            c.true(
+                journal_path.is_file() and previous_output.is_dir(),
+                "mid-cleanup legacy drift retains journal and backup evidence",
+            )
+
+
 def test_new_transaction_writer_and_terminal_evidence_use_v4(c: Check):
     observed: list[tuple[str, str]] = []
     with tempfile.TemporaryDirectory() as td:
