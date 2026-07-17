@@ -168,6 +168,8 @@ _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = 128 * 1024 * 1024
 _MAX_NPY_HEADER_BYTES = 4096
 _MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES = 1024
 _MAX_MAYO_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAYO_TRANSACTION_SCHEMA_V3 = "mayo_cache_exposure_transaction_v3"
+_MAYO_TRANSACTION_SCHEMA_V4 = "mayo_cache_exposure_transaction_v4"
 
 
 class InventoryDriftError(ValueError):
@@ -668,27 +670,47 @@ def _held_private_generation_storage_snapshot(
         remaining_bytes -= size
         file_digests.append((entry.parts, digest))
     _assert_held_private_storage_tree(held, field)
-    commitment_ledger = tuple(
-        (
-            kind,
-            parts,
-            identity if kind == "directory" else identity[:-1],
-        )
-        for kind, parts, identity in ledger
+    commitment = _private_generation_storage_commitment_from_snapshot(
+        ledger,
+        tuple(file_digests),
+        transaction_schema=_MAYO_TRANSACTION_SCHEMA_V4,
     )
+    return ledger, commitment, tuple(file_digests)
+
+
+def _private_generation_storage_commitment_from_snapshot(
+    ledger: tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
+    file_digests: tuple[tuple[tuple[str, ...], str], ...],
+    *,
+    transaction_schema: str,
+) -> str:
+    if transaction_schema == _MAYO_TRANSACTION_SCHEMA_V3:
+        commitment_ledger = ledger
+    elif transaction_schema == _MAYO_TRANSACTION_SCHEMA_V4:
+        commitment_ledger = tuple(
+            (
+                kind,
+                parts,
+                identity if kind == "directory" else identity[:-1],
+            )
+            for kind, parts, identity in ledger
+        )
+    else:
+        raise ValueError("Mayo transaction storage commitment version is unknown")
     encoded = json.dumps(
         {
             # ctime is not a storage-content contract on macOS: provenance xattrs
-            # may update it asynchronously.  Every other identity field plus the
-            # complete per-file SHA-256 remains committed below.
+            # may update it asynchronously in v4.  The immutable v3 branch above
+            # retains the exact legacy full-identity encoding for crash recovery.
+            # Both versions bind the complete per-file SHA-256 below.
             "ledger": commitment_ledger,
-            "file_sha256": tuple(file_digests),
+            "file_sha256": file_digests,
         },
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    return ledger, hashlib.sha256(encoded).hexdigest(), tuple(file_digests)
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _sha256_private_regular_file(
@@ -3212,7 +3234,10 @@ def _validate_transaction_journal_payload(
     if not isinstance(payload, dict) or set(payload) != required:
         raise ValueError("Mayo transaction journal has a noncanonical schema")
     if (
-        payload["schema"] != "mayo_cache_exposure_transaction_v3"
+        payload["schema"] not in {
+            _MAYO_TRANSACTION_SCHEMA_V3,
+            _MAYO_TRANSACTION_SCHEMA_V4,
+        }
         or not isinstance(payload["token"], str)
         or re.fullmatch(r"[0-9a-f]{16}", payload["token"]) is None
         or not isinstance(payload["staging_name"], str)
@@ -3767,8 +3792,15 @@ def _recover_cache_exposure_transaction_held(
                 ) = _held_private_generation_storage_snapshot(
                     held_output_source, "recoverable previous output generation",
                 )
+            schema_bound_output_commitment = (
+                _private_generation_storage_commitment_from_snapshot(
+                    output_ledger,
+                    output_file_digests,
+                    transaction_schema=str(journal["schema"]),
+                )
+            )
             if not hmac.compare_digest(
-                output_storage_commitment,
+                schema_bound_output_commitment,
                 str(journal["previous_output_storage_commitment"]),
             ):
                 raise ValueError(
@@ -3989,10 +4021,19 @@ def _recover_cache_exposure_transaction_held(
                         output_backup, "committed recovery output backup",
                     )
                 )
-                _ledger, observed_commitment = (
-                    _held_private_generation_storage_commitment(
-                        held_output_backup,
-                        "committed recovery output backup",
+                (
+                    backup_ledger,
+                    _current_commitment,
+                    backup_file_digests,
+                ) = _held_private_generation_storage_snapshot(
+                    held_output_backup,
+                    "committed recovery output backup",
+                )
+                observed_commitment = (
+                    _private_generation_storage_commitment_from_snapshot(
+                        backup_ledger,
+                        backup_file_digests,
+                        transaction_schema=str(journal["schema"]),
                     )
                 )
                 if not hmac.compare_digest(
@@ -4729,7 +4770,7 @@ def _promote_generation_with_exposure(
         f".{exposure.name}.retired-{token}-backup"
     )
     journal: dict[str, object] = {
-        "schema": "mayo_cache_exposure_transaction_v3",
+        "schema": _MAYO_TRANSACTION_SCHEMA_V4,
         "token": token,
         "staging_name": staging.name,
         "exposure_name": exposure.name,

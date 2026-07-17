@@ -2998,6 +2998,11 @@ def test_coupled_promotion_retains_hardlinked_old_tree_evidence(c: Check):
         c.true(journal.is_file(), "hardlink drift retains transaction evidence")
         retained = json.loads(journal.read_text())
         c.true(retained["indeterminate"] is True)
+        c.eq(
+            retained["schema"],
+            "mayo_cache_exposure_transaction_v4",
+            "indeterminate evidence keeps the writer's v4 algorithm binding",
+        )
         backup = root / f".cache.backup-{retained['token']}"
         retained_sentinel = backup / sentinel.name
         c.true(not output.exists() and backup.is_dir() and alias.is_file())
@@ -8161,6 +8166,549 @@ def test_held_canonical_mayo_key_rejects_same_stat_content_forgery(c: Check):
                     key,
                     ns=(restored.st_atime_ns, held.identity[7]),
                     follow_symlinks=False,
+                )
+
+
+def _frozen_legacy_v3_private_tree_commitment(root: Path) -> str:
+    """Reproduce the pre-bf8adbd storage commitment without production helpers."""
+    root_info = os.lstat(root)
+    records: list[tuple[str, tuple[str, ...], tuple[int, ...]]] = [(
+        "directory",
+        (),
+        (
+            int(root_info.st_dev), int(root_info.st_ino), int(root_info.st_mode),
+            int(root_info.st_uid), int(root_info.st_gid), int(root_info.st_nlink),
+        ),
+    )]
+    file_digests: list[tuple[tuple[str, ...], str]] = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for child in sorted(directory.iterdir(), key=lambda path: path.name):
+            info = os.lstat(child)
+            parts = child.relative_to(root).parts
+            if stat.S_ISDIR(info.st_mode):
+                records.append((
+                    "directory",
+                    parts,
+                    (
+                        int(info.st_dev), int(info.st_ino), int(info.st_mode),
+                        int(info.st_uid), int(info.st_gid), int(info.st_nlink),
+                    ),
+                ))
+                pending.append(child)
+            elif stat.S_ISREG(info.st_mode):
+                records.append((
+                    "file",
+                    parts,
+                    (
+                        int(info.st_dev), int(info.st_ino), int(info.st_mode),
+                        int(info.st_uid), int(info.st_gid), int(info.st_nlink),
+                        int(info.st_size), int(info.st_mtime_ns),
+                        int(info.st_ctime_ns),
+                    ),
+                ))
+                file_digests.append((parts, _sha(child.read_bytes())))
+            else:
+                raise AssertionError("legacy fixture contains unsafe storage")
+    encoded = json.dumps(
+        {
+            "ledger": tuple(sorted(records, key=lambda item: (item[1], item[0]))),
+            "file_sha256": tuple(sorted(file_digests)),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def test_legacy_v3_old_output_moved_journal_recovers(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            staging = _semantic_staging(
+                fixture.output.parent,
+                ".mayo_ssl_cache.staging-legacy-v3-regression",
+                fixture.salt_bytes,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+
+            def interrupt(phase: str) -> None:
+                if phase == "old_output_moved":
+                    raise SimulatedProcessDeath(phase)
+
+            try:
+                with builder.output_parent_lock(fixture.output):
+                    builder.promote_generation(
+                        staging,
+                        fixture.output,
+                        exposure_manifest_path=fixture.exposure,
+                        phase_hook=interrupt,
+                        salt=fixture.salt_bytes,
+                        expected_inventory_counts=fixture.counts,
+                        expected_collection_classification_integrity_id=str(
+                            fixture.collection["classification_integrity_id"]
+                        ),
+                        expected_classification_integrity_id=str(
+                            fixture.exposure_value["classification_integrity_id"]
+                        ),
+                    )
+            except SimulatedProcessDeath:
+                pass
+            else:
+                raise AssertionError("legacy fixture did not retain a transaction")
+
+            journal_path = fixture.output.parent / (
+                f".{fixture.output.name}.transaction.json"
+            )
+            journal = json.loads(journal_path.read_text())
+            backup = fixture.output.parent / (
+                f".{fixture.output.name}.backup-{journal['token']}"
+            )
+            journal["schema"] = "mayo_cache_exposure_transaction_v3"
+            journal["previous_output_storage_commitment"] = (
+                _frozen_legacy_v3_private_tree_commitment(backup)
+            )
+            journal_path.write_text(
+                json.dumps(journal, sort_keys=True, allow_nan=False) + "\n",
+                encoding="utf-8",
+            )
+            journal_path.chmod(0o600)
+
+            with builder.output_parent_lock(fixture.output):
+                builder.recover_interrupted_generations(
+                    fixture.output,
+                    exposure_manifest_path=fixture.exposure,
+                    salt=fixture.salt_bytes,
+                    expected_inventory_counts=fixture.counts,
+                    expected_collection_classification_integrity_id=str(
+                        fixture.collection["classification_integrity_id"]
+                    ),
+                    expected_classification_integrity_id=str(
+                        fixture.exposure_value["classification_integrity_id"]
+                    ),
+                    private_roots=(fixture.data, fixture.exports),
+                )
+            c.true(not journal_path.exists(), "valid legacy journal is retired")
+            c.eq(
+                fixture.authorize().commitment["schema"],
+                "mayo_cache_generation_commitment_v3",
+                "legacy rollback restores the complete authorized generation",
+            )
+
+
+class _RetainedMayoTransaction(BaseException):
+    pass
+
+
+def _fixture_transaction_kwargs(
+    fixture: _CommittedMayoAuthorizerFixture,
+) -> dict[str, object]:
+    return {
+        "salt": fixture.salt_bytes,
+        "expected_inventory_counts": fixture.counts,
+        "expected_collection_classification_integrity_id": str(
+            fixture.collection["classification_integrity_id"]
+        ),
+        "expected_classification_integrity_id": str(
+            fixture.exposure_value["classification_integrity_id"]
+        ),
+    }
+
+
+def _interrupt_fixture_transaction(
+    fixture: _CommittedMayoAuthorizerFixture,
+    label: str,
+    *,
+    hook_phase: str | None = None,
+    publication_field: str | None = None,
+    publication_timing: str | None = None,
+) -> Path:
+    staging = _semantic_staging(
+        fixture.output.parent,
+        f".mayo_ssl_cache.staging-{label}",
+        fixture.salt_bytes,
+        include_arkit=True,
+        include_exclusions=True,
+    )
+
+    def phase_hook(phase: str) -> None:
+        if phase == hook_phase:
+            raise _RetainedMayoTransaction(phase)
+
+    original_publish = builder._publish_private_path_no_replace
+
+    def interrupting_publish(source, destination, field, **kwargs):
+        if field != publication_field:
+            return original_publish(source, destination, field, **kwargs)
+        if publication_timing == "before":
+            raise _RetainedMayoTransaction(field)
+        result = original_publish(source, destination, field, **kwargs)
+        if publication_timing == "after":
+            raise _RetainedMayoTransaction(field)
+        return result
+
+    if publication_field is not None:
+        builder._publish_private_path_no_replace = interrupting_publish
+    try:
+        try:
+            with builder.output_parent_lock(fixture.output):
+                builder.promote_generation(
+                    staging,
+                    fixture.output,
+                    exposure_manifest_path=fixture.exposure,
+                    phase_hook=phase_hook if hook_phase is not None else None,
+                    **_fixture_transaction_kwargs(fixture),
+                )
+        except _RetainedMayoTransaction:
+            pass
+        else:
+            raise AssertionError("fixture transaction was not interrupted")
+    finally:
+        builder._publish_private_path_no_replace = original_publish
+    journal_path = fixture.output.parent / (
+        f".{fixture.output.name}.transaction.json"
+    )
+    if not journal_path.is_file():
+        raise AssertionError("interrupted transaction did not retain its journal")
+    return journal_path
+
+
+def _previous_output_for_journal(
+    fixture: _CommittedMayoAuthorizerFixture,
+    journal: dict[str, object],
+) -> Path:
+    backup = fixture.output.parent / (
+        f".{fixture.output.name}.backup-{journal['token']}"
+    )
+    return backup if backup.is_dir() else fixture.output
+
+
+def _rewrite_journal_previous_output_commitment(
+    journal_path: Path,
+    *,
+    schema: str,
+    commitment: str,
+) -> dict[str, object]:
+    journal = json.loads(journal_path.read_text())
+    journal["schema"] = schema
+    journal["previous_output_storage_commitment"] = commitment
+    journal_path.write_text(
+        json.dumps(journal, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    journal_path.chmod(0o600)
+    return journal
+
+
+def _recover_fixture_transaction(
+    fixture: _CommittedMayoAuthorizerFixture,
+) -> None:
+    with builder.output_parent_lock(fixture.output):
+        builder.recover_interrupted_generations(
+            fixture.output,
+            exposure_manifest_path=fixture.exposure,
+            private_roots=(fixture.data, fixture.exports),
+            **_fixture_transaction_kwargs(fixture),
+        )
+
+
+def test_legacy_v3_recovers_every_other_interrupted_topology(c: Check):
+    scenarios = (
+        ("prepared", "prepared", None, None),
+        ("moving-old-output-before", None, "previous Mayo output backup", "before"),
+        ("moving-old-output-after", None, "previous Mayo output backup", "after"),
+        ("moving-old-exposure-before", None, "previous Mayo exposure backup", "before"),
+        ("moving-old-exposure-after", None, "previous Mayo exposure backup", "after"),
+        ("old-exposure-moved", "old_exposure_moved", None, None),
+        ("installing-new-output-before", None, "Mayo cache generation", "before"),
+        ("installing-new-output-after", None, "Mayo cache generation", "after"),
+        ("new-output-installed", "new_output_installed", None, None),
+        ("installing-new-exposure-before", None, "Mayo exposure manifest", "before"),
+        ("installing-new-exposure-after", None, "Mayo exposure manifest", "after"),
+        ("new-exposure-installed", "new_exposure_installed", None, None),
+        ("committed", "committed", None, None),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for label, hook_phase, publication_field, publication_timing in scenarios:
+            root = outer / label
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                journal_path = _interrupt_fixture_transaction(
+                    fixture,
+                    label,
+                    hook_phase=hook_phase,
+                    publication_field=publication_field,
+                    publication_timing=publication_timing,
+                )
+                journal = json.loads(journal_path.read_text())
+                previous_output = _previous_output_for_journal(fixture, journal)
+                _rewrite_journal_previous_output_commitment(
+                    journal_path,
+                    schema="mayo_cache_exposure_transaction_v3",
+                    commitment=_frozen_legacy_v3_private_tree_commitment(
+                        previous_output
+                    ),
+                )
+                _recover_fixture_transaction(fixture)
+                c.true(
+                    not journal_path.exists(),
+                    f"valid legacy {label} journal is retired",
+                )
+                c.eq(
+                    fixture.authorize().commitment["schema"],
+                    "mayo_cache_generation_commitment_v3",
+                    f"legacy {label} recovery leaves one authorized generation",
+                )
+
+
+def test_transaction_storage_commitment_algorithms_never_fallback(c: Check):
+    cases = (
+        ("v3-with-v4", "mayo_cache_exposure_transaction_v3", "current"),
+        ("v4-with-v3", "mayo_cache_exposure_transaction_v4", "legacy"),
+        ("unknown", "mayo_cache_exposure_transaction_v5", "current"),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for label, schema, commitment_kind in cases:
+            root = outer / label
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                journal_path = _interrupt_fixture_transaction(
+                    fixture,
+                    f"confusion-{label}",
+                    hook_phase="old_output_moved",
+                )
+                journal = json.loads(journal_path.read_text())
+                previous_output = _previous_output_for_journal(fixture, journal)
+                commitment = str(journal["previous_output_storage_commitment"])
+                if commitment_kind == "legacy":
+                    commitment = _frozen_legacy_v3_private_tree_commitment(
+                        previous_output
+                    )
+                _rewrite_journal_previous_output_commitment(
+                    journal_path,
+                    schema=schema,
+                    commitment=commitment,
+                )
+                journal_inode = journal_path.stat().st_ino
+                c.raises(
+                    lambda: _recover_fixture_transaction(fixture),
+                    ValueError,
+                    f"{label} cannot dispatch to another commitment algorithm",
+                )
+                c.eq(
+                    journal_path.stat().st_ino,
+                    journal_inode,
+                    f"{label} retains its exact blocking journal",
+                )
+
+
+def test_v3_ctime_drift_fails_closed_but_v4_ctime_drift_recovers(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for schema in ("v3", "v4"):
+            root = outer / schema
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                journal_path = _interrupt_fixture_transaction(
+                    fixture,
+                    f"{schema}-ctime",
+                    hook_phase="old_output_moved",
+                )
+                journal = json.loads(journal_path.read_text())
+                previous_output = _previous_output_for_journal(fixture, journal)
+                if schema == "v3":
+                    _rewrite_journal_previous_output_commitment(
+                        journal_path,
+                        schema="mayo_cache_exposure_transaction_v3",
+                        commitment=_frozen_legacy_v3_private_tree_commitment(
+                            previous_output
+                        ),
+                    )
+                victim = next((previous_output / "mediapipe").glob("*.npz"))
+                before = builder._regular_snapshot(victim.stat())
+                victim.chmod(0o600)
+                after = builder._regular_snapshot(victim.stat())
+                c.true(
+                    before[:-1] == after[:-1] and before[-1] != after[-1],
+                    f"{schema} fixture changes only cache ctime",
+                )
+                if schema == "v3":
+                    journal_inode = journal_path.stat().st_ino
+                    c.raises(
+                        lambda: _recover_fixture_transaction(fixture),
+                        ValueError,
+                        "legacy ctime drift has no safe digest fallback",
+                    )
+                    c.eq(journal_path.stat().st_ino, journal_inode)
+                else:
+                    _recover_fixture_transaction(fixture)
+                    c.true(
+                        not journal_path.exists(),
+                        "v4 ignores only ctime after exact content revalidation",
+                    )
+                    fixture.authorize()
+
+
+def test_v3_and_v4_reject_same_size_restored_mtime_content_forgery(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for schema in ("v3", "v4"):
+            root = outer / schema
+            root.mkdir(mode=0o700)
+            with _CommittedMayoAuthorizerFixture(root) as fixture:
+                canonical_victim = next(
+                    (fixture.output / "mediapipe").glob("*.npz")
+                )
+                initial = canonical_victim.stat()
+                os.utime(
+                    canonical_victim,
+                    ns=(
+                        initial.st_atime_ns // 1000 * 1000,
+                        initial.st_mtime_ns // 1000 * 1000,
+                    ),
+                    follow_symlinks=False,
+                )
+                journal_path = _interrupt_fixture_transaction(
+                    fixture,
+                    f"{schema}-content-forgery",
+                    hook_phase="old_output_moved",
+                )
+                journal = json.loads(journal_path.read_text())
+                previous_output = _previous_output_for_journal(fixture, journal)
+                if schema == "v3":
+                    _rewrite_journal_previous_output_commitment(
+                        journal_path,
+                        schema="mayo_cache_exposure_transaction_v3",
+                        commitment=_frozen_legacy_v3_private_tree_commitment(
+                            previous_output
+                        ),
+                    )
+                victim = next((previous_output / "mediapipe").glob("*.npz"))
+                before = victim.stat()
+                payload = bytearray(victim.read_bytes())
+                payload[-1] ^= 1
+                victim.write_bytes(payload)
+                victim.chmod(0o600)
+                os.utime(
+                    victim,
+                    ns=(before.st_atime_ns, before.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                after = victim.stat()
+                c.eq(after.st_size, before.st_size)
+                c.eq(after.st_mtime_ns, before.st_mtime_ns)
+                journal_inode = journal_path.stat().st_ino
+                c.raises(
+                    lambda: _recover_fixture_transaction(fixture),
+                    ValueError,
+                    f"{schema} binds complete file bytes behind restored metadata",
+                )
+                c.eq(journal_path.stat().st_ino, journal_inode)
+
+
+def test_legacy_v3_identity_drift_fails_closed(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            journal_path = _interrupt_fixture_transaction(
+                fixture,
+                "v3-identity-drift",
+                hook_phase="old_output_moved",
+            )
+            journal = json.loads(journal_path.read_text())
+            previous_output = _previous_output_for_journal(fixture, journal)
+            _rewrite_journal_previous_output_commitment(
+                journal_path,
+                schema="mayo_cache_exposure_transaction_v3",
+                commitment=_frozen_legacy_v3_private_tree_commitment(
+                    previous_output
+                ),
+            )
+            victim = next((previous_output / "mediapipe").glob("*.npz"))
+            original = victim.stat()
+            replacement = victim.with_name(f".{victim.name}.replacement")
+            replacement.write_bytes(victim.read_bytes())
+            replacement.chmod(0o600)
+            os.utime(
+                replacement,
+                ns=(original.st_atime_ns, original.st_mtime_ns),
+                follow_symlinks=False,
+            )
+            os.replace(replacement, victim)
+            c.true(
+                victim.stat().st_ino != original.st_ino,
+                "legacy identity fixture replaces the exact file inode",
+            )
+            journal_inode = journal_path.stat().st_ino
+            c.raises(
+                lambda: _recover_fixture_transaction(fixture),
+                ValueError,
+                "legacy v3 binds the original storage identity",
+            )
+            c.eq(journal_path.stat().st_ino, journal_inode)
+
+
+def test_new_transaction_writer_and_terminal_evidence_use_v4(c: Check):
+    observed: list[tuple[str, str]] = []
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            staging = _semantic_staging(
+                fixture.output.parent,
+                ".mayo_ssl_cache.staging-v4-writer",
+                fixture.salt_bytes,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            journal_path = fixture.output.parent / (
+                f".{fixture.output.name}.transaction.json"
+            )
+
+            def inspect_phase(phase: str) -> None:
+                payload = json.loads(journal_path.read_text())
+                observed.append((phase, str(payload["schema"])))
+
+            with builder.output_parent_lock(fixture.output):
+                builder.promote_generation(
+                    staging,
+                    fixture.output,
+                    exposure_manifest_path=fixture.exposure,
+                    phase_hook=inspect_phase,
+                    **_fixture_transaction_kwargs(fixture),
+                )
+            c.eq(
+                tuple(phase for phase, _schema in observed),
+                (
+                    "prepared", "old_output_moved", "old_exposure_moved",
+                    "new_output_installed", "new_exposure_installed", "committed",
+                ),
+            )
+            c.true(all(
+                schema == "mayo_cache_exposure_transaction_v4"
+                for _phase, schema in observed
+            ))
+            terminal = (
+                *fixture.output.parent.glob(
+                    f".{journal_path.name}.history-*"
+                ),
+                *fixture.output.parent.glob(
+                    f".{journal_path.name}.complete-*"
+                ),
+            )
+            c.true(bool(terminal), "v4 transaction retains terminal evidence")
+            for artifact in terminal:
+                c.eq(
+                    builder._load_transaction_journal(artifact)["schema"],
+                    "mayo_cache_exposure_transaction_v4",
+                    "phase history and completion evidence remain version-bound",
                 )
 
 
