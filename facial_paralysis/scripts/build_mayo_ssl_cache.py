@@ -599,34 +599,34 @@ def _private_generation_storage_commitment(
     tuple[tuple[str, tuple[str, ...], tuple[int, ...]], ...],
     str,
 ]:
-    root, ledger = _private_generation_storage_ledger(path, field)
-    file_digests: list[tuple[tuple[str, ...], str]] = []
-    remaining_bytes = _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
-    for kind, parts, _identity in ledger:
-        if kind != "file":
-            continue
-        digest, size = _sha256_private_regular_file(
-            root.joinpath(*parts),
-            field,
-            max_bytes=remaining_bytes,
+    with _hold_private_storage_tree(Path(path), field) as held:
+        ledger = tuple(
+            (entry.kind, entry.parts, entry.identity)
+            for entry in held.entries
         )
-        remaining_bytes -= size
-        file_digests.append((parts, digest))
-    _current_root, current_ledger = _private_generation_storage_ledger(
-        root, field,
-    )
-    if current_ledger != ledger:
-        raise ValueError(f"{field} changed while its closure was computed")
-    encoded = json.dumps(
-        {
-            "ledger": ledger,
-            "file_sha256": tuple(file_digests),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return root, ledger, hashlib.sha256(encoded).hexdigest()
+        file_digests: list[tuple[tuple[str, ...], str]] = []
+        remaining_bytes = _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
+        for entry in held.entries:
+            if entry.kind != "file":
+                continue
+            digest, size = _sha256_held_private_regular_file(
+                entry,
+                field,
+                max_bytes=remaining_bytes,
+            )
+            remaining_bytes -= size
+            file_digests.append((entry.parts, digest))
+        _assert_held_private_storage_tree(held, field)
+        encoded = json.dumps(
+            {
+                "ledger": ledger,
+                "file_sha256": tuple(file_digests),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return held.root, ledger, hashlib.sha256(encoded).hexdigest()
 
 
 def _sha256_private_regular_file(
@@ -780,6 +780,37 @@ class _HeldPrivateStorageEntry:
     parts: tuple[str, ...]
     descriptor: int = dataclass_field(repr=False)
     identity: tuple[int, ...]
+
+
+def _sha256_held_private_regular_file(
+    entry: _HeldPrivateStorageEntry,
+    field: str,
+    *,
+    max_bytes: int,
+) -> tuple[str, int]:
+    if entry.kind != "file" or max_bytes < 0:
+        raise ValueError(f"{field} held digest inputs are invalid")
+    before = os.fstat(entry.descriptor)
+    _require_private_regular_stat(before, field)
+    if _regular_snapshot(before) != entry.identity:
+        raise ValueError(f"{field} held file changed before digest")
+    if int(before.st_size) > max_bytes:
+        raise ValueError(f"{field} exceeds its shared digest budget")
+    os.lseek(entry.descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    total = 0
+    while block := os.read(
+        entry.descriptor, min(1024 * 1024, max_bytes + 1),
+    ):
+        total += len(block)
+        if total > max_bytes:
+            raise ValueError(f"{field} exceeds its shared digest budget")
+        digest.update(block)
+    after = os.fstat(entry.descriptor)
+    _require_private_regular_stat(after, field)
+    if _regular_snapshot(after) != entry.identity or total != int(after.st_size):
+        raise ValueError(f"{field} held file changed during digest")
+    return digest.hexdigest(), total
 
 
 @dataclass(frozen=True)
@@ -2785,20 +2816,30 @@ def _unlink_held_transaction_journal_durably(
     _assert_held_transaction_journal(descriptor, path, identity)
     validate_final_state()
     unlinked = False
+
+    def require_journal_absent() -> None:
+        if path.exists() or _is_symlink(path):
+            raise ValueError("Mayo transaction journal path reappeared after unlink")
+
     try:
         os.unlink(path)
         unlinked = True
         _assert_unlinked_transaction_journal(descriptor, identity)
+        require_journal_absent()
         validate_final_state()
+        require_journal_absent()
         for directory in fsync_directories:
             _fsync_directory(directory)
+            require_journal_absent()
         validate_final_state()
+        require_journal_absent()
     except BaseException as primary:
         if unlinked:
             try:
                 if not path.exists() and not _is_symlink(path):
                     _write_transaction_journal(path, journal)
             except BaseException as restoration_error:
+                setattr(primary, "_journal_compensation_attempted", True)
                 raise primary from restoration_error
         raise
 
@@ -3170,7 +3211,15 @@ def _recover_cache_exposure_transaction(
     except BaseException as exc:
         close_error = exc
     if primary is not None or close_error is not None:
-        if not journal_path.exists() and not _is_symlink(journal_path):
+        compensation_failed = (
+            primary is not None
+            and bool(getattr(primary, "_journal_compensation_attempted", False))
+        )
+        if (
+            not compensation_failed
+            and not journal_path.exists()
+            and not _is_symlink(journal_path)
+        ):
             try:
                 _write_transaction_journal(journal_path, journal)
             except BaseException as restoration_error:
@@ -3640,6 +3689,9 @@ def _promote_generation_with_exposure(
     except Exception as primary_error:
         if (
             committed_boundary_started
+            and not bool(getattr(
+                primary_error, "_journal_compensation_attempted", False,
+            ))
             and not journal_path.exists()
             and not _is_symlink(journal_path)
         ):

@@ -3248,17 +3248,17 @@ def test_tree_commitment_debits_one_shared_streaming_budget(c: Check):
             path.write_bytes(b"x")
             path.chmod(0o600)
         original_limit = builder._MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
-        original_digest = builder._sha256_private_regular_file
+        original_digest = builder._sha256_held_private_regular_file
         read_sizes: list[int] = []
 
-        def grow_before_digest(path, field, *, max_bytes):
-            Path(path).write_bytes(b"x" * 8)
-            result = original_digest(path, field, max_bytes=max_bytes)
+        def grow_before_digest(entry, field, *, max_bytes):
+            root.joinpath(*entry.parts).write_bytes(b"x" * 8)
+            result = original_digest(entry, field, max_bytes=max_bytes)
             read_sizes.append(result[1])
             return result
 
         builder._MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = 8
-        builder._sha256_private_regular_file = grow_before_digest
+        builder._sha256_held_private_regular_file = grow_before_digest
         try:
             c.raises(
                 lambda: builder._private_generation_storage_commitment(
@@ -3268,9 +3268,57 @@ def test_tree_commitment_debits_one_shared_streaming_budget(c: Check):
                 "tree commitment shares one actual-read byte budget",
             )
         finally:
-            builder._sha256_private_regular_file = original_digest
+            builder._sha256_held_private_regular_file = original_digest
             builder._MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = original_limit
-        c.eq(read_sizes, [8], "the second grown file is rejected before read")
+        c.eq(read_sizes, [], "held growth is rejected before any digest read")
+
+
+def test_tree_commitment_hashes_one_held_tree_during_path_swap(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        parent = Path(td)
+        parent.chmod(0o700)
+        first = parent / "first"
+        second = parent / "second"
+        for root, payload in ((first, b"first"), (second, b"second")):
+            root.mkdir(mode=0o700)
+            item = root / "payload"
+            item.write_bytes(payload)
+            item.chmod(0o600)
+        first_commitment = builder._private_generation_storage_commitment(
+            first, "first held tree",
+        )[2]
+        second_commitment = builder._private_generation_storage_commitment(
+            second, "second held tree",
+        )[2]
+        parked = parent / "parked-first"
+        original_digest = builder._sha256_held_private_regular_file
+        swapped = False
+
+        def swap_paths_during_held_digest(entry, field, *, max_bytes):
+            nonlocal swapped
+            if not swapped:
+                swapped = True
+                first.rename(parked)
+                second.rename(first)
+                try:
+                    return original_digest(
+                        entry, field, max_bytes=max_bytes,
+                    )
+                finally:
+                    first.rename(second)
+                    parked.rename(first)
+            return original_digest(entry, field, max_bytes=max_bytes)
+
+        builder._sha256_held_private_regular_file = swap_paths_during_held_digest
+        try:
+            observed = builder._private_generation_storage_commitment(
+                first, "path-swapped held tree",
+            )[2]
+        finally:
+            builder._sha256_held_private_regular_file = original_digest
+        c.true(swapped)
+        c.eq(observed, first_commitment)
+        c.true(observed != second_commitment)
 
 
 def test_prepared_journal_binds_had_flags_to_original_snapshot(c: Check):
@@ -3608,6 +3656,112 @@ def test_post_check_journal_swap_is_detected_after_unlink(c: Check):
             builder._assert_held_transaction_journal = real_assert
         c.true(swapped and evidence.is_file())
         c.true(journal.is_file(), "conditional-unlink failure restores journal")
+
+
+def test_journal_path_must_remain_absent_after_exact_unlink(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-journal-reappears",
+            b"journal-reappears-salt-0123456789",
+        )
+        journal = root / ".cache.transaction.json"
+        original_unlinked_assert = builder._assert_unlinked_transaction_journal
+        recreated = False
+
+        def recreate_after_exact_unlink(descriptor, identity):
+            nonlocal recreated
+            original_unlinked_assert(descriptor, identity)
+            journal.write_text("{}")
+            journal.chmod(0o600)
+            recreated = True
+
+        builder._assert_unlinked_transaction_journal = recreate_after_exact_unlink
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging, output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "journal path reappearance fails committed cleanup",
+                )
+        finally:
+            builder._assert_unlinked_transaction_journal = original_unlinked_assert
+        c.true(recreated)
+        c.true(journal.is_file(), "reappeared journal remains blocking evidence")
+
+
+def test_failed_journal_compensation_is_attempted_once(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        exposure = root / "mayo_exposure_manifest.json"
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-single-compensation",
+            b"single-compensation-salt-012345678",
+        )
+        journal = root / ".cache.transaction.json"
+        original_fsync = builder._fsync_directory
+        original_write = builder._write_transaction_journal
+        armed = False
+        primary_faulted = False
+        compensation_attempts = 0
+
+        def arm_committed(phase):
+            nonlocal armed
+            if phase == "committed":
+                armed = True
+
+        def fail_primary_after_unlink(path):
+            nonlocal primary_faulted
+            if armed and not primary_faulted and not journal.exists():
+                primary_faulted = True
+                raise OSError("primary post-unlink fsync failure")
+            return original_fsync(path)
+
+        def fail_compensation(path, payload):
+            nonlocal compensation_attempts
+            if primary_faulted and Path(path) == journal:
+                compensation_attempts += 1
+                raise OSError(f"journal compensation failure {compensation_attempts}")
+            return original_write(path, payload)
+
+        builder._fsync_directory = fail_primary_after_unlink
+        builder._write_transaction_journal = fail_compensation
+
+        def run_promotion():
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=arm_committed,
+                )
+
+        observed = None
+        try:
+            try:
+                run_promotion()
+            except BaseException as exc:
+                observed = exc
+        finally:
+            builder._write_transaction_journal = original_write
+            builder._fsync_directory = original_fsync
+        c.true(isinstance(observed, OSError))
+        c.true(_exception_chain_contains(
+            observed, OSError, "primary post-unlink fsync failure",
+        ))
+        c.true(_exception_chain_contains(
+            observed, OSError, "journal compensation failure 1",
+        ))
+        c.eq(compensation_attempts, 1, "compensation failure is not overwritten")
 
 
 def test_recovery_post_unlink_fsync_failure_restores_journal(c: Check):
