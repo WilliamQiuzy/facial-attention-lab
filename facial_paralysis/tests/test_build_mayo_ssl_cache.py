@@ -3232,6 +3232,386 @@ def test_recovery_holds_final_objects_before_journal_cleanup(c: Check):
         c.eq(stat.S_IMODE((output / sentinel.name).stat().st_mode), 0o666)
 
 
+def test_tree_commitment_debits_one_shared_streaming_budget(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        first = root / "first"
+        second = root / "second"
+        for path in (first, second):
+            path.write_bytes(b"x")
+            path.chmod(0o600)
+        original_limit = builder._MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
+        original_digest = builder._sha256_private_regular_file
+        read_sizes: list[int] = []
+
+        def grow_before_digest(path, field, *, max_bytes):
+            Path(path).write_bytes(b"x" * 8)
+            result = original_digest(path, field, max_bytes=max_bytes)
+            read_sizes.append(result[1])
+            return result
+
+        builder._MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = 8
+        builder._sha256_private_regular_file = grow_before_digest
+        try:
+            c.raises(
+                lambda: builder._private_generation_storage_commitment(
+                    root, "scaled shared commitment budget",
+                ),
+                ValueError,
+                "tree commitment shares one actual-read byte budget",
+            )
+        finally:
+            builder._sha256_private_regular_file = original_digest
+            builder._MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = original_limit
+        c.eq(read_sizes, [8], "the second grown file is rejected before read")
+
+
+def test_prepared_journal_binds_had_flags_to_original_snapshot(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-prepared-topology-race",
+            b"prepared-topology-race-salt-012345",
+        )
+        parked_output = root / ".parked-output"
+        parked_exposure = root / ".parked-exposure"
+        original_token_hex = builder.secrets.token_hex
+
+        def move_old_objects_before_prepared(_size):
+            output.rename(parked_output)
+            exposure.rename(parked_exposure)
+            return "0123456789abcdef"
+
+        builder.secrets.token_hex = move_old_objects_before_prepared
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging, output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "prepared journal refuses topology drift from its snapshot",
+                )
+        finally:
+            builder.secrets.token_hex = original_token_hex
+            parked_output.rename(output)
+            parked_exposure.rename(exposure)
+        c.true(not (root / ".cache.transaction.json").exists())
+        c.true(staging.is_dir(), "pre-journal topology failure retains staging")
+
+
+def test_committed_promotion_holds_outputs_and_journal_through_cleanup(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for target in ("output", "exposure", "journal"):
+            root = outer / target
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            output.mkdir(mode=0o700)
+            old = output / "old-generation-sentinel"
+            old.write_text("old-cache")
+            old.chmod(0o600)
+            exposure = root / "mayo_exposure_manifest.json"
+            exposure.write_text("old-exposure")
+            exposure.chmod(0o600)
+            staging = _canonical_transaction_staging(
+                root,
+                f".cache.staging-committed-boundary-{target}",
+                b"committed-boundary-hold-salt-0123",
+            )
+            journal = root / ".cache.transaction.json"
+            evidence = root / ".original-committed-journal"
+
+            def mutate_committed_boundary(phase):
+                if phase != "committed":
+                    return
+                if target == "output":
+                    next((output / "mediapipe").glob("*.npz")).chmod(0o666)
+                elif target == "exposure":
+                    exposure.chmod(0o666)
+                else:
+                    journal.rename(evidence)
+                    journal.write_bytes(evidence.read_bytes())
+                    journal.chmod(0o600)
+
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=mutate_committed_boundary,
+                    ),
+                    ValueError,
+                    "committed cleanup refuses late storage drift",
+                )
+            c.true(journal.is_file(), "late committed failure stays blocking")
+            if target == "journal":
+                c.true(evidence.is_file(), "the opened journal evidence remains")
+
+
+def test_post_unlink_fsync_failure_restores_blocking_journal(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        old = output / "old-generation-sentinel"
+        old.write_text("old-cache")
+        old.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-post-unlink-fsync",
+            b"post-unlink-fsync-salt-012345678",
+        )
+        journal = root / ".cache.transaction.json"
+        original_fsync = builder._fsync_directory
+        faulted = False
+        armed = False
+
+        def arm_after_committed(phase):
+            nonlocal armed
+            if phase == "committed":
+                armed = True
+
+        def fail_once_after_unlink(path):
+            nonlocal faulted
+            if armed and not faulted and not journal.exists():
+                faulted = True
+                raise OSError("forced post-unlink directory fsync failure")
+            return original_fsync(path)
+
+        builder._fsync_directory = fail_once_after_unlink
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.promote_generation(
+                        staging,
+                        output,
+                        exposure_manifest_path=exposure,
+                        phase_hook=arm_after_committed,
+                    ),
+                    OSError,
+                    "post-unlink fsync failure remains explicit",
+                )
+        finally:
+            builder._fsync_directory = original_fsync
+        c.true(faulted, "fault occurs only after journal unlink")
+        c.true(journal.is_file(), "failed durable unlink restores the journal")
+
+
+def test_final_journal_check_is_followed_by_held_object_validation(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-final-journal-window",
+            b"final-journal-window-salt-01234567",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain recovery state")
+
+        journal = root / ".cache.transaction.json"
+        real_assert = builder._assert_held_transaction_journal
+        mutated = False
+
+        def mutate_after_final_journal_check(descriptor, path, identity):
+            nonlocal mutated
+            real_assert(descriptor, path, identity)
+            if output.is_dir() and (output / sentinel.name).is_file() and not mutated:
+                mutated = True
+                (output / sentinel.name).chmod(0o666)
+
+        builder._assert_held_transaction_journal = mutate_after_final_journal_check
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "data drift after journal check fails before success",
+                )
+        finally:
+            builder._assert_held_transaction_journal = real_assert
+        c.true(mutated)
+        c.true(journal.is_file(), "late data drift restores blocking journal")
+
+
+def test_post_check_journal_swap_is_detected_after_unlink(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-post-check-journal-swap",
+            b"post-check-journal-swap-salt-01234",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain recovery state")
+
+        journal = root / ".cache.transaction.json"
+        evidence = root / ".post-check-original-journal"
+        real_assert = builder._assert_held_transaction_journal
+        swapped = False
+
+        def swap_after_final_check(descriptor, path, identity):
+            nonlocal swapped
+            real_assert(descriptor, path, identity)
+            if output.is_dir() and (output / sentinel.name).is_file() and not swapped:
+                swapped = True
+                Path(path).rename(evidence)
+                Path(path).write_bytes(evidence.read_bytes())
+                Path(path).chmod(0o600)
+
+        builder._assert_held_transaction_journal = swap_after_final_check
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    ValueError,
+                    "post-check journal swap cannot masquerade as exact unlink",
+                )
+        finally:
+            builder._assert_held_transaction_journal = real_assert
+        c.true(swapped and evidence.is_file())
+        c.true(journal.is_file(), "conditional-unlink failure restores journal")
+
+
+def test_recovery_post_unlink_fsync_failure_restores_journal(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+        output = root / "cache"
+        output.mkdir(mode=0o700)
+        sentinel = output / "old-generation-sentinel"
+        sentinel.write_text("old-cache")
+        sentinel.chmod(0o600)
+        exposure = root / "mayo_exposure_manifest.json"
+        exposure.write_text("old-exposure")
+        exposure.chmod(0o600)
+        staging = _canonical_transaction_staging(
+            root,
+            ".cache.staging-recovery-post-unlink-fsync",
+            b"recovery-post-unlink-fsync-salt-01",
+        )
+
+        def interrupt(phase):
+            if phase == "old_output_moved":
+                raise SimulatedProcessDeath(phase)
+
+        try:
+            with builder.output_parent_lock(output):
+                builder.promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure,
+                    phase_hook=interrupt,
+                )
+        except SimulatedProcessDeath:
+            pass
+        else:
+            raise AssertionError("promotion did not retain recovery state")
+
+        journal = root / ".cache.transaction.json"
+        original_fsync = builder._fsync_directory
+        faulted = False
+
+        def fail_once_after_unlink(path):
+            nonlocal faulted
+            if not faulted and not journal.exists():
+                faulted = True
+                raise OSError("forced recovery post-unlink fsync failure")
+            return original_fsync(path)
+
+        builder._fsync_directory = fail_once_after_unlink
+        try:
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(
+                        output, exposure_manifest_path=exposure,
+                    ),
+                    OSError,
+                    "recovery fsync failure remains explicit",
+                )
+        finally:
+            builder._fsync_directory = original_fsync
+        c.true(faulted)
+        c.true(journal.is_file(), "recovery fsync failure restores journal")
+
+
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass

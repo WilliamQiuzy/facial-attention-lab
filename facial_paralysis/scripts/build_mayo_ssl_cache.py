@@ -599,14 +599,16 @@ def _private_generation_storage_commitment(
 ]:
     root, ledger = _private_generation_storage_ledger(path, field)
     file_digests: list[tuple[tuple[str, ...], str]] = []
+    remaining_bytes = _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES
     for kind, parts, _identity in ledger:
         if kind != "file":
             continue
-        _payload, digest, _size = _read_regular_bytes(
+        digest, size = _sha256_private_regular_file(
             root.joinpath(*parts),
             field,
-            max_bytes=_MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES,
+            max_bytes=remaining_bytes,
         )
+        remaining_bytes -= size
         file_digests.append((parts, digest))
     _current_root, current_ledger = _private_generation_storage_ledger(
         root, field,
@@ -623,6 +625,56 @@ def _private_generation_storage_commitment(
         allow_nan=False,
     ).encode("utf-8")
     return root, ledger, hashlib.sha256(encoded).hexdigest()
+
+
+def _sha256_private_regular_file(
+    path: Path,
+    field: str,
+    *,
+    max_bytes: int,
+) -> tuple[str, int]:
+    if (
+        not isinstance(max_bytes, int)
+        or isinstance(max_bytes, bool)
+        or max_bytes < 0
+    ):
+        raise ValueError(f"{field} digest byte limit is invalid")
+    checked = _require_regular_file(path, field)
+    descriptor = os.open(
+        checked,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        before = os.fstat(descriptor)
+        linked_before = os.lstat(checked)
+        _require_private_regular_stat(before, field)
+        _require_private_regular_stat(linked_before, field)
+        identity = _regular_snapshot(before)
+        if _regular_snapshot(linked_before) != identity:
+            raise ValueError(f"{field} changed while opened for digest")
+        if int(before.st_size) > max_bytes:
+            raise ValueError(f"{field} exceeds its shared digest budget")
+        digest = hashlib.sha256()
+        total = 0
+        while block := os.read(descriptor, min(1024 * 1024, max_bytes + 1)):
+            total += len(block)
+            if total > max_bytes:
+                raise ValueError(f"{field} exceeds its shared digest budget")
+            digest.update(block)
+        after = os.fstat(descriptor)
+        linked_after = os.lstat(checked)
+        _require_private_regular_stat(after, field)
+        _require_private_regular_stat(linked_after, field)
+        if (
+            _regular_snapshot(after) != identity
+            or _regular_snapshot(linked_after) != identity
+            or total != int(after.st_size)
+        ):
+            raise ValueError(f"{field} changed while its digest was computed")
+        return digest.hexdigest(), total
+    finally:
+        os.close(descriptor)
 
 
 def _private_regular_storage_commitment(
@@ -2615,6 +2667,58 @@ def _open_transaction_journal(
         raise
 
 
+def _assert_unlinked_transaction_journal(
+    descriptor: int,
+    identity: tuple[int, ...],
+) -> None:
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or int(opened.st_uid) != os.geteuid()
+        or int(opened.st_nlink) != 0
+        or (
+            int(opened.st_dev), int(opened.st_ino), int(opened.st_mode),
+            int(opened.st_uid), int(opened.st_gid), int(opened.st_size),
+            int(opened.st_mtime_ns),
+        ) != (
+            identity[0], identity[1], identity[2], identity[3],
+            identity[4], identity[6], identity[7],
+        )
+    ):
+        raise ValueError("the held Mayo transaction journal was not unlinked")
+
+
+def _unlink_held_transaction_journal_durably(
+    *,
+    descriptor: int,
+    identity: tuple[int, ...],
+    path: Path,
+    journal: Mapping[str, object],
+    validate_final_state: Callable[[], None],
+    fsync_directories: tuple[Path, ...],
+) -> None:
+    _assert_held_transaction_journal(descriptor, path, identity)
+    validate_final_state()
+    unlinked = False
+    try:
+        os.unlink(path)
+        unlinked = True
+        _assert_unlinked_transaction_journal(descriptor, identity)
+        validate_final_state()
+        for directory in fsync_directories:
+            _fsync_directory(directory)
+        validate_final_state()
+    except BaseException as primary:
+        if unlinked:
+            try:
+                if not path.exists() and not _is_symlink(path):
+                    _write_transaction_journal(path, journal)
+            except BaseException as restoration_error:
+                raise primary from restoration_error
+        raise
+
+
 def _load_transaction_journal(path: Path) -> dict[str, object]:
     descriptor, _identity, payload = _open_transaction_journal(path)
     try:
@@ -2894,40 +2998,47 @@ def _recover_cache_exposure_transaction_held(
             _remove_real_tree(staging)
         _remove_real_tree(output_backup)
         _unlink_regular_if_present(exposure_backup, "stale exposure backup")
-        if not committed:
-            if output_ledger is not None:
-                require_private_tree_snapshot(
-                    output, output_ledger,
-                    "final recovered output generation",
-                )
-                _assert_held_private_storage_tree(
-                    held_output, "final recovered output generation",
-                )
-            elif present(output):
-                raise ValueError(
-                    "recovery retained an unexpected output generation"
-                )
-            if exposure_stable is not None and exposure_digest is not None:
-                require_private_regular_snapshot(
-                    exposure, exposure_stable, exposure_digest,
-                    "final recovered exposure manifest",
-                )
-                _assert_held_private_regular_storage(
-                    held_exposure, "final recovered exposure manifest",
-                )
-            elif present(exposure):
-                raise ValueError(
-                    "recovery retained an unexpected exposure manifest"
-                )
-        else:
-            _assert_held_mayo_generation(held_committed)
-        _assert_held_transaction_journal(
-            journal_descriptor, journal_path, journal_identity,
+
+        def validate_final_state() -> None:
+            if not committed:
+                if output_ledger is not None:
+                    require_private_tree_snapshot(
+                        output, output_ledger,
+                        "final recovered output generation",
+                    )
+                    _assert_held_private_storage_tree(
+                        held_output, "final recovered output generation",
+                    )
+                elif present(output):
+                    raise ValueError(
+                        "recovery retained an unexpected output generation"
+                    )
+                if exposure_stable is not None and exposure_digest is not None:
+                    require_private_regular_snapshot(
+                        exposure, exposure_stable, exposure_digest,
+                        "final recovered exposure manifest",
+                    )
+                    _assert_held_private_regular_storage(
+                        held_exposure, "final recovered exposure manifest",
+                    )
+                elif present(exposure):
+                    raise ValueError(
+                        "recovery retained an unexpected exposure manifest"
+                    )
+            else:
+                _assert_held_mayo_generation(held_committed)
+
+        fsync_directories = tuple(dict.fromkeys((
+            output.parent, exposure.parent,
+        )))
+        _unlink_held_transaction_journal_durably(
+            descriptor=journal_descriptor,
+            identity=journal_identity,
+            path=journal_path,
+            journal=journal,
+            validate_final_state=validate_final_state,
+            fsync_directories=fsync_directories,
         )
-        os.unlink(journal_path)
-        _fsync_directory(output.parent)
-        if exposure.parent != output.parent:
-            _fsync_directory(exposure.parent)
     finally:
         final_holds.__exit__(*sys.exc_info())
 
@@ -2949,23 +3060,31 @@ def _recover_cache_exposure_transaction(
         return
     descriptor, identity, journal = _open_transaction_journal(journal_path)
     try:
-        _recover_cache_exposure_transaction_held(
-            output,
-            exposure,
-            journal_path=journal_path,
-            journal_descriptor=descriptor,
-            journal_identity=identity,
-            journal=journal,
-            salt=salt,
-            expected_inventory_counts=expected_inventory_counts,
-            expected_collection_classification_integrity_id=(
-                expected_collection_classification_integrity_id
-            ),
-            expected_classification_integrity_id=(
-                expected_classification_integrity_id
-            ),
-            allow_indeterminate=allow_indeterminate,
-        )
+        try:
+            _recover_cache_exposure_transaction_held(
+                output,
+                exposure,
+                journal_path=journal_path,
+                journal_descriptor=descriptor,
+                journal_identity=identity,
+                journal=journal,
+                salt=salt,
+                expected_inventory_counts=expected_inventory_counts,
+                expected_collection_classification_integrity_id=(
+                    expected_collection_classification_integrity_id
+                ),
+                expected_classification_integrity_id=(
+                    expected_classification_integrity_id
+                ),
+                allow_indeterminate=allow_indeterminate,
+            )
+        except BaseException as primary:
+            if not journal_path.exists() and not _is_symlink(journal_path):
+                try:
+                    _write_transaction_journal(journal_path, journal)
+                except BaseException as restoration_error:
+                    raise primary from restoration_error
+            raise
     finally:
         os.close(descriptor)
 
@@ -3156,6 +3275,52 @@ def _promote_generation_with_exposure(
                 previous_exposure_sha256,
             )
         )
+    had_output = previous_output_storage_commitment is not None
+    had_exposure = previous_exposure_storage_commitment is not None
+
+    def assert_previous_output_unchanged() -> None:
+        if (output.exists() or _is_symlink(output)) != had_output:
+            raise ValueError("previous output topology changed before move")
+        if not had_output:
+            return
+        (
+            _current_output,
+            current_output_ledger,
+            current_output_storage_commitment,
+        ) = _private_generation_storage_commitment(
+            output, "previous output generation",
+        )
+        if (
+            current_output_ledger != previous_output_ledger
+            or current_output_storage_commitment
+            != previous_output_storage_commitment
+        ):
+            raise ValueError("previous output generation changed before move")
+
+    def assert_previous_exposure_unchanged() -> None:
+        if (exposure.exists() or _is_symlink(exposure)) != had_exposure:
+            raise ValueError("previous exposure topology changed before move")
+        if not had_exposure:
+            return
+        live_exposure = os.lstat(exposure)
+        _require_private_regular_stat(
+            live_exposure, "previous exposure manifest",
+        )
+        if _regular_snapshot(live_exposure) != previous_exposure_identity:
+            raise ValueError("previous exposure manifest changed before move")
+        _payload, live_digest, _size = _read_regular_bytes(
+            exposure,
+            "previous exposure manifest",
+            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+        )
+        live_commitment = _private_regular_storage_commitment(
+            _movement_stable_regular_snapshot(os.lstat(exposure)),
+            live_digest,
+        )
+        if not hmac.compare_digest(
+            live_commitment, previous_exposure_storage_commitment,
+        ):
+            raise ValueError("previous exposure manifest changed before move")
 
     journal_path = _journal_path(output)
     if journal_path.exists() or _is_symlink(journal_path):
@@ -3169,8 +3334,8 @@ def _promote_generation_with_exposure(
         "token": token,
         "staging_name": staging.name,
         "exposure_name": exposure.name,
-        "had_output": output.exists(),
-        "had_exposure": exposure.exists(),
+        "had_output": had_output,
+        "had_exposure": had_exposure,
         "generation_commitment": generation_commitment,
         "previous_output_storage_commitment": (
             previous_output_storage_commitment
@@ -3182,10 +3347,10 @@ def _promote_generation_with_exposure(
         "indeterminate": False,
     }
 
-    def set_phase(phase: str) -> None:
+    def set_phase(phase: str, *, invoke_hook: bool = True) -> None:
         journal["phase"] = phase
         _write_transaction_journal(journal_path, journal)
-        if phase_hook is not None:
+        if invoke_hook and phase_hook is not None:
             phase_hook(phase)
 
     def retain_indeterminate_move(phase: str) -> None:
@@ -3197,8 +3362,11 @@ def _promote_generation_with_exposure(
 
     rollback_is_durable = True
     allow_indeterminate_recovery = False
+    committed_boundary_started = False
     if continuity_validator is not None:
         continuity_validator()
+    assert_previous_output_unchanged()
+    assert_previous_exposure_unchanged()
     set_phase("prepared")
     try:
         temporary_descriptor = _open_exclusive_private_file(
@@ -3211,20 +3379,8 @@ def _promote_generation_with_exposure(
             target.flush()
             os.fsync(target.fileno())
         _fsync_directory(exposure.parent)
-        if output.exists():
-            (
-                _current_output,
-                current_output_ledger,
-                current_output_storage_commitment,
-            ) = _private_generation_storage_commitment(
-                    output, "previous output generation",
-            )
-            if (
-                current_output_ledger != previous_output_ledger
-                or current_output_storage_commitment
-                != previous_output_storage_commitment
-            ):
-                raise ValueError("previous output generation changed before move")
+        if had_output:
+            assert_previous_output_unchanged()
             replace_func(output, output_backup)
             try:
                 (
@@ -3250,11 +3406,8 @@ def _promote_generation_with_exposure(
                 raise
             _fsync_directory(output.parent)
             set_phase("old_output_moved")
-        if exposure.exists():
-            live_exposure = os.lstat(exposure)
-            _require_private_regular_stat(live_exposure, "previous exposure manifest")
-            if _regular_snapshot(live_exposure) != previous_exposure_identity:
-                raise ValueError("previous exposure manifest changed before move")
+        if had_exposure:
+            assert_previous_exposure_unchanged()
             replace_func(exposure, exposure_backup)
             try:
                 moved_exposure = os.lstat(exposure_backup)
@@ -3308,30 +3461,91 @@ def _promote_generation_with_exposure(
         )
         if continuity_validator is not None:
             continuity_validator()
-        set_phase("committed")
-        if continuity_validator is not None:
-            try:
-                continuity_validator()
-            except Exception as primary_error:
-                # The committed phase hook runs after its durable journal write.
-                # If it exposed key drift, make the journal noncommitted again
-                # before the common recovery path so the just-installed cache
-                # and exposure are rolled back instead of accepted.
-                journal["phase"] = "new_exposure_installed"
-                journal["indeterminate"] = True
+        set_phase("committed", invoke_hook=False)
+        committed_boundary_started = True
+        (
+            committed_journal_descriptor,
+            committed_journal_identity,
+            committed_journal,
+        ) = _open_transaction_journal(journal_path)
+        try:
+            if committed_journal != journal:
+                raise ValueError("committed journal bytes changed after write")
+            if phase_hook is not None:
+                phase_hook("committed")
+            if continuity_validator is not None:
                 try:
-                    _write_transaction_journal(journal_path, journal)
-                except Exception as downgrade_error:
-                    # A failed atomic write or parent-directory fsync means the
-                    # downgrade is not durably established.  Recovery must not
-                    # interpret the last known committed journal and destroy
-                    # either side of this indeterminate transaction.
-                    rollback_is_durable = False
-                    raise primary_error from downgrade_error
-                allow_indeterminate_recovery = True
-                raise
-    except Exception:
-        if rollback_is_durable:
+                    continuity_validator()
+                except Exception as primary_error:
+                    # If the committed hook exposed key drift, durably downgrade
+                    # before the common recovery path rolls back both outputs.
+                    os.close(committed_journal_descriptor)
+                    committed_journal_descriptor = None
+                    journal["phase"] = "new_exposure_installed"
+                    journal["indeterminate"] = True
+                    try:
+                        _write_transaction_journal(journal_path, journal)
+                    except Exception as downgrade_error:
+                        rollback_is_durable = False
+                        raise primary_error from downgrade_error
+                    allow_indeterminate_recovery = True
+                    committed_boundary_started = False
+                    raise
+
+            with ExitStack() as committed_holds:
+                held_output = committed_holds.enter_context(
+                    _hold_private_storage_tree(
+                        output, "committed Mayo generation cleanup",
+                    )
+                )
+                held_exposure = committed_holds.enter_context(
+                    _hold_private_regular_storage(
+                        exposure, "committed Mayo exposure cleanup",
+                    )
+                )
+                _remove_real_tree(output_backup)
+                _unlink_regular_if_present(
+                    exposure_backup, "committed exposure backup",
+                )
+                _unlink_regular_if_present(
+                    exposure_temporary, "committed exposure temporary",
+                )
+
+                def validate_committed_final_state() -> None:
+                    _assert_held_private_storage_tree(
+                        held_output, "committed Mayo generation cleanup",
+                    )
+                    _assert_held_private_regular_storage(
+                        held_exposure, "committed Mayo exposure cleanup",
+                    )
+                    if continuity_validator is not None:
+                        continuity_validator()
+
+                fsync_directories = tuple(dict.fromkeys((
+                    output.parent, exposure.parent,
+                )))
+                _unlink_held_transaction_journal_durably(
+                    descriptor=committed_journal_descriptor,
+                    identity=committed_journal_identity,
+                    path=journal_path,
+                    journal=journal,
+                    validate_final_state=validate_committed_final_state,
+                    fsync_directories=fsync_directories,
+                )
+        finally:
+            if committed_journal_descriptor is not None:
+                os.close(committed_journal_descriptor)
+    except Exception as primary_error:
+        if (
+            committed_boundary_started
+            and not journal_path.exists()
+            and not _is_symlink(journal_path)
+        ):
+            try:
+                _write_transaction_journal(journal_path, journal)
+            except Exception as restoration_error:
+                raise primary_error from restoration_error
+        if rollback_is_durable and not committed_boundary_started:
             _recover_cache_exposure_transaction(
                 output, exposure,
                 salt=salt,
@@ -3345,13 +3559,6 @@ def _promote_generation_with_exposure(
                 allow_indeterminate=allow_indeterminate_recovery,
             )
         raise
-    _remove_real_tree(output_backup)
-    _unlink_regular_if_present(exposure_backup, "committed exposure backup")
-    _unlink_regular_if_present(exposure_temporary, "committed exposure temporary")
-    _require_regular_file(journal_path, "committed transaction journal").unlink()
-    _fsync_directory(output.parent)
-    if exposure.parent != output.parent:
-        _fsync_directory(exposure.parent)
 
 
 def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
