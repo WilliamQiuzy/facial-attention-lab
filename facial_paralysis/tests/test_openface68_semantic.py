@@ -3807,6 +3807,74 @@ def test_postpublication_canonical_mutation_never_returns_success(c: Check):
     )
 
 
+def test_generation_rechecks_files_after_final_archive_audit(c: Check):
+    observations: dict[str, dict[str, object]] = {}
+    for surface in ("manifest", "cache"):
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "source"
+            expected, _ = _synthetic_tree(data_root)
+            inventory = audit_ravdess_inventory(data_root, expectation=expected)
+            output = data_root / "derived_semantic23"
+            original_audit = prep.audit_ravdess_inventory
+            audit_calls = 0
+            mutated = False
+
+            def mutate_during_final_archive_audit(*args, **kwargs):
+                nonlocal audit_calls, mutated
+                result = original_audit(*args, **kwargs)
+                audit_calls += 1
+                target = output / "manifest.json"
+                if surface == "cache":
+                    target = sorted((output / "trials").glob("*.npz"))[0]
+                payload = target.read_bytes()
+                target.write_bytes(
+                    payload[:-1] + bytes([payload[-1] ^ 1])
+                )
+                target.chmod(0o600)
+                mutated = True
+                return result
+
+            observed: BaseException | None = None
+            prep.audit_ravdess_inventory = mutate_during_final_archive_audit
+            try:
+                try:
+                    build_generation_from_audited_sources(
+                        data_root,
+                        output,
+                        inventory,
+                        expectation=expected,
+                        id_key=TEST_ID_KEY,
+                    )
+                except BaseException as exc:  # noqa: BLE001 - inspect outcome
+                    observed = exc
+            finally:
+                prep.audit_ravdess_inventory = original_audit
+            observations[surface] = {
+                "audit_calls": audit_calls,
+                "mutated": mutated,
+                "exception": type(observed).__name__ if observed else None,
+                "canonical_retained": output.is_dir(),
+                "staging_count": len(list(
+                    output.parent.glob(f".{output.name}.staging-*")
+                )),
+            }
+
+    c.eq(
+        observations,
+        {
+            surface: {
+                "audit_calls": 1,
+                "mutated": True,
+                "exception": RuntimeError.__name__,
+                "canonical_retained": True,
+                "staging_count": 0,
+            }
+            for surface in ("manifest", "cache")
+        },
+        "manifest/cache changes during final archive audit cannot return success",
+    )
+
+
 def test_output_parent_swap_at_lock_release_retains_generation(c: Check):
     with tempfile.TemporaryDirectory() as temporary:
         base = Path(temporary)

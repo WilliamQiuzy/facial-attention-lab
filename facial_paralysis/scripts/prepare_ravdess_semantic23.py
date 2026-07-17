@@ -3234,6 +3234,32 @@ def build_generation_from_audited_sources(
             raise ValueError(
                 "published RAVDESS generation changed during validation"
             )
+        _assert_owner_snapshot_at(
+            stage_descriptor,
+            "manifest.json",
+            staged_manifest_identity,
+            "held published RAVDESS manifest",
+        )
+        _assert_owner_snapshot_at(
+            canonical_output_descriptor,
+            "manifest.json",
+            staged_manifest_identity,
+            "published RAVDESS manifest",
+        )
+        for cache_name in expected_cache_names:
+            expected_identity = staged_cache_identities[cache_name]
+            _assert_owner_snapshot_at(
+                trials_descriptor,
+                cache_name,
+                expected_identity,
+                "held published RAVDESS semantic23 cache",
+            )
+            _assert_owner_snapshot_at(
+                canonical_trials_descriptor,
+                cache_name,
+                expected_identity,
+                "published RAVDESS semantic23 cache",
+            )
         try:
             _release_output_lock(
                 output.parent,
