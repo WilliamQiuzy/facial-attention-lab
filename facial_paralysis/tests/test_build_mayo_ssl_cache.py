@@ -5490,6 +5490,38 @@ def test_recovery_journal_close_failure_does_not_reverse_terminal_success(c: Che
         )
 
 
+def test_terminal_cleanup_merge_preserves_nested_exitstack_failures(c: Check):
+    primary = ValueError("synthetic terminal primary failure")
+    earlier_cleanup = OSError("synthetic cleanup group two")
+    nested_first = OSError("synthetic cleanup group three first")
+    nested_second = OSError("synthetic cleanup group three second")
+    nested_last = OSError("synthetic cleanup group three last")
+    nested_second.__context__ = nested_first
+    nested_last.__context__ = nested_second
+    cleanup_state = builder._JournalCleanupState(
+        terminal_resolved=True,
+        terminal_cleanup_errors=[earlier_cleanup, nested_last],
+    )
+    observed = None
+    try:
+        builder._raise_with_terminal_cleanup_errors(
+            primary, primary.__traceback__, cleanup_state,
+        )
+    except BaseException as exc:
+        observed = exc
+    c.true(observed is primary)
+    for message in (
+        "synthetic cleanup group two",
+        "synthetic cleanup group three first",
+        "synthetic cleanup group three second",
+        "synthetic cleanup group three last",
+    ):
+        c.true(
+            _exception_chain_contains(observed, OSError, message),
+            f"terminal cleanup merge retains {message}",
+        )
+
+
 def test_committed_recovery_revalidates_all_generation_commitments(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
@@ -6732,17 +6764,103 @@ def test_prepared_crash_recovers_with_internal_aborted_exposure(c: Check):
             ))
             c.eq(len(archived), 1)
             c.true(not journal.exists() and not staging.exists())
+            archived_external = tuple(fixture.exposure.parent.glob(
+                f".{fixture.exposure.name}.aborted-*-temporary"
+            ))
             c.eq(
-                tuple(fixture.exposure.parent.glob(
-                    f".{fixture.exposure.name}.aborted-*-temporary"
-                )),
-                (),
-                "prepared crash has no external temporary to archive",
+                len(archived_external),
+                1,
+                "prepared recovery materializes one paired exposure witness",
+            )
+            c.eq(
+                archived_external[0].read_bytes(),
+                (archived[0] / "mayo_exposure_manifest.json").read_bytes(),
+                "paired prepared witness is the exact internal exposure bytes",
             )
             c.eq(
                 fixture.authorize().commitment["schema"],
                 "mayo_cache_generation_commitment_v3",
                 "prepared recovery remains read-only authorizable",
+            )
+
+
+def test_prepared_crash_external_archive_deletion_is_not_masked(c: Check):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _CommittedMayoAuthorizerFixture(root) as fixture:
+            staging = _semantic_staging(
+                fixture.output.parent,
+                ".mayo_ssl_cache.staging-prepared-external",
+                fixture.salt_bytes,
+                include_arkit=True,
+                include_exclusions=True,
+            )
+            original_fsync = builder._fsync_directory
+            interrupted = False
+
+            def interrupt_after_external_temporary_fsync(path):
+                nonlocal interrupted
+                original_fsync(path)
+                if (
+                    not interrupted
+                    and Path(path) == fixture.exposure.parent
+                    and tuple(fixture.exposure.parent.glob(
+                        f".{fixture.exposure.name}.tmp-*"
+                    ))
+                ):
+                    interrupted = True
+                    raise SimulatedProcessDeath("external temporary durable")
+
+            builder._fsync_directory = interrupt_after_external_temporary_fsync
+            try:
+                try:
+                    with builder.output_parent_lock(fixture.output):
+                        builder.promote_generation(
+                            staging,
+                            fixture.output,
+                            exposure_manifest_path=fixture.exposure,
+                            salt=fixture.salt_bytes,
+                            expected_inventory_counts=fixture.counts,
+                            expected_collection_classification_integrity_id=str(
+                                fixture.collection["classification_integrity_id"]
+                            ),
+                            expected_classification_integrity_id=str(
+                                fixture.exposure_value["classification_integrity_id"]
+                            ),
+                        )
+                except SimulatedProcessDeath:
+                    pass
+            finally:
+                builder._fsync_directory = original_fsync
+            c.true(interrupted, "prepared crash retains a durable external temporary")
+
+            with builder.output_parent_lock(fixture.output):
+                builder.recover_interrupted_generations(
+                    fixture.output,
+                    exposure_manifest_path=fixture.exposure,
+                    salt=fixture.salt_bytes,
+                    expected_inventory_counts=fixture.counts,
+                    expected_collection_classification_integrity_id=str(
+                        fixture.collection["classification_integrity_id"]
+                    ),
+                    expected_classification_integrity_id=str(
+                        fixture.exposure_value["classification_integrity_id"]
+                    ),
+                    private_roots=(fixture.data, fixture.exports),
+                )
+            archived_external = tuple(fixture.exposure.parent.glob(
+                f".{fixture.exposure.name}.aborted-*-temporary"
+            ))
+            c.eq(len(archived_external), 1)
+            fixture.authorize()
+            archived_external[0].unlink()
+            c.raises(
+                fixture.authorize,
+                RuntimeError,
+                "deleting required prepared external evidence fails authorization",
             )
 
 

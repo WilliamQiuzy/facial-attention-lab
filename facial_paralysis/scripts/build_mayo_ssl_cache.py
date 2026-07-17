@@ -3142,6 +3142,40 @@ def _finish_terminal_cleanup(
         cleanup_state.terminal_cleanup_errors.append(cleanup_error)
 
 
+def _linear_cleanup_cause(
+    primary: BaseException | None,
+    cleanup_errors: Sequence[BaseException],
+) -> BaseException | None:
+    """Preserve nested cleanup chains and append each one without a cycle."""
+    cause = primary
+    seen: set[int] = set()
+    current = primary
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    for error in cleanup_errors:
+        if id(error) in seen:
+            continue
+        unique_nodes: list[BaseException] = []
+        local_seen: set[int] = set()
+        current = error
+        while (
+            current is not None
+            and id(current) not in seen
+            and id(current) not in local_seen
+        ):
+            local_seen.add(id(current))
+            unique_nodes.append(current)
+            current = current.__cause__ or current.__context__
+        for node in reversed(unique_nodes):
+            node.__cause__ = cause
+            node.__context__ = None
+            node.__suppress_context__ = True
+            cause = node
+            seen.add(id(node))
+    return cause
+
+
 def _raise_with_terminal_cleanup_errors(
     primary: BaseException,
     traceback: object,
@@ -3150,12 +3184,15 @@ def _raise_with_terminal_cleanup_errors(
     """Raise one primary with all accumulated close errors in its cause chain."""
     if not cleanup_state.terminal_cleanup_errors:
         raise primary.with_traceback(traceback)
-    cause = cleanup_state.terminal_cleanup_errors[0]
-    for cleanup_error in cleanup_state.terminal_cleanup_errors[1:]:
-        cleanup_error.__cause__ = cause
-        cleanup_error.__suppress_context__ = True
-        cause = cleanup_error
-    raise primary.with_traceback(traceback) from cause
+    existing = primary.__cause__ or primary.__context__
+    cause = _linear_cleanup_cause(
+        existing, cleanup_state.terminal_cleanup_errors,
+    )
+    assert cause is not None
+    primary.__cause__ = cause
+    primary.__context__ = None
+    primary.__suppress_context__ = True
+    raise primary.with_traceback(traceback)
 
 
 def _retire_held_transaction_journal_durably(
@@ -3722,6 +3759,29 @@ def _recover_cache_exposure_transaction_held(
                 ),
                 _held=held_interrupted_generation,
             )
+            materialized_internal_witness = False
+            materialized_internal_digest: str | None = None
+            if not present(exposure_temporary):
+                internal_payload, materialized_internal_digest, _size = (
+                    _read_regular_descriptor(
+                        held_interrupted_generation.internal_exposure_descriptor,
+                        parent_descriptor=(
+                            held_interrupted_generation.output_descriptor
+                        ),
+                        name="mayo_exposure_manifest.json",
+                        field="interrupted internal Mayo exposure witness",
+                        expected_identity=(
+                            held_interrupted_generation.internal_exposure_identity
+                        ),
+                        max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                    )
+                )
+                _write_private_bytes_exclusive(
+                    exposure_temporary,
+                    internal_payload,
+                    "interrupted Mayo exposure witness",
+                )
+                materialized_internal_witness = True
             held_staging_cleanup = final_holds.enter_context(
                 _hold_private_storage_tree(
                     staging, "interrupted Mayo staging cleanup",
@@ -3740,7 +3800,27 @@ def _recover_cache_exposure_transaction_held(
                         "interrupted Mayo exposure temporary cleanup",
                     )
                 )
-                if (
+                if materialized_internal_witness:
+                    witness_entry = _HeldPrivateStorageEntry(
+                        kind="file",
+                        parts=(exposure_temporary.name,),
+                        descriptor=held_temporary_cleanup.descriptor,
+                        identity=held_temporary_cleanup.identity,
+                    )
+                    witness_digest, _witness_size = (
+                        _sha256_held_private_regular_file(
+                            witness_entry,
+                            "interrupted Mayo exposure witness",
+                            max_bytes=_MAX_MAYO_MANIFEST_BYTES,
+                        )
+                    )
+                    if not hmac.compare_digest(
+                        witness_digest, materialized_internal_digest,
+                    ):
+                        raise ValueError(
+                            "interrupted Mayo exposure witness changed"
+                        )
+                elif (
                     held_temporary_cleanup.identity
                     != held_interrupted_generation.external_exposure_identity
                 ):
@@ -4702,6 +4782,65 @@ def _write_json_exclusive(path: Path, payload: Mapping[str, object]) -> None:
         handle.write(serialized)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _write_private_bytes_exclusive(
+    path: Path,
+    payload: bytes,
+    field: str,
+) -> tuple[int, ...]:
+    """Durably create one exact owner-only witness without cleanup deletion."""
+    if (
+        type(payload) is not bytes
+        or len(payload) > _MAX_MAYO_MANIFEST_BYTES
+        or type(field) is not str
+        or not field
+    ):
+        raise ValueError("private witness inputs are invalid")
+    _require_private_directory(path.parent, f"{field} parent")
+    descriptor = _open_exclusive_private_file(path, field)
+    primary: BaseException | None = None
+    traceback = None
+    identity: tuple[int, ...] | None = None
+    try:
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError(f"{field} write made no progress")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        opened = os.fstat(descriptor)
+        linked = os.lstat(path)
+        _require_private_regular_stat(opened, field)
+        _require_private_regular_stat(linked, field)
+        identity = _regular_snapshot(opened)
+        if (
+            _regular_snapshot(linked) != identity
+            or int(opened.st_size) != len(payload)
+        ):
+            raise ValueError(f"{field} changed during durable creation")
+    except BaseException as caught:
+        primary = caught
+        traceback = caught.__traceback__
+    close_error: BaseException | None = None
+    try:
+        os.close(descriptor)
+    except BaseException as caught:
+        close_error = caught
+    if primary is not None:
+        if close_error is not None:
+            raise primary.with_traceback(traceback) from close_error
+        raise primary.with_traceback(traceback)
+    if close_error is not None:
+        raise close_error
+    assert identity is not None
+    _fsync_directory(path.parent)
+    linked = os.lstat(path)
+    _require_private_regular_stat(linked, field)
+    if _regular_snapshot(linked) != identity:
+        raise ValueError(f"{field} changed after parent sync")
+    return identity
 
 
 def _open_nofollow_directory(path: Path, field: str) -> int:
@@ -6763,14 +6902,7 @@ def _assert_resolved_transaction_evidence(
                     )
 
         if salt is not None:
-            missing_trees = set(regular_evidence) - set(tree_evidence)
-            missing_exposures = set(tree_evidence) - set(regular_evidence)
-            if missing_trees or any(
-                evidence_kind != "aborted-generation"
-                or evidence_token not in completed_journals
-                or completed_journals[evidence_token].get("phase") != "prepared"
-                for evidence_kind, evidence_token in missing_exposures
-            ):
+            if set(tree_evidence) != set(regular_evidence):
                 raise ValueError(
                     "archived Mayo output and exposure evidence are not paired"
                 )
@@ -6781,12 +6913,7 @@ def _assert_resolved_transaction_evidence(
                 arkit_count = expected_inventory_counts.get("arkit_trajectories")
             for evidence_key in sorted(tree_evidence):
                 archived_output = tree_evidence[evidence_key]
-                archived_exposure = regular_evidence.get(evidence_key)
-                exposure_is_internal = archived_exposure is None
-                if exposure_is_internal:
-                    archived_exposure = (
-                        archived_output / "mayo_exposure_manifest.json"
-                    )
+                archived_exposure = regular_evidence[evidence_key]
                 with _hold_committed_mayo_generation(
                     archived_output,
                     archived_exposure,
@@ -6839,11 +6966,7 @@ def _assert_resolved_transaction_evidence(
                         held_generation.external_exposure_descriptor,
                         parent_descriptor=held_generation.external_parent_descriptor,
                         name=held_generation.exposure.name,
-                        field=(
-                            "archived internal Mayo exposure manifest"
-                            if exposure_is_internal
-                            else "archived external Mayo exposure manifest"
-                        ),
+                        field="archived external Mayo exposure manifest",
                         expected_identity=held_generation.external_exposure_identity,
                     )
                     if not hmac.compare_digest(
