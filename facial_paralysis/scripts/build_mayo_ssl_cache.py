@@ -3144,17 +3144,6 @@ def _retire_held_transaction_journal_durably(
             "completed Mayo transaction journal",
             expected_identity=identity[:7],
         )
-        require_journal_absent()
-        validate_final_state()
-        require_journal_absent()
-        complete_hold = _HeldPrivateRegularStorage(
-            path=complete,
-            descriptor=descriptor,
-            identity=_regular_snapshot(os.fstat(descriptor)),
-        )
-        _assert_held_private_regular_storage(
-            complete_hold, "completed Mayo transaction journal",
-        )
     except BaseException as primary:
         if retired:
             cleanup_state.compensation_attempted = True
@@ -3861,6 +3850,7 @@ def recover_interrupted_generations(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    private_roots: tuple[Path, Path] | None = None,
 ) -> None:
     output = _lexical_absolute(output_root)
     _require_output_lock(output)
@@ -3880,9 +3870,31 @@ def recover_interrupted_generations(
                 expected_classification_integrity_id
             ),
         )
+    resolved_output_evidence = [
+        *parent.glob(f".{journal.name}.history-*"),
+        *parent.glob(f".{journal.name}.complete-*"),
+        *parent.glob(f".{output.name}.retired-*"),
+        *parent.glob(f".{output.name}.aborted-*"),
+    ]
+    if exposure_manifest_path is None and any(
+        path.exists() or _is_symlink(path) for path in resolved_output_evidence
+    ):
+        raise RuntimeError(
+            "Mayo resolved transaction evidence requires the coupled exposure path"
+        )
     if exposure_manifest_path is not None:
         _assert_resolved_transaction_evidence(
-            output, _lexical_absolute(exposure_manifest_path),
+            output,
+            _lexical_absolute(exposure_manifest_path),
+            private_roots=private_roots,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
         )
     active_residue = [
         *parent.glob(f".{output.name}.staging-*"),
@@ -3906,7 +3918,17 @@ def recover_interrupted_generations(
         _require_directory(output, "existing output generation")
     if exposure_manifest_path is not None:
         _assert_no_unresolved_generation_state(
-            output, _lexical_absolute(exposure_manifest_path),
+            output,
+            _lexical_absolute(exposure_manifest_path),
+            private_roots=private_roots,
+            salt=salt,
+            expected_inventory_counts=expected_inventory_counts,
+            expected_collection_classification_integrity_id=(
+                expected_collection_classification_integrity_id
+            ),
+            expected_classification_integrity_id=(
+                expected_classification_integrity_id
+            ),
         )
 
 
@@ -6350,11 +6372,90 @@ def _assert_committed_generation(
         _assert_held_mayo_generation(_held)
 
 
+def _private_root_forbidden_tokens(
+    private_roots: tuple[Path, Path] | None,
+) -> tuple[bytes, ...]:
+    if private_roots is None:
+        return ()
+    if (
+        type(private_roots) is not tuple
+        or len(private_roots) != 2
+        or any(not isinstance(root, Path) for root in private_roots)
+    ):
+        raise ValueError("Mayo evidence privacy roots are invalid")
+    tokens: set[bytes] = set()
+    for root in private_roots:
+        original = os.fspath(root)
+        absolute = os.path.abspath(os.path.expanduser(original))
+        try:
+            resolved = os.fspath(Path(absolute).resolve(strict=True))
+        except (OSError, RuntimeError):
+            resolved = os.fspath(Path(absolute).resolve(strict=False))
+        values = (
+            original,
+            absolute,
+            resolved,
+            Path(absolute).name,
+            os.path.relpath(absolute, os.fspath(PROJECT_ROOT)),
+            os.path.relpath(absolute, os.getcwd()),
+        )
+        for value in dict.fromkeys(values):
+            raw = value.encode("utf-8")
+            variants = (
+                raw,
+                raw.hex().encode("ascii"),
+                raw.hex().upper().encode("ascii"),
+                base64.b64encode(raw),
+                base64.urlsafe_b64encode(raw),
+                base64.b64encode(raw).rstrip(b"="),
+                base64.urlsafe_b64encode(raw).rstrip(b"="),
+            )
+            tokens.update(token for token in variants if len(token) >= 4)
+    return tuple(sorted(tokens, key=lambda token: (-len(token), token)))
+
+
+def _assert_descriptor_omits_private_tokens(
+    descriptor: int,
+    identity: tuple[int, ...],
+    tokens: tuple[bytes, ...],
+    field: str,
+) -> None:
+    if not tokens:
+        return
+    before = os.fstat(descriptor)
+    _require_private_regular_stat(before, field)
+    if _regular_snapshot(before) != identity:
+        raise ValueError(f"{field} changed before privacy scan")
+    longest = max(len(token) for token in tokens)
+    overlap = b""
+    offset = 0
+    while offset < int(before.st_size):
+        block = os.pread(
+            descriptor, min(1024 * 1024, int(before.st_size) - offset), offset,
+        )
+        if not block:
+            raise ValueError(f"{field} was truncated during privacy scan")
+        candidate = overlap + block
+        if any(token in candidate for token in tokens):
+            raise ValueError(f"{field} contains a private root representation")
+        overlap = candidate[-(longest - 1):] if longest > 1 else b""
+        offset += len(block)
+    if _regular_snapshot(os.fstat(descriptor)) != identity:
+        raise ValueError(f"{field} changed during privacy scan")
+
+
 def _assert_resolved_transaction_evidence(
     output: Path,
     exposure: Path,
+    *,
+    private_roots: tuple[Path, Path] | None = None,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
 ) -> None:
     journal = _journal_path(output)
+    forbidden_tokens = _private_root_forbidden_tokens(private_roots)
     try:
         for kind in ("history", "complete"):
             prefix = f".{journal.name}.{kind}-"
@@ -6370,13 +6471,23 @@ def _assert_resolved_transaction_evidence(
                 )
                 if match is None:
                     raise ValueError("terminal journal name is invalid")
-                descriptor, _identity, payload = _open_transaction_journal(
+                descriptor, artifact_identity, payload = _open_transaction_journal(
                     artifact,
                 )
                 try:
+                    _assert_descriptor_omits_private_tokens(
+                        descriptor,
+                        artifact_identity,
+                        forbidden_tokens,
+                        "terminal Mayo transaction journal evidence",
+                    )
                     if (
                         (kind == "complete" and payload["token"] != match.group(1))
                         or payload["exposure_name"] != exposure.name
+                        or "/" in str(payload["staging_name"])
+                        or "\\" in str(payload["staging_name"])
+                        or Path(str(payload["staging_name"])).name
+                        != str(payload["staging_name"])
                         or not str(payload["staging_name"]).startswith(
                             f".{output.name}.staging-"
                         )
@@ -6409,6 +6520,26 @@ def _assert_resolved_transaction_evidence(
                     _assert_held_private_storage_tree(
                         held, "archived Mayo transaction tree evidence",
                     )
+                    for entry in held.entries:
+                        if entry.kind == "file":
+                            _assert_descriptor_omits_private_tokens(
+                                entry.descriptor,
+                                entry.identity,
+                                forbidden_tokens,
+                                "archived Mayo transaction tree evidence",
+                            )
+                if salt is not None:
+                    _validate_staging(
+                        artifact,
+                        salt=salt,
+                        expected_inventory_counts=expected_inventory_counts,
+                        expected_collection_classification_integrity_id=(
+                            expected_collection_classification_integrity_id
+                        ),
+                        expected_classification_integrity_id=(
+                            expected_classification_integrity_id
+                        ),
+                    )
 
         regular_specs = (
             (
@@ -6434,12 +6565,39 @@ def _assert_resolved_transaction_evidence(
                     _assert_held_private_regular_storage(
                         held, "archived Mayo transaction file evidence",
                     )
+                    _assert_descriptor_omits_private_tokens(
+                        held.descriptor,
+                        held.identity,
+                        forbidden_tokens,
+                        "archived Mayo transaction file evidence",
+                    )
     except (OSError, ValueError) as exc:
         raise RuntimeError("Mayo resolved transaction evidence is invalid") from exc
 
 
-def _assert_no_unresolved_generation_state(output: Path, exposure: Path) -> None:
-    _assert_resolved_transaction_evidence(output, exposure)
+def _assert_no_unresolved_generation_state(
+    output: Path,
+    exposure: Path,
+    *,
+    private_roots: tuple[Path, Path] | None = None,
+    salt: bytes | None = None,
+    expected_inventory_counts: Mapping[str, object] | None = None,
+    expected_collection_classification_integrity_id: str | None = None,
+    expected_classification_integrity_id: str | None = None,
+) -> None:
+    _assert_resolved_transaction_evidence(
+        output,
+        exposure,
+        private_roots=private_roots,
+        salt=salt,
+        expected_inventory_counts=expected_inventory_counts,
+        expected_collection_classification_integrity_id=(
+            expected_collection_classification_integrity_id
+        ),
+        expected_classification_integrity_id=(
+            expected_classification_integrity_id
+        ),
+    )
     journal = _journal_path(output)
     candidates = [
         journal,
@@ -6513,9 +6671,20 @@ def authorize_committed_mayo_ssl_generation(
     expected_exposure_classification = str(
         expected_exposure["classification_integrity_id"]
     )
+    evidence_authority = {
+        "private_roots": (data, exports),
+        "salt": salt,
+        "expected_inventory_counts": inventory.counts,
+        "expected_collection_classification_integrity_id": (
+            expected_collection_classification
+        ),
+        "expected_classification_integrity_id": expected_exposure_classification,
+    }
     with output_parent_lock(output, create_if_missing=False), \
             _hold_committed_mayo_generation(output, exposure) as held:
-        _assert_no_unresolved_generation_state(output, exposure)
+        _assert_no_unresolved_generation_state(
+            output, exposure, **evidence_authority,
+        )
         commitment = _validate_staging(
             output,
             int(FROZEN_INVENTORY["long_unique_videos"]),
@@ -6657,7 +6826,9 @@ def authorize_committed_mayo_ssl_generation(
 
         # Revalidate all live commitments immediately before returning.  This
         # deliberately does not invoke transaction recovery or mutate output.
-        _assert_no_unresolved_generation_state(output, exposure)
+        _assert_no_unresolved_generation_state(
+            output, exposure, **evidence_authority,
+        )
         repeated = _validate_staging(
             output,
             int(FROZEN_INVENTORY["long_unique_videos"]),
@@ -6708,7 +6879,9 @@ def authorize_committed_mayo_ssl_generation(
         ):
             raise ValueError("Mayo private key changed during authorization")
         _assert_held_mayo_generation(held)
-        _assert_no_unresolved_generation_state(output, exposure)
+        _assert_no_unresolved_generation_state(
+            output, exposure, **evidence_authority,
+        )
         return AuthorizedMayoGeneration(
             schema=MEDIAPIPE_CACHE_SCHEMA,
             collection_manifest_sha256=collection_digest,
@@ -7093,6 +7266,7 @@ def _run_builder_impl(
             expected_classification_integrity_id=(
                 expected_classification_integrity_id
             ),
+            private_roots=(data, exports),
         )
         staging = Path(tempfile.mkdtemp(
             prefix=f".{output.name}.staging-", dir=output.parent

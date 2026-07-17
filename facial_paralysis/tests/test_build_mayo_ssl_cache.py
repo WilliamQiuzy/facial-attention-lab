@@ -3036,6 +3036,35 @@ def test_every_active_journal_free_residue_blocks_recovery_and_authorization(c: 
             c.eq(residue.stat().st_ino, inode, "the residue remains untouched")
 
 
+def test_output_side_resolved_evidence_requires_coupled_exposure_path(c: Check):
+    evidence_specs = (
+        ("file", "..cache.transaction.json.history-aaaaaaaaaaaaaaaa", 0o666),
+        ("tree", ".cache.retired-0123456789abcdef-backup", 0o777),
+        ("tree", ".cache.aborted-0123456789abcdef-staging", 0o777),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for index, (kind, name, mode) in enumerate(evidence_specs):
+            root = outer / str(index)
+            root.mkdir(mode=0o700)
+            output = root / "cache"
+            evidence = root / name
+            if kind == "tree":
+                evidence.mkdir(mode=mode)
+                evidence.chmod(mode)
+            else:
+                evidence.write_text("untrusted-terminal-evidence")
+                evidence.chmod(mode)
+            inode = evidence.stat().st_ino
+            with builder.output_parent_lock(output):
+                c.raises(
+                    lambda: builder.recover_interrupted_generations(output),
+                    RuntimeError,
+                    f"{name} cannot be ignored without its exposure path",
+                )
+            c.eq(evidence.stat().st_ino, inode)
+
+
 def test_successful_journal_recovery_rescans_unrelated_active_residue(c: Check):
     class SimulatedProcessDeath(BaseException):
         pass
@@ -6383,6 +6412,17 @@ def test_committed_mayo_authorizer_validates_resolved_terminal_evidence(c: Check
             builder._write_transaction_journal(
                 complete, payload, require_absent=True,
             )
+            retired_tree = fixture.output.parent / (
+                ".mayo_ssl_cache.retired-0123456789abcdef-backup"
+            )
+            retired_exposure = fixture.exposure.parent / (
+                ".mayo_exposure_manifest.json.retired-"
+                "0123456789abcdef-backup"
+            )
+            shutil.copytree(fixture.output, retired_tree)
+            shutil.copy2(fixture.exposure, retired_exposure)
+            retired_tree.chmod(0o700)
+            retired_exposure.chmod(0o600)
             c.eq(
                 fixture.authorize().commitment,
                 commitment,
@@ -6398,6 +6438,22 @@ def test_committed_mayo_authorizer_validates_resolved_terminal_evidence(c: Check
                     )
                 finally:
                     artifact.chmod(0o600)
+            original_history = history.read_bytes()
+            leaked = json.loads(original_history)
+            leaked["staging_name"] = (
+                ".mayo_ssl_cache.staging-" + str(fixture.data)
+            )
+            history.write_text(json.dumps(leaked, sort_keys=True) + "\n")
+            history.chmod(0o600)
+            try:
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    "a real private root in terminal evidence blocks authorization",
+                )
+            finally:
+                history.write_bytes(original_history)
+                history.chmod(0o600)
 
 
 def test_committed_mayo_authorizer_rejects_unsafe_archived_evidence(c: Check):
@@ -6429,7 +6485,7 @@ def test_committed_mayo_authorizer_rejects_unsafe_archived_evidence(c: Check):
                     evidence.mkdir(mode=0o777)
                     evidence.chmod(0o777)
                 else:
-                    evidence.write_text("/private/raw/mayo-root")
+                    evidence.write_text(str(fixture.data))
                     evidence.chmod(0o666)
                 c.raises(
                     fixture.authorize,
@@ -6437,6 +6493,18 @@ def test_committed_mayo_authorizer_rejects_unsafe_archived_evidence(c: Check):
                     f"unsafe {name} blocks read-only authorization",
                 )
                 c.true(evidence.exists())
+                if kind == "output-tree":
+                    evidence.chmod(0o700)
+                    leaked = evidence / "private-root"
+                    leaked.write_text(str(fixture.data))
+                    leaked.chmod(0o600)
+                else:
+                    evidence.chmod(0o600)
+                c.raises(
+                    fixture.authorize,
+                    RuntimeError,
+                    f"private content in {name} blocks authorization",
+                )
 
 def test_committed_mayo_authorizer_never_mixes_swapped_generation_roots(c: Check):
     with tempfile.TemporaryDirectory() as td:
