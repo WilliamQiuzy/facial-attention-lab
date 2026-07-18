@@ -2764,8 +2764,13 @@ def test_runner_freezes_producer_before_parser_and_authorization(c: Check):
             json_line=json.dumps(action(), sort_keys=True),
         )
 
+    def quiet_call(function, /, *args, **kwargs):
+        events.append(("quiet", function.__name__))
+        return function(*args, **kwargs)
+
     original_capture = inputs_cli._run_mayo_cli_captured
     runner._producer_sha256 = producer_sha256
+    runner._quiet_call = quiet_call
     runner._parser = Parser
     runner._run_two_stage = run_two_stage
     inputs_cli._run_mayo_cli_captured = captured

@@ -989,7 +989,7 @@ def _run_two_stage(
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
-    producer_sha256 = _quiet_call(_producer_sha256)
+    producer_sha256 = _producer_sha256()
     args = _parser().parse_args(argv)
     if args.command != "two-stage":
         raise ValueError("unsupported pretraining command")
