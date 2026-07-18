@@ -46,13 +46,14 @@ from ..preprocessing.openface68_semantic import (
 
 @dataclass(frozen=True)
 class BridgePolicy:
-    """The preregistered, length-only packet policy."""
+    """The preregistered stage-specific packet policy."""
 
     sample_rate_hz: float = 30.0
     window_length: int = 32
     ravdess_packets_per_trial: int = 1
     mayo_packets_per_recording: int = 16
-    selection: str = "uniform_floor_v1"
+    ravdess_selection: str = "uniform_floor_v1"
+    mayo_selection: str = "valid_quantile_span4_v1"
 
     def __post_init__(self) -> None:
         if (
@@ -74,8 +75,12 @@ class BridgePolicy:
                 or int(observed) != expected
             ):
                 raise ValueError(f"bridge {name} must be exactly {expected}")
-        if self.selection != "uniform_floor_v1":
-            raise ValueError("bridge selection must be uniform_floor_v1")
+        if self.ravdess_selection != "uniform_floor_v1":
+            raise ValueError("RAVDESS bridge selection must be uniform_floor_v1")
+        if self.mayo_selection != "valid_quantile_span4_v1":
+            raise ValueError(
+                "Mayo bridge selection must be valid_quantile_span4_v1"
+            )
 
 
 @dataclass(frozen=True)
@@ -142,6 +147,10 @@ class _PreparedFrozenInputs:
     mayo: _PreparedFrozenStage
 
 
+class _MayoMaskQualityExclusion(ValueError):
+    """One source cannot provide 64 distinct frozen span-four windows."""
+
+
 def _exact_integer(value: object, name: str) -> int:
     if (
         isinstance(value, (bool, np.bool_))
@@ -182,6 +191,80 @@ def uniform_floor_starts(
         or np.any(np.diff(starts) < 0)
     ):
         raise RuntimeError("uniform floor selection violated its frozen contract")
+    return starts
+
+
+def mayo_valid_quantile_starts(
+    valid_mask: np.ndarray,
+    *,
+    policy: BridgePolicy = BridgePolicy(),
+) -> np.ndarray:
+    """Select 64 unique valid-window quantiles for one Mayo trajectory."""
+    if type(policy) is not BridgePolicy:
+        raise ValueError("Mayo window selection requires BridgePolicy")
+    BridgePolicy.__post_init__(policy)
+    mask = np.asarray(valid_mask)
+    if mask.dtype != np.bool_ or mask.ndim != 1:
+        raise ValueError("Mayo validity mask must have shape (T,) and dtype bool")
+    if len(mask) < policy.window_length:
+        raise ValueError("Mayo trajectory is shorter than the canonical window")
+
+    span_length = 4
+    spans_per_window = 2
+    span_starts = np.flatnonzero(
+        np.convolve(
+            mask.astype(np.int8, copy=False),
+            np.ones(span_length, dtype=np.int8),
+            mode="valid",
+        ) == span_length
+    )
+    eligible: list[int] = []
+    left = 0
+    right = 0
+    final_start = len(mask) - policy.window_length
+    last_span_offset = policy.window_length - span_length
+    for window_start in range(final_start + 1):
+        while left < len(span_starts) and span_starts[left] < window_start:
+            left += 1
+        if right < left:
+            right = left
+        while (
+            right < len(span_starts)
+            and span_starts[right] <= window_start + last_span_offset
+        ):
+            right += 1
+        if (
+            right - left >= spans_per_window
+            and int(span_starts[right - 1]) - int(span_starts[left])
+            >= span_length
+        ):
+            eligible.append(window_start)
+
+    count = policy.mayo_packets_per_recording * 4
+    if len(eligible) < count:
+        raise _MayoMaskQualityExclusion(
+            "Mayo trajectory has fewer than 64 eligible span-four windows"
+        )
+    quantiles = np.fromiter(
+        (
+            index * (len(eligible) - 1) // (count - 1)
+            for index in range(count)
+        ),
+        dtype=np.int64,
+        count=count,
+    )
+    starts = np.asarray(eligible, dtype=np.int64)[quantiles]
+    if (
+        starts.shape != (count,)
+        or np.any(np.diff(starts) <= 0)
+        or not all(
+            _window_has_two_mask_spans(
+                mask[int(start):int(start) + policy.window_length]
+            )
+            for start in starts
+        )
+    ):
+        raise RuntimeError("Mayo valid-window quantiles violated their contract")
     return starts
 
 
@@ -384,11 +467,7 @@ def packetize_mayo_trajectory(
         or not np.array_equal(semantic23, expected_semantic23)
     ):
         raise ValueError("clinical23_v2 adapter violated the exact semantic23 mapping")
-    starts = uniform_floor_starts(
-        len(checked[0]),
-        count=policy.mayo_packets_per_recording * 4,
-        window=policy.window_length,
-    )
+    starts = mayo_valid_quantile_starts(checked[1], policy=policy)
     packet_starts = np.stack(
         tuple(
             starts[offset:offset + policy.mayo_packets_per_recording]
@@ -418,9 +497,11 @@ _FROZEN_RAVDESS_ACTOR_COUNT = 24
 _FROZEN_RAVDESS_SOURCE_FRAMES = 299_854
 _FROZEN_RAVDESS_SAMPLE_COUNT = 2_452
 _FROZEN_MAYO_MEDIAPIPE_COUNT = 48
+_FROZEN_MAYO_ELIGIBLE_COUNT = 46
+_FROZEN_MAYO_EXCLUSION_COUNT = 2
 _FROZEN_MAYO_ARKIT_COUNT = 8
 _FROZEN_MAYO_CACHE_COUNT = 56
-_FROZEN_MAYO_SAMPLE_COUNT = 768
+_FROZEN_MAYO_SAMPLE_COUNT = 736
 _MAYO_V3_COMMITMENT_FIELDS = frozenset({
     "schema",
     "collection_manifest_sha256",
@@ -565,7 +646,9 @@ def _require_frozen_public_authorizations(
         or mayo_expected_count != _FROZEN_MAYO_MEDIAPIPE_COUNT
         or len(mayo_recordings) != _FROZEN_MAYO_MEDIAPIPE_COUNT
         or mayo_arkit_count != _FROZEN_MAYO_ARKIT_COUNT
-        or mayo_recording_count * 16 != _FROZEN_MAYO_SAMPLE_COUNT
+        or _FROZEN_MAYO_ELIGIBLE_COUNT + _FROZEN_MAYO_EXCLUSION_COUNT
+        != _FROZEN_MAYO_MEDIAPIPE_COUNT
+        or _FROZEN_MAYO_ELIGIBLE_COUNT * 16 != _FROZEN_MAYO_SAMPLE_COUNT
     ):
         raise ValueError("Mayo authorization violates the frozen production counts")
     mayo_recording_ids: list[str] = []
@@ -964,6 +1047,7 @@ def _stage_record(
     overlap_pairs: int,
     covered_positions: int,
     exclusions: int,
+    selection: str,
 ) -> dict[str, object]:
     names_digest = hashlib.sha256(
         _json_bytes({"feature_names": list(feature_names)})
@@ -999,7 +1083,7 @@ def _stage_record(
             "sample_rate_hz": 30.0,
             "window_length": 32,
             "windows_per_packet": 4,
-            "selection": "uniform_floor_v1",
+            "selection": selection,
         },
         "overlap_pair_count": overlap_pairs,
         "covered_canonical_position_count": covered_positions,
@@ -1133,6 +1217,7 @@ def _prepare_ravdess_stage(
         overlap_pairs=overlap_pairs,
         covered_positions=covered_positions,
         exclusions=0,
+        selection=BridgePolicy().ravdess_selection,
     )
     return _PreparedBridgeStage(
         name="ravdess",
@@ -1200,6 +1285,7 @@ def _prepare_mayo_stage(
     original_times: list[tuple[tuple[float, ...], ...]] = []
     overlap_pairs = covered_positions = 0
     seen_units: set[str] = set()
+    exclusions = 0
     for recording in recordings:
         recording_id = getattr(recording, "recording_id", None)
         group_id = getattr(recording, "group_id", None)
@@ -1209,21 +1295,25 @@ def _prepare_mayo_stage(
         if recording_id in seen_units:
             raise ValueError("Mayo authorization repeats a source unit")
         seen_units.add(recording_id)
-        bundle, mapping = packetize_mayo_trajectory(
-            np.asarray(getattr(recording, "features_30hz", None)),
-            np.asarray(getattr(recording, "valid_mask_30hz", None)),
-            canonical_frame_indices=np.asarray(
-                getattr(recording, "target_frame_indices_30hz", None)
-            ),
-            original_source_frame_indices=np.asarray(
-                getattr(recording, "source_frame_indices_30hz", None)
-            ),
-            original_timestamps=np.asarray(
-                getattr(recording, "timestamps_30hz", None)
-            ),
-            feature_schema=DYNAMIC_FEATURE_SCHEMA,
-            feature_names=DYNAMIC_FEATURE_NAMES,
-        )
+        try:
+            bundle, mapping = packetize_mayo_trajectory(
+                np.asarray(getattr(recording, "features_30hz", None)),
+                np.asarray(getattr(recording, "valid_mask_30hz", None)),
+                canonical_frame_indices=np.asarray(
+                    getattr(recording, "target_frame_indices_30hz", None)
+                ),
+                original_source_frame_indices=np.asarray(
+                    getattr(recording, "source_frame_indices_30hz", None)
+                ),
+                original_timestamps=np.asarray(
+                    getattr(recording, "timestamps_30hz", None)
+                ),
+                feature_schema=DYNAMIC_FEATURE_SCHEMA,
+                feature_names=DYNAMIC_FEATURE_NAMES,
+            )
+        except _MayoMaskQualityExclusion:
+            exclusions += 1
+            continue
         _require_mask_span_capacity(bundle.valid_mask, "mayo")
         features.append(bundle.features)
         masks.append(bundle.valid_mask)
@@ -1264,8 +1354,17 @@ def _prepare_mayo_stage(
                     ).encode("ascii")
                 ).hexdigest()
             )
-    if len(set(groups)) != recording_count:
-        raise ValueError("Mayo bridge requires one recording group per source unit")
+    if (
+        recording_count != _FROZEN_MAYO_MEDIAPIPE_COUNT
+        or expected_count != _FROZEN_MAYO_MEDIAPIPE_COUNT
+        or len(seen_units) != _FROZEN_MAYO_MEDIAPIPE_COUNT
+        or exclusions != _FROZEN_MAYO_EXCLUSION_COUNT
+        or len(set(source_ids)) != _FROZEN_MAYO_ELIGIBLE_COUNT
+        or len(set(groups)) != _FROZEN_MAYO_ELIGIBLE_COUNT
+        or len(set(cache_ids)) != _FROZEN_MAYO_ELIGIBLE_COUNT
+        or len(sample_ids) != _FROZEN_MAYO_SAMPLE_COUNT
+    ):
+        raise ValueError("Mayo bridge quality-selection counts do not close")
     bundle_bytes = _npz_bundle_bytes(
         features=np.concatenate(features, axis=0),
         valid_mask=np.concatenate(masks, axis=0),
@@ -1295,7 +1394,8 @@ def _prepare_mayo_stage(
         mapping_commitments=tuple(mappings),
         overlap_pairs=overlap_pairs,
         covered_positions=covered_positions,
-        exclusions=0,
+        exclusions=exclusions,
+        selection=BridgePolicy().mayo_selection,
     )
     return _PreparedBridgeStage(
         name="mayo",
@@ -2762,6 +2862,14 @@ def _prepare_live_generation(
         != _FROZEN_RAVDESS_SAMPLE_COUNT
         or prepared.mayo.record.get("sample_count")
         != _FROZEN_MAYO_SAMPLE_COUNT
+        or prepared.mayo.record.get("source_unit_count")
+        != _FROZEN_MAYO_ELIGIBLE_COUNT
+        or prepared.mayo.record.get("unique_group_count")
+        != _FROZEN_MAYO_ELIGIBLE_COUNT
+        or prepared.mayo.record.get("upstream_cache_count")
+        != _FROZEN_MAYO_ELIGIBLE_COUNT
+        or prepared.mayo.record.get("exclusion_count")
+        != _FROZEN_MAYO_EXCLUSION_COUNT
     ):
         raise ValueError("bridge samples violate the frozen production counts")
     for anchor, field in anchors:
@@ -4015,6 +4123,7 @@ __all__ = [
     "build_bridge_bundles",
     "freeze_bridge_stage",
     "initialize_owner_only_key",
+    "mayo_valid_quantile_starts",
     "packetize_mayo_trajectory",
     "packetize_ravdess_trajectory",
     "uniform_floor_starts",

@@ -132,7 +132,8 @@ def test_policy_and_all_frozen_ravdess_lengths_packetize(c: Check):
     c.eq(policy.window_length, 32)
     c.eq(policy.ravdess_packets_per_trial, 1)
     c.eq(policy.mayo_packets_per_recording, 16)
-    c.eq(policy.selection, "uniform_floor_v1")
+    c.eq(policy.ravdess_selection, "uniform_floor_v1")
+    c.eq(policy.mayo_selection, "valid_quantile_span4_v1")
 
     starts = uniform_floor_starts(88, count=4, window=32)
     c.true(bool(np.array_equal(starts, np.asarray([0, 18, 37, 56], np.int64))))
@@ -161,6 +162,41 @@ def test_policy_and_all_frozen_ravdess_lengths_packetize(c: Check):
         c.eq(mapping.window_starts.shape, (1, 4))
         c.eq(int(mapping.window_starts[0, 0]), 0)
         c.eq(int(mapping.window_starts[0, -1]), length - 32)
+
+
+def test_mayo_valid_quantile_selector_is_exact_unique_and_fail_closed(c: Check):
+    selector = getattr(bridge_core, "mayo_valid_quantile_starts", None)
+    c.true(callable(selector), "mask-aware Mayo selector must exist")
+    if not callable(selector):
+        return
+
+    all_valid = np.ones(128, dtype=np.bool_)
+    starts = selector(all_valid)
+    expected = uniform_floor_starts(128, count=64, window=32)
+    c.true(bool(np.array_equal(starts, expected)),
+           "all-valid masks preserve exact uniform starts")
+
+    two_islands = np.zeros(160, dtype=np.bool_)
+    two_islands[:64] = True
+    two_islands[96:] = True
+    island_starts = selector(two_islands)
+    c.eq(island_starts.dtype, np.dtype(np.int64))
+    c.eq(island_starts.shape, (64,))
+    c.true(bool(np.all(np.diff(island_starts) > 0)),
+           "eligible Mayo starts are distinct and strictly increasing")
+    c.eq(int(island_starts[0]), 0)
+    c.eq(int(island_starts[-1]), 128)
+    c.true(all(
+        bridge_core._window_has_two_mask_spans(
+            two_islands[int(start):int(start) + 32]
+        )
+        for start in island_starts
+    ), "every selected window preserves the frozen span-four quality gate")
+
+    sparse = np.zeros(512, dtype=np.bool_)
+    sparse[::8] = True
+    c.raises(lambda: selector(sparse), ValueError,
+             "fewer than 64 eligible starts is an explicit quality exclusion")
 
 
 def test_mayo_packets_use_exact_local_axes_and_quartile_layout(c: Check):
@@ -225,7 +261,7 @@ def test_mayo_packets_use_exact_local_axes_and_quartile_layout(c: Check):
         "the full 95d Mayo signal is retained rather than replaced by semantic23")
 
 
-def test_selection_depends_only_on_length(c: Check):
+def test_selection_depends_only_on_length_and_mayo_validity(c: Check):
     length = 257
     first_features, first_mask, *_ = _trajectory(length, 95)
     second_features = np.flip(first_features, axis=0).copy()
@@ -239,7 +275,7 @@ def test_selection_depends_only_on_length(c: Check):
     )
     c.true(bool(np.array_equal(
         first_mapping.window_starts, second_mapping.window_starts,
-    )), "features and masks cannot affect window starts")
+    )), "feature changes and masks that preserve every eligible start cannot move windows")
     metadata_variants = (
         {"label": 0, "movement": np.zeros(length)},
         {"label": 6, "movement": np.linspace(100.0, -100.0, length)},
@@ -249,7 +285,7 @@ def test_selection_depends_only_on_length(c: Check):
         for _metadata in metadata_variants
     ]
     c.true(bool(np.array_equal(metadata_starts[0], metadata_starts[1])),
-           "labels and movement are outside the length-only selection API")
+           "labels and movement are outside the frozen selection API")
     parameters = inspect.signature(packetize_mayo_trajectory).parameters
     c.true("label" not in parameters and "movement" not in parameters,
            "content metadata cannot enter the pure packetizer")
@@ -301,7 +337,8 @@ def test_forged_bridge_policies_fail_closed(c: Check):
     subclass_policy = BadPolicy(
         sample_rate_hz=31.0,
         ravdess_packets_per_trial=99,
-        selection="anything",
+        ravdess_selection="anything",
+        mayo_selection="anything",
     )
     c.raises(lambda: _ravdess(
         88, policy=subclass_policy,
@@ -309,7 +346,8 @@ def test_forged_bridge_policies_fail_closed(c: Check):
 
     mutated_policy = BridgePolicy()
     object.__setattr__(mutated_policy, "sample_rate_hz", 31.0)
-    object.__setattr__(mutated_policy, "selection", "anything")
+    object.__setattr__(mutated_policy, "ravdess_selection", "anything")
+    object.__setattr__(mutated_policy, "mayo_selection", "anything")
     c.raises(lambda: _ravdess(
         88, policy=mutated_policy,
     ), ValueError, "an exact-type policy is revalidated after construction")
@@ -329,9 +367,11 @@ _PRODUCTION_BRIDGE_CONTRACT = {
     "_FROZEN_RAVDESS_SOURCE_FRAMES": 299_854,
     "_FROZEN_RAVDESS_SAMPLE_COUNT": 2_452,
     "_FROZEN_MAYO_MEDIAPIPE_COUNT": 48,
+    "_FROZEN_MAYO_ELIGIBLE_COUNT": 46,
+    "_FROZEN_MAYO_EXCLUSION_COUNT": 2,
     "_FROZEN_MAYO_ARKIT_COUNT": 8,
     "_FROZEN_MAYO_CACHE_COUNT": 56,
-    "_FROZEN_MAYO_SAMPLE_COUNT": 768,
+    "_FROZEN_MAYO_SAMPLE_COUNT": 736,
 }
 
 
@@ -347,6 +387,8 @@ def _synthetic_authorizations():
         "_FROZEN_RAVDESS_SOURCE_FRAMES": 185,
         "_FROZEN_RAVDESS_SAMPLE_COUNT": 2,
         "_FROZEN_MAYO_MEDIAPIPE_COUNT": 2,
+        "_FROZEN_MAYO_ELIGIBLE_COUNT": 2,
+        "_FROZEN_MAYO_EXCLUSION_COUNT": 0,
         "_FROZEN_MAYO_ARKIT_COUNT": 1,
         "_FROZEN_MAYO_CACHE_COUNT": 3,
         "_FROZEN_MAYO_SAMPLE_COUNT": 32,
@@ -636,6 +678,54 @@ def test_bridge_rejects_packets_without_two_valid_mask_spans_per_window(c: Check
         ), ValueError,
         "every packet window needs two non-overlapping contiguous valid spans of four")
         c.true(not output.exists(), "mask-span failure publishes no generation")
+
+
+def test_mayo_stage_records_explicit_mask_quality_exclusion(c: Check):
+    ravdess, mayo = _synthetic_authorizations()
+    recordings = list(mayo.recordings)
+    excluded = dict(vars(recordings[0]))
+    excluded["recording_id"] = "rec_" + "f" * 64
+    excluded["group_id"] = "grp_" + "e" * 64
+    excluded["cache_integrity_id"] = "cache_" + "d" * 64
+    excluded["cache_sha256"] = "c" * 64
+    sparse = np.zeros_like(excluded["valid_mask_30hz"])
+    sparse[::8] = True
+    excluded["valid_mask_30hz"] = sparse
+    recordings.append(SimpleNamespace(**excluded))
+
+    commitment = dict(mayo.commitment)
+    commitment["mediapipe_file_count"] = 3
+    commitment["cache_file_count"] = 4
+    changed = dict(vars(mayo))
+    changed.update({
+        "recording_count": 3,
+        "expected_recording_count": 3,
+        "commitment": commitment,
+        "recordings": tuple(recordings),
+    })
+    _set_bridge_contract({
+        "_FROZEN_RAVDESS_TRIAL_COUNT": 2,
+        "_FROZEN_RAVDESS_ACTOR_COUNT": 2,
+        "_FROZEN_RAVDESS_SOURCE_FRAMES": 185,
+        "_FROZEN_RAVDESS_SAMPLE_COUNT": 2,
+        "_FROZEN_MAYO_MEDIAPIPE_COUNT": 3,
+        "_FROZEN_MAYO_ELIGIBLE_COUNT": 2,
+        "_FROZEN_MAYO_EXCLUSION_COUNT": 1,
+        "_FROZEN_MAYO_ARKIT_COUNT": 1,
+        "_FROZEN_MAYO_CACHE_COUNT": 4,
+        "_FROZEN_MAYO_SAMPLE_COUNT": 32,
+    })
+    prepared = bridge_core._prepare_bridge_generation(
+        ravdess,
+        SimpleNamespace(**changed),
+        producer_sha256="f" * 64,
+    )
+    c.eq(prepared.mayo.record["sample_count"], 32)
+    c.eq(prepared.mayo.record["source_unit_count"], 2)
+    c.eq(prepared.mayo.record["unique_group_count"], 2)
+    c.eq(prepared.mayo.record["upstream_cache_count"], 2)
+    c.eq(prepared.mayo.record["exclusion_count"], 1)
+    c.eq(len(prepared.mayo.sample_ids), 32)
 
 
 def test_total_bundle_size_is_gated_before_publication(c: Check):
