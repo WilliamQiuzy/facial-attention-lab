@@ -1,6 +1,7 @@
 """Synthetic-only contracts for dynamic landmark masked-span pretraining."""
 from __future__ import annotations
 
+import argparse
 import base64
 import hashlib
 import importlib.util
@@ -2737,6 +2738,54 @@ def test_runner_import_order_preserves_canonical_producer_identity(c: Check):
     )
 
 
+def test_runner_freezes_producer_before_parser_and_authorization(c: Check):
+    runner = _load_runner()
+    from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
+
+    events: list[object] = []
+    producer = "a" * 64
+
+    class Parser:
+        def parse_args(self, _argv):
+            events.append("parse")
+            return argparse.Namespace(command="two-stage")
+
+    def producer_sha256():
+        events.append("producer")
+        return producer
+
+    def run_two_stage(_args, *, producer_sha256):
+        events.append(("run", producer_sha256))
+        return {"stage_count": 2}
+
+    def captured(_args, action):
+        events.append("capture")
+        return types.SimpleNamespace(
+            json_line=json.dumps(action(), sort_keys=True),
+        )
+
+    original_capture = inputs_cli._run_mayo_cli_captured
+    runner._producer_sha256 = producer_sha256
+    runner._parser = Parser
+    runner._run_two_stage = run_two_stage
+    inputs_cli._run_mayo_cli_captured = captured
+    stdout = io.StringIO()
+    try:
+        with redirect_stdout(stdout):
+            result = runner.main([])
+    finally:
+        inputs_cli._run_mayo_cli_captured = original_capture
+
+    c.eq(result, {"stage_count": 2})
+    c.eq(stdout.getvalue(), '{"stage_count": 2}\n')
+    c.eq(
+        events,
+        ["producer", "parse", "capture", ("run", producer)],
+        "runner freezes the canonical producer identity before parser and "
+        "authorization machinery can warm live producer semantics",
+    )
+
+
 def test_direct_runner_delegates_once_to_canonical_entrypoint(c: Check):
     import scripts
 
@@ -2900,8 +2949,10 @@ def test_pretraining_runner_captures_native_mayo_root_output(c: Check):
             module, arguments, _run_root, roots = _synthetic_runner_fixture(
                 root, frozen,
             )
+            observed_producers: list[str] = []
 
-            def leaking_run(_args):
+            def leaking_run(_args, *, producer_sha256):
+                observed_producers.append(producer_sha256)
                 os.write(1, (str(roots["mayo"]) + "\n").encode("utf-8"))
                 os.write(2, (str(roots["legacy"]) + "\n").encode("utf-8"))
                 return {
@@ -2934,6 +2985,7 @@ def test_pretraining_runner_captures_native_mayo_root_output(c: Check):
                 emitted = native_stdout.read() + native_stderr.read()
             c.true(isinstance(caught, ValueError))
             c.eq(str(caught), "private Mayo command failed")
+            c.eq(observed_producers, [frozen["producer_sha256"]])
             c.true(str(roots["mayo"]).encode("utf-8") not in emitted)
             c.true(str(roots["legacy"]).encode("utf-8") not in emitted)
 

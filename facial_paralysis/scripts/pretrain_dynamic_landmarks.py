@@ -714,7 +714,11 @@ def _publish_validated_results(
         ) from rename_error
 
 
-def _run_two_stage(args: argparse.Namespace) -> dict[str, object]:
+def _run_two_stage(
+    args: argparse.Namespace,
+    *,
+    producer_sha256: str,
+) -> dict[str, object]:
     run_root = _private_directory(args.run_root.absolute(), "run root")
     if args.mode == "smoke":
         namespace_root = run_root.parent.parent
@@ -740,7 +744,6 @@ def _run_two_stage(args: argparse.Namespace) -> dict[str, object]:
     ravdess_authorizer, mayo_authorizer = _quiet_call(
         _authorization_factories, args,
     )
-    producer_sha256 = _quiet_call(_producer_sha256)
     privacy_forbidden = _quiet_call(
         _privacy_forbidden,
         args, ravdess_authorizer, mayo_authorizer,
@@ -986,13 +989,18 @@ def _run_two_stage(args: argparse.Namespace) -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
+    producer_sha256 = _quiet_call(_producer_sha256)
     args = _parser().parse_args(argv)
     if args.command != "two-stage":
         raise ValueError("unsupported pretraining command")
     from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
 
     captured = inputs_cli._run_mayo_cli_captured(
-        args, lambda: _run_two_stage(args),
+        args,
+        lambda: _run_two_stage(
+            args,
+            producer_sha256=producer_sha256,
+        ),
     )
     print(captured.json_line)
     result = json.loads(captured.json_line)
