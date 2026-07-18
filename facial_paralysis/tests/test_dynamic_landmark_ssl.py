@@ -1074,6 +1074,55 @@ def test_frozen_mayo_quality_exclusion_reauthorizes_before_training(c: Check):
             c.eq(mayo_evidence.source_unit_count, 2)
 
 
+def test_frozen_exclusion_count_tamper_matrix_precedes_optimizer(c: Check):
+    cases = (
+        ("mayo-missing", "mayo", None),
+        ("mayo-boolean", "mayo", True),
+        ("mayo-negative", "mayo", -1),
+        ("mayo-ravdess-value", "mayo", 0),
+        ("mayo-other-value", "mayo", 3),
+        ("ravdess-mayo-value", "ravdess", 2),
+    )
+    for name, stage, replacement in cases:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+                receipt_path = (
+                    frozen["inputs_root"] / "receipts" / f"{stage}.json"
+                )
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if replacement is None:
+                    receipt.pop("exclusion_count")
+                else:
+                    receipt["exclusion_count"] = replacement
+                receipt_path.write_bytes(ssl_core._canonical_json_bytes(receipt))
+                receipt_path.chmod(0o600)
+                optimizer_calls = 0
+                original_adamw = torch.optim.AdamW
+
+                def forbidden_adamw(*_args, **_kwargs):
+                    nonlocal optimizer_calls
+                    optimizer_calls += 1
+                    raise AssertionError("OPTIMIZER_REACHED")
+
+                torch.optim.AdamW = forbidden_adamw
+                try:
+                    c.raises(
+                        lambda: ssl_core.authorize_frozen_ssl_stage(
+                            stage=stage, **frozen,
+                        ),
+                        ValueError,
+                        f"{name} exclusion claim fails frozen authorization",
+                    )
+                finally:
+                    torch.optim.AdamW = original_adamw
+                c.eq(
+                    optimizer_calls,
+                    0,
+                    f"{name} fails before optimizer construction",
+                )
+
+
 def test_formal_receipt_freezes_three_seeds_and_thirty_epochs(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
