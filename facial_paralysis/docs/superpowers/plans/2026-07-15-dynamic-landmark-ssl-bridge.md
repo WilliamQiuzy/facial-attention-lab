@@ -371,6 +371,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
   - `bridge_receipt_sha256`, `receipt_hmac`, run mode, canonical-key file identity, and bridge receipt file identity;
   - ordered opaque packet IDs, source-unit IDs, group IDs, and original canonical mapping digests;
   - `bundle_file_count=1`, `sample_count=2452|736`, `source_unit_count=2452|46`, `unique_group_count=24|46`, `upstream_cache_count=2452|46`, and `exclusion_count=0|2` separately;
+  - frozen-stage authorization is stage exact: it requires `exclusion_count=0` for RAVDESS and `exclusion_count=2` for Mayo, carries that claim through the HMAC-bound bridge receipt, and rejects a swapped, missing, boolean, negative, or otherwise mismatched exclusion count before optimizer construction;
   - feature schema/name digest;
   - canonical temporal policy digest;
   - bundle cache commitment/count;
