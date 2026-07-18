@@ -136,7 +136,7 @@ Command:
 
 ## Task 6: Pretrain with masked spans and explicit source-transfer boundaries
 
-> **2026-07-15 execution amendment:** The source builders and SSL core are complete, but real pretraining now follows the reviewed bridge plan in `2026-07-15-dynamic-landmark-ssl-bridge.md`. That plan supersedes the older extraction/window details below wherever they differ: all 48 retained Mayo videos are homogeneously re-extracted; all 2,452 RAVDESS trials are retained; both stages use canonical 30-Hz indices with step 1 and local window timestamps; Mayo uses 16 fixed uniform packets per recording; and SSL authorization binds a private bridge receipt through manifest/stage-evidence v2.
+> **2026-07-15 execution amendment:** The source builders and SSL core are complete, but real pretraining now follows the reviewed bridge plan in `2026-07-15-dynamic-landmark-ssl-bridge.md`. That plan supersedes the older extraction/window details below wherever they differ: all 48 retained Mayo videos are homogeneously re-extracted and the complete 48-recording Mayo cache commitment remains bound in authorization; the mask-only quality gate retains 46 eligible recordings, each emitting 16 `valid_quantile_span4_v1` packets for 736 total, while the two quality-excluded recordings emit none; all 2,452 RAVDESS trials are retained; both stages use canonical 30-Hz indices with step 1 and local window timestamps; and SSL authorization binds a private bridge receipt through manifest/stage-evidence v2.
 
 **Files:**
 
@@ -149,6 +149,7 @@ Command:
 
 - [ ] First write failing tests for contiguous span masking, masked-only SmoothL1 reconstruction, actor/recording split isolation, 30-Hz resampling, train-only source scalers, full 64-dimensional GRU input compatibility, checkpoint names/shapes, and permitted weight transfer.
 - [ ] Use masked-span reconstruction only. Do not use a BiGRU next-step objective because its representation already sees future frames.
+- [ ] Freeze the exact `deterministic_microbatch_full_partition_64` policy: each epoch preserves the complete full train partition in its fixed row order, with no shuffling or runtime override, and splits it into consecutive chunks of at most 64 rows. Each chunk computes its masked SmoothL1 sum; each backward contribution is normalized by the total number of masked feature elements across the complete full train partition, all chunk gradients accumulate, and exactly one `optimizer.step()` occurs per epoch. Every mode-bound config, receipt, and checkpoint lineage must bind the exact policy string `deterministic_microbatch_full_partition_64`.
 - [ ] RAVDESS stage: actor-disjoint 32-frame windows at 30 Hz, a RAVDESS-only scaler/input adapter, zero 32-dimensional base latent, and landmark latent in the second half of the full 64-dimensional shared GRU input. Transfer only shared GRU/pooling weights downstream unless cross-detector agreement is independently proven.
 - [ ] Freeze the expanded aggregate inventory before extraction: 65 sessions total; 50 video-bearing; 15 without video. Of the video sessions, exclude one exact duplicate copy and one 1.13-second QC-only clip, leaving 48 unique long videos. Existing complete V2 exports cover 13 of those for audit only; do not reuse them. Re-extract all 48 retained long videos homogeneously in MediaPipe VIDEO mode without annotated preview video.
 - [ ] Save compact 60-Hz normalized landmark/blendshape tensors, masks, timestamps, and transform metadata rather than new multi-gigabyte CSV/preview artifacts; then downsample the SSL view to 30 Hz. Group only what provenance proves and publish an ignored manifest using salted IDs/fingerprints rather than recording names. Mark every exposed current Mayo recording permanently development-only.
@@ -156,7 +157,7 @@ Command:
 - [ ] Use a Mayo-only scaler for SSL. The compatible MediaPipe landmark projections plus shared GRU/pooling may warm-start downstream, but the pretraining scaler is never substituted for the PalsyNet fold scaler.
 - [ ] In every outer fold, random and pretrained candidates share one scaler fitted only to that outer-train PalsyNet fold. The only intended difference is initialization.
 - [ ] Report actor-held-out RAVDESS and recording-held-out Mayo masked reconstruction loss against untrained and train-mean baselines. Recording-held-out is not patient-held-out when identity grouping is unavailable.
-- [ ] Save two preregisterable checkpoints: RAVDESS-only and RAVDESS-then-Mayo. Reject partial/mismatched state dictionaries.
+- [ ] Save two preregisterable checkpoint types per seed, RAVDESS-only and RAVDESS-then-Mayo, for seeds `0,1,2`, yielding six formal checkpoints total. Each Mayo-stage checkpoint must initialize from the exact same-seed RAVDESS checkpoint. Reject partial/mismatched state dictionaries.
 
 ## Task 7: Register every candidate, then run one unified outer evaluation
 
@@ -252,6 +253,8 @@ Focused verification commands:
 /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_model.py
 /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_benchmark.py
 /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_openface68_semantic.py
+/Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_build_mayo_ssl_cache.py
 /Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl.py
+/Users/williamqiu/opt/anaconda3/bin/python3 facial_paralysis/tests/test_dynamic_landmark_ssl_bridge.py
 git diff --check
 ```
