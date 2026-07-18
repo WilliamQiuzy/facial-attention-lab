@@ -2464,7 +2464,7 @@ def _prepare_frozen_stage(
         "learning_rate": 0.001,
         "weight_decay": 0.0001,
         "epochs": 1 if mode == "smoke" else 30,
-        "batch_policy": "full_train_partition",
+        "batch_policy": "deterministic_microbatch_full_partition_64",
         "span_length": 4,
         "spans_per_window": 2,
         "device": "cpu",

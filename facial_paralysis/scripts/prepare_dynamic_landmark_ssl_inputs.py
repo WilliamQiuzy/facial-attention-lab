@@ -46,6 +46,7 @@ from scripts.prepare_ravdess_semantic23 import (  # noqa: E402
     audit_ravdess_inventory,
     authorize_committed_ravdess_semantic23,
 )
+from src.pretraining import dynamic_landmark_ssl as _dynamic_landmark_ssl  # noqa: E402,F401
 from src.pretraining.dynamic_landmark_ssl_bridge import (  # noqa: E402
     build_bridge_bundles,
     freeze_bridge_stage,
@@ -55,10 +56,34 @@ from src.pretraining.dynamic_landmark_ssl_bridge import (  # noqa: E402
 )
 
 
+def _capture_trainer_authorization_marker(original: object):
+    def require_original(value: object) -> bool:
+        trainer = sys.modules.get("src.pretraining.dynamic_landmark_ssl")
+        if (
+            not isinstance(trainer, ModuleType)
+            or vars(trainer).get("_AUTHORIZATION_MARKER") is not original
+        ):
+            raise ValueError(
+                "trainer authorization marker changed after producer import"
+            )
+        return value is original
+
+    return require_original
+
+
+_is_original_trainer_authorization_marker = (
+    _capture_trainer_authorization_marker(
+        _dynamic_landmark_ssl._AUTHORIZATION_MARKER
+    )
+)
+del _capture_trainer_authorization_marker
+
+
 PRETRAINING_ROOT = ROOT / "outputs" / "dynamic_landmark" / "pretraining"
 CANONICAL_MAYO_KEY = PRETRAINING_ROOT / ".mayo_ssl_hmac.key"
 _SAFE_RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _PRODUCER_FILES = (
+    ROOT / "src" / "pretraining" / "dynamic_landmark_ssl.py",
     ROOT / "src" / "pretraining" / "dynamic_landmark_ssl_bridge.py",
     Path(__file__).resolve(),
     ROOT / "scripts" / "prepare_ravdess_semantic23.py",
@@ -68,6 +93,7 @@ _PRODUCER_FILES = (
     ROOT / "src" / "datasets" / "dynamic_landmark.py",
 )
 _PRODUCER_MODULE_NAMES = (
+    "src.pretraining.dynamic_landmark_ssl",
     "src.pretraining.dynamic_landmark_ssl_bridge",
     __name__,
     "scripts.prepare_ravdess_semantic23",
@@ -835,6 +861,10 @@ class _LiveSemanticEncoder:
             raise ValueError("live semantic closure exceeds its node bound")
         if value is None:
             return self._frame(b"none")
+        if _is_original_trainer_authorization_marker(value):
+            return self._frame(
+                b"dynamic-landmark-ssl-authorization-marker"
+            )
         if value is Ellipsis:
             return self._frame(b"ellipsis")
         if type(value) is bool:
@@ -1080,6 +1110,19 @@ class _LiveSemanticEncoder:
                 + self.encode(tuple(raw_types), depth=depth + 1)
                 + self.encode(identity, depth=depth + 1)
                 + self.encode(signature, depth=depth + 1),
+            )
+        torch_module = sys.modules.get("torch")
+        torch_dtype_type = (
+            getattr(torch_module, "dtype", None)
+            if isinstance(torch_module, ModuleType)
+            else None
+        )
+        if isinstance(torch_dtype_type, type) and type(value) is torch_dtype_type:
+            identity = str(value)
+            if not identity.startswith("torch.") or not identity[6:].isalnum():
+                raise ValueError("live torch dtype identity is malformed")
+            return self._frame(
+                b"torch-dtype", self.encode(identity, depth=depth + 1)
             )
         value_type = type(value)
         if (

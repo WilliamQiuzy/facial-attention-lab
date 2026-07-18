@@ -613,6 +613,69 @@ def masked_smooth_l1(
     )
 
 
+def _backward_full_partition_microbatches(
+    model: nn.Module,
+    *,
+    features: torch.Tensor,
+    valid_mask: torch.Tensor,
+    timestamps: torch.Tensor,
+    source_frame_indices: torch.Tensor,
+    reconstruction_mask: torch.Tensor,
+    source: str,
+) -> torch.Tensor:
+    """Backpropagate one exact full-partition mean in deterministic row chunks."""
+    if not isinstance(model, nn.Module):
+        raise ValueError("microbatch reconstruction requires a torch model")
+    if not all(isinstance(item, torch.Tensor) for item in (
+        features, valid_mask, timestamps, source_frame_indices,
+        reconstruction_mask,
+    )):
+        raise ValueError("microbatch reconstruction inputs must be tensors")
+    if features.ndim < 2 or any(
+        item.shape[0] != features.shape[0]
+        for item in (
+            valid_mask, timestamps, source_frame_indices, reconstruction_mask,
+        )
+    ):
+        raise ValueError("microbatch reconstruction rows must align")
+    total_masked_elements = (
+        int(reconstruction_mask.sum().detach().cpu().item())
+        * int(features.shape[-1])
+    )
+    if total_masked_elements < 1:
+        raise ValueError("full-partition reconstruction mask must select elements")
+
+    detached_loss_sum = torch.zeros(
+        (), dtype=features.dtype, device=features.device,
+    )
+    for start in range(0, int(features.shape[0]), 64):
+        stop = min(start + 64, int(features.shape[0]))
+        chunk_mask = reconstruction_mask[start:stop]
+        chunk_masked_elements = (
+            int(chunk_mask.sum().detach().cpu().item())
+            * int(features.shape[-1])
+        )
+        if chunk_masked_elements == 0:
+            continue
+        chunk_features = features[start:stop]
+        prediction = model(
+            chunk_features,
+            valid_mask[start:stop],
+            timestamps[start:stop],
+            source_frame_indices[start:stop],
+            reconstruction_mask=chunk_mask,
+            source=source,
+        )
+        chunk_loss_sum = functional.smooth_l1_loss(
+            prediction[chunk_mask],
+            chunk_features[chunk_mask],
+            reduction="sum",
+        )
+        (chunk_loss_sum / total_masked_elements).backward()
+        detached_loss_sum = detached_loss_sum + chunk_loss_sum.detach()
+    return detached_loss_sum / total_masked_elements
+
+
 def deterministic_group_split(
     group_ids: Sequence[str],
     *,
@@ -1273,7 +1336,7 @@ def _validate_v2_training_config(
         "learning_rate": 0.001,
         "weight_decay": 0.0001,
         "epochs": 1 if mode == "smoke" else 30,
-        "batch_policy": "full_train_partition",
+        "batch_policy": "deterministic_microbatch_full_partition_64",
         "span_length": 4,
         "spans_per_window": 2,
         "device": "cpu",
@@ -1827,7 +1890,7 @@ def _validate_training_config(
         "seeds": list(SSL_SEEDS),
         "development_only": development_only,
         "optimizer": "adamw",
-        "batch_policy": "full_train_partition",
+        "batch_policy": "deterministic_microbatch_full_partition_64",
         "device": "cpu",
     }
     if any(not _exact_json_value(value[name], expected) for name, expected in fixed.items()):
@@ -3176,18 +3239,15 @@ def _train_ssl_stage_impl(
             })
             model.train()
             optimizer.zero_grad(set_to_none=True)
-            trained_prediction = model(
-                train_scaled,
-                train_valid,
-                train_times,
-                train_source_indices,
+            loss = _backward_full_partition_microbatches(
+                model,
+                features=train_scaled,
+                valid_mask=train_valid,
+                timestamps=train_times,
+                source_frame_indices=train_source_indices,
                 reconstruction_mask=train_mask,
                 source=source_key,
             )
-            loss = masked_smooth_l1(
-                trained_prediction, train_scaled, train_mask
-            )
-            loss.backward()
             optimizer.step()
             train_trace.append({
                 "step": epoch,

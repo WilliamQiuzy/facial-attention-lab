@@ -2617,12 +2617,125 @@ def test_exact_tree_snapshot_accepts_frozen_mayo_generation_scale(c: Check):
 def test_producer_lineage_includes_feature_adapter_sources(c: Check):
     cli = _load_cli()
     required_producers = {
+        ROOT / "src" / "pretraining" / "dynamic_landmark_ssl.py",
         ROOT / "src" / "preprocessing" / "semantic_landmarks.py",
         ROOT / "src" / "preprocessing" / "openface68_semantic.py",
         ROOT / "src" / "datasets" / "dynamic_landmark.py",
     }
     c.true(required_producers.issubset(set(cli._PRODUCER_FILES)),
-           "producer closure includes every feature adapter implementation")
+           "producer closure includes trainer and every feature adapter")
+    c.true(
+        "src.pretraining.dynamic_landmark_ssl" in cli._PRODUCER_MODULE_NAMES,
+        "producer live-semantics closure includes the trainer module",
+    )
+
+
+def test_real_producer_binds_trainer_held_bytes_and_live_semantics(c: Check):
+    cli = _load_cli()
+    trainer_name = "src.pretraining.dynamic_landmark_ssl"
+    trainer_path = ROOT / "src" / "pretraining" / "dynamic_landmark_ssl.py"
+    trainer = sys.modules.get(trainer_name)
+    c.true(trainer is not None, "direct prepare CLI keeps trainer semantics live")
+    c.true(trainer_path in cli._PRODUCER_FILES)
+    c.true(trainer_name in cli._PRODUCER_MODULE_NAMES)
+    baseline = cli._producer_sha256()
+
+    original_read = cli.os.read
+    trainer_stat = trainer_path.stat()
+    trainer_identity = (int(trainer_stat.st_dev), int(trainer_stat.st_ino))
+    changed_trainer_read = False
+
+    def changed_held_trainer_bytes(descriptor, size):
+        nonlocal changed_trainer_read
+        payload = original_read(descriptor, size)
+        observed = cli.os.fstat(descriptor)
+        if (
+            payload
+            and not changed_trainer_read
+            and (int(observed.st_dev), int(observed.st_ino)) == trainer_identity
+        ):
+            changed_trainer_read = True
+            return bytes((payload[0] ^ 1,)) + payload[1:]
+        return payload
+
+    cli.os.read = changed_held_trainer_bytes
+    try:
+        held_bytes_changed = cli._producer_sha256()
+    finally:
+        cli.os.read = original_read
+    c.true(changed_trainer_read, "trainer bytes are read from their held descriptor")
+    c.true(
+        held_bytes_changed != baseline,
+        "a trainer source-byte change invalidates producer lineage",
+    )
+
+    original_backward = trainer._backward_full_partition_microbatches
+
+    def changed_backward_semantics(*_args, **_kwargs):
+        raise RuntimeError("synthetic changed trainer behavior")
+
+    trainer._backward_full_partition_microbatches = changed_backward_semantics
+    try:
+        live_semantics_changed = cli._producer_sha256()
+    finally:
+        trainer._backward_full_partition_microbatches = original_backward
+    c.true(
+        live_semantics_changed != baseline,
+        "a live trainer behavior change invalidates producer lineage",
+    )
+    c.eq(cli._producer_sha256(), baseline)
+
+
+def test_live_semantic_encoder_only_accepts_the_trainer_authorization_singleton(c: Check):
+    cli = _load_cli()
+    trainer_name = "src.pretraining.dynamic_landmark_ssl"
+    trainer = sys.modules[trainer_name]
+    encoded = cli._LiveSemanticEncoder(
+        cli._PRODUCER_MODULE_NAMES
+    ).encode(trainer._AUTHORIZATION_MARKER)
+    c.true(
+        b"dynamic-landmark-ssl-authorization-marker" in encoded,
+        "the trainer singleton has one fixed dedicated semantic tag",
+    )
+    c.eq(
+        cli._LiveSemanticEncoder(cli._PRODUCER_MODULE_NAMES).encode(
+            trainer._AUTHORIZATION_MARKER
+        ),
+        encoded,
+    )
+    c.raises(
+        lambda: cli._LiveSemanticEncoder(
+            cli._PRODUCER_MODULE_NAMES
+        ).encode(object()),
+        ValueError,
+        "arbitrary plain objects remain unsupported and fail closed",
+    )
+
+
+def test_live_producer_fails_closed_if_trainer_authorization_marker_is_rebound(c: Check):
+    cli = _load_cli()
+    trainer = sys.modules["src.pretraining.dynamic_landmark_ssl"]
+    original = trainer._AUTHORIZATION_MARKER
+    baseline = cli._producer_sha256()
+    trainer._AUTHORIZATION_MARKER = object()
+    try:
+        c.raises(
+            cli._live_producer_semantics_sha256,
+            ValueError,
+            "rebinding the trainer marker cannot mint the original producer identity",
+        )
+        c.raises(
+            cli._producer_sha256,
+            ValueError,
+            "the complete producer gate also fails closed on marker rebinding",
+        )
+    finally:
+        trainer._AUTHORIZATION_MARKER = original
+    c.eq(
+        cli._producer_sha256(),
+        baseline,
+        "restoring the exact singleton restores the original producer digest",
+    )
 
 
 def test_producer_digest_binds_live_code_and_exact_held_file_snapshots(c: Check):

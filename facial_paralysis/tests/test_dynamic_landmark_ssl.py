@@ -218,6 +218,26 @@ def _temporal(batch: int, windows: int = 4, frames: int = 32):
     return mask, timestamps, source
 
 
+@contextmanager
+def _mutated_microbatch_contract_globals():
+    missing = object()
+    saved_policy = getattr(ssl_core, "SSL_BATCH_POLICY", missing)
+    saved_size = getattr(ssl_core, "SSL_MICRO_BATCH_SIZE", missing)
+    ssl_core.SSL_BATCH_POLICY = "full_train_partition"
+    ssl_core.SSL_MICRO_BATCH_SIZE = 65
+    try:
+        yield
+    finally:
+        if saved_policy is missing:
+            delattr(ssl_core, "SSL_BATCH_POLICY")
+        else:
+            ssl_core.SSL_BATCH_POLICY = saved_policy
+        if saved_size is missing:
+            delattr(ssl_core, "SSL_MICRO_BATCH_SIZE")
+        else:
+            ssl_core.SSL_MICRO_BATCH_SIZE = saved_size
+
+
 def _write_stage_artifacts(
     root: Path,
     *,
@@ -252,7 +272,7 @@ def _write_stage_artifacts(
             "learning_rate": 0.001,
             "weight_decay": 0.0,
             "epochs": 1,
-            "batch_policy": "full_train_partition",
+            "batch_policy": "deterministic_microbatch_full_partition_64",
             "span_length": 4,
             "spans_per_window": 1,
             "device": "cpu",
@@ -514,6 +534,210 @@ def test_masked_only_loss_and_conservative_reports_use_exact_baselines(c: Check)
         evaluated_indices=split.heldout_indices,
         group_ids=groups, source="ravdess_openface_semantic23",
     ), ValueError, "the baseline must be fitted on the exact training partition")
+
+
+def test_microbatch_backward_matches_full_partition_loss_gradients_and_update(c: Check):
+    batch_size = 65
+    valid, timestamps, source_indices = _temporal(batch=batch_size)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(4107)
+    features = torch.randn(batch_size, 4, 32, 23, generator=generator)
+    reconstruction_mask = torch.zeros_like(valid)
+    for row in range(batch_size):
+        masked_frames = row % 5 + 1
+        reconstruction_mask[row, 0, :masked_frames] = True
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(91)
+        full_model = DynamicLandmarkSSLModel()
+    chunked_model = DynamicLandmarkSSLModel()
+    chunked_model.load_state_dict(full_model.state_dict(), strict=True)
+    full_optimizer = torch.optim.AdamW(
+        full_model.parameters(), lr=0.001, weight_decay=0.0001,
+    )
+    chunked_optimizer = torch.optim.AdamW(
+        chunked_model.parameters(), lr=0.001, weight_decay=0.0001,
+    )
+
+    full_optimizer.zero_grad(set_to_none=True)
+    full_prediction = full_model(
+        features, valid, timestamps, source_indices,
+        reconstruction_mask=reconstruction_mask, source="ravdess",
+    )
+    full_loss = masked_smooth_l1(
+        full_prediction, features, reconstruction_mask,
+    )
+    full_loss.backward()
+    full_gradients = {
+        name: parameter.grad.detach().clone()
+        for name, parameter in full_model.named_parameters()
+        if parameter.grad is not None
+    }
+
+    chunked_optimizer.zero_grad(set_to_none=True)
+    chunked_loss = ssl_core._backward_full_partition_microbatches(
+        chunked_model,
+        features=features,
+        valid_mask=valid,
+        timestamps=timestamps,
+        source_frame_indices=source_indices,
+        reconstruction_mask=reconstruction_mask,
+        source="ravdess",
+    )
+    chunked_gradients = {
+        name: parameter.grad.detach().clone()
+        for name, parameter in chunked_model.named_parameters()
+        if parameter.grad is not None
+    }
+    torch.testing.assert_close(chunked_loss, full_loss.detach(), rtol=1e-6, atol=1e-7)
+    c.eq(set(chunked_gradients), set(full_gradients))
+    for name in full_gradients:
+        torch.testing.assert_close(
+            chunked_gradients[name], full_gradients[name], rtol=5e-5, atol=1e-6,
+        )
+
+    full_optimizer.step()
+    chunked_optimizer.step()
+    for name, full_value in full_model.state_dict().items():
+        torch.testing.assert_close(
+            chunked_model.state_dict()[name], full_value, rtol=3e-4, atol=5e-6,
+        )
+
+
+def test_microbatch_training_keeps_one_optimizer_step_per_frozen_epoch(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        evidence, _, _ = _build_training_stage(
+            root,
+            stage="ravdess",
+            groups=["actor_a", "actor_a", "actor_b", "actor_b"],
+            data_seed=771,
+            config_overrides={"epochs": 2},
+        )
+        original_adamw = ssl_core.torch.optim.AdamW
+        step_calls = 0
+
+        class CountingAdamW(original_adamw):
+            def step(self, *args, **kwargs):
+                nonlocal step_calls
+                step_calls += 1
+                return super().step(*args, **kwargs)
+
+        try:
+            ssl_core.torch.optim.AdamW = CountingAdamW
+            result = ssl_core.train_ssl_stage(stage_evidence=evidence, seed=0)
+        finally:
+            ssl_core.torch.optim.AdamW = original_adamw
+        c.eq(step_calls, 2, "gradient accumulation cannot add optimizer steps")
+        c.eq(result.training_receipt.optimizer_steps, 2)
+        c.eq(
+            result.training_receipt.batch_policy,
+            "deterministic_microbatch_full_partition_64",
+            "the frozen receipt names the exact accumulation algorithm and size",
+        )
+        payload = build_ssl_checkpoint_payload(result)
+        c.eq(
+            payload["metadata"]["training_receipt"]["batch_policy"],
+            result.training_receipt.batch_policy,
+            "checkpoint lineage retains the frozen microbatch policy",
+        )
+
+
+def test_microbatch_size_is_frozen_in_batch_policy_and_has_no_config_override(c: Check):
+    groups = ["actor_a", "actor_a", "actor_b", "actor_b"]
+    for overrides in (
+        {"batch_policy": "full_train_partition"},
+        {"micro_batch_size": 1},
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            c.raises(
+                lambda value=overrides, root=Path(td): _build_training_stage(
+                    root,
+                    stage="ravdess",
+                    groups=groups,
+                    data_seed=909,
+                    config_overrides=value,
+                ),
+                ValueError,
+                "microbatch size cannot be changed outside the frozen policy",
+            )
+
+
+def test_mutated_module_globals_cannot_authorize_the_retired_batch_policy(c: Check):
+    with _mutated_microbatch_contract_globals():
+        with tempfile.TemporaryDirectory() as td:
+            c.raises(
+                lambda: _build_training_stage(
+                    Path(td),
+                    stage="ravdess",
+                    groups=["actor_a", "actor_a", "actor_b", "actor_b"],
+                    data_seed=419,
+                    config_overrides={"batch_policy": "full_train_partition"},
+                ),
+                ValueError,
+                "mutable module attributes cannot redefine the frozen policy",
+            )
+
+
+def test_mutated_module_globals_cannot_change_64_row_chunking(c: Check):
+    batch_size = 65
+    valid, timestamps, source_indices = _temporal(batch=batch_size)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(811)
+    features = torch.randn(batch_size, 4, 32, 23, generator=generator)
+    reconstruction_mask = torch.zeros_like(valid)
+    reconstruction_mask[:, 0, :2] = True
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(117)
+        model = DynamicLandmarkSSLModel()
+    observed_batch_sizes: list[int] = []
+    original_forward = model.forward
+
+    def recording_forward(chunk, *args, **kwargs):
+        observed_batch_sizes.append(int(chunk.shape[0]))
+        return original_forward(chunk, *args, **kwargs)
+
+    model.forward = recording_forward
+    with _mutated_microbatch_contract_globals():
+        ssl_core._backward_full_partition_microbatches(
+            model,
+            features=features,
+            valid_mask=valid,
+            timestamps=timestamps,
+            source_frame_indices=source_indices,
+            reconstruction_mask=reconstruction_mask,
+            source="ravdess",
+        )
+    c.eq(
+        observed_batch_sizes,
+        [64, 1],
+        "the exact 64-row execution contract cannot be changed at runtime",
+    )
+
+
+def test_mutated_module_globals_cannot_change_training_receipt_policy(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        evidence, _, _ = _build_training_stage(
+            Path(td),
+            stage="ravdess",
+            groups=["actor_a", "actor_a", "actor_b", "actor_b"],
+            data_seed=271,
+        )
+        with _mutated_microbatch_contract_globals():
+            result = ssl_core.train_ssl_stage(stage_evidence=evidence, seed=0)
+        c.eq(
+            result.training_receipt.batch_policy,
+            "deterministic_microbatch_full_partition_64",
+            "receipt policy remains exact under hostile runtime mutation",
+        )
+
+
+def test_runtime_authorization_marker_remains_an_opaque_object_singleton(c: Check):
+    marker = ssl_core._AUTHORIZATION_MARKER
+    external = object()
+    c.true(type(marker) is object, "runtime authority uses an opaque plain object")
+    c.true(external is not marker)
+    c.true(external != marker, "external callers cannot construct an equal marker")
 
 
 def test_actor_and_recording_splits_are_disjoint_complete_and_conservative(c: Check):
@@ -871,7 +1095,10 @@ def test_repository_training_is_the_only_checkpoint_minting_path(c: Check):
         c.eq(receipt["learning_rate"], 0.001)
         c.eq(receipt["weight_decay"], 0.0)
         c.eq(receipt["epochs"], 1)
-        c.eq(receipt["batch_policy"], "full_train_partition")
+        c.eq(
+            receipt["batch_policy"],
+            "deterministic_microbatch_full_partition_64",
+        )
         c.eq(receipt["span_length"], 4)
         c.eq(receipt["spans_per_window"], 1)
         c.eq(receipt["optimizer_steps"], 1)
@@ -1143,6 +1370,10 @@ def test_formal_receipt_freezes_three_seeds_and_thirty_epochs(c: Check):
             c.eq(authorization.training_config["optimizer"], "adamw")
             c.eq(authorization.training_config["learning_rate"], 0.001)
             c.eq(authorization.training_config["weight_decay"], 0.0001)
+            c.eq(
+                authorization.training_config["batch_policy"],
+                "deterministic_microbatch_full_partition_64",
+            )
             c.eq(evidence.source_unit_count, 2)
             c.eq(evidence.unique_group_count, 2)
             c.eq(evidence.upstream_cache_count, 2)
@@ -2528,7 +2759,10 @@ def test_frozen_config_drives_training_and_every_artifact_revalidates(c: Check):
         c.eq(result.training_receipt.epochs, 2)
         c.eq(result.training_receipt.optimizer_steps, 2)
         c.eq(result.training_receipt.optimizer, "adamw")
-        c.eq(result.training_receipt.batch_policy, "full_train_partition")
+        c.eq(
+            result.training_receipt.batch_policy,
+            "deterministic_microbatch_full_partition_64",
+        )
         payload = build_ssl_checkpoint_payload(result)
         public_manifest = json.loads(
             (root / "ravdess_manifest.json").read_text(encoding="utf-8")
