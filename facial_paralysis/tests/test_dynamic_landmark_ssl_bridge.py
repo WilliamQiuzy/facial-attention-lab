@@ -468,6 +468,48 @@ def _synthetic_authorizations():
     return ravdess, mayo
 
 
+def _synthetic_authorizations_with_mayo_exclusion():
+    ravdess, mayo = _synthetic_authorizations()
+    recordings = list(mayo.recordings)
+    for recording_token, group_token, cache_token, sha_token in (
+        ("f", "e", "d", "c"),
+        ("b", "a", "9", "8"),
+    ):
+        excluded = dict(vars(recordings[0]))
+        excluded["recording_id"] = "rec_" + recording_token * 64
+        excluded["group_id"] = "grp_" + group_token * 64
+        excluded["cache_integrity_id"] = "cache_" + cache_token * 64
+        excluded["cache_sha256"] = sha_token * 64
+        sparse = np.zeros_like(excluded["valid_mask_30hz"])
+        sparse[::8] = True
+        excluded["valid_mask_30hz"] = sparse
+        recordings.append(SimpleNamespace(**excluded))
+
+    commitment = dict(mayo.commitment)
+    commitment["mediapipe_file_count"] = 4
+    commitment["cache_file_count"] = 5
+    changed = dict(vars(mayo))
+    changed.update({
+        "recording_count": 4,
+        "expected_recording_count": 4,
+        "commitment": commitment,
+        "recordings": tuple(recordings),
+    })
+    _set_bridge_contract({
+        "_FROZEN_RAVDESS_TRIAL_COUNT": 2,
+        "_FROZEN_RAVDESS_ACTOR_COUNT": 2,
+        "_FROZEN_RAVDESS_SOURCE_FRAMES": 185,
+        "_FROZEN_RAVDESS_SAMPLE_COUNT": 2,
+        "_FROZEN_MAYO_MEDIAPIPE_COUNT": 4,
+        "_FROZEN_MAYO_ELIGIBLE_COUNT": 2,
+        "_FROZEN_MAYO_EXCLUSION_COUNT": 2,
+        "_FROZEN_MAYO_ARKIT_COUNT": 1,
+        "_FROZEN_MAYO_CACHE_COUNT": 5,
+        "_FROZEN_MAYO_SAMPLE_COUNT": 32,
+    })
+    return ravdess, SimpleNamespace(**changed)
+
+
 def _tree_bytes(root: Path) -> dict[str, bytes]:
     return {
         str(path.relative_to(root)): path.read_bytes()
@@ -681,50 +723,17 @@ def test_bridge_rejects_packets_without_two_valid_mask_spans_per_window(c: Check
 
 
 def test_mayo_stage_records_explicit_mask_quality_exclusion(c: Check):
-    ravdess, mayo = _synthetic_authorizations()
-    recordings = list(mayo.recordings)
-    excluded = dict(vars(recordings[0]))
-    excluded["recording_id"] = "rec_" + "f" * 64
-    excluded["group_id"] = "grp_" + "e" * 64
-    excluded["cache_integrity_id"] = "cache_" + "d" * 64
-    excluded["cache_sha256"] = "c" * 64
-    sparse = np.zeros_like(excluded["valid_mask_30hz"])
-    sparse[::8] = True
-    excluded["valid_mask_30hz"] = sparse
-    recordings.append(SimpleNamespace(**excluded))
-
-    commitment = dict(mayo.commitment)
-    commitment["mediapipe_file_count"] = 3
-    commitment["cache_file_count"] = 4
-    changed = dict(vars(mayo))
-    changed.update({
-        "recording_count": 3,
-        "expected_recording_count": 3,
-        "commitment": commitment,
-        "recordings": tuple(recordings),
-    })
-    _set_bridge_contract({
-        "_FROZEN_RAVDESS_TRIAL_COUNT": 2,
-        "_FROZEN_RAVDESS_ACTOR_COUNT": 2,
-        "_FROZEN_RAVDESS_SOURCE_FRAMES": 185,
-        "_FROZEN_RAVDESS_SAMPLE_COUNT": 2,
-        "_FROZEN_MAYO_MEDIAPIPE_COUNT": 3,
-        "_FROZEN_MAYO_ELIGIBLE_COUNT": 2,
-        "_FROZEN_MAYO_EXCLUSION_COUNT": 1,
-        "_FROZEN_MAYO_ARKIT_COUNT": 1,
-        "_FROZEN_MAYO_CACHE_COUNT": 4,
-        "_FROZEN_MAYO_SAMPLE_COUNT": 32,
-    })
+    ravdess, mayo = _synthetic_authorizations_with_mayo_exclusion()
     prepared = bridge_core._prepare_bridge_generation(
         ravdess,
-        SimpleNamespace(**changed),
+        mayo,
         producer_sha256="f" * 64,
     )
     c.eq(prepared.mayo.record["sample_count"], 32)
     c.eq(prepared.mayo.record["source_unit_count"], 2)
     c.eq(prepared.mayo.record["unique_group_count"], 2)
     c.eq(prepared.mayo.record["upstream_cache_count"], 2)
-    c.eq(prepared.mayo.record["exclusion_count"], 1)
+    c.eq(prepared.mayo.record["exclusion_count"], 2)
     c.eq(len(prepared.mayo.sample_ids), 32)
 
 

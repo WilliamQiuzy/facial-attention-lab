@@ -2434,6 +2434,7 @@ def _prepare_frozen_stage(
         "source_unit_count": stage.record["source_unit_count"],
         "unique_group_count": stage.record["unique_group_count"],
         "upstream_cache_count": stage.record["upstream_cache_count"],
+        "exclusion_count": stage.record["exclusion_count"],
         "bundle_file_count": 1,
         "bundle_sha256": stage.record["bundle_sha256"],
         "bundle_size_bytes": stage.record["bundle_size_bytes"],

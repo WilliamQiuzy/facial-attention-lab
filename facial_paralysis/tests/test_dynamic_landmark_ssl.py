@@ -46,7 +46,7 @@ from src.pretraining.dynamic_landmark_ssl import (  # noqa: E402
 )
 from test_dynamic_landmark_ssl_bridge import (  # noqa: E402
     _PRODUCTION_BRIDGE_CONTRACT,
-    _synthetic_authorizations,
+    _synthetic_authorizations_with_mayo_exclusion,
     _set_bridge_contract,
 )
 
@@ -140,12 +140,16 @@ ssl_core.initialize_mayo_ssl_model = _test_initialize_mayo_ssl_model
 
 
 @contextmanager
-def _frozen_bridge_inputs(root: Path, *, mode: str = "smoke"):
+def _frozen_bridge_inputs(
+    root: Path,
+    *,
+    mode: str = "smoke",
+):
     saved_contract = {
         name: getattr(bridge_core, name) for name in _PRODUCTION_BRIDGE_CONTRACT
     }
     try:
-        ravdess, mayo = _synthetic_authorizations()
+        ravdess, mayo = _synthetic_authorizations_with_mayo_exclusion()
         producer = "f" * 64
         bridge = root / "bridge"
         run_root = (
@@ -1014,6 +1018,60 @@ def test_receipt_bound_v2_stage_authorizes_exact_single_bundle_and_claims(c: Che
             c.eq(evidence.source, "ravdess_openface_semantic23")
             c.eq(evidence.bundle_file_count, 1)
             c.eq(evidence.sample_count, 2)
+
+
+def test_frozen_mayo_manifest_binds_explicit_quality_exclusion(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            receipt = json.loads(
+                (frozen["inputs_root"] / "receipts" / "mayo.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            manifest = json.loads(
+                (
+                    frozen["inputs_root"] / "artifacts" / "mayo"
+                    / "manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            c.eq(receipt["exclusion_count"], 2)
+            c.eq(manifest["exclusion_count"], 2)
+
+
+def test_frozen_mayo_quality_exclusion_reauthorizes_before_training(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            ravdess_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="ravdess", **frozen,
+            )
+            ravdess_result = ssl_core.train_ssl_stage(
+                stage_evidence=ravdess_evidence, seed=0,
+            )
+            ravdess_payload = build_ssl_checkpoint_payload(ravdess_result)
+            checkpoint_root = root / "quality-exclusion-prior"
+            checkpoint_root.mkdir(mode=0o700)
+            checkpoint = checkpoint_root / "ravdess_seed0.pt"
+            checkpoint_receipt = save_ssl_checkpoint(
+                checkpoint,
+                ravdess_payload,
+                stage_evidence=ravdess_evidence,
+            )
+            persisted = load_ssl_checkpoint(
+                checkpoint,
+                receipt=checkpoint_receipt,
+                stage_evidence=ravdess_evidence,
+            )
+            mayo_evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                prior_ravdess_checkpoint=persisted,
+                prior_ravdess_evidence=ravdess_evidence,
+                **frozen,
+            )
+            c.eq(mayo_evidence.exclusion_count, 2)
+            c.eq(mayo_evidence.sample_count, 32)
+            c.eq(mayo_evidence.source_unit_count, 2)
 
 
 def test_formal_receipt_freezes_three_seeds_and_thirty_epochs(c: Check):

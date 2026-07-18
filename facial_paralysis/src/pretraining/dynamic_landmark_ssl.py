@@ -163,6 +163,7 @@ class SSLStageEvidence:
     source_unit_count: int | None = None
     unique_group_count: int | None = None
     upstream_cache_count: int | None = None
+    exclusion_count: int | None = None
     feature_names_sha256: str | None = None
     adapter_sha256: str | None = None
     temporal_policy_sha256: str | None = None
@@ -1207,6 +1208,7 @@ _V2_MANIFEST_FIELDS = {
     "schema_version", "stage", "mode", "source", "source_schema",
     "sample_ids", "source_unit_ids", "group_ids", "sample_count",
     "source_unit_count", "unique_group_count", "upstream_cache_count",
+    "exclusion_count",
     "bundle_file_count", "bundle_sha256", "bundle_size_bytes",
     "feature_names_sha256", "adapter_sha256", "temporal_policy_sha256",
     "bridge_generation_sha256", "upstream_manifest_commitments",
@@ -1492,6 +1494,8 @@ def _snapshot_frozen_ssl_stage(
     upstream_cache_count = _positive_integer(
         receipt.get("upstream_cache_count"), "upstream-cache count"
     )
+    exclusion_count = receipt.get("exclusion_count")
+    expected_exclusion_count = 0 if stage == "ravdess" else 2
     if (
         len(sample_ids) != sample_count
         or len(set(sample_ids)) != sample_count
@@ -1502,13 +1506,15 @@ def _snapshot_frozen_ssl_stage(
         or len(set(group_ids)) != unique_group_count
         or len(set(cache_integrity_ids)) != upstream_cache_count
         or receipt.get("bundle_file_count") != 1
-        or receipt.get("exclusion_count") != 0
+        or isinstance(exclusion_count, (bool, np.bool_))
+        or not isinstance(exclusion_count, (int, np.integer))
+        or int(exclusion_count) != expected_exclusion_count
     ):
         raise ValueError(f"{stage} receipt aggregate counts are inconsistent")
     common_claims = {
         "source_schema", "sample_ids", "source_unit_ids", "group_ids",
         "sample_count", "source_unit_count", "unique_group_count",
-        "upstream_cache_count", "bundle_file_count", "bundle_sha256",
+        "upstream_cache_count", "exclusion_count", "bundle_file_count", "bundle_sha256",
         "bundle_size_bytes", "feature_names_sha256", "adapter_sha256",
         "bridge_generation_sha256", "upstream_manifest_commitments",
         "upstream_generation_closure_hmac",
@@ -1971,6 +1977,15 @@ def _validate_stage_evidence(evidence: SSLStageEvidence) -> None:
             "source_unit_count", "unique_group_count", "upstream_cache_count",
         ):
             _positive_integer(getattr(evidence, name), f"stage evidence {name}")
+        expected_exclusion_count = 0 if evidence.stage == "ravdess" else 2
+        if (
+            isinstance(evidence.exclusion_count, (bool, np.bool_))
+            or not isinstance(evidence.exclusion_count, (int, np.integer))
+            or int(evidence.exclusion_count) != expected_exclusion_count
+        ):
+            raise ValueError(
+                "receipt-bound evidence exclusion count contradicts its stage"
+            )
         if evidence.bundle_file_count != 1 or evidence.cache_count != 1:
             raise ValueError("receipt-bound evidence requires one exact bundle")
         expected_source = (
@@ -2580,6 +2595,7 @@ def authorize_frozen_ssl_stage(
         "source_unit_count": receipt["source_unit_count"],
         "unique_group_count": receipt["unique_group_count"],
         "upstream_cache_count": receipt["upstream_cache_count"],
+        "exclusion_count": receipt["exclusion_count"],
         "feature_names_sha256": receipt["feature_names_sha256"],
         "adapter_sha256": receipt["adapter_sha256"],
         "temporal_policy_sha256": manifest["temporal_policy_sha256"],
