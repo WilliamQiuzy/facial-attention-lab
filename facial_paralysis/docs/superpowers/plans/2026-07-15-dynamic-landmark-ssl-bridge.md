@@ -57,9 +57,9 @@
 
   All numeric values are type-exact integers and both digests are type-exact lowercase strings. Missing or extra fields, different names/types/values, member-name maps or arrays, and member digests fail closed. The generator and authorizer require the identical exact field union; no archive member name or member-byte digest may persist.
 - RAVDESS emits one `(4,32,23)` packet per trial. Window starts are `floor(i * (T - 32) / 3)` for `i=0..3`; overlap is allowed for short trials and must be recorded, not hidden.
-- Mayo input is the full retained set of 48 unique long recordings from the homogeneous MediaPipe VIDEO-mode cache. The 13 legacy exports remain audit-only and are never reused.
-- Mayo emits exactly 16 `(4,32,95)` packets per recording, or 768 samples total. For `M=64`, starts are `floor(j * (T - 32) / 63)` for `j=0..63`; packet `k` uses starts `k`, `k+16`, `k+32`, `k+48`.
-- Window selection depends only on canonical trajectory length. Features, detector validity, movement amplitude, asymmetry, labels, and future evaluation results cannot move a window.
+- Mayo authorization and generation closure retain all 48 unique long recordings from the homogeneous MediaPipe VIDEO-mode cache. The 13 legacy exports remain audit-only and are never reused. A post-generation, mask-only quality gate is frozen from the complete 48-recording cache: 46 recordings are eligible and two are explicitly excluded because they contain fewer than 64 distinct 32-frame windows with two non-overlapping valid spans of length four. The exclusion decision depends only on the committed boolean detector mask, is recomputed during every live authorization, and is bound by the complete 48-recording upstream commitment; no cache is deleted.
+- Each eligible Mayo recording emits exactly 16 `(4,32,95)` packets, for 736 samples total. Let `F` be the sorted set of all 32-frame start positions whose committed mask contains at least two non-overlapping contiguous valid spans of length four. Eligibility requires `|F| >= 64`; the exact 64 starts are `F[floor(j * (|F| - 1) / 63)]` for `j=0..63`, which are strictly increasing because `|F| >= 64`. Packet `k` uses selected starts `k`, `k+16`, `k+32`, `k+48`. A recording with fewer than 64 eligible starts contributes no packet and increments the exact quality-exclusion count; duplicate windows, gap compression, cross-gap span construction, and threshold relaxation are forbidden.
+- RAVDESS window selection depends only on canonical trajectory length. Mayo quality selection depends only on canonical trajectory length and the committed boolean detector mask. Feature values, movement amplitude, asymmetry, labels, and future evaluation results cannot influence a window or exclusion.
 - Both stages use canonical 30-Hz windows with expected step `1`. In every bundle window, `timestamps` is exactly `float32([0..31] / 30)` and `source_frame_indices` is exactly `int64([0..31])`; neither array carries a recording offset. Original canonical 30-Hz indices, upstream source/target indices, and source timestamps stay only in the private receipt.
 - Missing detector rows remain zero-valued with `valid_mask=False`; no interpolation, nearest fill, compression, or gap bridging is permitted.
 - RAVDESS uses exact `semantic23_v1` names/order. Mayo uses exact `72 + clinical23_v2`; its final 23 values must be explicitly checked through `clinical23_v2_to_semantic23`, never accepted by width alone.
@@ -160,8 +160,9 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
   - `uniform_floor_v1(T=88, window=32, count=4)` returns four deterministic starts and retains the trial;
   - all 2,452-trial length values can produce one RAVDESS packet;
-  - Mayo `K=16` produces exactly 64 starts and the exact quartile-interleaved packet layout;
-  - changing features, masks, labels, or movement values does not change starts;
+  - Mayo `K=16` selects exactly 64 strictly increasing eligible starts by frozen valid-window quantiles and preserves the exact quartile-interleaved packet layout;
+  - changing features, labels, or movement values does not change Mayo starts; changing only the validity mask changes starts solely through the exact frozen span-capacity rule;
+  - fewer than 64 eligible Mayo starts produces one explicit quality exclusion rather than duplicate packets, gap compression, threshold relaxation, or a partial source;
   - gaps remain fixed grid positions with `False/zero` rather than compressed rows;
   - a trajectory shorter than 32 rows fails closed;
   - wrong schemas, names, widths, dtypes, nonfinite values, or ARKit 52d fail closed.
@@ -185,7 +186,8 @@ Expected: commit succeeds; `git status --short` prints nothing.
       window_length: int = 32
       ravdess_packets_per_trial: int = 1
       mayo_packets_per_recording: int = 16
-      selection: str = "uniform_floor_v1"
+      ravdess_selection: str = "uniform_floor_v1"
+      mayo_selection: str = "valid_quantile_span4_v1"
 
   def uniform_floor_starts(length: int, *, count: int, window: int = 32) -> np.ndarray: ...
   def packetize_ravdess_trajectory(...): ...
@@ -277,7 +279,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
   group_ids             unicode (N,)
   ```
 
-  Require RAVDESS `N=2452,W=23` and Mayo `N=768,W=95`; ordered opaque packet `sample_ids` live in the private receipt/manifest, not as a sixth NPZ field. Require RAVDESS 24 unique groups and 2,452 source units; Mayo 48 unique groups/source units with every source unit repeated exactly 16 times.
+  Require RAVDESS `N=2452,W=23` and Mayo `N=736,W=95`; ordered opaque packet `sample_ids` live in the private receipt/manifest, not as a sixth NPZ field. Require RAVDESS 24 unique groups and 2,452 source units; Mayo 46 eligible unique groups/source units with every eligible source unit repeated exactly 16 times, two exact mask-quality exclusions, and the complete 48-recording upstream generation commitment.
 
   The owner-only receipt must bind:
 
@@ -368,7 +370,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
 
   - `bridge_receipt_sha256`, `receipt_hmac`, run mode, canonical-key file identity, and bridge receipt file identity;
   - ordered opaque packet IDs, source-unit IDs, group IDs, and original canonical mapping digests;
-  - `bundle_file_count=1`, `sample_count=2452|768`, `source_unit_count=2452|48`, `unique_group_count=24|48`, and `upstream_cache_count=2452|48` separately;
+  - `bundle_file_count=1`, `sample_count=2452|736`, `source_unit_count=2452|46`, `unique_group_count=24|46`, `upstream_cache_count=2452|46`, and `exclusion_count=0|2` separately;
   - feature schema/name digest;
   - canonical temporal policy digest;
   - bundle cache commitment/count;
@@ -601,7 +603,7 @@ The current approved-code parent HEAD is `23cfc27bc841480ab0bde8fd8ff984830fc8ae
     --output-root /Users/williamqiu/.config/superpowers/worktrees/Mayo-Clinic/landmark-fusion/facial_paralysis/outputs/dynamic_landmark/pretraining/bridge
   ```
 
-  Require exact output aggregates: one RAVDESS bundle with 2,452 samples/2,452 source units/24 groups/2,452 upstream caches/0 exclusions; one Mayo bundle with 768 samples/48 source units/48 groups/48 upstream caches/0 exclusions. The sibling `.bridge.lock` must remain an empty current-euid, single-link regular mode-`0600` file and no `.bridge.staging-*` may remain. In every one of the four windows of every packet, the frozen mask must contain at least two non-overlapping contiguous valid spans of length four. If any packet fails, fail the entire generation and publish nothing; never silently exclude or move a window.
+  Require exact output aggregates: one RAVDESS bundle with 2,452 samples/2,452 source units/24 groups/2,452 upstream caches/0 exclusions; one Mayo bundle with 736 samples/46 eligible source units/46 groups/46 upstream caches/2 exact mask-quality exclusions, while its upstream generation commitment still closes over all 48 MediaPipe and eight ARKit caches. The sibling `.bridge.lock` must remain an empty current-euid, single-link regular mode-`0600` file and no `.bridge.staging-*` may remain. In every one of the four windows of every retained packet, the frozen mask must contain at least two non-overlapping contiguous valid spans of length four. Recompute the eligible-start set from the live committed mask and require exactly 46 eligible and two excluded recordings before staging; any other count, any retained packet failure, any duplicate selected start, or any partial source fails the entire generation and publishes nothing.
 
 - [ ] **Step 5: Validate privacy, hashes, modes, disk size, and deterministic rebuild equivalence.**
 
