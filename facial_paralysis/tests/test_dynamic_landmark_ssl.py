@@ -7,9 +7,12 @@ import importlib.util
 import io
 import json
 import os
+import runpy
 import stat
+import subprocess
 import sys
 import tempfile
+import types
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
@@ -2682,6 +2685,109 @@ def _load_runner():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_runner_import_order_preserves_canonical_producer_identity(c: Check):
+    def producer_digest(import_source: str) -> bytes:
+        read_descriptor, write_descriptor = os.pipe()
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT)
+        environment["SSL_PRODUCER_DESCRIPTOR"] = str(write_descriptor)
+        source = (
+            "import os\n"
+            f"{import_source}\n"
+            "digest = producer._producer_sha256()\n"
+            "os.write(int(os.environ['SSL_PRODUCER_DESCRIPTOR']), "
+            "digest.encode('ascii'))\n"
+        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, "-B", "-c", source],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                check=False,
+                pass_fds=(write_descriptor,),
+            )
+        finally:
+            os.close(write_descriptor)
+        try:
+            digest = os.read(read_descriptor, 65)
+        finally:
+            os.close(read_descriptor)
+        c.eq(completed.returncode, 0, "producer subprocess exits successfully")
+        c.eq(completed.stdout, b"", "producer subprocess keeps stdout empty")
+        c.eq(completed.stderr, b"", "producer subprocess keeps stderr empty")
+        c.eq(len(digest), 64, "producer digest has the required length")
+        c.true(
+            all(byte in b"0123456789abcdef" for byte in digest),
+            "producer digest is lowercase hexadecimal",
+        )
+        return digest
+
+    canonical_digest = producer_digest(
+        "from scripts import prepare_dynamic_landmark_ssl_inputs as producer"
+    )
+    runner_digest = producer_digest(
+        "from scripts import pretrain_dynamic_landmarks as producer"
+    )
+    c.true(
+        runner_digest == canonical_digest,
+        "pretraining runner producer identity equals canonical bridge identity",
+    )
+
+
+def test_direct_runner_delegates_once_to_canonical_entrypoint(c: Check):
+    import scripts
+
+    canonical_name = "scripts.pretrain_dynamic_landmarks"
+    attribute_name = "pretrain_dynamic_landmarks"
+    sentinel_exit_code = 73
+    calls: list[None] = []
+    sentinel = types.ModuleType(canonical_name)
+
+    def sentinel_entrypoint() -> None:
+        calls.append(None)
+        raise SystemExit(sentinel_exit_code)
+
+    sentinel._entrypoint = sentinel_entrypoint
+    missing = object()
+    saved_module = sys.modules.get(canonical_name, missing)
+    saved_attribute = getattr(scripts, attribute_name, missing)
+    saved_argv = sys.argv
+    script = ROOT / "scripts" / "pretrain_dynamic_landmarks.py"
+    captured_stderr = io.StringIO()
+    sys.modules[canonical_name] = sentinel
+    setattr(scripts, attribute_name, sentinel)
+    sys.argv = [str(script)]
+    try:
+        try:
+            with redirect_stderr(captured_stderr):
+                runpy.run_path(str(script), run_name="__main__")
+        except SystemExit as error:
+            exit_code = error.code
+        else:
+            exit_code = None
+    finally:
+        sys.argv = saved_argv
+        if saved_module is missing:
+            del sys.modules[canonical_name]
+        else:
+            sys.modules[canonical_name] = saved_module
+        if saved_attribute is missing:
+            delattr(scripts, attribute_name)
+        else:
+            setattr(scripts, attribute_name, saved_attribute)
+
+    c.eq(
+        (exit_code, len(calls)),
+        (sentinel_exit_code, 1),
+        "direct runner delegates exactly once to the canonical entrypoint",
+    )
+    c.eq(
+        captured_stderr.getvalue(), "",
+        "canonical entrypoint exit emits no local diagnostic",
+    )
 
 
 def _synthetic_runner_fixture(root: Path, frozen: dict[str, object]):

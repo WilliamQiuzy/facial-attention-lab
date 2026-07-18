@@ -25,6 +25,11 @@ PRETRAINING_ROOT = (
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+if __name__ == "__main__":
+    from scripts import pretrain_dynamic_landmarks as canonical_runner
+
+    canonical_runner._entrypoint()
+
 from src.pretraining import dynamic_landmark_ssl as ssl_core  # noqa: E402
 
 
@@ -996,9 +1001,10 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
     return result
 
 
-if __name__ == "__main__":
+def _entrypoint() -> None:
     try:
         main()
     except (FileExistsError, OSError, RuntimeError, ValueError):
         print("dynamic landmark pretraining failed closed", file=sys.stderr)
         raise SystemExit(2)
+    raise SystemExit(0)
