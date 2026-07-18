@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import os
+import runpy
 import stat
 import sys
 import tempfile
@@ -1301,6 +1302,56 @@ def test_cli_has_exact_subcommands_and_live_mayo_roots_are_preoutput_required(c:
         ]), ValueError, "wrong key target fails before canonical private output creation")
         c.true(not absent_root.exists(),
                "rejected key location causes no canonical-directory side effect")
+
+
+def test_script_entry_bootstraps_canonical_module_before_local_dispatch(c: Check):
+    import scripts as scripts_package
+
+    canonical_name = "scripts.prepare_dynamic_landmark_ssl_inputs"
+    missing = object()
+    previous_module = sys.modules.get(canonical_name, missing)
+    previous_attribute = getattr(
+        scripts_package, "prepare_dynamic_landmark_ssl_inputs", missing,
+    )
+    previous_argv = sys.argv
+    sentinel = ModuleType(canonical_name)
+    calls: list[str] = []
+
+    def sentinel_main():
+        calls.append("main")
+        return 0
+
+    sentinel.main = sentinel_main
+    sys.modules[canonical_name] = sentinel
+    setattr(scripts_package, "prepare_dynamic_landmark_ssl_inputs", sentinel)
+    exit_code = None
+    try:
+        sys.argv = [str(CLI_SCRIPT), "must-not-reach-local-parser"]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+            io.StringIO()
+        ):
+            try:
+                runpy.run_path(str(CLI_SCRIPT), run_name="__main__")
+            except SystemExit as exc:
+                exit_code = exc.code
+    finally:
+        sys.argv = previous_argv
+        if previous_module is missing:
+            sys.modules.pop(canonical_name, None)
+        else:
+            sys.modules[canonical_name] = previous_module
+        if previous_attribute is missing:
+            delattr(
+                scripts_package, "prepare_dynamic_landmark_ssl_inputs",
+            )
+        else:
+            setattr(
+                scripts_package,
+                "prepare_dynamic_landmark_ssl_inputs",
+                previous_attribute,
+            )
+    c.eq(calls, ["main"])
+    c.eq(exit_code, 0)
 
 
 def test_all_mayo_cli_commands_capture_native_and_logger_root_leaks(c: Check):

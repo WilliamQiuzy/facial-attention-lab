@@ -33,6 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+if __name__ == "__main__":
+    from scripts import prepare_dynamic_landmark_ssl_inputs as _canonical_entry
+
+    raise SystemExit(_canonical_entry.main())
+
 from scripts.build_mayo_ssl_cache import (  # noqa: E402
     authorize_committed_mayo_ssl_generation,
     inventory_mayo_sources,
