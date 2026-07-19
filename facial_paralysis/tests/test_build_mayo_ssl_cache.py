@@ -7054,6 +7054,101 @@ def test_source_attestation_rejects_root_role_and_frozen_topology_drift(c: Check
     root_tokens = {
         row["role"]: row["root_token"] for row in canonical["approved_roots"]
     }
+
+    same_root_path = json.loads(json.dumps(canonical))
+    same_root_path["approved_roots"][1] = (
+        builder._source_attestation_approved_root_record(
+            salt,
+            "legacy_export_root",
+            expected_roots["data_root"]["path"],
+            same_root_path["approved_roots"][1]["stat_identity"],
+        )
+    )
+    for session in same_root_path["session_classifications"]:
+        session["legacy_export_root_token"] = same_root_path[
+            "approved_roots"
+        ][1]["root_token"]
+    _resign_source_attestation(same_root_path, salt)
+    c.eq(
+        same_root_path["approved_roots"][0]["path_token"],
+        same_root_path["approved_roots"][1]["path_token"],
+        "one lexical path has one role-neutral physical path token",
+    )
+    c.true(
+        same_root_path["approved_roots"][0]["root_token"]
+        != same_root_path["approved_roots"][1]["root_token"],
+        "root tokens remain role-separated",
+    )
+    same_path_expected = json.loads(json.dumps(expected_roots, default=str))
+    same_path_expected["data_root"]["path"] = expected_roots["data_root"][
+        "path"
+    ]
+    same_path_expected["legacy_export_root"]["path"] = expected_roots[
+        "data_root"
+    ]["path"]
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            same_root_path,
+            salt=salt,
+        ),
+        ValueError,
+        "role-separated roots cannot name the same lexical absolute path",
+    )
+    c.raises(
+        lambda: builder._validate_source_attestation_expected_roots(
+            same_path_expected,
+            salt=salt,
+            approved_roots=same_root_path["approved_roots"],
+        ),
+        ValueError,
+        "expected roots independently reject the same lexical path",
+    )
+
+    same_root_object = json.loads(json.dumps(canonical))
+    same_devino_identity = list(
+        same_root_object["approved_roots"][1]["stat_identity"]
+    )
+    same_devino_identity[:2] = same_root_object["approved_roots"][0][
+        "stat_identity"
+    ][:2]
+    same_root_object["approved_roots"][1] = (
+        builder._source_attestation_approved_root_record(
+            salt,
+            "legacy_export_root",
+            expected_roots["legacy_export_root"]["path"],
+            same_devino_identity,
+        )
+    )
+    for session in same_root_object["session_classifications"]:
+        session["legacy_export_root_token"] = same_root_object[
+            "approved_roots"
+        ][1]["root_token"]
+    _resign_source_attestation(same_root_object, salt)
+    same_object_expected = dict(expected_roots)
+    same_object_expected["legacy_export_root"] = dict(
+        expected_roots["legacy_export_root"]
+    )
+    same_object_expected["legacy_export_root"]["stat_identity"] = (
+        same_devino_identity
+    )
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            same_root_object,
+            salt=salt,
+        ),
+        ValueError,
+        "role-separated roots cannot bind the same directory object",
+    )
+    c.raises(
+        lambda: builder._validate_source_attestation_expected_roots(
+            same_object_expected,
+            salt=salt,
+            approved_roots=same_root_object["approved_roots"],
+        ),
+        ValueError,
+        "expected roots independently reject the same directory object",
+    )
+
     wrong_entry_root = json.loads(json.dumps(canonical))
     wrong_entry_root["source_entries"][0]["root_token"] = (
         root_tokens["legacy_export_root"]
@@ -7122,6 +7217,57 @@ def test_source_attestation_rejects_root_role_and_frozen_topology_drift(c: Check
         ),
         ValueError,
         "legacy-stat-identity drift violates the frozen source topology",
+    )
+
+    duplicate_source_object = json.loads(json.dumps(canonical))
+    first_source_identity = duplicate_source_object["source_entries"][0][
+        "stat_identity"
+    ]
+    second_source_identity = duplicate_source_object["source_entries"][1][
+        "stat_identity"
+    ]
+    second_source_identity[:2] = first_source_identity[:2]
+    second_source_identity[6:] = [
+        first_source_identity[6] + 1,
+        first_source_identity[7] + 2,
+        first_source_identity[8] + 3,
+    ]
+    _resign_source_attestation(duplicate_source_object, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            duplicate_source_object,
+            salt=salt,
+        ),
+        ValueError,
+        "source objects require unique device and inode identities",
+    )
+
+    duplicate_legacy_object = json.loads(json.dumps(canonical))
+    complete_indices = [
+        index for index, row in enumerate(
+            duplicate_legacy_object["session_classifications"]
+        ) if row["lookup_outcome"] == "complete_export"
+    ]
+    first_legacy_identity = duplicate_legacy_object[
+        "session_classifications"
+    ][complete_indices[0]][legacy_field]
+    second_legacy_identity = duplicate_legacy_object[
+        "session_classifications"
+    ][complete_indices[1]][legacy_field]
+    second_legacy_identity[:2] = first_legacy_identity[:2]
+    second_legacy_identity[6:] = [
+        first_legacy_identity[6] + 1,
+        first_legacy_identity[7] + 2,
+        first_legacy_identity[8] + 3,
+    ]
+    _resign_source_attestation(duplicate_legacy_object, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            duplicate_legacy_object,
+            salt=salt,
+        ),
+        ValueError,
+        "legacy export objects require unique device and inode identities",
     )
 
     unique_videos = json.loads(json.dumps(canonical))
@@ -7663,11 +7809,16 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
         (encoded_path,), (source_digest,), salt,
     )
     c.true(b"ordinary_component" in encoded_tokens)
+    full_path_percent = urllib.parse.quote_from_bytes(
+        os.fsencode(os.fspath(encoded_path)), safe="",
+    ).encode("ascii")
     c.true(
-        urllib.parse.quote_from_bytes(
-            os.fsencode(os.fspath(encoded_path)), safe="",
-        ).encode("ascii") in encoded_tokens,
+        full_path_percent in encoded_tokens,
         "percent-encoded full paths are leak sentinels",
+    )
+    c.true(
+        full_path_percent.lower() in encoded_tokens,
+        "lowercase normal-percent full paths are leak sentinels",
     )
     c.true(
         json.dumps(unicode_component, ensure_ascii=True).encode("ascii")
@@ -7675,17 +7826,42 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
         "exact JSON ensure_ascii Unicode strings are leak sentinels",
     )
     c.true(
+        json.dumps(unicode_component, ensure_ascii=False).encode("utf-8")
+        in encoded_tokens,
+        "exact UTF-8 JSON Unicode strings are leak sentinels",
+    )
+    c.true(
         json.dumps(surrogate_component, ensure_ascii=True).encode("ascii")
         in encoded_tokens,
         "exact JSON surrogate strings are leak sentinels",
     )
     c.true(b"data" not in encoded_tokens, "short components are not bare tokens")
+    c.true(b"64617461" in encoded_tokens, "short component hex is audited")
+    c.true(b"ZGF0YQ==" in encoded_tokens, "short component base64 is audited")
+    unicode_bytes = unicode_component.encode("utf-8")
+    component_percent = urllib.parse.quote_from_bytes(
+        unicode_bytes, safe="",
+    ).encode("ascii")
+    c.true(component_percent in encoded_tokens)
+    c.true(component_percent.lower() in encoded_tokens)
+    c.true(unicode_bytes.hex().encode("ascii") in encoded_tokens)
+    c.true(unicode_bytes.hex().upper().encode("ascii") in encoded_tokens)
+    fully_percent_upper = b"".join(
+        f"%{byte:02X}".encode("ascii") for byte in unicode_bytes
+    )
+    fully_percent_lower = fully_percent_upper.lower()
+    c.true(fully_percent_upper in encoded_tokens)
+    c.true(fully_percent_lower in encoded_tokens)
     builder._assert_bytes_omit_private_tokens(
         b'{"metadata_only":true}',
         encoded_tokens,
         "safe metadata manifest",
     )
-    for leaked in (b'"data"', b"/data/", b"ordinary_component"):
+    for leaked in (
+        b'"data"', b"/data/", b"/data", b"data/",
+        b"64617461", b"ZGF0YQ==", b"ZGF0YQ",
+        b"%64%61%74%61", b"caf%c3%a9", b"ordinary_component",
+    ):
         c.raises(
             lambda leaked=leaked: builder._assert_bytes_omit_private_tokens(
                 leaked,
@@ -7751,6 +7927,28 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
         )
         real_tokens = builder._source_attestation_private_tokens(
             real_private_paths, real_source_sha256, salt,
+        )
+        original_compile = builder._compile_private_token_automaton
+        compile_calls = 0
+
+        def counted_compile(*args, **kwargs):
+            nonlocal compile_calls
+            compile_calls += 1
+            return original_compile(*args, **kwargs)
+
+        builder._compile_private_token_automaton = counted_compile
+        try:
+            builder._validate_staging(
+                staging,
+                salt=salt,
+                forbidden_tokens=real_tokens,
+            )
+        finally:
+            builder._compile_private_token_automaton = original_compile
+        c.eq(
+            compile_calls,
+            1,
+            "one staging validation compiles and reuses one privacy matcher",
         )
         for manifest_name in (
             "collection_manifest.json", "mayo_exposure_manifest.json",
@@ -7845,6 +8043,21 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
             ValueError,
             f"private attestation material is forbidden from {stream_name}",
         )
+
+
+def test_private_token_automaton_state_budget_is_fail_closed(c: Check):
+    original_limit = builder._MAX_PRIVATE_SCAN_AUTOMATON_STATES
+    builder._MAX_PRIVATE_SCAN_AUTOMATON_STATES = 4
+    try:
+        c.raises(
+            lambda: builder._compile_private_token_automaton(
+                (b"abcd",), "state-budget artifact",
+            ),
+            ValueError,
+            "automaton construction checks its state budget before allocation",
+        )
+    finally:
+        builder._MAX_PRIVATE_SCAN_AUTOMATON_STATES = original_limit
 
 
 def test_committed_mayo_generation_exposes_narrow_read_only_authorizer(c: Check):

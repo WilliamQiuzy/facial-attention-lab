@@ -178,6 +178,7 @@ _MAX_SOURCE_ATTESTATION_TOKEN_BYTES = 128
 _MAX_PRIVATE_SCAN_TOKENS = 8192
 _MAX_PRIVATE_SCAN_TOKEN_BYTES = 4096
 _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES = 4 * 1024 * 1024
+_MAX_PRIVATE_SCAN_AUTOMATON_STATES = 800_000
 _MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS = 64
 _MAX_MAYO_TERMINAL_EVIDENCE_BYTES = 4 * 1024 * 1024
 _MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS = 4
@@ -5725,7 +5726,6 @@ def _source_attestation_approved_root_record(
         salt,
         "approved-root-path",
         _source_attestation_canonical_bytes({
-            "role": role,
             "lexical_absolute_path": rendered,
         }),
     )
@@ -5922,6 +5922,10 @@ def _normalize_source_attestation_approved_roots(
         len({row["root_token"] for row in roots}) != 2
     ):
         raise ValueError("source attestation approved root tokens are not unique")
+    if len({tuple(row["stat_identity"][:2]) for row in roots}) != 2:
+        raise ValueError(
+            "source attestation approved roots must be physically distinct"
+        )
     return roots
 
 
@@ -5938,6 +5942,7 @@ def _validate_source_attestation_expected_roots(
     canonical_by_role = {
         str(row["role"]): row for row in approved_roots
     }
+    expected_records: list[dict[str, object]] = []
     for role in _SOURCE_ATTESTATION_ROOT_ROLES:
         raw = value[role]
         if type(raw) is not dict or set(raw) != {"path", "stat_identity"}:
@@ -5948,11 +5953,17 @@ def _validate_source_attestation_expected_roots(
             raw["path"],
             raw["stat_identity"],
         )
+        expected_records.append(expected)
         if expected != canonical_by_role[role]:
             raise ValueError(
                 f"source attestation does not match the expected {role} path "
                 "and directory identity"
             )
+    if (
+        len({row["path_token"] for row in expected_records}) != 2
+        or len({tuple(row["stat_identity"][:2]) for row in expected_records}) != 2
+    ):
+        raise ValueError("expected approved roots must be physically distinct")
 
 
 def _normalize_source_attestation_entries(
@@ -6031,6 +6042,10 @@ def _normalize_source_attestation_entries(
     stat_identities = [tuple(row["stat_identity"]) for row in entries]
     if len(set(stat_identities)) != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT:
         raise ValueError("source attestation source stat identities must be unique")
+    if len({identity[:2] for identity in stat_identities}) != (
+        _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT
+    ):
+        raise ValueError("source attestation source file objects must be unique")
     return entries
 
 
@@ -6103,6 +6118,10 @@ def _normalize_source_attestation_sessions(
     if len(legacy_identities) != 52 or len(set(legacy_identities)) != 52:
         raise ValueError(
             "source attestation legacy export stat identities must be unique"
+        )
+    if len({identity[:2] for identity in legacy_identities}) != 52:
+        raise ValueError(
+            "source attestation legacy export file objects must be unique"
         )
     return sessions
 
@@ -7311,24 +7330,63 @@ def _require_mayo_npz_headers(
 
 @dataclass(frozen=True)
 class _PrivateTokenAutomaton:
+    tokens: tuple[bytes, ...]
     transitions: tuple[dict[int, int], ...]
     failures: tuple[int, ...]
     terminal: tuple[bool, ...]
+
+
+@dataclass
+class _PrivateTokenAccumulator:
+    field: str
+    tokens: set[bytes] = dataclass_field(default_factory=set)
+    total_bytes: int = 0
+
+    def add(self, token: bytes) -> None:
+        if type(token) is not bytes or not token:
+            raise ValueError(f"{self.field} privacy token is invalid")
+        if token in self.tokens:
+            return
+        if (
+            len(token) > _MAX_PRIVATE_SCAN_TOKEN_BYTES
+            or len(self.tokens) >= _MAX_PRIVATE_SCAN_TOKENS
+            or self.total_bytes + len(token)
+            > _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES
+        ):
+            raise ValueError(
+                f"{self.field} privacy tokens exceed their exact scan budget"
+            )
+        self.tokens.add(token)
+        self.total_bytes += len(token)
+
+    def canonical(self) -> tuple[bytes, ...]:
+        return tuple(sorted(self.tokens, key=lambda token: (-len(token), token)))
 
 
 def _compile_private_token_automaton(
     tokens: tuple[bytes, ...],
     field: str,
 ) -> _PrivateTokenAutomaton:
-    if (
-        type(tokens) is not tuple
-        or len(tokens) > _MAX_PRIVATE_SCAN_TOKENS
-        or any(type(token) is not bytes or not token for token in tokens)
-        or len(set(tokens)) != len(tokens)
-        or any(len(token) > _MAX_PRIVATE_SCAN_TOKEN_BYTES for token in tokens)
-        or sum(len(token) for token in tokens) > _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES
-    ):
+    if type(tokens) is not tuple or len(tokens) > _MAX_PRIVATE_SCAN_TOKENS:
         raise ValueError(f"{field} privacy tokens exceed their exact scan budget")
+    observed: set[bytes] = set()
+    total_bytes = 0
+    for token in tokens:
+        if (
+            type(token) is not bytes
+            or not token
+            or token in observed
+            or len(token) > _MAX_PRIVATE_SCAN_TOKEN_BYTES
+        ):
+            raise ValueError(
+                f"{field} privacy tokens exceed their exact scan budget"
+            )
+        observed.add(token)
+        total_bytes += len(token)
+        if total_bytes > _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES:
+            raise ValueError(
+                f"{field} privacy tokens exceed their exact scan budget"
+            )
     transitions: list[dict[int, int]] = [{}]
     failures = [0]
     terminal = [False]
@@ -7337,6 +7395,10 @@ def _compile_private_token_automaton(
         for byte in token:
             next_state = transitions[state].get(byte)
             if next_state is None:
+                if len(transitions) >= _MAX_PRIVATE_SCAN_AUTOMATON_STATES:
+                    raise ValueError(
+                        f"{field} privacy automaton exceeds its state budget"
+                    )
                 next_state = len(transitions)
                 transitions[state][byte] = next_state
                 transitions.append({})
@@ -7357,6 +7419,7 @@ def _compile_private_token_automaton(
             failures[state] = transitions[fallback].get(byte, 0)
             terminal[state] = terminal[state] or terminal[failures[state]]
     return _PrivateTokenAutomaton(
+        tokens=tokens,
         transitions=tuple(transitions),
         failures=tuple(failures),
         terminal=tuple(terminal),
@@ -7391,14 +7454,28 @@ def _private_token_chunks_contain(
     return False
 
 
+def _require_private_token_automaton(
+    tokens: tuple[bytes, ...],
+    field: str,
+    matcher: _PrivateTokenAutomaton | None,
+) -> _PrivateTokenAutomaton:
+    if matcher is None:
+        return _compile_private_token_automaton(tokens, field)
+    if type(matcher) is not _PrivateTokenAutomaton or matcher.tokens != tokens:
+        raise ValueError(f"{field} privacy matcher does not bind its token set")
+    return matcher
+
+
 def _assert_private_token_chunks_omit(
     chunks: Sequence[bytes],
     tokens: tuple[bytes, ...],
     field: str,
+    *,
+    matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
     if type(chunks) not in {tuple, list} or type(field) is not str or not field:
         raise ValueError("private material scan inputs are invalid")
-    automaton = _compile_private_token_automaton(tokens, field)
+    automaton = _require_private_token_automaton(tokens, field, matcher)
     if _private_token_chunks_contain(chunks, automaton):
         raise ValueError(f"{field} contains private source material")
 
@@ -7407,9 +7484,11 @@ def _assert_npz_expanded_omits_private_tokens(
     payload: bytes,
     tokens: tuple[bytes, ...],
     field: str,
+    *,
+    matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
     """Scan each bounded decompressed NPY member, including chunk boundaries."""
-    automaton = _compile_private_token_automaton(tokens, field)
+    automaton = _require_private_token_automaton(tokens, field, matcher)
     if not tokens:
         return
     expanded_total = 0
@@ -7456,6 +7535,7 @@ def _validate_compact_cache(
     held_identity: tuple[int, ...] | None = None,
     held_sha256: str | None = None,
     forbidden_tokens: tuple[bytes, ...] = (),
+    forbidden_token_matcher: _PrivateTokenAutomaton | None = None,
 ) -> tuple[str, int, CompactCacheSummary]:
     if len({held_descriptor is None, held_identity is None, held_sha256 is None}) != 1:
         raise ValueError("compact cache held identity is incomplete")
@@ -7493,7 +7573,10 @@ def _validate_compact_cache(
         expected_schema=expected_schema,
     )
     _assert_npz_expanded_omits_private_tokens(
-        payload, forbidden_tokens, "compact cache expanded payload",
+        payload,
+        forbidden_tokens,
+        "compact cache expanded payload",
+        matcher=forbidden_token_matcher,
     )
     try:
         with np.load(io.BytesIO(payload), allow_pickle=False) as cached:
@@ -7960,8 +8043,14 @@ def _validate_staging(
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
     forbidden_tokens: tuple[bytes, ...] = (),
+    forbidden_token_matcher: _PrivateTokenAutomaton | None = None,
     _held: _HeldCommittedMayoGeneration | None = None,
 ) -> dict[str, object]:
+    privacy_matcher = _require_private_token_automaton(
+        forbidden_tokens,
+        "staged generation",
+        forbidden_token_matcher,
+    )
     allowed_top = {"collection_manifest.json", "mayo_exposure_manifest.json",
                    "mediapipe", "arkit"}
     if _held is None:
@@ -8279,6 +8368,7 @@ def _validate_staging(
                         None if held_file is None else held_file.sha256
                     ),
                     forbidden_tokens=forbidden_tokens,
+                    forbidden_token_matcher=privacy_matcher,
                 )
                 if dirname == "mediapipe":
                     if row["legacy_export_audit_status"] == "no_complete_legacy_export":
@@ -8453,6 +8543,44 @@ def _assert_committed_generation(
         _assert_held_mayo_generation(_held)
 
 
+def _add_private_reversible_tokens(
+    accumulator: _PrivateTokenAccumulator,
+    raw: bytes,
+    *,
+    include_normal_percent: bool,
+) -> None:
+    representations = {
+        raw,
+        raw.hex().encode("ascii"),
+        raw.hex().upper().encode("ascii"),
+        base64.b64encode(raw),
+        base64.urlsafe_b64encode(raw),
+        base64.b64encode(raw).rstrip(b"="),
+        base64.urlsafe_b64encode(raw).rstrip(b"="),
+    }
+    if include_normal_percent:
+        normal_percent = urllib.parse.quote_from_bytes(
+            raw, safe="",
+        ).encode("ascii")
+        representations.add(normal_percent)
+        representations.add(normal_percent.lower())
+    for representation in representations:
+        if len(representation) < 4:
+            continue
+        accumulator.add(representation)
+        try:
+            text = representation.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+            accumulator.add(text.encode(encoding))
+
+
+def _fully_percent_encoded(raw: bytes, *, lowercase: bool) -> bytes:
+    rendered = b"".join(f"%{byte:02X}".encode("ascii") for byte in raw)
+    return rendered.lower() if lowercase else rendered
+
+
 def _private_root_forbidden_tokens(
     private_roots: tuple[Path, Path] | None,
 ) -> tuple[bytes, ...]:
@@ -8464,7 +8592,7 @@ def _private_root_forbidden_tokens(
         or any(not isinstance(root, Path) for root in private_roots)
     ):
         raise ValueError("Mayo evidence privacy roots are invalid")
-    tokens: set[bytes] = set()
+    accumulator = _PrivateTokenAccumulator("Mayo evidence privacy roots")
     for root in private_roots:
         original = os.fspath(root)
         absolute = os.path.abspath(os.path.expanduser(original))
@@ -8481,24 +8609,16 @@ def _private_root_forbidden_tokens(
             os.path.relpath(absolute, os.getcwd()),
         )
         for value in dict.fromkeys(values):
-            raw = value.encode("utf-8")
-            representations = (
-                value,
-                raw.hex(),
-                raw.hex().upper(),
-                base64.b64encode(raw).decode("ascii"),
-                base64.urlsafe_b64encode(raw).decode("ascii"),
-                base64.b64encode(raw).rstrip(b"=").decode("ascii"),
-                base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii"),
+            try:
+                raw = value.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError(
+                    "Mayo evidence privacy root is not UTF-8"
+                ) from exc
+            _add_private_reversible_tokens(
+                accumulator, raw, include_normal_percent=True,
             )
-            for representation in representations:
-                for encoding in (
-                    "utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be",
-                ):
-                    token = representation.encode(encoding)
-                    if len(token) >= 4:
-                        tokens.add(token)
-    return tuple(sorted(tokens, key=lambda token: (-len(token), token)))
+    return accumulator.canonical()
 
 
 def _source_attestation_private_tokens(
@@ -8520,18 +8640,31 @@ def _source_attestation_private_tokens(
     ):
         raise ValueError("source attestation private leak inputs are invalid")
     key = _require_salt(salt)
-    raw_values: set[bytes] = {key}
-    exact_json_values: set[str] = set()
-    unquoted_json_values: set[str] = set()
-    tokens: set[bytes] = set()
+    accumulator = _PrivateTokenAccumulator("source attestation privacy")
+    _add_private_reversible_tokens(
+        accumulator, key, include_normal_percent=True,
+    )
     for path in private_paths:
         rendered_text = os.fspath(path)
         try:
             rendered = os.fsencode(rendered_text)
         except UnicodeEncodeError as exc:
             raise ValueError("source attestation private path is not encodable") from exc
-        raw_values.add(rendered)
-        exact_json_values.add(rendered_text)
+        _add_private_reversible_tokens(
+            accumulator, rendered, include_normal_percent=True,
+        )
+        for ensure_ascii in (True, False):
+            try:
+                encoded_json = json.dumps(
+                    rendered_text, ensure_ascii=ensure_ascii,
+                ).encode("ascii" if ensure_ascii else "utf-8")
+            except UnicodeEncodeError:
+                if ensure_ascii:
+                    raise ValueError(
+                        "source attestation private path JSON encoding failed"
+                    )
+                continue
+            accumulator.add(encoded_json)
         for component in path.parts:
             try:
                 encoded = os.fsencode(component)
@@ -8540,65 +8673,78 @@ def _source_attestation_private_tokens(
                     "source attestation private path component is not encodable"
                 ) from exc
             if len(encoded) >= 4 and component not in {path.anchor, "/"}:
-                tokens.add(b"/" + encoded + b"/")
-                exact_json_values.add(component)
+                for bounded in (
+                    b"/" + encoded + b"/",
+                    encoded + b"/",
+                    b"/" + encoded,
+                ):
+                    accumulator.add(bounded)
+                component_representations = {
+                    encoded.hex().encode("ascii"),
+                    encoded.hex().upper().encode("ascii"),
+                    base64.b64encode(encoded),
+                    base64.urlsafe_b64encode(encoded),
+                    base64.b64encode(encoded).rstrip(b"="),
+                    base64.urlsafe_b64encode(encoded).rstrip(b"="),
+                    _fully_percent_encoded(encoded, lowercase=False),
+                    _fully_percent_encoded(encoded, lowercase=True),
+                }
+                normal_percent = urllib.parse.quote_from_bytes(
+                    encoded, safe="",
+                ).encode("ascii")
+                if normal_percent != encoded:
+                    component_representations.add(normal_percent)
+                    component_representations.add(normal_percent.lower())
+                for representation in component_representations:
+                    accumulator.add(representation)
+                try:
+                    accumulator.add(
+                        json.dumps(component, ensure_ascii=True).encode("ascii")
+                    )
+                except UnicodeEncodeError as exc:
+                    raise ValueError(
+                        "source attestation private path JSON encoding failed"
+                    ) from exc
+                try:
+                    utf8_json = json.dumps(
+                        component, ensure_ascii=False,
+                    ).encode("utf-8")
+                except UnicodeEncodeError:
+                    utf8_json = None
+                if utf8_json is not None:
+                    accumulator.add(utf8_json)
                 if len(encoded) >= 8:
-                    raw_values.add(encoded)
-                    unquoted_json_values.add(component)
+                    accumulator.add(encoded)
+                    try:
+                        accumulator.add(
+                            json.dumps(component, ensure_ascii=True)[1:-1].encode(
+                                "ascii"
+                            )
+                        )
+                    except UnicodeEncodeError as exc:
+                        raise ValueError(
+                            "source attestation private path JSON encoding failed"
+                        ) from exc
     for digest in source_sha256:
-        raw_values.add(digest.encode("ascii"))
-        raw_values.add(bytes.fromhex(digest))
-
-    for raw in raw_values:
-        if not raw:
-            continue
-        representations = {
-            raw,
-            raw.hex().encode("ascii"),
-            raw.hex().upper().encode("ascii"),
-            base64.b64encode(raw),
-            base64.urlsafe_b64encode(raw),
-            base64.b64encode(raw).rstrip(b"="),
-            base64.urlsafe_b64encode(raw).rstrip(b"="),
-            urllib.parse.quote_from_bytes(raw, safe="").encode("ascii"),
-        }
-        for representation in representations:
-            if len(representation) < 4:
-                continue
-            tokens.add(representation)
-            try:
-                text = representation.decode("ascii")
-            except UnicodeDecodeError:
-                continue
-            for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
-                tokens.add(text.encode(encoding))
-    for value in exact_json_values:
-        try:
-            escaped = json.dumps(value, ensure_ascii=True).encode("ascii")
-        except (TypeError, ValueError, UnicodeEncodeError) as exc:
-            raise ValueError(
-                "source attestation private path JSON encoding failed"
-            ) from exc
-        if len(escaped) >= 4:
-            tokens.add(escaped)
-    for value in unquoted_json_values:
-        try:
-            escaped = json.dumps(value, ensure_ascii=True)[1:-1].encode("ascii")
-        except (TypeError, ValueError, UnicodeEncodeError) as exc:
-            raise ValueError(
-                "source attestation private path JSON encoding failed"
-            ) from exc
-        if len(escaped) >= 8:
-            tokens.add(escaped)
-    canonical = tuple(sorted(tokens, key=lambda token: (-len(token), token)))
-    _compile_private_token_automaton(canonical, "source attestation privacy")
-    return canonical
+        _add_private_reversible_tokens(
+            accumulator,
+            digest.encode("ascii"),
+            include_normal_percent=True,
+        )
+        _add_private_reversible_tokens(
+            accumulator,
+            bytes.fromhex(digest),
+            include_normal_percent=True,
+        )
+    return accumulator.canonical()
 
 
 def _assert_bytes_omit_private_tokens(
     payload: bytes,
     tokens: tuple[bytes, ...],
     field: str,
+    *,
+    matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
     if (
         type(payload) is not bytes
@@ -8606,7 +8752,7 @@ def _assert_bytes_omit_private_tokens(
         or not field
     ):
         raise ValueError("private material scan inputs are invalid")
-    automaton = _compile_private_token_automaton(tokens, field)
+    automaton = _require_private_token_automaton(tokens, field, matcher)
     if _private_token_chunks_contain((payload,), automaton):
         raise ValueError(f"{field} contains private source material")
 
@@ -8618,8 +8764,9 @@ def _assert_descriptor_omits_private_tokens(
     field: str,
     *,
     expected_sha256: str | None = None,
+    matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
-    automaton = _compile_private_token_automaton(tokens, field)
+    automaton = _require_private_token_automaton(tokens, field, matcher)
     if not tokens:
         return
     before = os.fstat(descriptor)
@@ -8672,9 +8819,15 @@ def _assert_resolved_transaction_evidence(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    forbidden_token_matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
     journal = _journal_path(output)
     forbidden_tokens = _private_root_forbidden_tokens(private_roots)
+    privacy_matcher = _require_private_token_automaton(
+        forbidden_tokens,
+        "resolved Mayo transaction evidence",
+        forbidden_token_matcher,
+    )
     try:
         completed_journals: dict[str, dict[str, object]] = {}
         terminal_journals: dict[
@@ -8737,6 +8890,7 @@ def _assert_resolved_transaction_evidence(
                     forbidden_tokens,
                     "terminal Mayo transaction journal evidence",
                     expected_sha256=artifact_sha256,
+                    matcher=privacy_matcher,
                 )
                 if (
                     (kind == "complete" and payload["token"] != match.group(1))
@@ -8863,6 +9017,7 @@ def _assert_resolved_transaction_evidence(
                             forbidden_tokens,
                             "archived Mayo transaction tree evidence",
                             expected_sha256=entry.sha256,
+                            matcher=privacy_matcher,
                         )
 
         for artifact, prefix, suffix_pattern, evidence_kinds in regular_candidates:
@@ -8885,6 +9040,7 @@ def _assert_resolved_transaction_evidence(
                     forbidden_tokens,
                     "archived Mayo transaction file evidence",
                     expected_sha256=held.sha256,
+                    matcher=privacy_matcher,
                 )
 
         evidence_tokens = {
@@ -9081,6 +9237,7 @@ def _assert_resolved_transaction_evidence(
                             forbidden_tokens,
                             "paired archived Mayo transaction evidence",
                             expected_sha256=artifact_sha256,
+                            matcher=privacy_matcher,
                         )
                     commitment = _validate_staging(
                         archived_output,
@@ -9093,6 +9250,7 @@ def _assert_resolved_transaction_evidence(
                             expected_classification_integrity_id
                         ),
                         forbidden_tokens=forbidden_tokens,
+                        forbidden_token_matcher=privacy_matcher,
                         _held=held_generation,
                     )
                     _external_value, external_digest = _load_public_json_descriptor(
@@ -9363,6 +9521,7 @@ def _assert_no_unresolved_generation_state(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    forbidden_token_matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
     _assert_resolved_transaction_evidence(
         output,
@@ -9376,6 +9535,7 @@ def _assert_no_unresolved_generation_state(
         expected_classification_integrity_id=(
             expected_classification_integrity_id
         ),
+        forbidden_token_matcher=forbidden_token_matcher,
     )
     journal = _journal_path(output)
     candidates = [
@@ -9484,6 +9644,10 @@ def authorize_committed_mayo_ssl_generation(
         "expected_classification_integrity_id": expected_exposure_classification,
     }
     forbidden_tokens = _private_root_forbidden_tokens((data, exports))
+    privacy_matcher = _compile_private_token_automaton(
+        forbidden_tokens, "Mayo authorization public artifacts",
+    )
+    evidence_authority["forbidden_token_matcher"] = privacy_matcher
     with output_parent_lock(
             output, create_if_missing=False, shared=True,
         ), \
@@ -9502,6 +9666,7 @@ def authorize_committed_mayo_ssl_generation(
             ),
             expected_classification_integrity_id=expected_exposure_classification,
             forbidden_tokens=forbidden_tokens,
+            forbidden_token_matcher=privacy_matcher,
             _held=held,
         )
         _external_exposure, external_digest = _load_public_json_descriptor(
@@ -9650,6 +9815,7 @@ def authorize_committed_mayo_ssl_generation(
             ),
             expected_classification_integrity_id=expected_exposure_classification,
             forbidden_tokens=forbidden_tokens,
+            forbidden_token_matcher=privacy_matcher,
             _held=held,
         )
         if repeated != commitment:
