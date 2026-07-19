@@ -633,6 +633,46 @@ def test_ssl_mayo_arms_change_only_input_not_architecture_or_target(c: Check):
     c.eq(tuple(prediction.shape), tuple(features.shape), "every arm predicts full95")
 
 
+def test_mayo_reconstruction_report_uses_inverse_scaled_equal_recording_metrics(c: Check):
+    split = ssl_core.SSLGroupSplit(
+        train_indices=np.asarray([0], dtype=np.int64),
+        heldout_indices=np.asarray([1, 2, 3], dtype=np.int64),
+        unit="recording",
+        claim_unit="recording_held_out_not_patient_held_out",
+        patient_held_out=False,
+    )
+    groups = ["rec_train", "rec_a", "rec_b", "rec_b"]
+    target = torch.zeros(3, 1, 2, 95)
+    trained = torch.ones_like(target)
+    untrained = torch.zeros_like(target)
+    mask = torch.ones(3, 1, 2, dtype=torch.bool)
+    scale = torch.cat((torch.full((72,), 2.0), torch.full((23,), 10.0)))
+    scaler = SourceScaler(
+        source="mayo_mediapipe_clinical23_development_only",
+        mean=torch.zeros(95),
+        scale=scale,
+        fit_indices=(0,),
+    )
+    report = reconstruction_report(
+        trained, untrained, target, mask,
+        baseline=scaler, split=split,
+        evaluated_indices=split.heldout_indices,
+        group_ids=groups,
+        source="mayo_mediapipe_clinical23_development_only",
+    )
+    raw = report["common_target_metrics"]["trained"]["raw_mae"]
+    c.true(abs(raw["blendshape72"] - 2.0) < 1e-7)
+    c.true(abs(raw["clinical23"] - 10.0) < 1e-7)
+    c.true(abs(raw["equal_block_macro"] - 6.0) < 1e-7)
+    c.true(abs(raw["full95"] - ((72 * 2 + 23 * 10) / 95)) < 1e-7)
+    c.eq(len(report["per_recording_metrics"]), 2)
+    c.eq(
+        {item["recording_id"] for item in report["per_recording_metrics"]},
+        {"rec_a", "rec_b"},
+    )
+    c.eq(report["aggregation"], "per_recording_then_equal_recording_mean")
+
+
 def test_microbatch_backward_matches_full_partition_loss_gradients_and_update(c: Check):
     batch_size = 65
     valid, timestamps, source_indices = _temporal(batch=batch_size)

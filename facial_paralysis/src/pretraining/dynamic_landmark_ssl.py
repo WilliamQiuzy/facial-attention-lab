@@ -2968,7 +2968,87 @@ def reconstruction_report(
     )
     baseline_scaler_sha256 = _scaler_sha256(baseline)
     baseline_prediction = torch.zeros_like(target)
-    return {
+    predictions = {
+        "trained": trained_prediction,
+        "untrained": untrained_prediction,
+        "train_mean": baseline_prediction,
+    }
+    common_target_metrics: dict[str, object] = {}
+    per_recording: dict[str, dict[str, object]] = {}
+    evaluated_groups = tuple(groups[int(index)] for index in evaluated.tolist())
+    ordered_groups = tuple(dict.fromkeys(evaluated_groups))
+    scale = baseline.scale.to(device=target.device, dtype=target.dtype)
+    mean = baseline.mean.to(device=target.device, dtype=target.dtype)
+    if scale.shape != (target.shape[-1],) or mean.shape != scale.shape:
+        raise ValueError("reconstruction scaler does not match target width")
+    for prediction_name, prediction in predictions.items():
+        if (
+            not isinstance(prediction, torch.Tensor)
+            or prediction.shape != target.shape
+            or prediction.device != target.device
+            or not prediction.is_floating_point()
+            or not torch.isfinite(prediction).all()
+        ):
+            raise ValueError("reconstruction prediction violates the common target")
+        raw_error = torch.abs(
+            (prediction * scale + mean) - (target * scale + mean)
+        )
+        standardized_error = torch.abs(prediction - target)
+        group_metrics: list[dict[str, float]] = []
+        for group in ordered_groups:
+            rows = torch.tensor(
+                [
+                    index for index, observed in enumerate(evaluated_groups)
+                    if observed == group
+                ],
+                dtype=torch.int64,
+                device=target.device,
+            )
+            group_mask = reconstruction_mask.index_select(0, rows)
+            selected_raw = raw_error.index_select(0, rows)[group_mask]
+            selected_standardized = standardized_error.index_select(0, rows)[
+                group_mask
+            ]
+            if selected_raw.numel() == 0:
+                raise ValueError("every heldout recording requires masked targets")
+            if target.shape[-1] == 95:
+                blendshape = float(selected_raw[:, :72].mean().item())
+                clinical = float(selected_raw[:, 72:].mean().item())
+                raw_metrics = {
+                    "blendshape72": blendshape,
+                    "clinical23": clinical,
+                    "equal_block_macro": (blendshape + clinical) / 2.0,
+                    "full95": float(selected_raw.mean().item()),
+                }
+            elif target.shape[-1] == 23:
+                semantic = float(selected_raw.mean().item())
+                raw_metrics = {"semantic23": semantic, "full23": semantic}
+            else:
+                raw_metrics = {
+                    f"full{target.shape[-1]}": float(selected_raw.mean().item())
+                }
+            record_metrics = {
+                "raw_mae": raw_metrics,
+                "standardized_mae": float(selected_standardized.mean().item()),
+            }
+            group_metrics.append(record_metrics)
+            per_recording.setdefault(group, {})[prediction_name] = record_metrics
+        raw_names = tuple(group_metrics[0]["raw_mae"])
+        common_target_metrics[prediction_name] = {
+            "raw_mae": {
+                name: float(np.mean([
+                    item["raw_mae"][name] for item in group_metrics
+                ], dtype=np.float64))
+                for name in raw_names
+            },
+            "standardized_mae": float(np.mean([
+                item["standardized_mae"] for item in group_metrics
+            ], dtype=np.float64)),
+            "standardized_smooth_l1": float(masked_smooth_l1(
+                prediction, target, reconstruction_mask
+            ).item()),
+        }
+    report = {
         "metric": "masked_smooth_l1",
         "target_space": "source_train_standardized",
         "trained": float(masked_smooth_l1(
@@ -2989,7 +3069,14 @@ def reconstruction_report(
         "medical_generalization": False,
         "objective": "masked_span_reconstruction_only",
         "next_step_objective": False,
+        "aggregation": "per_recording_then_equal_recording_mean",
+        "common_target_metrics": common_target_metrics,
+        "per_recording_metrics": [
+            {"recording_id": group, **per_recording[group]}
+            for group in ordered_groups
+        ],
     }
+    return report
 
 
 def _load_authorized_training_cache(
