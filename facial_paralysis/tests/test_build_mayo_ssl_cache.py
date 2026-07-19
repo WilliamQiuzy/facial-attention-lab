@@ -15,7 +15,9 @@ import shutil
 import stat
 import sys
 import tempfile
+import urllib.parse
 import zipfile
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,6 +65,10 @@ def _value_error_text(fn) -> str:
     try:
         fn()
     except ValueError as exc:
+        if type(exc) is not ValueError:
+            raise AssertionError(
+                f"expected normalized ValueError, got {type(exc).__name__}"
+            ) from exc
         return str(exc)
     raise AssertionError("expected ValueError, nothing raised")
 
@@ -72,7 +78,11 @@ def _source_attestation_parts(
     *,
     source_count: int | None = None,
     session_count: int | None = None,
-) -> tuple[tuple[str, str], list[dict[str, object]], list[dict[str, object]]]:
+) -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
     if source_count is None:
         source_count = (
             builder.FROZEN_INVENTORY["video_bearing_sessions"]
@@ -80,18 +90,42 @@ def _source_attestation_parts(
         )
     if session_count is None:
         session_count = builder.FROZEN_INVENTORY["total_sessions"]
-    root_tokens = tuple(
-        builder._source_attestation_hmac_token(
-            salt, "approved-root", f"root-{index}".encode("ascii"),
+    root_paths = {
+        "data_root": Path("/private/attestation-data-root"),
+        "legacy_export_root": Path("/private/attestation-legacy-export-root"),
+    }
+    root_identities = {
+        "data_root": [
+            1, 2, stat.S_IFDIR | 0o755, os.geteuid(), os.getegid(), 2,
+        ],
+        "legacy_export_root": [
+            1, 3, stat.S_IFDIR | 0o755, os.geteuid(), os.getegid(), 2,
+        ],
+    }
+    approved_roots = [
+        builder._source_attestation_approved_root_record(
+            salt,
+            role,
+            root_paths[role],
+            root_identities[role],
         )
-        for index in range(2)
-    )
+        for role in ("data_root", "legacy_export_root")
+    ]
+    root_tokens = {
+        str(row["role"]): str(row["root_token"])
+        for row in approved_roots
+    }
     source_entries = []
     for index in range(source_count):
-        source_sha256 = f"{index + 1:064x}"[-64:]
+        kind = "video" if index < 50 else "arkit"
+        if kind == "video":
+            digest_index = 0 if index < 2 else index - 1
+            source_sha256 = _sha(f"private-video-{digest_index}".encode("ascii"))
+        else:
+            source_sha256 = _sha(f"private-arkit-{index - 50}".encode("ascii"))
         source_entries.append({
-            "kind": "video" if index % 2 == 0 else "arkit",
-            "root_token": root_tokens[index % 2],
+            "kind": kind,
+            "root_token": root_tokens["data_root"],
             "path_token": builder._source_attestation_hmac_token(
                 salt, "relative-path", f"member-{index}".encode("ascii"),
             ),
@@ -106,7 +140,7 @@ def _source_attestation_parts(
         })
     session_classifications = []
     for index in range(session_count):
-        complete = index % 2 == 0
+        complete = index < 13
         session_classifications.append({
             "session_token": builder._source_attestation_hmac_token(
                 salt, "session", f"session-{index}".encode("ascii"),
@@ -114,19 +148,22 @@ def _source_attestation_parts(
             "lookup_outcome": (
                 "complete_export" if complete else "no_complete_export"
             ),
+            "legacy_export_root_token": root_tokens["legacy_export_root"],
             **{
                 f"{name.replace('.', '_')}_stat_identity": (
                     [
-                        1, 100 + file_index, stat.S_IFREG | 0o600,
+                        1, 1000 + index * 4 + file_index,
+                        stat.S_IFREG | 0o600,
                         os.geteuid(), os.getegid(), 1, 10 + file_index,
-                        3000 + file_index, 4000 + file_index,
+                        3000 + index * 4 + file_index,
+                        4000 + index * 4 + file_index,
                     ]
                     if complete else None
                 )
                 for file_index, name in enumerate(builder.EXISTING_EXPORT_FILES)
             },
         })
-    return root_tokens, source_entries, session_classifications
+    return approved_roots, source_entries, session_classifications
 
 
 def _source_attestation_fixture(
@@ -135,7 +172,7 @@ def _source_attestation_fixture(
     source_count: int | None = None,
     session_count: int | None = None,
 ) -> dict[str, object]:
-    root_tokens, source_entries, session_classifications = (
+    approved_roots, source_entries, session_classifications = (
         _source_attestation_parts(
             salt,
             source_count=source_count,
@@ -143,11 +180,41 @@ def _source_attestation_fixture(
         )
     )
     return builder._build_source_digest_attestation(
-        approved_root_tokens=root_tokens,
+        approved_roots=approved_roots,
         source_entries=source_entries,
         session_classifications=session_classifications,
         salt=salt,
     )
+
+
+def _resign_source_attestation(
+    value: dict[str, object],
+    salt: bytes,
+) -> dict[str, object]:
+    value["entry_set_hmac"] = builder._source_attestation_aggregate_hmac(
+        salt, "entry-set", value["source_entries"],
+    )
+    value["legacy_export_topology_hmac"] = (
+        builder._source_attestation_aggregate_hmac(
+            salt, "legacy-export-topology", value["session_classifications"],
+        )
+    )
+    value["source_identity_aggregate_hmac"] = (
+        builder._source_attestation_aggregate_hmac(
+            salt,
+            "source-identity-aggregate",
+            {
+                "approved_roots": value["approved_roots"],
+                "source_entries": value["source_entries"],
+            },
+        )
+    )
+    authenticated = dict(value)
+    authenticated.pop("object_hmac")
+    value["object_hmac"] = builder._source_attestation_aggregate_hmac(
+        salt, "whole-object", authenticated,
+    )
+    return value
 
 
 def _prepend_duplicate_json_field(
@@ -1280,6 +1347,7 @@ def _semantic_staging(
     include_arkit: bool,
     include_exclusions: bool = False,
     source_sha256: tuple[str, str] = ("1" * 64, "2" * 64),
+    private_layout: tuple[str, str, str] = ("video", "arkit", "exports"),
 ) -> Path:
     staging = root / name
     media = staging / "mediapipe"
@@ -1290,8 +1358,10 @@ def _semantic_staging(
     for directory in (staging, media, arkit):
         directory.chmod(0o700)
     private = root / "private_fixture"
+    video_directory, arkit_directory, export_directory = private_layout
     video = builder.VideoAsset(
-        private / "video", private / "video" / "source.mov",
+        private / video_directory,
+        private / video_directory / "source.mov",
         builder.VideoMetadata(6, 60.0, 10, 10), source_sha256[0], None,
     )
     duplicate = builder.VideoAsset(
@@ -1307,7 +1377,8 @@ def _semantic_staging(
         builder.VideoMetadata(45, 60.0, 10, 10), "4" * 64, None,
     )
     arkit_asset = builder.ARKitAsset(
-        private / "arkit", private / "arkit" / "source_iPhone.csv",
+        private / arkit_directory,
+        private / arkit_directory / "source_iPhone.csv",
         5, builder.ARKIT_BLENDSHAPE_NAMES, source_sha256[1], 2,
     )
     counts = {
@@ -1327,13 +1398,13 @@ def _semantic_staging(
         "metadata_only_sessions": 0,
     }
     inventory = builder.MayoInventory(
-        private, private / "exports", counts,
+        private, private / export_directory, counts,
         ((video, duplicate, short_one, short_two)
          if include_exclusions else (video,)),
         (video,), (), (video,),
         ((duplicate,) if include_exclusions else ()),
         ((short_one, short_two) if include_exclusions else ()),
-        ((private / "arkit",) if include_arkit else ()),
+        ((private / arkit_directory,) if include_arkit else ()),
         ((arkit_asset,) if include_arkit else ()), (),
     )
     collection, exposure = builder.build_public_manifests(inventory, salt)
@@ -6814,13 +6885,21 @@ def test_source_digest_attestation_schema_and_private_round_trip(c: Check):
     salt = b"a" * 32
     attestation = _source_attestation_fixture(salt)
     c.eq(set(attestation), {
-        "schema", "approved_root_tokens", "source_entries",
+        "schema", "approved_roots", "source_entries",
         "session_classifications", "entry_set_hmac",
         "legacy_export_topology_hmac", "source_identity_aggregate_hmac",
         "object_hmac",
     }, "private source attestation has one exact top-level schema")
-    c.eq(attestation["schema"], "mayo_source_digest_attestation_v1")
-    c.eq(len(attestation["approved_root_tokens"]), 2)
+    c.eq(attestation["schema"], "mayo_source_digest_attestation_v2")
+    c.eq(
+        [row["role"] for row in attestation["approved_roots"]],
+        ["data_root", "legacy_export_root"],
+    )
+    c.true(all(
+        set(row) == {"role", "path_token", "root_token", "stat_identity"}
+        and len(row["stat_identity"]) == 6
+        for row in attestation["approved_roots"]
+    ), "each approved root binds its role, path token, and directory identity")
     c.eq(len(attestation["source_entries"]), 58)
     c.eq(len(attestation["session_classifications"]), 65)
     c.eq(
@@ -6867,6 +6946,335 @@ def test_source_digest_attestation_schema_and_private_round_trip(c: Check):
         )
 
 
+def test_source_attestation_rejects_root_role_and_frozen_topology_drift(c: Check):
+    salt = b"r" * 32
+    canonical = _source_attestation_fixture(salt)
+    expected_roots = {
+        "data_root": {
+            "path": Path("/private/attestation-data-root"),
+            "stat_identity": [
+                1, 2, stat.S_IFDIR | 0o755,
+                os.geteuid(), os.getegid(), 2,
+            ],
+        },
+        "legacy_export_root": {
+            "path": Path("/private/attestation-legacy-export-root"),
+            "stat_identity": [
+                1, 3, stat.S_IFDIR | 0o755,
+                os.geteuid(), os.getegid(), 2,
+            ],
+        },
+    }
+    c.eq(
+        builder._validate_source_digest_attestation(
+            canonical,
+            salt=salt,
+            expected_approved_roots=expected_roots,
+        ),
+        canonical,
+        "the attestation matches the caller's held root descriptors",
+    )
+    changed_root_path = dict(expected_roots)
+    changed_root_path["data_root"] = dict(expected_roots["data_root"])
+    changed_root_path["data_root"]["path"] = Path(
+        "/private/attestation-data-root-renamed"
+    )
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            canonical,
+            salt=salt,
+            expected_approved_roots=changed_root_path,
+        ),
+        ValueError,
+        "a different lexical root path is rejected despite the same identity",
+    )
+    changed_root_identity = dict(expected_roots)
+    changed_root_identity["legacy_export_root"] = dict(
+        expected_roots["legacy_export_root"]
+    )
+    changed_root_identity["legacy_export_root"]["stat_identity"] = list(
+        expected_roots["legacy_export_root"]["stat_identity"]
+    )
+    changed_root_identity["legacy_export_root"]["stat_identity"][1] += 1
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            canonical,
+            salt=salt,
+            expected_approved_roots=changed_root_identity,
+        ),
+        ValueError,
+        "a changed held-directory identity is rejected",
+    )
+    entries = canonical["source_entries"]
+    videos = [row for row in entries if row["kind"] == "video"]
+    arkit = [row for row in entries if row["kind"] == "arkit"]
+    video_digests = Counter(row["source_sha256"] for row in videos)
+    c.eq((len(videos), len(arkit)), (50, 8))
+    c.eq(sorted(video_digests.values()), [1] * 48 + [2])
+    c.eq(len({row["source_sha256"] for row in arkit}), 8)
+    c.true(
+        not ({row["source_sha256"] for row in videos}
+             & {row["source_sha256"] for row in arkit}),
+        "ARKit and video source content sets are disjoint",
+    )
+    c.eq(len({tuple(row["stat_identity"]) for row in entries}), 58)
+    sessions = canonical["session_classifications"]
+    c.eq(Counter(row["lookup_outcome"] for row in sessions), {
+        "complete_export": 13, "no_complete_export": 52,
+    })
+    legacy_identities = [
+        tuple(row[field])
+        for row in sessions if row["lookup_outcome"] == "complete_export"
+        for field in builder._SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS
+    ]
+    c.eq(len(legacy_identities), 52)
+    c.eq(len(set(legacy_identities)), 52)
+
+    role_swap = json.loads(json.dumps(canonical))
+    role_swap["approved_roots"][0]["role"] = "legacy_export_root"
+    role_swap["approved_roots"][1]["role"] = "data_root"
+    _resign_source_attestation(role_swap, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(role_swap, salt=salt),
+        ValueError,
+        "approved root roles cannot be interchanged even after re-signing",
+    )
+
+    identity_drift = json.loads(json.dumps(canonical))
+    identity_drift["approved_roots"][0]["stat_identity"][1] += 1
+    _resign_source_attestation(identity_drift, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            identity_drift, salt=salt,
+        ),
+        ValueError,
+        "root token binds the held directory identity",
+    )
+
+    root_tokens = {
+        row["role"]: row["root_token"] for row in canonical["approved_roots"]
+    }
+    wrong_entry_root = json.loads(json.dumps(canonical))
+    wrong_entry_root["source_entries"][0]["root_token"] = (
+        root_tokens["legacy_export_root"]
+    )
+    _resign_source_attestation(wrong_entry_root, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            wrong_entry_root, salt=salt,
+        ),
+        ValueError,
+        "source entries cannot reference the legacy export root",
+    )
+
+    wrong_session_root = json.loads(json.dumps(canonical))
+    wrong_session_root["session_classifications"][0][
+        "legacy_export_root_token"
+    ] = root_tokens["data_root"]
+    _resign_source_attestation(wrong_session_root, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            wrong_session_root, salt=salt,
+        ),
+        ValueError,
+        "legacy topology cannot reference the data root",
+    )
+
+    for label, mutate in (
+        (
+            "kind-count",
+            lambda value: value["source_entries"][0].update(kind="arkit"),
+        ),
+        (
+            "source-stat-identity",
+            lambda value: value["source_entries"][1].update(
+                stat_identity=value["source_entries"][0]["stat_identity"]
+            ),
+        ),
+    ):
+        drifted = json.loads(json.dumps(canonical))
+        mutate(drifted)
+        _resign_source_attestation(drifted, salt)
+        c.raises(
+            lambda drifted=drifted: builder._validate_source_digest_attestation(
+                drifted, salt=salt,
+            ),
+            ValueError,
+            f"{label} drift violates the frozen source topology",
+        )
+
+    duplicate_legacy_stat = json.loads(json.dumps(canonical))
+    complete_indices = [
+        index for index, row in enumerate(
+            duplicate_legacy_stat["session_classifications"]
+        ) if row["lookup_outcome"] == "complete_export"
+    ]
+    legacy_field = builder._SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS[0]
+    duplicate_legacy_stat["session_classifications"][complete_indices[1]][
+        legacy_field
+    ] = duplicate_legacy_stat["session_classifications"][complete_indices[0]][
+        legacy_field
+    ]
+    _resign_source_attestation(duplicate_legacy_stat, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            duplicate_legacy_stat, salt=salt,
+        ),
+        ValueError,
+        "legacy-stat-identity drift violates the frozen source topology",
+    )
+
+    unique_videos = json.loads(json.dumps(canonical))
+    replacement = _sha(b"replacement unique video")
+    repeated_digest = next(
+        digest for digest, count in video_digests.items() if count == 2
+    )
+    repeated_index = next(
+        index for index, row in enumerate(unique_videos["source_entries"])
+        if row["source_sha256"] == repeated_digest
+    )
+    unique_videos["source_entries"][repeated_index][
+        "source_sha256"
+    ] = replacement
+    unique_videos["source_entries"][repeated_index]["content_token"] = (
+        builder._source_attestation_hmac_token(
+            salt, "source-content", replacement.encode("ascii"),
+        )
+    )
+    _resign_source_attestation(unique_videos, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            unique_videos, salt=salt,
+        ),
+        ValueError,
+        "50 video entries require one exact duplicate pair",
+    )
+
+    duplicate_arkit = json.loads(json.dumps(canonical))
+    arkit_indices = [
+        index for index, row in enumerate(duplicate_arkit["source_entries"])
+        if row["kind"] == "arkit"
+    ]
+    first_arkit = duplicate_arkit["source_entries"][arkit_indices[0]]
+    second_arkit = duplicate_arkit["source_entries"][arkit_indices[1]]
+    second_arkit["source_sha256"] = first_arkit["source_sha256"]
+    second_arkit["content_token"] = first_arkit["content_token"]
+    _resign_source_attestation(duplicate_arkit, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            duplicate_arkit, salt=salt,
+        ),
+        ValueError,
+        "eight ARKit source digests must be unique",
+    )
+
+    overlapping_arkit = json.loads(json.dumps(canonical))
+    arkit_index = next(
+        index for index, item in enumerate(overlapping_arkit["source_entries"])
+        if item["kind"] == "arkit"
+    )
+    video_row = next(
+        item for item in overlapping_arkit["source_entries"]
+        if item["kind"] == "video"
+    )
+    overlapping_arkit["source_entries"][arkit_index]["source_sha256"] = (
+        video_row["source_sha256"]
+    )
+    overlapping_arkit["source_entries"][arkit_index]["content_token"] = (
+        video_row["content_token"]
+    )
+    _resign_source_attestation(overlapping_arkit, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            overlapping_arkit, salt=salt,
+        ),
+        ValueError,
+        "ARKit and video digest sets cannot overlap",
+    )
+
+    incomplete = json.loads(json.dumps(canonical))
+    complete_index = next(
+        index for index, row in enumerate(incomplete["session_classifications"])
+        if row["lookup_outcome"] == "complete_export"
+    )
+    row = incomplete["session_classifications"][complete_index]
+    row["lookup_outcome"] = "no_complete_export"
+    for field in builder._SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS:
+        row[field] = None
+    _resign_source_attestation(incomplete, salt)
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(incomplete, salt=salt),
+        ValueError,
+        "legacy topology requires exactly 13 complete exports",
+    )
+
+    c.raises(
+        lambda: builder._source_attestation_approved_root_record(
+            salt,
+            "data_root",
+            Path("relative/private-root"),
+            [1, 2, stat.S_IFDIR | 0o700, os.geteuid(), os.getegid(), 2],
+        ),
+        ValueError,
+        "approved roots require canonical lexical absolute paths",
+    )
+    readable_root = builder._source_attestation_approved_root_record(
+        salt,
+        "data_root",
+        Path("/private/readable-root"),
+        [1, 2, stat.S_IFDIR | 0o755, os.geteuid(), os.getegid(), 2],
+    )
+    c.eq(
+        stat.S_IMODE(readable_root["stat_identity"][2]),
+        0o755,
+        "canonical source roots may be read-only exposed but remain identity-bound",
+    )
+    for unsafe_mode in (0o775, 0o777):
+        c.raises(
+            lambda unsafe_mode=unsafe_mode: (
+                builder._source_attestation_approved_root_record(
+                    salt,
+                    "data_root",
+                    Path("/private/writable-root"),
+                    [
+                        1, 2, stat.S_IFDIR | unsafe_mode,
+                        os.geteuid(), os.getegid(), 2,
+                    ],
+                )
+            ),
+            ValueError,
+            "approved roots cannot be group- or world-writable",
+        )
+    approved_roots, source_entries, classifications = (
+        _source_attestation_parts(salt)
+    )
+    c.raises(
+        lambda: builder._build_source_digest_attestation(
+            approved_roots=tuple(approved_roots),
+            source_entries=source_entries,
+            session_classifications=classifications,
+            salt=salt,
+        ),
+        ValueError,
+        "builder runtime contract requires exact mutable-list inputs",
+    )
+    _value_error_text(
+        lambda: builder._source_attestation_relative_path_token(
+            salt,
+            canonical["approved_roots"][0]["root_token"],
+            ("raw_\ud800.mov",),
+        )
+    )
+    _value_error_text(
+        lambda: builder._source_attestation_approved_root_record(
+            salt,
+            "data_root",
+            Path("/private/raw_\ud800"),
+            [1, 2, stat.S_IFDIR | 0o700, os.geteuid(), os.getegid(), 2],
+        )
+    )
+
+
 def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
     salt = b"b" * 32
     canonical = _source_attestation_fixture(salt)
@@ -6896,7 +7304,7 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
     wrong_links["source_entries"][0]["stat_identity"][5] = 2
     malformed.append(wrong_links)
     overlong_token = json.loads(json.dumps(canonical))
-    overlong_token["approved_root_tokens"][0] = "a" * 129
+    overlong_token["approved_roots"][0]["root_token"] = "a" * 129
     malformed.append(overlong_token)
     for value in malformed:
         c.raises(
@@ -6945,7 +7353,7 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
                     salt,
                     "source-identity-aggregate",
                     {
-                        "approved_root_tokens": drifted["approved_root_tokens"],
+                        "approved_roots": drifted["approved_roots"],
                         "source_entries": drifted["source_entries"],
                     },
                 )
@@ -7004,7 +7412,7 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
                 "source attestation session count is invalid" in message,
                 f"reader identifies the exact {session_count}-session failure path",
             )
-    root_token = canonical["approved_root_tokens"][0]
+    root_token = canonical["approved_roots"][0]["root_token"]
     c.true(
         builder._source_attestation_hmac_token(
             salt, "approved-root", b"same-material",
@@ -7246,6 +7654,78 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
         safe_payload, tokens, "safe public manifest",
     )
 
+    unicode_component = "café"
+    surrogate_component = "raw_\udcff_face.mov"
+    encoded_path = Path(
+        "/vault/data/ordinary_component"  # deliberately has ordinary names
+    ) / unicode_component / surrogate_component
+    encoded_tokens = builder._source_attestation_private_tokens(
+        (encoded_path,), (source_digest,), salt,
+    )
+    c.true(b"ordinary_component" in encoded_tokens)
+    c.true(
+        urllib.parse.quote_from_bytes(
+            os.fsencode(os.fspath(encoded_path)), safe="",
+        ).encode("ascii") in encoded_tokens,
+        "percent-encoded full paths are leak sentinels",
+    )
+    c.true(
+        json.dumps(unicode_component, ensure_ascii=True).encode("ascii")
+        in encoded_tokens,
+        "exact JSON ensure_ascii Unicode strings are leak sentinels",
+    )
+    c.true(
+        json.dumps(surrogate_component, ensure_ascii=True).encode("ascii")
+        in encoded_tokens,
+        "exact JSON surrogate strings are leak sentinels",
+    )
+    c.true(b"data" not in encoded_tokens, "short components are not bare tokens")
+    builder._assert_bytes_omit_private_tokens(
+        b'{"metadata_only":true}',
+        encoded_tokens,
+        "safe metadata manifest",
+    )
+    for leaked in (b'"data"', b"/data/", b"ordinary_component"):
+        c.raises(
+            lambda leaked=leaked: builder._assert_bytes_omit_private_tokens(
+                leaked,
+                encoded_tokens,
+                "component leak artifact",
+            ),
+            ValueError,
+            "bounded component representations remain private leak sentinels",
+        )
+    c.raises(
+        lambda: builder._assert_private_token_chunks_omit(
+            (b"safe-prefix-ordinary_", b"component-safe-suffix"),
+            encoded_tokens,
+            "chunked public artifact",
+        ),
+        ValueError,
+        "multi-pattern scanner carries state across chunk boundaries",
+    )
+    c.raises(
+        lambda: builder._assert_bytes_omit_private_tokens(
+            b"safe",
+            tuple(
+                f"token-{index:05d}".encode("ascii")
+                for index in range(builder._MAX_PRIVATE_SCAN_TOKENS + 1)
+            ),
+            "too-many-token artifact",
+        ),
+        ValueError,
+        "scanner token count is bounded before automaton construction",
+    )
+    c.raises(
+        lambda: builder._assert_bytes_omit_private_tokens(
+            b"safe",
+            (b"x" * (builder._MAX_PRIVATE_SCAN_TOKEN_BYTES + 1),),
+            "overlong-token artifact",
+        ),
+        ValueError,
+        "scanner token length is bounded before automaton construction",
+    )
+
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         real_source_sha256 = (
@@ -7256,12 +7736,16 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
             root, ".mayo_ssl_cache.staging-real-privacy", salt,
             include_arkit=True,
             source_sha256=real_source_sha256,
+            private_layout=(
+                "video_member_a91f", "arkit_member_b72e",
+                "legacy_member_c83d",
+            ),
         )
         private = root / "private_fixture"
         real_private_paths = (
-            private / "video" / "source.mov",
-            private / "arkit" / "source_iPhone.csv",
-            private / "exports",
+            private / "video_member_a91f" / "source.mov",
+            private / "arkit_member_b72e" / "source_iPhone.csv",
+            private / "legacy_member_c83d",
             private / "model.task",
             private / ".mayo_ssl_hmac.key",
         )
