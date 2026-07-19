@@ -537,6 +537,102 @@ def test_masked_only_loss_and_conservative_reports_use_exact_baselines(c: Check)
     ), ValueError, "the baseline must be fitted on the exact training partition")
 
 
+def test_ssl_input_arms_are_stage_exact_and_keep_the_common_target(c: Check):
+    expected = {
+        ("ravdess", "semantic23_only"): tuple(range(23)),
+        ("mayo", "blendshape_only"): tuple(range(72)),
+        ("mayo", "landmark_only"): tuple(range(72, 95)),
+        ("mayo", "fusion"): tuple(range(95)),
+    }
+    for (stage, arm), active in expected.items():
+        c.eq(ssl_core.validate_ssl_input_arm(stage, arm), active)
+    for stage, arm in (
+        ("ravdess", "fusion"),
+        ("ravdess", "landmark_only"),
+        ("mayo", "semantic23_only"),
+        ("mayo", "blendshape"),
+        ("other", "fusion"),
+    ):
+        c.raises(
+            lambda stage=stage, arm=arm: ssl_core.validate_ssl_input_arm(
+                stage, arm,
+            ),
+            ValueError,
+            "input arms cannot cross stages or accept aliases",
+        )
+
+    features = torch.arange(95, dtype=torch.float32).reshape(1, 1, 1, 95)
+    blendshape = ssl_core.apply_ssl_input_arm(
+        features, stage="mayo", input_arm="blendshape_only",
+    )
+    landmark = ssl_core.apply_ssl_input_arm(
+        features, stage="mayo", input_arm="landmark_only",
+    )
+    fusion = ssl_core.apply_ssl_input_arm(
+        features, stage="mayo", input_arm="fusion",
+    )
+    c.true(torch.equal(blendshape[..., :72], features[..., :72]))
+    c.true(bool((blendshape[..., 72:] == 0).all()))
+    c.true(bool((landmark[..., :72] == 0).all()))
+    c.true(torch.equal(landmark[..., 72:], features[..., 72:]))
+    c.true(torch.equal(fusion, features))
+    c.true(torch.equal(features, torch.arange(95).reshape(1, 1, 1, 95)))
+
+
+def test_ssl_mayo_arms_change_only_input_not_architecture_or_target(c: Check):
+    valid, timestamps, indices = _temporal(batch=1)
+    reconstruction = torch.zeros_like(valid)
+    reconstruction[:, :, 4:8] = True
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(887)
+    features = torch.randn(1, 4, 32, 95, generator=generator)
+    observed = valid & ~reconstruction
+
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(99)
+        first = DynamicLandmarkSSLModel()
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(99)
+        second = DynamicLandmarkSSLModel()
+    c.eq(
+        [(name, tuple(value.shape)) for name, value in first.state_dict().items()],
+        [(name, tuple(value.shape)) for name, value in second.state_dict().items()],
+    )
+    for name, value in first.state_dict().items():
+        c.true(torch.equal(value, second.state_dict()[name]))
+
+    changed_landmarks = features.clone()
+    changed_landmarks[..., 72:] += 1000.0
+    bs_first = first.build_gru_input(
+        features, observed, timestamps, indices,
+        source="mayo", input_arm="blendshape_only",
+    )
+    bs_second = first.build_gru_input(
+        changed_landmarks, observed, timestamps, indices,
+        source="mayo", input_arm="blendshape_only",
+    )
+    c.true(torch.equal(bs_first, bs_second), "inactive landmark input is isolated")
+
+    changed_blendshapes = features.clone()
+    changed_blendshapes[..., :72] -= 1000.0
+    lm_first = first.build_gru_input(
+        features, observed, timestamps, indices,
+        source="mayo", input_arm="landmark_only",
+    )
+    lm_second = first.build_gru_input(
+        changed_blendshapes, observed, timestamps, indices,
+        source="mayo", input_arm="landmark_only",
+    )
+    c.true(torch.equal(lm_first, lm_second), "inactive blendshape input is isolated")
+
+    prediction = first(
+        features, valid, timestamps, indices,
+        reconstruction_mask=reconstruction, source="mayo",
+        input_arm="landmark_only",
+    )
+    c.eq(tuple(prediction.shape), tuple(features.shape), "every arm predicts full95")
+
+
 def test_microbatch_backward_matches_full_partition_loss_gradients_and_update(c: Check):
     batch_size = 65
     valid, timestamps, source_indices = _temporal(batch=batch_size)

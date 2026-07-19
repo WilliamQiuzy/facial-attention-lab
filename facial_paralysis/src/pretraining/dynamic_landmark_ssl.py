@@ -27,7 +27,12 @@ import torch
 import torch.nn.functional as functional
 from torch import nn
 
-from ..models.dynamic_landmark import DynamicLandmarkModel
+from ..models.dynamic_landmark import (
+    ARM_BLENDSHAPE,
+    ARM_FUSION,
+    ARM_LANDMARK,
+    DynamicLandmarkModel,
+)
 
 
 CHECKPOINT_RAVDESS_ONLY = "ravdess_only"
@@ -45,6 +50,9 @@ RAVDESS_STAGE = "ravdess"
 MAYO_DEVELOPMENT_STAGE = "mayo"
 RAVDESS_SOURCE = "ravdess_openface_semantic23"
 MAYO_SOURCE = "mayo_mediapipe_clinical23_development_only"
+ARM_SEMANTIC23 = "semantic23_only"
+TARGET_SEMANTIC23 = "semantic23_v1"
+TARGET_FULL95 = "mediapipe72_plus_clinical23_full95_v1"
 SSL_MANIFEST_SCHEMA = "dynamic_landmark_ssl_manifest_v1"
 SSL_CONFIG_SCHEMA = "dynamic_landmark_ssl_config_v1"
 SSL_SPLIT_SCHEMA = "dynamic_landmark_ssl_split_v1"
@@ -57,6 +65,47 @@ BRIDGE_RECEIPT_SCHEMA = "dynamic_landmark_bridge_receipt_v1"
 _MAX_FROZEN_JSON_BYTES = 64 * 1024 * 1024
 _MAX_FROZEN_BUNDLE_BYTES = 100 * 1024 * 1024
 _AUTHORIZATION_MARKER = object()
+
+
+def validate_ssl_input_arm(stage: str, input_arm: str) -> tuple[int, ...]:
+    """Return the exact active columns for one stage-bound SSL input arm."""
+    if type(stage) is not str or type(input_arm) is not str:
+        raise ValueError("SSL stage and input arm must be exact strings")
+    if stage == RAVDESS_STAGE and input_arm == ARM_SEMANTIC23:
+        return tuple(range(23))
+    if stage == MAYO_DEVELOPMENT_STAGE:
+        if input_arm == ARM_BLENDSHAPE:
+            return tuple(range(72))
+        if input_arm == ARM_LANDMARK:
+            return tuple(range(72, 95))
+        if input_arm == ARM_FUSION:
+            return tuple(range(95))
+    raise ValueError("SSL input arm is not legal for its stage")
+
+
+def apply_ssl_input_arm(
+    features: torch.Tensor,
+    *,
+    stage: str,
+    input_arm: str,
+) -> torch.Tensor:
+    """Zero only inactive standardized columns while preserving the target."""
+    active = validate_ssl_input_arm(stage, input_arm)
+    expected_width = 23 if stage == RAVDESS_STAGE else 95
+    if (
+        not isinstance(features, torch.Tensor)
+        or features.ndim < 1
+        or features.shape[-1] != expected_width
+        or not features.is_floating_point()
+        or not torch.isfinite(features).all()
+    ):
+        raise ValueError("SSL arm input violates its stage feature contract")
+    if len(active) == expected_width:
+        return features
+    result = torch.zeros_like(features)
+    indices = torch.tensor(active, dtype=torch.int64, device=features.device)
+    result.index_copy_(-1, indices, features.index_select(-1, indices))
+    return result
 
 
 class PretrainingLockedError(RuntimeError):
@@ -2754,6 +2803,7 @@ class DynamicLandmarkSSLModel(nn.Module):
         source_frame_indices: torch.Tensor,
         *,
         source: str,
+        input_arm: str | None = None,
     ) -> torch.Tensor:
         width = self._source_width(source)
         if features.ndim != 4 or features.shape[1:3] != (4, 32) or features.shape[-1] != width:
@@ -2765,7 +2815,12 @@ class DynamicLandmarkSSLModel(nn.Module):
             raise ValueError("observed mask must be boolean with feature leading shape")
         if bool((~observed_mask.reshape(features.shape[0], -1).any(dim=1)).any()):
             raise ValueError("each SSL recording requires observed context")
-        x = features * observed_mask.unsqueeze(-1)
+        stage = RAVDESS_STAGE if source == "ravdess" else MAYO_DEVELOPMENT_STAGE
+        if input_arm is None:
+            input_arm = ARM_SEMANTIC23 if source == "ravdess" else ARM_FUSION
+        x = apply_ssl_input_arm(
+            features, stage=stage, input_arm=input_arm,
+        ) * observed_mask.unsqueeze(-1)
         dx, _ = ssl_gap_safe_per_second_differences(
             x,
             observed_mask,
@@ -2817,6 +2872,7 @@ class DynamicLandmarkSSLModel(nn.Module):
         *,
         reconstruction_mask: torch.Tensor,
         source: str,
+        input_arm: str | None = None,
     ) -> torch.Tensor:
         if valid_mask.shape != features.shape[:-1] or valid_mask.dtype != torch.bool:
             raise ValueError("valid mask must be boolean with feature leading shape")
@@ -2833,7 +2889,8 @@ class DynamicLandmarkSSLModel(nn.Module):
             raise ValueError("all-masked SSL recordings are rejected")
         observed = valid_mask & ~reconstruction_mask
         gru_input = self.build_gru_input(
-            features, observed, timestamps, source_frame_indices, source=source
+            features, observed, timestamps, source_frame_indices,
+            source=source, input_arm=input_arm,
         )
         batch, windows, frames, _ = gru_input.shape
         encoded, _ = self.temporal(gru_input.reshape(batch * windows, frames, 64))
