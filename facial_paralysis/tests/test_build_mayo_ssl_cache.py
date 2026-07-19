@@ -59,6 +59,14 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _value_error_text(fn) -> str:
+    try:
+        fn()
+    except ValueError as exc:
+        return str(exc)
+    raise AssertionError("expected ValueError, nothing raised")
+
+
 def _source_attestation_parts(
     salt: bytes,
     *,
@@ -6914,32 +6922,88 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
             ValueError,
             f"session count {session_count} violates the frozen 65-session set",
         )
-    for source_count, session_count in (
-        (0, 65), (57, 65), (59, 65), (58, 0), (58, 64), (58, 66),
-    ):
-        roots, entries, sessions = _source_attestation_parts(
-            salt,
-            source_count=source_count,
-            session_count=session_count,
-        )
-        drifted = json.loads(json.dumps(canonical))
-        drifted["approved_root_tokens"] = sorted(roots)
-        drifted["source_entries"] = sorted(
-            entries,
-            key=lambda item: (
-                item["root_token"], item["path_token"], item["kind"],
-            ),
-        )
-        drifted["session_classifications"] = sorted(
-            sessions, key=lambda item: item["session_token"],
-        )
-        c.raises(
-            lambda drifted=drifted: builder._validate_source_digest_attestation(
-                drifted, salt=salt,
-            ),
-            ValueError,
-            "reader rejects non-frozen source or session cardinality before HMAC use",
-        )
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        for source_count in (57, 59):
+            _roots, entries, _sessions = _source_attestation_parts(
+                salt, source_count=source_count,
+            )
+            drifted = json.loads(json.dumps(canonical))
+            drifted["source_entries"] = sorted(
+                entries,
+                key=lambda item: (
+                    item["root_token"], item["path_token"], item["kind"],
+                ),
+            )
+            drifted["entry_set_hmac"] = (
+                builder._source_attestation_aggregate_hmac(
+                    salt, "entry-set", drifted["source_entries"],
+                )
+            )
+            drifted["source_identity_aggregate_hmac"] = (
+                builder._source_attestation_aggregate_hmac(
+                    salt,
+                    "source-identity-aggregate",
+                    {
+                        "approved_root_tokens": drifted["approved_root_tokens"],
+                        "source_entries": drifted["source_entries"],
+                    },
+                )
+            )
+            authenticated = dict(drifted)
+            authenticated.pop("object_hmac")
+            drifted["object_hmac"] = builder._source_attestation_aggregate_hmac(
+                salt, "whole-object", authenticated,
+            )
+            path = root / f"source-count-{source_count}.json"
+            path.write_bytes(
+                builder._source_attestation_canonical_bytes(drifted) + b"\n"
+            )
+            path.chmod(0o600)
+            message = _value_error_text(
+                lambda path=path: builder._load_source_digest_attestation(
+                    path, salt=salt,
+                )
+            )
+            c.true(
+                "source attestation entry count is invalid" in message,
+                f"reader identifies the exact {source_count}-source failure path",
+            )
+
+        for session_count in (0, 64, 66):
+            _roots, _entries, sessions = _source_attestation_parts(
+                salt, session_count=session_count,
+            )
+            drifted = json.loads(json.dumps(canonical))
+            drifted["session_classifications"] = sorted(
+                sessions, key=lambda item: item["session_token"],
+            )
+            drifted["legacy_export_topology_hmac"] = (
+                builder._source_attestation_aggregate_hmac(
+                    salt,
+                    "legacy-export-topology",
+                    drifted["session_classifications"],
+                )
+            )
+            authenticated = dict(drifted)
+            authenticated.pop("object_hmac")
+            drifted["object_hmac"] = builder._source_attestation_aggregate_hmac(
+                salt, "whole-object", authenticated,
+            )
+            path = root / f"session-count-{session_count}.json"
+            path.write_bytes(
+                builder._source_attestation_canonical_bytes(drifted) + b"\n"
+            )
+            path.chmod(0o600)
+            message = _value_error_text(
+                lambda path=path: builder._load_source_digest_attestation(
+                    path, salt=salt,
+                )
+            )
+            c.true(
+                "source attestation session count is invalid" in message,
+                f"reader identifies the exact {session_count}-session failure path",
+            )
     root_token = canonical["approved_root_tokens"][0]
     c.true(
         builder._source_attestation_hmac_token(
@@ -6959,12 +7023,21 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
     )
     tampered_entry_set = dict(canonical)
     tampered_entry_set["entry_set_hmac"] = "0" * 64
-    c.raises(
+    authenticated = dict(tampered_entry_set)
+    authenticated.pop("object_hmac")
+    tampered_entry_set["object_hmac"] = (
+        builder._source_attestation_aggregate_hmac(
+            salt, "whole-object", authenticated,
+        )
+    )
+    entry_set_message = _value_error_text(
         lambda: builder._validate_source_digest_attestation(
             tampered_entry_set, salt=salt,
-        ),
-        ValueError,
-        "entry-set HMAC tampering fails closed",
+        )
+    )
+    c.true(
+        "entry-set HMAC" in entry_set_message,
+        "entry-set tampering is rejected by its own HMAC before whole-object HMAC",
     )
     c.raises(
         lambda: builder._source_attestation_relative_path_token(
@@ -7034,17 +7107,29 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
             wrong_file_owner, canonical, salt=salt,
         )
         original_geteuid = builder.os.geteuid
+        original_decode = builder._decode_unique_json_object
+        decoded_wrong_owner = []
         builder.os.geteuid = lambda: original_geteuid() + 1
+        builder._decode_unique_json_object = (
+            lambda *_args, **_kwargs: decoded_wrong_owner.append(True)
+        )
         try:
-            c.raises(
+            owner_message = _value_error_text(
                 lambda: builder._load_source_digest_attestation(
                     wrong_file_owner, salt=salt,
-                ),
-                ValueError,
-                "private attestation requires current ownership",
+                )
             )
         finally:
+            builder._decode_unique_json_object = original_decode
             builder.os.geteuid = original_geteuid
+        c.true(
+            "current-owner" in owner_message,
+            "wrong file owner is rejected by private storage validation",
+        )
+        c.eq(
+            decoded_wrong_owner, [],
+            "wrong-owner attestation is rejected before JSON parsing",
+        )
 
         oversized = root / "oversized.json"
         oversized.write_bytes(b"{" + b" " * builder._MAX_SOURCE_ATTESTATION_BYTES)
