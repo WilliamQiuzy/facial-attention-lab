@@ -37,7 +37,10 @@ from ..models.dynamic_landmark import (
 
 CHECKPOINT_RAVDESS_ONLY = "ravdess_only"
 CHECKPOINT_RAVDESS_MAYO = "ravdess_then_mayo"
-CHECKPOINT_TYPES = (CHECKPOINT_RAVDESS_ONLY, CHECKPOINT_RAVDESS_MAYO)
+CHECKPOINT_MAYO_ONLY = "mayo_only_fresh"
+CHECKPOINT_TYPES = (
+    CHECKPOINT_RAVDESS_ONLY, CHECKPOINT_RAVDESS_MAYO, CHECKPOINT_MAYO_ONLY,
+)
 SSL_CHECKPOINT_SCHEMA = "dynamic_landmark_ssl_v1"
 SSL_CHECKPOINT_RECEIPT_SCHEMA = "dynamic_landmark_ssl_checkpoint_receipt_v1"
 SSL_CHECKPOINT_RECEIPT_V2_SCHEMA = "dynamic_landmark_ssl_checkpoint_receipt_v2"
@@ -196,6 +199,10 @@ class SSLStageEvidence:
     heldout_count: int
     development_only: bool
     prior_checkpoint_sha256: str | None
+    experiment_kind: str
+    input_arm: str
+    target_schema: str
+    initialization_policy: str
     evidence_sha256: str
     mode: str | None = None
     bridge_receipt_sha256: str | None = None
@@ -299,6 +306,8 @@ class _FrozenSSLStageAuthorization:
     ravdess_authorizer: Callable[[], object]
     mayo_authorizer: Callable[[], object]
     producer_sha256: str
+    experiment_kind: str
+    mayo_input_arm: str
     snapshot: _FrozenStageSnapshot
 
 
@@ -307,6 +316,10 @@ class SSLTrainingReceipt:
     schema_version: str
     stage: str
     source: str
+    experiment_kind: str
+    input_arm: str
+    target_schema: str
+    initialization_policy: str
     seed: int
     stage_evidence_sha256: str
     cache_binding_sha256: str
@@ -1774,6 +1787,8 @@ def _capture_frozen_ssl_stage(
     ravdess_authorizer: Callable[[], object],
     mayo_authorizer: Callable[[], object],
     producer_sha256: str,
+    experiment_kind: str,
+    mayo_input_arm: str,
 ) -> _FrozenStageSnapshot:
     from .dynamic_landmark_ssl_bridge import verify_frozen_bridge_stage
 
@@ -1808,6 +1823,8 @@ def _capture_frozen_ssl_stage(
         ravdess_authorizer=capture_ravdess,
         mayo_authorizer=capture_mayo,
         producer_sha256=producer_sha256,
+        experiment_kind=experiment_kind,
+        mayo_input_arm=mayo_input_arm,
         finalize_locked=finalize_locked,
     )
     if len(snapshots) != 1:
@@ -2150,7 +2167,8 @@ def _stage_evidence_without_digest(evidence: SSLStageEvidence) -> dict[str, obje
                 "group_ids_sha256", "scaler_sha256",
                 "split_artifact_sha256", "scaler_artifact_sha256",
                 "train_count", "heldout_count", "development_only",
-                "prior_checkpoint_sha256",
+                "prior_checkpoint_sha256", "experiment_kind", "input_arm",
+                "target_schema", "initialization_policy",
             }
         }
     return value
@@ -2244,13 +2262,38 @@ def _validate_stage_evidence(evidence: SSLStageEvidence) -> None:
         ):
             raise ValueError("receipt-bound stage evidence contradicts its stage")
         if evidence.stage == "ravdess":
-            if evidence.prior_checkpoint_sha256 is not None:
+            if (
+                evidence.prior_checkpoint_sha256 is not None
+                or evidence.experiment_kind != "two_stage_fusion"
+                or evidence.input_arm != ARM_SEMANTIC23
+                or evidence.target_schema != TARGET_SEMANTIC23
+                or evidence.initialization_policy != "same_seed_fresh"
+            ):
                 raise ValueError("RAVDESS receipt-bound evidence cannot name prior state")
-        else:
+        elif evidence.initialization_policy == "seed_matched_ravdess_prior":
             _require_sha256(
                 evidence.prior_checkpoint_sha256,
                 "Mayo prior checkpoint fingerprint",
             )
+            if (
+                evidence.experiment_kind != "two_stage_fusion"
+                or evidence.input_arm != ARM_FUSION
+                or evidence.target_schema != TARGET_FULL95
+            ):
+                raise ValueError("Mayo fusion evidence arm contract is invalid")
+        elif evidence.initialization_policy == "same_seed_fresh":
+            if (
+                evidence.prior_checkpoint_sha256 is not None
+                or evidence.experiment_kind != "mayo_input_arm_ablation"
+                or evidence.input_arm not in {
+                    ARM_BLENDSHAPE, ARM_LANDMARK, ARM_FUSION,
+                }
+                or evidence.target_schema != TARGET_FULL95
+                or evidence.mode != "formal"
+            ):
+                raise ValueError("Mayo-only ablation evidence is invalid")
+        else:
+            raise ValueError("Mayo evidence initialization policy is invalid")
         if evidence.evidence_sha256 != _canonical_sha256(
             _stage_evidence_without_digest(evidence)
         ):
@@ -2260,7 +2303,13 @@ def _validate_stage_evidence(evidence: SSLStageEvidence) -> None:
         expected = (
             RAVDESS_SOURCE, "actor", "actor_held_out", False,
         )
-        if evidence.prior_checkpoint_sha256 is not None:
+        if (
+            evidence.prior_checkpoint_sha256 is not None
+            or evidence.experiment_kind != "two_stage_fusion"
+            or evidence.input_arm != ARM_SEMANTIC23
+            or evidence.target_schema != TARGET_SEMANTIC23
+            or evidence.initialization_policy != "same_seed_fresh"
+        ):
             raise ValueError("RAVDESS stage evidence cannot name a prior checkpoint")
     elif evidence.stage == MAYO_DEVELOPMENT_STAGE:
         expected = (
@@ -2270,6 +2319,10 @@ def _validate_stage_evidence(evidence: SSLStageEvidence) -> None:
         if (
             not isinstance(evidence.prior_checkpoint_sha256, str)
             or _SHA256.fullmatch(evidence.prior_checkpoint_sha256) is None
+            or evidence.experiment_kind != "two_stage_fusion"
+            or evidence.input_arm != ARM_FUSION
+            or evidence.target_schema != TARGET_FULL95
+            or evidence.initialization_policy != "seed_matched_ravdess_prior"
         ):
             raise ValueError("Mayo stage evidence requires a prior RAVDESS fingerprint")
     else:
@@ -2323,6 +2376,8 @@ def _require_receipt_bound_stage_authorization(
         ravdess_authorizer=frozen.ravdess_authorizer,
         mayo_authorizer=frozen.mayo_authorizer,
         producer_sha256=frozen.producer_sha256,
+        experiment_kind=frozen.experiment_kind,
+        mayo_input_arm=frozen.mayo_input_arm,
     )
     if _snapshot_semantic_facts(current) != _snapshot_semantic_facts(
         frozen.snapshot
@@ -2371,11 +2426,23 @@ def _require_receipt_bound_stage_authorization(
         or scaler_value.get("fit_source_unit_ids") != list(fit_sources)
     ):
         raise ValueError("receipt-bound scaler changed after authorization")
+    if any(
+        current.config.get(name) != getattr(evidence, name)
+        for name in (
+            "experiment_kind", "input_arm", "target_schema",
+            "initialization_policy",
+        )
+    ):
+        raise ValueError("receipt-bound arm contract changed after authorization")
     prior_payload = authorization.prior_ravdess_checkpoint
     prior_evidence = authorization.prior_ravdess_evidence
     if evidence.stage == "ravdess":
         if prior_payload is not None or prior_evidence is not None:
             raise ValueError("RAVDESS receipt-bound authority carries prior state")
+        return
+    if evidence.initialization_policy == "same_seed_fresh":
+        if prior_payload is not None or prior_evidence is not None:
+            raise ValueError("Mayo-only authority cannot carry prior state")
         return
     if prior_payload is None or prior_evidence is None:
         raise ValueError("Mayo receipt-bound authority lacks prior RAVDESS state")
@@ -2482,6 +2549,10 @@ def _require_authorized_stage_evidence(evidence: SSLStageEvidence) -> None:
     if evidence.stage == RAVDESS_STAGE:
         if prior_payload is not None or prior_evidence is not None:
             raise ValueError("RAVDESS authorization cannot carry prior-stage state")
+        return
+    if evidence.initialization_policy == "same_seed_fresh":
+        if prior_payload is not None or prior_evidence is not None:
+            raise ValueError("Mayo-only authorization cannot carry prior-stage state")
         return
     if prior_payload is None or prior_evidence is None:
         raise ValueError("Mayo authorization requires the actual prior RAVDESS stage")
@@ -2621,6 +2692,18 @@ def _build_synthetic_ssl_stage_evidence_v1(
         "heldout_count": int(heldout.size),
         "development_only": development_only,
         "prior_checkpoint_sha256": prior_sha256,
+        "experiment_kind": "two_stage_fusion",
+        "input_arm": (
+            ARM_SEMANTIC23 if stage == RAVDESS_STAGE else ARM_FUSION
+        ),
+        "target_schema": (
+            TARGET_SEMANTIC23 if stage == RAVDESS_STAGE else TARGET_FULL95
+        ),
+        "initialization_policy": (
+            "same_seed_fresh"
+            if stage == RAVDESS_STAGE
+            else "seed_matched_ravdess_prior"
+        ),
     }
     values["evidence_sha256"] = _canonical_sha256(values)
     evidence = SSLStageEvidence(**values)
@@ -2664,6 +2747,8 @@ def authorize_frozen_ssl_stage(
     ravdess_authorizer: Callable[[], object],
     mayo_authorizer: Callable[[], object],
     producer_sha256: str,
+    experiment_kind: str = "two_stage_fusion",
+    mayo_input_arm: str = ARM_FUSION,
     prior_ravdess_checkpoint: Mapping[str, object] | None = None,
     prior_ravdess_evidence: SSLStageEvidence | None = None,
 ) -> SSLStageEvidence:
@@ -2683,6 +2768,8 @@ def authorize_frozen_ssl_stage(
         ravdess_authorizer=ravdess_authorizer,
         mayo_authorizer=mayo_authorizer,
         producer_sha256=producer_sha256,
+        experiment_kind=experiment_kind,
+        mayo_input_arm=mayo_input_arm,
     )
     receipt = snapshot.receipt
     manifest = snapshot.manifest
@@ -2769,11 +2856,13 @@ def authorize_frozen_ssl_stage(
             "receipt-bound scaler does not match unique train-frame recomputation"
         )
     cache_commitment = _cache_commitment_sha256(group_ids, (bundle_payload,))
+    config_value = snapshot.config
+    initialization_policy = config_value.get("initialization_policy")
     if stage == "ravdess":
         if prior_ravdess_checkpoint is not None or prior_ravdess_evidence is not None:
             raise ValueError("RAVDESS receipt-bound evidence cannot carry prior state")
         prior_sha256 = None
-    else:
+    elif initialization_policy == "seed_matched_ravdess_prior":
         if prior_ravdess_checkpoint is None or prior_ravdess_evidence is None:
             raise ValueError("Mayo receipt-bound evidence requires prior RAVDESS state")
         _require_exact_ravdess_only_prior(
@@ -2783,6 +2872,12 @@ def authorize_frozen_ssl_stage(
             require_persisted=True,
         )
         prior_sha256 = ssl_checkpoint_fingerprint(prior_ravdess_checkpoint)
+    elif initialization_policy == "same_seed_fresh":
+        if prior_ravdess_checkpoint is not None or prior_ravdess_evidence is not None:
+            raise ValueError("Mayo-only ablation cannot carry prior-stage state")
+        prior_sha256 = None
+    else:
+        raise ValueError("Mayo receipt-bound initialization policy is unsupported")
     files = snapshot.files
     values: dict[str, object] = {
         "schema_version": SSL_STAGE_EVIDENCE_SCHEMA,
@@ -2805,6 +2900,10 @@ def authorize_frozen_ssl_stage(
         "heldout_count": int(heldout.size),
         "development_only": stage == "mayo",
         "prior_checkpoint_sha256": prior_sha256,
+        "experiment_kind": config_value["experiment_kind"],
+        "input_arm": config_value["input_arm"],
+        "target_schema": config_value["target_schema"],
+        "initialization_policy": initialization_policy,
         "mode": mode,
         "bridge_receipt_sha256": files["receipt"].sha256,
         "receipt_hmac": receipt["receipt_hmac"],
@@ -2851,6 +2950,8 @@ def authorize_frozen_ssl_stage(
         ravdess_authorizer=ravdess_authorizer,
         mayo_authorizer=mayo_authorizer,
         producer_sha256=producer_sha256,
+        experiment_kind=experiment_kind,
+        mayo_input_arm=mayo_input_arm,
         snapshot=snapshot,
     )
     authorization = _SSLStageAuthorization(
@@ -3073,6 +3174,7 @@ def reconstruction_report(
     evaluated_indices: Sequence[int] | np.ndarray,
     group_ids: Sequence[str],
     source: str,
+    additional_predictions: Mapping[str, torch.Tensor] | None = None,
 ) -> dict[str, object]:
     train, heldout, groups = _validate_split_partition(split, group_ids)
     evaluated = _index_array(evaluated_indices, len(groups), "evaluated_indices")
@@ -3093,6 +3195,16 @@ def reconstruction_report(
         "untrained": untrained_prediction,
         "train_mean": baseline_prediction,
     }
+    if additional_predictions is not None:
+        if (
+            not isinstance(additional_predictions, Mapping)
+            or any(
+                type(name) is not str or not name or name in predictions
+                for name in additional_predictions
+            )
+        ):
+            raise ValueError("additional reconstruction baselines are malformed")
+        predictions.update(additional_predictions)
     common_target_metrics: dict[str, object] = {}
     per_recording: dict[str, dict[str, object]] = {}
     evaluated_groups = tuple(groups[int(index)] for index in evaluated.tolist())
@@ -3265,13 +3377,31 @@ def _validate_training_receipt(receipt: SSLTrainingReceipt) -> None:
         if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
             raise ValueError(f"SSL training receipt {name} is malformed")
     if receipt.stage == RAVDESS_STAGE:
-        if receipt.prior_checkpoint_sha256 is not None:
+        if (
+            receipt.prior_checkpoint_sha256 is not None
+            or receipt.experiment_kind != "two_stage_fusion"
+            or receipt.input_arm != ARM_SEMANTIC23
+            or receipt.target_schema != TARGET_SEMANTIC23
+            or receipt.initialization_policy != "same_seed_fresh"
+        ):
             raise ValueError("RAVDESS training cannot name a prior checkpoint")
+    elif receipt.initialization_policy == "seed_matched_ravdess_prior":
+        if (
+            not isinstance(receipt.prior_checkpoint_sha256, str)
+            or _SHA256.fullmatch(receipt.prior_checkpoint_sha256) is None
+            or receipt.experiment_kind != "two_stage_fusion"
+            or receipt.input_arm != ARM_FUSION
+            or receipt.target_schema != TARGET_FULL95
+        ):
+            raise ValueError("Mayo fusion training requires an exact prior checkpoint")
     elif (
-        not isinstance(receipt.prior_checkpoint_sha256, str)
-        or _SHA256.fullmatch(receipt.prior_checkpoint_sha256) is None
+        receipt.initialization_policy != "same_seed_fresh"
+        or receipt.prior_checkpoint_sha256 is not None
+        or receipt.experiment_kind != "mayo_input_arm_ablation"
+        or receipt.input_arm not in {ARM_BLENDSHAPE, ARM_LANDMARK, ARM_FUSION}
+        or receipt.target_schema != TARGET_FULL95
     ):
-        raise ValueError("Mayo training requires an exact prior checkpoint")
+        raise ValueError("Mayo-only training receipt arm contract is invalid")
     config_contract = {
         "schema_version": SSL_CONFIG_SCHEMA,
         "stage": receipt.stage,
@@ -3446,7 +3576,7 @@ def _train_ssl_stage_impl(
             model = DynamicLandmarkSSLModel().to("cpu")
             fresh_untrained_state = _clone_model_state(model)
             prior_checkpoint_sha256 = None
-        else:
+        elif stage_evidence.initialization_policy == "seed_matched_ravdess_prior":
             if prior_ravdess_checkpoint is None or prior_stage_evidence is None:
                 raise ValueError("Mayo training requires its exact authorized RAVDESS checkpoint")
             _require_exact_ravdess_only_prior(
@@ -3464,6 +3594,14 @@ def _train_ssl_stage_impl(
             model = DynamicLandmarkSSLModel().to("cpu")
             fresh_untrained_state = _clone_model_state(model)
             model.load_state_dict(prior_ravdess_checkpoint["model_state"], strict=True)
+        elif stage_evidence.initialization_policy == "same_seed_fresh":
+            if prior_ravdess_checkpoint is not None or prior_stage_evidence is not None:
+                raise ValueError("Mayo-only training cannot accept prior-stage state")
+            model = DynamicLandmarkSSLModel().to("cpu")
+            fresh_untrained_state = _clone_model_state(model)
+            prior_checkpoint_sha256 = None
+        else:
+            raise ValueError("SSL training initialization policy is unsupported")
 
         pre_state = _clone_model_state(model)
         pre_state_sha256 = _model_state_sha256(pre_state)
@@ -3577,7 +3715,7 @@ def _train_ssl_stage_impl(
                 expected_source_step=expected_source_step,
                 span_length=span_length,
                 spans_per_window=spans_per_window,
-                seed=10_000 + seed,
+                seed=10_000,
             )
             heldout_mask_sha256 = _mask_sha256(heldout_mask)
             with torch.no_grad():
@@ -3618,13 +3756,36 @@ def _train_ssl_stage_impl(
                 evaluated_indices=heldout_indices,
                 group_ids=groups,
                 source=stage_evidence.source,
+                additional_predictions=(
+                    {"fresh_untrained": fresh_untrained_heldout}
+                    if stage_evidence.initialization_policy
+                    == "seed_matched_ravdess_prior"
+                    else None
+                ),
             )
-            if stage_evidence.stage == MAYO_DEVELOPMENT_STAGE:
+            if (
+                stage_evidence.stage == MAYO_DEVELOPMENT_STAGE
+                and stage_evidence.initialization_policy
+                == "seed_matched_ravdess_prior"
+            ):
                 report["prior_ravdess"] = report.pop("untrained")
-                report["fresh_untrained"] = float(masked_smooth_l1(
-                    fresh_untrained_heldout, heldout_scaled, heldout_mask
-                ).item())
+                report["fresh_untrained"] = report[
+                    "common_target_metrics"
+                ]["fresh_untrained"]["standardized_smooth_l1"]
+                report["common_target_metrics"]["prior_ravdess"] = report[
+                    "common_target_metrics"
+                ].pop("untrained")
+                for item in report["per_recording_metrics"]:
+                    item["prior_ravdess"] = item.pop("untrained")
                 initialization_baseline_metric = "prior_ravdess"
+            elif stage_evidence.stage == MAYO_DEVELOPMENT_STAGE:
+                report["fresh_untrained"] = report.pop("untrained")
+                report["common_target_metrics"]["fresh_untrained"] = report[
+                    "common_target_metrics"
+                ].pop("untrained")
+                for item in report["per_recording_metrics"]:
+                    item["fresh_untrained"] = item.pop("untrained")
+                initialization_baseline_metric = "fresh_untrained"
             else:
                 initialization_baseline_metric = "untrained"
             report.update({
@@ -3640,6 +3801,9 @@ def _train_ssl_stage_impl(
                     "same_seed_fresh_ravdess"
                     if stage_evidence.stage == RAVDESS_STAGE
                     else "exact_prior_ravdess_checkpoint"
+                    if stage_evidence.initialization_policy
+                    == "seed_matched_ravdess_prior"
+                    else "same_seed_fresh_mayo"
                 ),
             })
         heldout_report_sha256 = _canonical_sha256(report)
@@ -3647,6 +3811,10 @@ def _train_ssl_stage_impl(
             "schema_version": SSL_TRAINING_RECEIPT_SCHEMA,
             "stage": stage_evidence.stage,
             "source": stage_evidence.source,
+            "experiment_kind": stage_evidence.experiment_kind,
+            "input_arm": stage_evidence.input_arm,
+            "target_schema": stage_evidence.target_schema,
+            "initialization_policy": stage_evidence.initialization_policy,
             "seed": seed,
             "stage_evidence_sha256": stage_evidence.evidence_sha256,
             "cache_binding_sha256": cache_binding,
@@ -3751,6 +3919,10 @@ def _require_authorized_training_result(result: SSLTrainingResult) -> None:
     expected_receipt_values = {
         "stage": result.stage_evidence.stage,
         "source": result.stage_evidence.source,
+        "experiment_kind": result.stage_evidence.experiment_kind,
+        "input_arm": result.stage_evidence.input_arm,
+        "target_schema": result.stage_evidence.target_schema,
+        "initialization_policy": result.stage_evidence.initialization_policy,
         "stage_evidence_sha256": result.stage_evidence.evidence_sha256,
         "cache_binding_sha256": cache_binding,
         "cache_count": result.stage_evidence.cache_count,
@@ -3791,11 +3963,11 @@ def _require_authorized_training_result(result: SSLTrainingResult) -> None:
 
 def _checkpoint_type_for_evidence(evidence: SSLStageEvidence) -> str:
     _validate_stage_evidence(evidence)
-    return (
-        CHECKPOINT_RAVDESS_ONLY
-        if evidence.stage == RAVDESS_STAGE
-        else CHECKPOINT_RAVDESS_MAYO
-    )
+    if evidence.stage == RAVDESS_STAGE:
+        return CHECKPOINT_RAVDESS_ONLY
+    if evidence.initialization_policy == "seed_matched_ravdess_prior":
+        return CHECKPOINT_RAVDESS_MAYO
+    return CHECKPOINT_MAYO_ONLY
 
 
 def _checkpoint_metadata(
@@ -3804,14 +3976,20 @@ def _checkpoint_metadata(
     heldout_report: Mapping[str, object],
 ) -> dict[str, object]:
     checkpoint_type = _checkpoint_type_for_evidence(evidence)
-    mayo = checkpoint_type == CHECKPOINT_RAVDESS_MAYO
+    mayo = checkpoint_type in {CHECKPOINT_RAVDESS_MAYO, CHECKPOINT_MAYO_ONLY}
     smoke = evidence.mode == "smoke"
     return {
         "objective": "masked_span_smooth_l1_only",
         "next_step_objective": False,
         "seed": receipt.seed,
         "config_sha256": evidence.config_sha256,
-        "source_stages": ["ravdess", "mayo"] if mayo else ["ravdess"],
+        "source_stages": (
+            ["ravdess", "mayo"]
+            if checkpoint_type == CHECKPOINT_RAVDESS_MAYO
+            else ["mayo"]
+            if checkpoint_type == CHECKPOINT_MAYO_ONLY
+            else ["ravdess"]
+        ),
         "ravdess_claim": (
             "train_only_smoke_no_heldout_metric"
             if smoke else "actor_held_out_reconstruction"
@@ -4000,7 +4178,7 @@ def validate_ssl_checkpoint_payload(payload: Mapping[str, object]) -> None:
         ):
             raise ValueError("RAVDESS checkpoint baseline report is mislabeled")
         metric_names = ("trained", "untrained", "train_mean")
-    else:
+    elif evidence.initialization_policy == "seed_matched_ravdess_prior":
         if (
             report.get("initialization_baseline_metric") != "prior_ravdess"
             or "untrained" in report
@@ -4011,6 +4189,15 @@ def validate_ssl_checkpoint_payload(payload: Mapping[str, object]) -> None:
         metric_names = (
             "trained", "prior_ravdess", "fresh_untrained", "train_mean",
         )
+    else:
+        if (
+            report.get("initialization_baseline_metric") != "fresh_untrained"
+            or "untrained" in report
+            or "prior_ravdess" in report
+            or "fresh_untrained" not in report
+        ):
+            raise ValueError("Mayo-only checkpoint baselines are mislabeled")
+        metric_names = ("trained", "fresh_untrained", "train_mean")
     if any(
         isinstance(report.get(name), (bool, np.bool_))
         or not isinstance(report.get(name), (int, float, np.number))
@@ -4886,7 +5073,7 @@ def _transfer_ssl_weights_impl(
     shared_prefixes = ("temporal.", "attention_score.", "pool_projection.")
     checkpoint_type = payload["checkpoint_type"]
     allowed = [name for name in downstream_state if name.startswith(shared_prefixes)]
-    if checkpoint_type == CHECKPOINT_RAVDESS_MAYO:
+    if checkpoint_type in {CHECKPOINT_RAVDESS_MAYO, CHECKPOINT_MAYO_ONLY}:
         allowed.extend(name for name in downstream_state if name.startswith((
             "proj_bs_x.", "proj_bs_dx.", "proj_lm_x.", "proj_lm_dx.",
         )))
@@ -4949,6 +5136,7 @@ def require_frozen_pretraining_inputs(
 
 __all__ = [
     "CHECKPOINT_RAVDESS_ONLY", "CHECKPOINT_RAVDESS_MAYO",
+    "CHECKPOINT_MAYO_ONLY",
     "DynamicLandmarkSSLModel", "PretrainingLockedError", "SSLGroupSplit",
     "ResampledTrajectory", "SourceScaler", "SSLStageEvidence",
     "SSLCheckpointPayload", "SSLCheckpointReceipt", "SSLTrainingReceipt",

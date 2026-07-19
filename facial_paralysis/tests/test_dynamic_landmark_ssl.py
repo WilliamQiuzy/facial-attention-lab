@@ -149,6 +149,8 @@ def _frozen_bridge_inputs(
     root: Path,
     *,
     mode: str = "smoke",
+    experiment_kind: str = "two_stage_fusion",
+    mayo_input_arm: str = "fusion",
 ):
     saved_contract = {
         name: getattr(bridge_core, name) for name in _PRODUCTION_BRIDGE_CONTRACT
@@ -172,6 +174,8 @@ def _frozen_bridge_inputs(
             run_root,
             bridge,
             mode=mode,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
             ravdess_authorizer=lambda: ravdess,
             mayo_authorizer=lambda: mayo,
             producer_sha256=producer,
@@ -183,6 +187,8 @@ def _frozen_bridge_inputs(
             "ravdess_authorizer": lambda: ravdess,
             "mayo_authorizer": lambda: mayo,
             "producer_sha256": producer,
+            "experiment_kind": experiment_kind,
+            "mayo_input_arm": mayo_input_arm,
         }
         yield arguments, ravdess, mayo
     finally:
@@ -1524,6 +1530,48 @@ def test_frozen_mayo_quality_exclusion_reauthorizes_before_training(c: Check):
             c.eq(mayo_evidence.exclusion_count, 2)
             c.eq(mayo_evidence.sample_count, 32)
             c.eq(mayo_evidence.source_unit_count, 2)
+
+
+def test_formal_mayo_ablation_authorizes_fresh_without_ravdess_prior(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _frozen_bridge_inputs(
+            Path(td),
+            mode="formal",
+            experiment_kind="mayo_input_arm_ablation",
+            mayo_input_arm="landmark_only",
+        ) as (frozen, _ravdess, _mayo):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                **frozen,
+            )
+            c.eq(evidence.prior_checkpoint_sha256, None)
+            authorization = evidence._runtime_authorization
+            c.eq(authorization.training_config["input_arm"], "landmark_only")
+            c.eq(
+                authorization.training_config["initialization_policy"],
+                "same_seed_fresh",
+            )
+            result = ssl_core.train_ssl_stage(
+                stage_evidence=evidence,
+                seed=0,
+            )
+            c.eq(result.training_receipt.prior_checkpoint_sha256, None)
+            c.eq(
+                result.heldout_report["initialization_baseline_metric"],
+                "fresh_untrained",
+            )
+            payload = build_ssl_checkpoint_payload(result)
+            c.eq(payload["checkpoint_type"], "mayo_only_fresh")
+            c.true("prior_ravdess" not in result.heldout_report)
+            second = ssl_core.train_ssl_stage(
+                stage_evidence=evidence,
+                seed=1,
+            )
+            c.eq(
+                result.training_receipt.heldout_mask_schedule_sha256,
+                second.training_receipt.heldout_mask_schedule_sha256,
+                "all arms and seeds reuse one frozen heldout mask",
+            )
 
 
 def test_frozen_exclusion_count_tamper_matrix_precedes_optimizer(c: Check):

@@ -950,6 +950,62 @@ def test_freeze_stage_is_independent_mode_bound_private_transaction(c: Check):
         ), FileExistsError, "committed inputs are immutable and never overwritten")
 
 
+def test_freeze_stage_can_bind_one_formal_mayo_ablation_arm(c: Check):
+    ravdess, mayo = _synthetic_authorizations()
+    producer = "f" * 64
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary)
+        bridge = parent / "bridge"
+        run_root = parent / "ablation"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        bridge_core.freeze_bridge_stage(
+            run_root,
+            bridge,
+            mode="formal",
+            experiment_kind="mayo_input_arm_ablation",
+            mayo_input_arm="landmark_only",
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        config = json.loads((
+            run_root / "inputs" / "artifacts" / "mayo" / "config.json"
+        ).read_text("ascii"))
+        c.eq(config["experiment_kind"], "mayo_input_arm_ablation")
+        c.eq(config["input_arm"], "landmark_only")
+        c.eq(config["input_active_indices"], list(range(72, 95)))
+        c.eq(config["initialization_policy"], "same_seed_fresh")
+        bridge_core.verify_frozen_bridge_stage(
+            run_root / "inputs",
+            bridge,
+            mode="formal",
+            experiment_kind="mayo_input_arm_ablation",
+            mayo_input_arm="landmark_only",
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        c.raises(
+            lambda: bridge_core.verify_frozen_bridge_stage(
+                run_root / "inputs",
+                bridge,
+                mode="formal",
+                experiment_kind="mayo_input_arm_ablation",
+                mayo_input_arm="fusion",
+                ravdess_authorizer=lambda: ravdess,
+                mayo_authorizer=lambda: mayo,
+                producer_sha256=producer,
+            ),
+            ValueError,
+            "an arm mismatch cannot authorize frozen ablation inputs",
+        )
+
+
 def test_frozen_receipts_bind_artifacts_mappings_and_hmac(c: Check):
     ravdess, mayo = _synthetic_authorizations()
     producer = "f" * 64

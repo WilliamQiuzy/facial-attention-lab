@@ -106,6 +106,7 @@ FROZEN_INVENTORY: dict[str, int] = {
     "arkit_timecode_gaps": 24,
     "metadata_only_sessions": 8,
 }
+_FORMAL_FROZEN_INVENTORY = dict(FROZEN_INVENTORY)
 
 ARKIT_BLENDSHAPE_NAMES: tuple[str, ...] = (
     "EyeBlinkLeft", "EyeLookDownLeft", "EyeLookInLeft", "EyeLookOutLeft",
@@ -4787,6 +4788,8 @@ def promote_generation(
     expected_inventory_counts: Mapping[str, object] | None = None,
     expected_collection_classification_integrity_id: str | None = None,
     expected_classification_integrity_id: str | None = None,
+    forbidden_tokens: tuple[bytes, ...] = (),
+    forbidden_token_matcher: _PrivateTokenAutomaton | None = None,
 ) -> None:
     staging = _require_directory(staging_root, "staging generation")
     output = _lexical_absolute(output_root)
@@ -4809,6 +4812,8 @@ def promote_generation(
             expected_classification_integrity_id=(
                 expected_classification_integrity_id
             ),
+            forbidden_tokens=forbidden_tokens,
+            forbidden_token_matcher=forbidden_token_matcher,
         )
         return
     backup = output.parent / f".{output.name}.backup-{secrets.token_hex(8)}"
@@ -4856,6 +4861,8 @@ def _promote_generation_with_exposure(
     expected_inventory_counts: Mapping[str, object] | None,
     expected_collection_classification_integrity_id: str | None,
     expected_classification_integrity_id: str | None,
+    forbidden_tokens: tuple[bytes, ...],
+    forbidden_token_matcher: _PrivateTokenAutomaton | None,
 ) -> None:
     """Promote cache + exposure with a fsynced crash-recovery journal."""
     staged_exposure = _require_regular_file(
@@ -4869,6 +4876,8 @@ def _promote_generation_with_exposure(
             expected_collection_classification_integrity_id
         ),
         expected_classification_integrity_id=expected_classification_integrity_id,
+        forbidden_tokens=forbidden_tokens,
+        forbidden_token_matcher=forbidden_token_matcher,
     )
     _fsync_generation_tree(staging)
     try:
@@ -6932,6 +6941,189 @@ def _attested_mayo_digest_resolver(
         raise cleanup_error
 
 
+@dataclass(frozen=True)
+class _HeldMayoSourceAttestationInputs:
+    inventory: MayoInventory
+    data_root: _HeldMayoSourceRoot
+    legacy_export_root: _HeldMayoSourceRoot
+    source_files: tuple[_HeldMayoSource, ...]
+    legacy_export_files: tuple[_HeldMayoSource, ...]
+    attestation: dict[str, object]
+
+    @property
+    def held_descriptors(self) -> list[int]:
+        return [
+            self.data_root.descriptor,
+            self.legacy_export_root.descriptor,
+            *(item.descriptor for item in self.source_files),
+            *(item.descriptor for item in self.legacy_export_files),
+        ]
+
+    def assert_unchanged(self) -> None:
+        _assert_held_mayo_source_root(
+            self.data_root, "held final Mayo data root",
+        )
+        _assert_held_mayo_source_root(
+            self.legacy_export_root, "held final Mayo legacy export root",
+        )
+        _assert_all_held_mayo_sources(
+            self.source_files + self.legacy_export_files
+        )
+
+
+@contextmanager
+def _hold_mayo_source_attestation_inputs(
+    inventory: MayoInventory,
+    salt: bytes,
+):
+    """Capture the final nlink=1 source identity sweep and hold it to publish."""
+    if (
+        not isinstance(inventory, MayoInventory)
+        or inventory.counts != FROZEN_INVENTORY
+        or len(inventory.video_instances) != 50
+        or len(inventory.arkit_trajectories) != 8
+    ):
+        raise ValueError("formal Mayo source attestation requires the frozen inventory")
+    key = _require_salt(salt)
+    descriptors = ExitStack()
+    try:
+        data_root = _open_held_mayo_source_root(
+            inventory.data_root, "final Mayo data root",
+        )
+        descriptors.callback(os.close, data_root.descriptor)
+        export_root = _open_held_mayo_source_root(
+            inventory.export_root, "final Mayo legacy export root",
+        )
+        descriptors.callback(os.close, export_root.descriptor)
+        roots = [
+            _source_attestation_approved_root_record(
+                key,
+                role,
+                held.path,
+                list(held.identity),
+            )
+            for role, held in (
+                ("data_root", data_root),
+                ("legacy_export_root", export_root),
+            )
+        ]
+        root_tokens = {
+            str(row["role"]): str(row["root_token"])
+            for row in roots
+        }
+        assets = (
+            *(("video", item) for item in inventory.video_instances),
+            *(("arkit", item) for item in inventory.arkit_trajectories),
+        )
+        source_paths = tuple(asset.path for _kind, asset in assets)
+        source_files = descriptors.enter_context(
+            _hold_mayo_source_files(source_paths)
+        )
+        held_by_path = {item.path: item for item in source_files}
+        if len(held_by_path) != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT:
+            raise ValueError("formal Mayo source paths are not unique")
+        source_entries: list[dict[str, object]] = []
+        for kind, asset in assets:
+            held = held_by_path.get(_lexical_absolute(asset.path))
+            if held is None:
+                raise ValueError("formal Mayo source path was not held")
+            source_entries.append({
+                "kind": kind,
+                "root_token": root_tokens["data_root"],
+                "path_token": _source_attestation_relative_path_token(
+                    key,
+                    root_tokens["data_root"],
+                    held.path.relative_to(data_root.path).parts,
+                ),
+                "content_token": _source_attestation_hmac_token(
+                    key,
+                    "source-content",
+                    asset.source_sha256.encode("ascii"),
+                ),
+                "source_sha256": asset.source_sha256,
+                "stat_identity": list(held.identity),
+            })
+
+        complete_sessions = {
+            asset.session_path.name: asset.export_dir
+            for asset in inventory.existing_export_videos
+        }
+        live_sessions = sorted(
+            (
+                item for item in data_root.path.iterdir()
+                if item.is_dir() and not _is_symlink(item)
+            ),
+            key=lambda item: item.name,
+        )
+        if (
+            len(live_sessions) != _FROZEN_SOURCE_ATTESTATION_SESSION_COUNT
+            or len(complete_sessions) != 13
+        ):
+            raise ValueError("formal Mayo session topology is not frozen")
+        legacy_paths: list[Path] = []
+        for session in live_sessions:
+            export_dir = complete_sessions.get(session.name)
+            if export_dir is not None:
+                legacy_paths.extend(
+                    Path(export_dir) / name for name in EXISTING_EXPORT_FILES
+                )
+        legacy_export_files = descriptors.enter_context(
+            _hold_mayo_source_files(tuple(legacy_paths))
+        )
+        legacy_by_path = {
+            item.path: item for item in legacy_export_files
+        }
+        if len(legacy_by_path) != 13 * len(EXISTING_EXPORT_FILES):
+            raise ValueError("formal Mayo legacy export paths are not unique")
+        session_classifications: list[dict[str, object]] = []
+        for session in live_sessions:
+            export_dir = complete_sessions.get(session.name)
+            complete = export_dir is not None
+            row: dict[str, object] = {
+                "session_token": _source_attestation_session_token(
+                    key, root_tokens["data_root"], session.name,
+                ),
+                "lookup_outcome": (
+                    "complete_export" if complete else "no_complete_export"
+                ),
+                "legacy_export_root_token": root_tokens[
+                    "legacy_export_root"
+                ],
+            }
+            for name, field in zip(
+                EXISTING_EXPORT_FILES,
+                _SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS,
+            ):
+                if not complete:
+                    row[field] = None
+                    continue
+                path = _lexical_absolute(Path(export_dir) / name)
+                held = legacy_by_path.get(path)
+                if held is None:
+                    raise ValueError("formal Mayo legacy export was not held")
+                row[field] = list(held.identity)
+            session_classifications.append(row)
+        attestation = _build_source_digest_attestation(
+            approved_roots=roots,
+            source_entries=source_entries,
+            session_classifications=session_classifications,
+            salt=key,
+        )
+        held_inputs = _HeldMayoSourceAttestationInputs(
+            inventory=inventory,
+            data_root=data_root,
+            legacy_export_root=export_root,
+            source_files=source_files,
+            legacy_export_files=legacy_export_files,
+            attestation=attestation,
+        )
+        held_inputs.assert_unchanged()
+        yield held_inputs
+        held_inputs.assert_unchanged()
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
 def _open_nofollow_directory_at(
     parent_descriptor: int,
     name: str,
@@ -8340,6 +8532,9 @@ class _HeldCommittedMayoGeneration:
     internal_exposure_descriptor: int = dataclass_field(repr=False)
     internal_exposure_identity: tuple[int, ...]
     internal_exposure_sha256: str
+    source_attestation_descriptor: int | None = dataclass_field(repr=False)
+    source_attestation_identity: tuple[int, ...] | None
+    source_attestation_sha256: str | None
     media_descriptor: int = dataclass_field(repr=False)
     media_identity: tuple[int, ...]
     media_files: tuple[_HeldCommittedMayoCache, ...]
@@ -8361,8 +8556,12 @@ def _hold_committed_mayo_generation(
     media_count: int | None = None,
     arkit_count: int | None = None,
     assert_on_exit: bool = True,
+    require_source_attestation: bool = False,
 ):
-    if type(assert_on_exit) is not bool:
+    if (
+        type(assert_on_exit) is not bool
+        or type(require_source_attestation) is not bool
+    ):
         raise ValueError("committed Mayo exit assertion flag is invalid")
     expected_media_count = (
         int(FROZEN_INVENTORY["long_unique_videos"])
@@ -8406,6 +8605,27 @@ def _hold_committed_mayo_generation(
             "committed internal exposure manifest",
         )
         descriptors.callback(os.close, internal_exposure_descriptor)
+        top_level_names = set(os.listdir(output_descriptor))
+        has_source_attestation = SOURCE_DIGEST_ATTESTATION_FILENAME in (
+            top_level_names
+        )
+        if require_source_attestation and not has_source_attestation:
+            raise ValueError(
+                "committed Mayo generation lacks its source attestation"
+            )
+        source_attestation_descriptor = None
+        source_attestation_identity = None
+        source_attestation_sha256 = None
+        if has_source_attestation:
+            (
+                source_attestation_descriptor,
+                source_attestation_identity,
+            ) = _open_regular_at(
+                output_descriptor,
+                SOURCE_DIGEST_ATTESTATION_FILENAME,
+                "committed source digest attestation",
+            )
+            descriptors.callback(os.close, source_attestation_descriptor)
         media_descriptor, media_identity = _open_nofollow_directory_at(
             output_descriptor, "mediapipe", "committed Mayo MediaPipe cache",
         )
@@ -8463,6 +8683,8 @@ def _hold_committed_mayo_generation(
         regular_identities = (
             collection_identity,
             internal_exposure_identity,
+            *((source_attestation_identity,)
+              if source_attestation_identity is not None else ()),
             *(identity for _name, _descriptor, identity in media_candidates),
             *(identity for _name, _descriptor, identity in arkit_candidates),
             external_exposure_identity,
@@ -8495,6 +8717,21 @@ def _hold_committed_mayo_generation(
             expected_identity=internal_exposure_identity,
             max_bytes=_MAX_MAYO_MANIFEST_BYTES,
         )
+        if (
+            source_attestation_descriptor is not None
+            and source_attestation_identity is not None
+        ):
+            (
+                source_attestation_sha256,
+                source_attestation_identity,
+            ) = _snapshot_held_regular_digest(
+                source_attestation_descriptor,
+                parent_descriptor=output_descriptor,
+                name=SOURCE_DIGEST_ATTESTATION_FILENAME,
+                field="committed source digest attestation",
+                expected_identity=source_attestation_identity,
+                max_bytes=_MAX_SOURCE_ATTESTATION_BYTES,
+            )
 
         def snapshot_cache_files(
             candidates: tuple[tuple[str, int, tuple[int, ...]], ...],
@@ -8553,6 +8790,9 @@ def _hold_committed_mayo_generation(
             internal_exposure_descriptor=internal_exposure_descriptor,
             internal_exposure_identity=internal_exposure_identity,
             internal_exposure_sha256=internal_exposure_sha256,
+            source_attestation_descriptor=source_attestation_descriptor,
+            source_attestation_identity=source_attestation_identity,
+            source_attestation_sha256=source_attestation_sha256,
             media_descriptor=media_descriptor,
             media_identity=media_identity,
             media_files=media_files,
@@ -8670,6 +8910,23 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
         "committed internal exposure manifest",
         max_bytes=_MAX_MAYO_MANIFEST_BYTES,
     )
+    attestation_fields = (
+        held.source_attestation_descriptor,
+        held.source_attestation_identity,
+        held.source_attestation_sha256,
+    )
+    if all(value is not None for value in attestation_fields):
+        require_file(
+            int(held.source_attestation_descriptor),
+            held.output_descriptor,
+            SOURCE_DIGEST_ATTESTATION_FILENAME,
+            held.source_attestation_identity,
+            str(held.source_attestation_sha256),
+            "committed source digest attestation",
+            max_bytes=_MAX_SOURCE_ATTESTATION_BYTES,
+        )
+    elif any(value is not None for value in attestation_fields):
+        raise ValueError("held Mayo source attestation identity is incomplete")
     require_directory(
         held.media_descriptor, held.media_identity, "committed Mayo MediaPipe cache",
     )
@@ -8725,6 +8982,92 @@ def _assert_held_mayo_generation(held: _HeldCommittedMayoGeneration) -> None:
     )
 
 
+def _load_source_digest_attestation_descriptor(
+    held: _HeldCommittedMayoGeneration,
+    *,
+    salt: bytes,
+    expected_approved_roots: dict[str, dict[str, object]] | None = None,
+) -> tuple[dict[str, object], str]:
+    descriptor = held.source_attestation_descriptor
+    identity = held.source_attestation_identity
+    expected_sha256 = held.source_attestation_sha256
+    if descriptor is None or identity is None or expected_sha256 is None:
+        raise ValueError("held Mayo generation has no source attestation")
+    payload, digest, _size = _read_regular_descriptor(
+        descriptor,
+        parent_descriptor=held.output_descriptor,
+        name=SOURCE_DIGEST_ATTESTATION_FILENAME,
+        field="held committed source digest attestation",
+        expected_identity=identity,
+        expected_sha256=expected_sha256,
+        max_bytes=_MAX_SOURCE_ATTESTATION_BYTES,
+    )
+    decoded = _decode_unique_json_object(
+        payload, "held committed source digest attestation",
+    )
+    canonical = _validate_source_digest_attestation(
+        decoded,
+        salt=salt,
+        expected_approved_roots=expected_approved_roots,
+    )
+    if payload != _source_attestation_canonical_bytes(canonical) + b"\n":
+        raise ValueError("held source digest attestation bytes are noncanonical")
+    _assert_held_mayo_generation(held)
+    return canonical, digest
+
+
+@contextmanager
+def _held_committed_mayo_digest_resolver(
+    held: _HeldCommittedMayoGeneration,
+    *,
+    salt: bytes,
+    data_root: str | Path,
+    legacy_export_root: str | Path,
+):
+    """Load only the held generation witness, then authorize live digests."""
+    attestation, digest = _load_source_digest_attestation_descriptor(
+        held, salt=salt,
+    )
+    if (
+        held.source_attestation_sha256 is None
+        or not hmac.compare_digest(digest, held.source_attestation_sha256)
+    ):
+        raise ValueError("held Mayo source attestation digest changed")
+    with _attested_mayo_digest_resolver(
+        attestation,
+        salt=salt,
+        data_root=data_root,
+        legacy_export_root=legacy_export_root,
+    ) as resolver:
+        yield resolver
+        _assert_held_mayo_generation(held)
+
+
+@contextmanager
+def _mayo_authorization_digest_resolver(
+    held: _HeldCommittedMayoGeneration,
+    *,
+    salt: bytes,
+    data_root: Path,
+    legacy_export_root: Path,
+    formal_contract: bool,
+):
+    if type(formal_contract) is not bool:
+        raise ValueError("Mayo formal source contract flag is invalid")
+    if formal_contract:
+        with _held_committed_mayo_digest_resolver(
+            held,
+            salt=salt,
+            data_root=data_root,
+            legacy_export_root=legacy_export_root,
+        ) as resolver:
+            yield resolver
+        return
+    # Existing synthetic transaction tests replace the module-level frozen
+    # inventory with a reduced policy.  No public entry point can select it.
+    yield None
+
+
 def _inventory_counts_sha256(value: Mapping[str, object]) -> str:
     if (
         not isinstance(value, Mapping)
@@ -8756,14 +9099,19 @@ def _validate_staging(
         "staged generation",
         forbidden_token_matcher,
     )
-    allowed_top = {"collection_manifest.json", "mayo_exposure_manifest.json",
-                   "mediapipe", "arkit"}
+    legacy_top = {
+        "collection_manifest.json", "mayo_exposure_manifest.json",
+        "mediapipe", "arkit",
+    }
+    attested_top = legacy_top | {SOURCE_DIGEST_ATTESTATION_FILENAME}
     if _held is None:
         staging = _require_private_generation_storage_tree(
             staging, "staging generation",
         )
         observed_top = {item.name for item in staging.iterdir()}
-        if observed_top != allowed_top:
+        if frozenset(observed_top) not in {
+            frozenset(legacy_top), frozenset(attested_top),
+        }:
             raise ValueError(
                 "staging generation has a stale, missing, or unexpected top-level file"
             )
@@ -8778,7 +9126,9 @@ def _validate_staging(
             raise ValueError("held Mayo generation path is inconsistent")
         _assert_held_mayo_generation(_held)
         observed_top = set(os.listdir(_held.output_descriptor))
-        if observed_top != allowed_top:
+        if frozenset(observed_top) not in {
+            frozenset(legacy_top), frozenset(attested_top),
+        }:
             raise ValueError(
                 "staging generation has a stale, missing, or unexpected top-level file"
             )
@@ -8798,6 +9148,32 @@ def _validate_staging(
             expected_identity=_held.internal_exposure_identity,
             expected_sha256=_held.internal_exposure_sha256,
         )
+    has_source_attestation = observed_top == attested_top
+    if has_source_attestation:
+        if salt is None:
+            raise ValueError("source-attested staging requires the canonical key")
+        if _held is None:
+            source_attestation, source_attestation_digest = (
+                _load_source_digest_attestation(
+                    staging / SOURCE_DIGEST_ATTESTATION_FILENAME,
+                    salt=salt,
+                )
+            )
+        else:
+            source_attestation, source_attestation_digest = (
+                _load_source_digest_attestation_descriptor(
+                    _held, salt=salt,
+                )
+            )
+    else:
+        if _held is not None and any(value is not None for value in (
+            _held.source_attestation_descriptor,
+            _held.source_attestation_identity,
+            _held.source_attestation_sha256,
+        )):
+            raise ValueError("held Mayo generation mixes attested and legacy members")
+        source_attestation = None
+        source_attestation_digest = None
     collection_counts = _validate_collection_top(collection)
     inventory_counts_sha256 = _inventory_counts_sha256(collection_counts)
     if expected_inventory_counts is not None:
@@ -9108,8 +9484,19 @@ def _validate_staging(
     generation_aggregate.update(
         f"caches:{cache_aggregate.hexdigest()}\n".encode("ascii")
     )
+    if source_attestation is not None and source_attestation_digest is not None:
+        generation_aggregate.update(
+            f"source-attestation:{source_attestation_digest}:"
+            f"{source_attestation['source_identity_aggregate_hmac']}\n".encode(
+                "ascii"
+            )
+        )
     result = {
-        "schema": "mayo_cache_generation_commitment_v3",
+        "schema": (
+            "mayo_cache_generation_commitment_v4"
+            if source_attestation is not None
+            else "mayo_cache_generation_commitment_v3"
+        ),
         "collection_manifest_sha256": collection_digest,
         "exposure_manifest_sha256": exposure_digest,
         "mediapipe_file_count": observed_media_count,
@@ -9123,6 +9510,16 @@ def _validate_staging(
         ),
         "exposure_classification_integrity_id": classification_integrity,
     }
+    if source_attestation is not None and source_attestation_digest is not None:
+        result.update({
+            "source_attestation_sha256": source_attestation_digest,
+            "source_attestation_entry_count": len(
+                source_attestation["source_entries"]
+            ),
+            "source_identity_aggregate_hmac": source_attestation[
+                "source_identity_aggregate_hmac"
+            ],
+        })
     if _held is not None:
         _assert_held_mayo_generation(_held)
     return result
@@ -10324,34 +10721,58 @@ def authorize_committed_mayo_ssl_generation(
     _assert_canonical_mayo_key_path_unchanged(
         key_path, before_key_identity, salt,
     )
-    inventory = inventory_mayo_sources(data, exports, enforce_frozen=True)
-    if not isinstance(inventory, MayoInventory) or inventory.counts != FROZEN_INVENTORY:
-        raise ValueError("Mayo live inventory does not match the frozen contract")
-    expected_collection, expected_exposure = build_public_manifests(inventory, salt)
-    expected_collection_classification = str(
-        expected_collection["classification_integrity_id"]
-    )
-    expected_exposure_classification = str(
-        expected_exposure["classification_integrity_id"]
-    )
-    evidence_authority = {
-        "private_roots": (data, exports),
-        "salt": salt,
-        "expected_inventory_counts": inventory.counts,
-        "expected_collection_classification_integrity_id": (
-            expected_collection_classification
-        ),
-        "expected_classification_integrity_id": expected_exposure_classification,
-    }
-    forbidden_tokens = _private_root_forbidden_tokens((data, exports))
-    privacy_matcher = _compile_private_token_automaton(
-        forbidden_tokens, "Mayo authorization public artifacts",
-    )
-    evidence_authority["forbidden_token_matcher"] = privacy_matcher
+    formal_source_contract = FROZEN_INVENTORY == _FORMAL_FROZEN_INVENTORY
     with output_parent_lock(
             output, create_if_missing=False, shared=True,
         ), \
-            _hold_committed_mayo_generation(output, exposure) as held:
+            _hold_committed_mayo_generation(
+                output,
+                exposure,
+                require_source_attestation=formal_source_contract,
+            ) as held, \
+            _mayo_authorization_digest_resolver(
+                held,
+                salt=salt,
+                data_root=data,
+                legacy_export_root=exports,
+                formal_contract=formal_source_contract,
+            ) as digest_resolver:
+        inventory = inventory_mayo_sources(
+            data,
+            exports,
+            digest_resolver=digest_resolver,
+            enforce_frozen=True,
+        )
+        if (
+            not isinstance(inventory, MayoInventory)
+            or inventory.counts != FROZEN_INVENTORY
+        ):
+            raise ValueError("Mayo live inventory does not match the frozen contract")
+        expected_collection, expected_exposure = build_public_manifests(
+            inventory, salt
+        )
+        expected_collection_classification = str(
+            expected_collection["classification_integrity_id"]
+        )
+        expected_exposure_classification = str(
+            expected_exposure["classification_integrity_id"]
+        )
+        evidence_authority = {
+            "private_roots": (data, exports),
+            "salt": salt,
+            "expected_inventory_counts": inventory.counts,
+            "expected_collection_classification_integrity_id": (
+                expected_collection_classification
+            ),
+            "expected_classification_integrity_id": (
+                expected_exposure_classification
+            ),
+        }
+        forbidden_tokens = _private_root_forbidden_tokens((data, exports))
+        privacy_matcher = _compile_private_token_automaton(
+            forbidden_tokens, "Mayo authorization public artifacts",
+        )
+        evidence_authority["forbidden_token_matcher"] = privacy_matcher
         _assert_no_unresolved_generation_state(
             output, exposure, **evidence_authority,
         )
@@ -10369,6 +10790,10 @@ def authorize_committed_mayo_ssl_generation(
             forbidden_token_matcher=privacy_matcher,
             _held=held,
         )
+        if formal_source_contract and commitment["schema"] != (
+            "mayo_cache_generation_commitment_v4"
+        ):
+            raise ValueError("Mayo authorization requires an attested v4 generation")
         _external_exposure, external_digest = _load_public_json_descriptor(
             held.external_exposure_descriptor,
             parent_descriptor=held.external_parent_descriptor,
@@ -10530,7 +10955,12 @@ def authorize_committed_mayo_ssl_generation(
         )
         if not hmac.compare_digest(repeated_exposure_digest, external_digest):
             raise ValueError("Mayo exposure manifest changed during authorization")
-        repeated_inventory = inventory_mayo_sources(data, exports, enforce_frozen=True)
+        repeated_inventory = inventory_mayo_sources(
+            data,
+            exports,
+            digest_resolver=digest_resolver,
+            enforce_frozen=True,
+        )
         if (
             not isinstance(repeated_inventory, MayoInventory)
             or repeated_inventory.counts != inventory.counts
@@ -11074,32 +11504,88 @@ def _run_builder_impl(
             )
             _key_guard.assert_unchanged()
             _remove_real_tree(snapshot_dir)
-            _validate_staging(
-                staging, len(inventory.long_unique_videos),
-                len(inventory.arkit_trajectories),
-                salt=salt,
-                expected_inventory_counts=expected_inventory_counts,
-                expected_collection_classification_integrity_id=(
-                    expected_collection_classification_integrity_id
-                ),
-                expected_classification_integrity_id=(
-                    expected_classification_integrity_id
-                ),
-            )
-            promote_generation(
-                staging,
-                output,
-                exposure_manifest_path=exposure_path,
-                salt=salt,
-                expected_inventory_counts=expected_inventory_counts,
-                expected_collection_classification_integrity_id=(
-                    expected_collection_classification_integrity_id
-                ),
-                expected_classification_integrity_id=(
-                    expected_classification_integrity_id
-                ),
-                continuity_validator=_key_guard.assert_unchanged,
-            )
+            formal_attestation = inventory_factory is inventory_mayo_sources
+
+            def validate_and_promote(
+                *,
+                forbidden_tokens: tuple[bytes, ...] = (),
+                forbidden_token_matcher: _PrivateTokenAutomaton | None = None,
+                held_sources: _HeldMayoSourceAttestationInputs | None = None,
+            ) -> None:
+                if held_sources is not None:
+                    held_sources.assert_unchanged()
+                commitment = _validate_staging(
+                    staging, len(inventory.long_unique_videos),
+                    len(inventory.arkit_trajectories),
+                    salt=salt,
+                    expected_inventory_counts=expected_inventory_counts,
+                    expected_collection_classification_integrity_id=(
+                        expected_collection_classification_integrity_id
+                    ),
+                    expected_classification_integrity_id=(
+                        expected_classification_integrity_id
+                    ),
+                    forbidden_tokens=forbidden_tokens,
+                    forbidden_token_matcher=forbidden_token_matcher,
+                )
+                if formal_attestation and commitment["schema"] != (
+                    "mayo_cache_generation_commitment_v4"
+                ):
+                    raise ValueError("formal Mayo build did not produce v4")
+                if held_sources is not None:
+                    held_sources.assert_unchanged()
+                promote_generation(
+                    staging,
+                    output,
+                    exposure_manifest_path=exposure_path,
+                    salt=salt,
+                    expected_inventory_counts=expected_inventory_counts,
+                    expected_collection_classification_integrity_id=(
+                        expected_collection_classification_integrity_id
+                    ),
+                    expected_classification_integrity_id=(
+                        expected_classification_integrity_id
+                    ),
+                    forbidden_tokens=forbidden_tokens,
+                    forbidden_token_matcher=forbidden_token_matcher,
+                    continuity_validator=_key_guard.assert_unchanged,
+                )
+                if held_sources is not None:
+                    held_sources.assert_unchanged()
+
+            if formal_attestation:
+                with _hold_mayo_source_attestation_inputs(
+                    inventory, salt,
+                ) as held_sources:
+                    attestation_path = (
+                        staging / SOURCE_DIGEST_ATTESTATION_FILENAME
+                    )
+                    _write_source_digest_attestation_exclusive(
+                        attestation_path,
+                        held_sources.attestation,
+                        salt=salt,
+                    )
+                    source_private_tokens = _source_attestation_private_tokens(
+                        source_paths,
+                        [
+                            inventory_source_hashes[path]
+                            for path in source_paths
+                        ],
+                        salt,
+                    )
+                    privacy_matcher = _compile_private_token_automaton(
+                        source_private_tokens,
+                        "formal Mayo build public artifacts",
+                    )
+                    validate_and_promote(
+                        forbidden_tokens=source_private_tokens,
+                        forbidden_token_matcher=privacy_matcher,
+                        held_sources=held_sources,
+                    )
+            else:
+                # Test-only dependency-injected inventories predate the frozen
+                # 58-source schema; the public run_builder path is always formal.
+                validate_and_promote()
             _key_guard.assert_unchanged()
         finally:
             journal = _journal_path(output)

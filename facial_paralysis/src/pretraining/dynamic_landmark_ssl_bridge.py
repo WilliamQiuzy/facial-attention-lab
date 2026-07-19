@@ -2419,6 +2419,8 @@ def _prepare_frozen_stage(
     *,
     mode: str,
     bridge_generation_sha256: str,
+    experiment_kind: str,
+    mayo_input_arm: str,
 ) -> _PreparedFrozenStage:
     if mode not in {"smoke", "formal"} or type(mode) is not str:
         raise ValueError("bridge freeze mode must be exactly smoke or formal")
@@ -2459,6 +2461,25 @@ def _prepare_frozen_stage(
             "upstream_generation_closure_hmac"
         ],
     }
+    if experiment_kind == "two_stage_fusion":
+        if mayo_input_arm != "fusion":
+            raise ValueError("two-stage fusion requires the fusion Mayo arm")
+        mayo_initialization = "seed_matched_ravdess_prior"
+    elif (
+        experiment_kind == "mayo_input_arm_ablation"
+        and mayo_input_arm in {
+            "blendshape_only", "landmark_only", "fusion",
+        }
+        and mode == "formal"
+    ):
+        mayo_initialization = "same_seed_fresh"
+    else:
+        raise ValueError("frozen SSL experiment and Mayo arm are incompatible")
+    active_indices = {
+        "blendshape_only": list(range(72)),
+        "landmark_only": list(range(72, 95)),
+        "fusion": list(range(95)),
+    }
     config: dict[str, object] = {
         "schema_version": _SSL_CONFIG_SCHEMA,
         "stage": stage.name,
@@ -2476,13 +2497,19 @@ def _prepare_frozen_stage(
         "span_length": 4,
         "spans_per_window": 2,
         "device": "cpu",
-        "experiment_kind": "two_stage_fusion",
-        "input_arm": (
-            "semantic23_only" if stage.name == "ravdess" else "fusion"
+        "experiment_kind": (
+            "two_stage_fusion"
+            if stage.name == "ravdess"
+            else experiment_kind
         ),
-        "input_active_indices": list(range(
-            23 if stage.name == "ravdess" else 95
-        )),
+        "input_arm": (
+            "semantic23_only" if stage.name == "ravdess" else mayo_input_arm
+        ),
+        "input_active_indices": (
+            list(range(23))
+            if stage.name == "ravdess"
+            else active_indices[mayo_input_arm]
+        ),
         "target_schema": (
             "semantic23_v1"
             if stage.name == "ravdess"
@@ -2491,7 +2518,7 @@ def _prepare_frozen_stage(
         "initialization_policy": (
             "same_seed_fresh"
             if stage.name == "ravdess"
-            else "seed_matched_ravdess_prior"
+            else mayo_initialization
         ),
         "producer_sha256": stage.record["producer_sha256"],
         "mayo_generation_commitment_sha256": (
@@ -2592,6 +2619,8 @@ def _prepare_frozen_inputs(
     generation: _PreparedBridgeGeneration,
     *,
     mode: str,
+    experiment_kind: str = "two_stage_fusion",
+    mayo_input_arm: str = "fusion",
 ) -> _PreparedFrozenInputs:
     generation_sha256 = hashlib.sha256(generation.generation_bytes).hexdigest()
     return _PreparedFrozenInputs(
@@ -2600,11 +2629,15 @@ def _prepare_frozen_inputs(
             generation.ravdess,
             mode=mode,
             bridge_generation_sha256=generation_sha256,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
         ),
         mayo=_prepare_frozen_stage(
             generation.mayo,
             mode=mode,
             bridge_generation_sha256=generation_sha256,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
         ),
     )
 
@@ -3590,6 +3623,8 @@ def freeze_bridge_stage(
     bridge_root: str | Path,
     *,
     mode: str,
+    experiment_kind: str = "two_stage_fusion",
+    mayo_input_arm: str = "fusion",
     ravdess_authorizer: Callable[[], object],
     mayo_authorizer: Callable[[], object],
     producer_sha256: str,
@@ -3699,7 +3734,12 @@ def freeze_bridge_stage(
             ),
         )
         _validate_generation_fd(bridge_anchor.descriptor, first_generation)
-        first = _prepare_frozen_inputs(first_generation, mode=mode)
+        first = _prepare_frozen_inputs(
+            first_generation,
+            mode=mode,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
+        )
         _assert_destination_lock_at(
             inputs_lock,
             run_anchor.descriptor,
@@ -3734,7 +3774,12 @@ def freeze_bridge_stage(
         if not _prepared_equal(first_generation, second_generation):
             raise ValueError("upstream authorization changed during stage freeze")
         _validate_generation_fd(bridge_anchor.descriptor, second_generation)
-        second = _prepare_frozen_inputs(second_generation, mode=mode)
+        second = _prepare_frozen_inputs(
+            second_generation,
+            mode=mode,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
+        )
         if not _frozen_inputs_equal(first, second):
             raise ValueError("frozen inputs changed during stage freeze")
         _validate_frozen_inputs_fd(staging_fd, second)
@@ -3865,6 +3910,8 @@ def verify_frozen_bridge_stage(
     bridge_root: str | Path,
     *,
     mode: str,
+    experiment_kind: str = "two_stage_fusion",
+    mayo_input_arm: str = "fusion",
     ravdess_authorizer: Callable[[], object],
     mayo_authorizer: Callable[[], object],
     producer_sha256: str,
@@ -3951,7 +3998,12 @@ def verify_frozen_bridge_stage(
         first_validation = _validate_generation_fd(
             bridge_anchor.descriptor, first_generation,
         )
-        first = _prepare_frozen_inputs(first_generation, mode=mode)
+        first = _prepare_frozen_inputs(
+            first_generation,
+            mode=mode,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
+        )
         _validate_frozen_inputs_fd(inputs_anchor.descriptor, first)
         second_generation = _prepare_live_generation(
             ravdess_authorizer,
@@ -3961,7 +4013,12 @@ def verify_frozen_bridge_stage(
         )
         if not _prepared_equal(first_generation, second_generation):
             raise ValueError("upstream authorization changed during input verification")
-        second = _prepare_frozen_inputs(second_generation, mode=mode)
+        second = _prepare_frozen_inputs(
+            second_generation,
+            mode=mode,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
+        )
         if not _frozen_inputs_equal(first, second):
             raise ValueError("mode-bound inputs are nondeterministic")
         second_validation = _validate_generation_fd(

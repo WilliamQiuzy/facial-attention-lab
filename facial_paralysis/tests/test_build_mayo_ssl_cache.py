@@ -423,6 +423,42 @@ def _live_source_attestation(
     )
 
 
+def _root_bound_source_attestation(
+    data: Path,
+    exports: Path,
+    salt: bytes,
+) -> dict[str, object]:
+    _old_roots, entries, sessions = _source_attestation_parts(salt)
+    roots = [
+        builder._source_attestation_approved_root_record(
+            salt,
+            role,
+            path,
+            list(builder._directory_snapshot(os.lstat(path))),
+        )
+        for role, path in (
+            ("data_root", data),
+            ("legacy_export_root", exports),
+        )
+    ]
+    root_tokens = {
+        str(row["role"]): str(row["root_token"])
+        for row in roots
+    }
+    for entry in entries:
+        entry["root_token"] = root_tokens["data_root"]
+    for session in sessions:
+        session["legacy_export_root_token"] = root_tokens[
+            "legacy_export_root"
+        ]
+    return builder._build_source_digest_attestation(
+        approved_roots=roots,
+        source_entries=entries,
+        session_classifications=sessions,
+        salt=salt,
+    )
+
+
 def test_frozen_inventory_classifies_video_exports_and_arkit_pool(c: Check):
     with tempfile.TemporaryDirectory() as td:
         _data, _exports, inventory, _probe, _inspect = _inventory(Path(td))
@@ -776,6 +812,229 @@ def test_attested_resolver_fails_closed_on_source_root_and_topology_drift(c: Che
                 ValueError,
                 f"{mutation} cannot reuse the attested digests",
             )
+
+
+def test_cold_attestation_inputs_require_unpinned_sources_and_hold_to_barrier(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        data, exports, inventory, _probe, _inspect = _inventory(root)
+        salt = b"p" * 32
+        victim = inventory.video_instances[0].path
+        pin = root / "temporary-source-pin.mov"
+        os.link(victim, pin)
+        c.raises(
+            lambda: builder._hold_mayo_source_attestation_inputs(
+                inventory, salt,
+            ).__enter__(),
+            ValueError,
+            "formal attestation capture cannot overlap the hard-link pin phase",
+        )
+        pin.unlink()
+
+        descriptors: list[int] = []
+
+        def drift_before_publication() -> None:
+            nonlocal descriptors
+            with builder._hold_mayo_source_attestation_inputs(
+                inventory, salt,
+            ) as held:
+                c.eq(len(held.source_files), 58)
+                c.true(all(item.identity[5] == 1 for item in held.source_files))
+                c.eq(len(held.attestation["source_entries"]), 58)
+                descriptors = held.held_descriptors
+                before = os.lstat(victim)
+                replacement = victim.with_name("same-stat-replacement.mov")
+                replacement.write_bytes(b"x" * before.st_size)
+                os.utime(
+                    replacement,
+                    ns=(before.st_atime_ns, before.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                os.replace(replacement, victim)
+                held.assert_unchanged()
+
+        c.raises(
+            drift_before_publication,
+            ValueError,
+            "the pre-publication barrier rejects source replacement",
+        )
+        for descriptor in descriptors:
+            c.raises(
+                lambda descriptor=descriptor: os.fstat(descriptor),
+                OSError,
+                "all final source and topology descriptors close after drift",
+            )
+
+
+def test_v4_staging_exactly_holds_and_binds_source_attestation(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        salt = b"v" * 32
+        staging = _semantic_staging(
+            root, ".mayo_ssl_cache.staging-v4-attestation", salt,
+            include_arkit=True, include_exclusions=True,
+        )
+        data = root / "live-data"
+        exports = root / "live-exports"
+        data.mkdir(mode=0o755)
+        exports.mkdir(mode=0o755)
+        data.chmod(0o755)
+        exports.chmod(0o755)
+        attestation = _root_bound_source_attestation(
+            data, exports, salt,
+        )
+        target = staging / builder.SOURCE_DIGEST_ATTESTATION_FILENAME
+        builder._write_source_digest_attestation_exclusive(
+            target, attestation, salt=salt,
+        )
+        commitment = builder._validate_staging(staging, salt=salt)
+        c.eq(commitment["schema"], "mayo_cache_generation_commitment_v4")
+        c.eq(commitment["source_attestation_sha256"], _sha(target.read_bytes()))
+        c.eq(commitment["source_attestation_entry_count"], 58)
+        c.eq(
+            commitment["source_identity_aggregate_hmac"],
+            attestation["source_identity_aggregate_hmac"],
+        )
+        external = root / "external-exposure.json"
+        external.write_bytes((staging / "mayo_exposure_manifest.json").read_bytes())
+        external.chmod(0o600)
+        with builder._hold_committed_mayo_generation(
+            staging,
+            external,
+            media_count=1,
+            arkit_count=1,
+            require_source_attestation=True,
+        ) as held:
+            c.true(held.source_attestation_descriptor is not None)
+            observed, digest = builder._load_source_digest_attestation_descriptor(
+                held,
+                salt=salt,
+                expected_approved_roots={
+                    "data_root": {
+                        "path": data,
+                        "stat_identity": list(
+                            builder._directory_snapshot(os.lstat(data))
+                        ),
+                    },
+                    "legacy_export_root": {
+                        "path": exports,
+                        "stat_identity": list(
+                            builder._directory_snapshot(os.lstat(exports))
+                        ),
+                    },
+                },
+            )
+            c.eq(observed, attestation)
+            c.eq(digest, commitment["source_attestation_sha256"])
+
+        target.unlink()
+        c.raises(
+            lambda: builder._hold_committed_mayo_generation(
+                staging,
+                external,
+                media_count=1,
+                arkit_count=1,
+                require_source_attestation=True,
+            ).__enter__(),
+            ValueError,
+            "the warm held-generation entry rejects legacy v3 membership",
+        )
+        c.raises(
+            lambda: builder._assert_committed_generation(
+                staging, external, commitment, salt=salt,
+            ),
+            ValueError,
+            "a v4 commitment cannot authorize a v3-shaped generation",
+        )
+
+
+def test_held_committed_attestation_reuses_zero_hash_resolver_twice(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        source_root = root / "sources"
+        source_root.mkdir()
+        data, exports, cold, probe, inspect_arkit = _inventory(source_root)
+        salt = b"h" * 32
+        staging = _semantic_staging(
+            root, ".mayo_ssl_cache.staging-held-warm", salt,
+            include_arkit=True, include_exclusions=True,
+        )
+        attestation = _live_source_attestation(
+            data, exports, cold, salt,
+        )
+        builder._write_source_digest_attestation_exclusive(
+            staging / builder.SOURCE_DIGEST_ATTESTATION_FILENAME,
+            attestation,
+            salt=salt,
+        )
+        external = root / "external-exposure.json"
+        external.write_bytes((staging / "mayo_exposure_manifest.json").read_bytes())
+        external.chmod(0o600)
+        original_cold = builder._cold_mayo_source_digest
+        original_sha256 = builder.sha256_file
+        original_path_loader = builder._load_source_digest_attestation
+        builder._cold_mayo_source_digest = lambda _path: (
+            (_ for _ in ()).throw(AssertionError("warm context hashed a source"))
+        )
+        builder.sha256_file = lambda _path: (_ for _ in ()).throw(
+            AssertionError("warm context used the fallback path hasher")
+        )
+        builder._load_source_digest_attestation = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(
+                AssertionError("warm context loaded attestation by pathname")
+            )
+        )
+        inventories = []
+        try:
+            with builder._hold_committed_mayo_generation(
+                staging,
+                external,
+                media_count=1,
+                arkit_count=1,
+                require_source_attestation=True,
+            ) as held, builder._held_committed_mayo_digest_resolver(
+                held,
+                salt=salt,
+                data_root=data,
+                legacy_export_root=exports,
+            ) as resolver:
+                for _edge in ("entry", "publication"):
+                    inventories.append(builder.inventory_mayo_sources(
+                        data,
+                        exports,
+                        probe_video=probe,
+                        inspect_arkit=inspect_arkit,
+                        digest_resolver=resolver,
+                        enforce_frozen=True,
+                    ))
+        finally:
+            builder._load_source_digest_attestation = original_path_loader
+            builder.sha256_file = original_sha256
+            builder._cold_mayo_source_digest = original_cold
+        c.eq(len(inventories), 2)
+        c.true(all(item.counts == builder.FROZEN_INVENTORY for item in inventories))
+        c.eq(
+            tuple(item.source_sha256 for item in inventories[0].video_instances),
+            tuple(item.source_sha256 for item in inventories[1].video_instances),
+            "entry and publication-edge inventories reuse one held witness",
+        )
+
+
+def test_authorizer_wires_held_resolver_to_both_live_inventory_edges(c: Check):
+    source = inspect.getsource(builder.authorize_committed_mayo_ssl_generation)
+    c.true(
+        "require_source_attestation=formal_source_contract" in source,
+        "formal authorization rejects a generation without the held witness",
+    )
+    c.true(
+        "_mayo_authorization_digest_resolver(" in source,
+        "authorization loads the witness through its held-generation context",
+    )
+    c.eq(
+        source.count("digest_resolver=digest_resolver"),
+        2,
+        "entry and publication-edge inventories both use the same warm resolver",
+    )
 
 
 def _sequence_with_gap() -> object:
