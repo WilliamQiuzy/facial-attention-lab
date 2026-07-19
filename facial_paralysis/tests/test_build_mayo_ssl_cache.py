@@ -7857,8 +7857,22 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
         encoded_tokens,
         "safe metadata manifest",
     )
+    for safe_boundary_payload in (
+        b"metadata/",
+        b"/metadata/",
+        b"/database",
+        b"/database/table",
+        b"notdata/value",
+        b"prefix-metadata/suffix",
+        b'{"metadata_path":"metadata/"}',
+    ):
+        builder._assert_bytes_omit_private_tokens(
+            safe_boundary_payload,
+            encoded_tokens,
+            "safe short-component boundary artifact",
+        )
     for leaked in (
-        b'"data"', b"/data/", b"/data", b"data/",
+        b'"data"', b"/data/",
         b"64617461", b"ZGF0YQ==", b"ZGF0YQ",
         b"%64%61%74%61", b"caf%c3%a9", b"ordinary_component",
     ):

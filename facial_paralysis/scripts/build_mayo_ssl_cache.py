@@ -8673,12 +8673,7 @@ def _source_attestation_private_tokens(
                     "source attestation private path component is not encodable"
                 ) from exc
             if len(encoded) >= 4 and component not in {path.anchor, "/"}:
-                for bounded in (
-                    b"/" + encoded + b"/",
-                    encoded + b"/",
-                    b"/" + encoded,
-                ):
-                    accumulator.add(bounded)
+                accumulator.add(b"/" + encoded + b"/")
                 component_representations = {
                     encoded.hex().encode("ascii"),
                     encoded.hex().upper().encode("ascii"),
