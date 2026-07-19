@@ -183,13 +183,19 @@ _MAYO_TRANSACTION_SCHEMA_V3 = "mayo_cache_exposure_transaction_v3"
 _MAYO_TRANSACTION_SCHEMA_V4 = "mayo_cache_exposure_transaction_v4"
 SOURCE_DIGEST_ATTESTATION_SCHEMA = "mayo_source_digest_attestation_v1"
 SOURCE_DIGEST_ATTESTATION_FILENAME = "source_digest_attestation.json"
+_FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT = (
+    FROZEN_INVENTORY["video_bearing_sessions"]
+    + FROZEN_INVENTORY["arkit_trajectories"]
+)
+_FROZEN_SOURCE_ATTESTATION_SESSION_COUNT = FROZEN_INVENTORY["total_sessions"]
 _SOURCE_ATTESTATION_DOMAINS = frozenset({
     "approved-root", "relative-path", "source-content", "session",
-    "legacy-export-topology", "source-identity-aggregate", "whole-object",
+    "entry-set", "legacy-export-topology", "source-identity-aggregate",
+    "whole-object",
 })
 _SOURCE_ATTESTATION_TOP_FIELDS = frozenset({
     "schema", "approved_root_tokens", "source_entries",
-    "session_classifications", "entry_set_digest",
+    "session_classifications", "entry_set_hmac",
     "legacy_export_topology_hmac", "source_identity_aggregate_hmac",
     "object_hmac",
 })
@@ -5783,7 +5789,7 @@ def _normalize_source_attestation_entries(
 ) -> list[dict[str, object]]:
     if (
         type(value) not in {list, tuple}
-        or len(value) > _MAX_SOURCE_ATTESTATION_ENTRIES
+        or len(value) != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT
     ):
         raise ValueError("source attestation entry count is invalid")
     entries: list[dict[str, object]] = []
@@ -5839,7 +5845,7 @@ def _normalize_source_attestation_entries(
 def _normalize_source_attestation_sessions(value: object) -> list[dict[str, object]]:
     if (
         type(value) not in {list, tuple}
-        or len(value) > _MAX_SOURCE_ATTESTATION_SESSIONS
+        or len(value) != _FROZEN_SOURCE_ATTESTATION_SESSION_COUNT
     ):
         raise ValueError("source attestation session count is invalid")
     sessions: list[dict[str, object]] = []
@@ -5880,10 +5886,13 @@ def _normalize_source_attestation_sessions(value: object) -> list[dict[str, obje
     return sessions
 
 
-def _source_attestation_entry_set_digest(
+def _source_attestation_entry_set_hmac(
+    salt: bytes,
     entries: list[dict[str, object]],
 ) -> str:
-    return hashlib.sha256(_source_attestation_canonical_bytes(entries)).hexdigest()
+    return _source_attestation_hmac_token(
+        salt, "entry-set", _source_attestation_canonical_bytes(entries),
+    )
 
 
 def _source_attestation_aggregate_hmac(
@@ -5929,15 +5938,13 @@ def _validate_source_digest_attestation(
     )
     if value["session_classifications"] != sessions:
         raise ValueError("source attestation sessions are not canonically ordered")
-    entry_set_digest = value["entry_set_digest"]
-    if (
-        type(entry_set_digest) is not str
-        or _SHA256.fullmatch(entry_set_digest) is None
-        or not hmac.compare_digest(
-            entry_set_digest, _source_attestation_entry_set_digest(entries),
-        )
+    entry_set_hmac = _require_source_attestation_token(
+        value["entry_set_hmac"], "source entry set",
+    )
+    if not hmac.compare_digest(
+        entry_set_hmac, _source_attestation_entry_set_hmac(salt, entries),
     ):
-        raise ValueError("source attestation entry-set digest is invalid")
+        raise ValueError("source attestation entry-set HMAC is invalid")
     legacy_hmac = _require_source_attestation_token(
         value["legacy_export_topology_hmac"], "legacy export topology",
     )
@@ -5974,7 +5981,7 @@ def _validate_source_digest_attestation(
         "approved_root_tokens": list(approved_roots),
         "source_entries": entries,
         "session_classifications": sessions,
-        "entry_set_digest": entry_set_digest,
+        "entry_set_hmac": entry_set_hmac,
         "legacy_export_topology_hmac": legacy_hmac,
         "source_identity_aggregate_hmac": identity_hmac,
         "object_hmac": object_hmac,
@@ -5999,9 +6006,11 @@ def _build_source_digest_attestation(
         type(approved_root_tokens) not in {tuple, list}
         or len(approved_root_tokens) != 2
         or type(source_entries) not in {tuple, list}
-        or len(source_entries) > _MAX_SOURCE_ATTESTATION_ENTRIES
+        or len(source_entries) != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT
         or type(session_classifications) not in {tuple, list}
-        or len(session_classifications) > _MAX_SOURCE_ATTESTATION_SESSIONS
+        or len(session_classifications) != (
+            _FROZEN_SOURCE_ATTESTATION_SESSION_COUNT
+        )
     ):
         raise ValueError("source attestation builder inputs exceed frozen bounds")
     roots = sorted(
@@ -6023,7 +6032,7 @@ def _build_source_digest_attestation(
         "approved_root_tokens": roots,
         "source_entries": entries,
         "session_classifications": sessions,
-        "entry_set_digest": _source_attestation_entry_set_digest(entries),
+        "entry_set_hmac": _source_attestation_entry_set_hmac(salt, entries),
         "legacy_export_topology_hmac": _source_attestation_aggregate_hmac(
             salt, "legacy-export-topology", sessions,
         ),
@@ -8062,9 +8071,8 @@ def _validate_generation_commitment(value: object) -> dict[str, object]:
         raise ValueError("transaction generation commitment counts disagree")
     if schema == "mayo_cache_generation_commitment_v4" and (
         type(value["source_attestation_entry_count"]) is not int
-        or value["source_attestation_entry_count"] < 0
-        or value["source_attestation_entry_count"] > (
-            _MAX_SOURCE_ATTESTATION_ENTRIES
+        or value["source_attestation_entry_count"] != (
+            _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT
         )
     ):
         raise ValueError("transaction source attestation entry count is invalid")
@@ -8196,7 +8204,19 @@ def _source_attestation_private_tokens(
         raw_values.add(rendered)
         for component in path.parts:
             encoded = os.fsencode(component)
-            if len(encoded) >= 4 and component not in {path.anchor, "/"}:
+            lowered = component.lower()
+            if (
+                len(encoded) >= 4
+                and component not in {path.anchor, "/"}
+                and (
+                    "private" in lowered
+                    or "phi" in lowered
+                    or _RAW_MAYO_NAME.search(component) is not None
+                    or Path(component).suffix.lower() in (
+                        *VIDEO_EXTENSIONS, ".csv", ".npy",
+                    )
+                )
+            ):
                 raw_values.add(encoded)
     for digest in source_sha256:
         raw_values.add(digest.encode("ascii"))

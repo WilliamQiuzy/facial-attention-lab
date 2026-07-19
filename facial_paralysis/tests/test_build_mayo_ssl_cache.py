@@ -59,12 +59,19 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _source_attestation_fixture(
+def _source_attestation_parts(
     salt: bytes,
     *,
-    source_count: int = 2,
-    session_count: int = 2,
-) -> dict[str, object]:
+    source_count: int | None = None,
+    session_count: int | None = None,
+) -> tuple[tuple[str, str], list[dict[str, object]], list[dict[str, object]]]:
+    if source_count is None:
+        source_count = (
+            builder.FROZEN_INVENTORY["video_bearing_sessions"]
+            + builder.FROZEN_INVENTORY["arkit_trajectories"]
+        )
+    if session_count is None:
+        session_count = builder.FROZEN_INVENTORY["total_sessions"]
     root_tokens = tuple(
         builder._source_attestation_hmac_token(
             salt, "approved-root", f"root-{index}".encode("ascii"),
@@ -111,6 +118,22 @@ def _source_attestation_fixture(
                 for file_index, name in enumerate(builder.EXISTING_EXPORT_FILES)
             },
         })
+    return root_tokens, source_entries, session_classifications
+
+
+def _source_attestation_fixture(
+    salt: bytes,
+    *,
+    source_count: int | None = None,
+    session_count: int | None = None,
+) -> dict[str, object]:
+    root_tokens, source_entries, session_classifications = (
+        _source_attestation_parts(
+            salt,
+            source_count=source_count,
+            session_count=session_count,
+        )
+    )
     return builder._build_source_digest_attestation(
         approved_root_tokens=root_tokens,
         source_entries=source_entries,
@@ -1248,6 +1271,7 @@ def _semantic_staging(
     *,
     include_arkit: bool,
     include_exclusions: bool = False,
+    source_sha256: tuple[str, str] = ("1" * 64, "2" * 64),
 ) -> Path:
     staging = root / name
     media = staging / "mediapipe"
@@ -1260,11 +1284,11 @@ def _semantic_staging(
     private = root / "private_fixture"
     video = builder.VideoAsset(
         private / "video", private / "video" / "source.mov",
-        builder.VideoMetadata(6, 60.0, 10, 10), "1" * 64, None,
+        builder.VideoMetadata(6, 60.0, 10, 10), source_sha256[0], None,
     )
     duplicate = builder.VideoAsset(
         private / "duplicate", private / "duplicate" / "copy.mov",
-        builder.VideoMetadata(6, 60.0, 10, 10), "1" * 64, None,
+        builder.VideoMetadata(6, 60.0, 10, 10), source_sha256[0], None,
     )
     short_one = builder.VideoAsset(
         private / "short_one", private / "short_one" / "qc.mov",
@@ -1276,7 +1300,7 @@ def _semantic_staging(
     )
     arkit_asset = builder.ARKitAsset(
         private / "arkit", private / "arkit" / "source_iPhone.csv",
-        5, builder.ARKIT_BLENDSHAPE_NAMES, "2" * 64, 2,
+        5, builder.ARKIT_BLENDSHAPE_NAMES, source_sha256[1], 2,
     )
     counts = {
         "total_sessions": 1 + int(include_arkit) + 3 * int(include_exclusions),
@@ -6783,14 +6807,23 @@ def test_source_digest_attestation_schema_and_private_round_trip(c: Check):
     attestation = _source_attestation_fixture(salt)
     c.eq(set(attestation), {
         "schema", "approved_root_tokens", "source_entries",
-        "session_classifications", "entry_set_digest",
+        "session_classifications", "entry_set_hmac",
         "legacy_export_topology_hmac", "source_identity_aggregate_hmac",
         "object_hmac",
     }, "private source attestation has one exact top-level schema")
     c.eq(attestation["schema"], "mayo_source_digest_attestation_v1")
     c.eq(len(attestation["approved_root_tokens"]), 2)
-    c.eq(len(attestation["source_entries"]), 2)
-    c.eq(len(attestation["session_classifications"]), 2)
+    c.eq(len(attestation["source_entries"]), 58)
+    c.eq(len(attestation["session_classifications"]), 65)
+    c.eq(
+        builder._SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS,
+        (
+            "done_json_stat_identity", "landmarks_csv_stat_identity",
+            "blendshapes_wide_csv_stat_identity",
+            "transform_matrices_npy_stat_identity",
+        ),
+        "legacy topology binds the exact four frozen export filenames",
+    )
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td) / "generation"
@@ -6865,16 +6898,48 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
             ValueError,
             "schema, primitive type, digest, token, and HMAC drift fail closed",
         )
-    c.raises(
-        lambda: _source_attestation_fixture(salt, source_count=129),
-        ValueError,
-        "source entry count is capped before serialization",
-    )
-    c.raises(
-        lambda: _source_attestation_fixture(salt, session_count=66),
-        ValueError,
-        "session classification count is capped before serialization",
-    )
+    for source_count in (0, 57, 59, 129):
+        c.raises(
+            lambda source_count=source_count: _source_attestation_fixture(
+                salt, source_count=source_count,
+            ),
+            ValueError,
+            f"source entry count {source_count} violates the frozen 58-entry set",
+        )
+    for session_count in (0, 64, 66):
+        c.raises(
+            lambda session_count=session_count: _source_attestation_fixture(
+                salt, session_count=session_count,
+            ),
+            ValueError,
+            f"session count {session_count} violates the frozen 65-session set",
+        )
+    for source_count, session_count in (
+        (0, 65), (57, 65), (59, 65), (58, 0), (58, 64), (58, 66),
+    ):
+        roots, entries, sessions = _source_attestation_parts(
+            salt,
+            source_count=source_count,
+            session_count=session_count,
+        )
+        drifted = json.loads(json.dumps(canonical))
+        drifted["approved_root_tokens"] = sorted(roots)
+        drifted["source_entries"] = sorted(
+            entries,
+            key=lambda item: (
+                item["root_token"], item["path_token"], item["kind"],
+            ),
+        )
+        drifted["session_classifications"] = sorted(
+            sessions, key=lambda item: item["session_token"],
+        )
+        c.raises(
+            lambda drifted=drifted: builder._validate_source_digest_attestation(
+                drifted, salt=salt,
+            ),
+            ValueError,
+            "reader rejects non-frozen source or session cardinality before HMAC use",
+        )
     root_token = canonical["approved_root_tokens"][0]
     c.true(
         builder._source_attestation_hmac_token(
@@ -6883,6 +6948,23 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
             salt, "relative-path", b"same-material",
         ),
         "HMAC domains cannot be substituted",
+    )
+    c.true(
+        builder._source_attestation_hmac_token(
+            salt, "entry-set", b"same-material",
+        ) != builder._source_attestation_hmac_token(
+            salt, "source-identity-aggregate", b"same-material",
+        ),
+        "entry-set authentication has its own strict HMAC domain",
+    )
+    tampered_entry_set = dict(canonical)
+    tampered_entry_set["entry_set_hmac"] = "0" * 64
+    c.raises(
+        lambda: builder._validate_source_digest_attestation(
+            tampered_entry_set, salt=salt,
+        ),
+        ValueError,
+        "entry-set HMAC tampering fails closed",
     )
     c.raises(
         lambda: builder._source_attestation_relative_path_token(
@@ -6983,14 +7065,46 @@ def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
         c.eq(decoded, [], "oversized attestation never reaches its JSON parser")
 
 
+def test_source_attestation_legacy_topology_hmac_binds_each_export_file(c: Check):
+    salt = b"l" * 32
+    canonical = _source_attestation_fixture(salt)
+    fields = builder._SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS
+    c.eq(fields, (
+        "done_json_stat_identity", "landmarks_csv_stat_identity",
+        "blendshapes_wide_csv_stat_identity",
+        "transform_matrices_npy_stat_identity",
+    ))
+    complete_index = next(
+        index for index, row in enumerate(canonical["session_classifications"])
+        if row["lookup_outcome"] == "complete_export"
+    )
+    for field in fields:
+        mutated = json.loads(json.dumps(canonical))
+        mutated["session_classifications"][complete_index][field][6] += 1
+        authenticated = dict(mutated)
+        authenticated.pop("object_hmac")
+        mutated["object_hmac"] = builder._source_attestation_aggregate_hmac(
+            salt, "whole-object", authenticated,
+        )
+        try:
+            builder._validate_source_digest_attestation(mutated, salt=salt)
+        except ValueError as exc:
+            c.true(
+                "legacy topology HMAC" in str(exc),
+                f"{field} mutation is rejected specifically by topology HMAC",
+            )
+        else:
+            c.true(False, f"{field} mutation cannot survive topology validation")
+
+
 def test_v4_generation_commitment_binds_source_attestation(c: Check):
     commitment = {
         "schema": "mayo_cache_generation_commitment_v4",
         "collection_manifest_sha256": "1" * 64,
         "exposure_manifest_sha256": "2" * 64,
-        "mediapipe_file_count": 50,
+        "mediapipe_file_count": 48,
         "arkit_file_count": 8,
-        "cache_file_count": 58,
+        "cache_file_count": 56,
         "cache_tree_aggregate_sha256": "3" * 64,
         "generation_aggregate_sha256": "4" * 64,
         "inventory_counts_sha256": "5" * 64,
@@ -7012,8 +7126,14 @@ def test_v4_generation_commitment_binds_source_attestation(c: Check):
     wrong_count_type["source_attestation_entry_count"] = True
     malformed.append(wrong_count_type)
     wrong_count_bound = dict(commitment)
-    wrong_count_bound["source_attestation_entry_count"] = 129
+    wrong_count_bound["source_attestation_entry_count"] = 57
     malformed.append(wrong_count_bound)
+    wrong_count_upper = dict(commitment)
+    wrong_count_upper["source_attestation_entry_count"] = 59
+    malformed.append(wrong_count_upper)
+    wrong_count_zero = dict(commitment)
+    wrong_count_zero["source_attestation_entry_count"] = 0
+    malformed.append(wrong_count_zero)
     wrong_identity_hmac = dict(commitment)
     wrong_identity_hmac["source_identity_aggregate_hmac"] = "short"
     malformed.append(wrong_identity_hmac)
@@ -7026,7 +7146,7 @@ def test_v4_generation_commitment_binds_source_attestation(c: Check):
 
 
 def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check):
-    salt = b"c" * 32
+    salt = hashlib.sha256(b"attestation privacy test key").digest()
     source_digest = _sha(b"private source bytes")
     private_path = Path("/private/PHI_source/session/private.mov")
     tokens = builder._source_attestation_private_tokens(
@@ -7040,6 +7160,79 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
     builder._assert_bytes_omit_private_tokens(
         safe_payload, tokens, "safe public manifest",
     )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        real_source_sha256 = (
+            _sha(b"real private video source"),
+            _sha(b"real private ARKit source"),
+        )
+        staging = _semantic_staging(
+            root, ".mayo_ssl_cache.staging-real-privacy", salt,
+            include_arkit=True,
+            source_sha256=real_source_sha256,
+        )
+        private = root / "private_fixture"
+        real_private_paths = (
+            private / "video" / "source.mov",
+            private / "arkit" / "source_iPhone.csv",
+            private / "exports",
+            private / "model.task",
+            private / ".mayo_ssl_hmac.key",
+        )
+        real_tokens = builder._source_attestation_private_tokens(
+            real_private_paths, real_source_sha256, salt,
+        )
+        for manifest_name in (
+            "collection_manifest.json", "mayo_exposure_manifest.json",
+        ):
+            builder._assert_bytes_omit_private_tokens(
+                (staging / manifest_name).read_bytes(),
+                real_tokens,
+                f"real {manifest_name}",
+            )
+        for cache_path in sorted((*staging.glob("mediapipe/*.npz"),
+                                  *staging.glob("arkit/*.npz"))):
+            cache_bytes = cache_path.read_bytes()
+            builder._assert_bytes_omit_private_tokens(
+                cache_bytes, real_tokens, f"real {cache_path.name}",
+            )
+            builder._assert_npz_expanded_omits_private_tokens(
+                cache_bytes, real_tokens, f"expanded real {cache_path.name}",
+            )
+
+        collection = json.loads(
+            (staging / "collection_manifest.json").read_text("utf-8")
+        )
+        original_runtime = builder.validate_extraction_runtime
+        original_run_builder = builder.run_builder
+        builder.validate_extraction_runtime = lambda *_args, **_kwargs: None
+        builder.run_builder = lambda **_kwargs: collection
+        cli_stdout = io.StringIO()
+        cli_stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(cli_stdout), \
+                    contextlib.redirect_stderr(cli_stderr):
+                c.eq(builder._run_cli([
+                    "--data-root", str(real_private_paths[0].parent),
+                    "--existing-export-root", str(real_private_paths[2]),
+                    "--model-path", str(real_private_paths[3]),
+                    "--salt-file", str(real_private_paths[4]),
+                    "--output-root", str(staging),
+                    "--exposure-manifest", str(
+                        staging / "mayo_exposure_manifest.json"
+                    ),
+                ]), 0, "real CLI success output is reachable")
+        finally:
+            builder.validate_extraction_runtime = original_runtime
+            builder.run_builder = original_run_builder
+        for stream_name, stream in (
+            ("real CLI stdout", cli_stdout),
+            ("real CLI stderr", cli_stderr),
+        ):
+            builder._assert_bytes_omit_private_tokens(
+                stream.getvalue().encode("utf-8"), real_tokens, stream_name,
+            )
 
     public_leaks = (
         json.dumps({"private_digest": source_digest}).encode("utf-8"),
