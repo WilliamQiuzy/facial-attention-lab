@@ -346,6 +346,83 @@ def _inventory(root: Path):
     return data, exports, inventory, probe, inspect_arkit
 
 
+def _live_source_attestation(
+    data: Path,
+    exports: Path,
+    inventory: object,
+    salt: bytes,
+) -> dict[str, object]:
+    roots = [
+        builder._source_attestation_approved_root_record(
+            salt,
+            role,
+            path,
+            list(builder._directory_snapshot(os.lstat(path))),
+        )
+        for role, path in (
+            ("data_root", data),
+            ("legacy_export_root", exports),
+        )
+    ]
+    root_tokens = {
+        str(row["role"]): str(row["root_token"])
+        for row in roots
+    }
+    entries = []
+    for kind, asset in (
+        *(("video", item) for item in inventory.video_instances),
+        *(("arkit", item) for item in inventory.arkit_trajectories),
+    ):
+        entries.append({
+            "kind": kind,
+            "root_token": root_tokens["data_root"],
+            "path_token": builder._source_attestation_relative_path_token(
+                salt,
+                root_tokens["data_root"],
+                asset.path.relative_to(data).parts,
+            ),
+            "content_token": builder._source_attestation_hmac_token(
+                salt,
+                "source-content",
+                asset.source_sha256.encode("ascii"),
+            ),
+            "source_sha256": asset.source_sha256,
+            "stat_identity": list(
+                builder._regular_snapshot(os.lstat(asset.path))
+            ),
+        })
+    complete_sessions = {
+        item.session_path.name for item in inventory.existing_export_videos
+    }
+    sessions = []
+    for session in sorted(data.iterdir(), key=lambda item: item.name):
+        complete = session.name in complete_sessions
+        row: dict[str, object] = {
+            "session_token": builder._source_attestation_session_token(
+                salt, root_tokens["data_root"], session.name,
+            ),
+            "lookup_outcome": (
+                "complete_export" if complete else "no_complete_export"
+            ),
+            "legacy_export_root_token": root_tokens["legacy_export_root"],
+        }
+        for name, field in zip(
+            builder.EXISTING_EXPORT_FILES,
+            builder._SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS,
+        ):
+            row[field] = (
+                list(builder._regular_snapshot(os.lstat(exports / session.name / name)))
+                if complete else None
+            )
+        sessions.append(row)
+    return builder._build_source_digest_attestation(
+        approved_roots=roots,
+        source_entries=entries,
+        session_classifications=sessions,
+        salt=salt,
+    )
+
+
 def test_frozen_inventory_classifies_video_exports_and_arkit_pool(c: Check):
     with tempfile.TemporaryDirectory() as td:
         _data, _exports, inventory, _probe, _inspect = _inventory(Path(td))
@@ -381,6 +458,324 @@ def test_inventory_drift_is_reported_not_silently_reclassified(c: Check):
             data, exports, probe_video=probe, inspect_arkit=inspect_arkit,
             enforce_frozen=True,
         ), builder.InventoryDriftError, "a 66th session trips the frozen-inventory gate")
+
+
+def test_held_mayo_source_descriptors_reject_drift_links_and_close_all(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "sources"
+        root.mkdir(mode=0o755)
+        root.chmod(0o755)
+        first = root / "first.mov"
+        second = root / "second.mov"
+        first.write_bytes(b"first-source")
+        second.write_bytes(b"second-source")
+        held_descriptors: list[int] = []
+        with builder._hold_mayo_source_files((first, second)) as held:
+            held_descriptors = [item.descriptor for item in held]
+            c.eq(
+                tuple(item.identity for item in held),
+                tuple(builder._regular_snapshot(os.lstat(path)) for path in (first, second)),
+                "held sources bind all nine identity fields",
+            )
+        for descriptor in held_descriptors:
+            c.raises(
+                lambda descriptor=descriptor: os.fstat(descriptor),
+                OSError,
+                "successful held-source exit closes every descriptor",
+            )
+
+        symlink = root / "linked.mov"
+        symlink.symlink_to(first)
+        c.raises(
+            lambda: builder._open_held_mayo_source(symlink),
+            ValueError,
+            "source symlinks are rejected",
+        )
+        fifo = root / "special.mov"
+        os.mkfifo(fifo)
+        c.raises(
+            lambda: builder._open_held_mayo_source(fifo),
+            ValueError,
+            "source special files are rejected before reads",
+        )
+
+        hardlink = root / "hardlink.mov"
+        os.link(first, hardlink)
+        c.raises(
+            lambda: builder._open_held_mayo_source(first),
+            ValueError,
+            "formal source attestations require exactly one hard link",
+        )
+        pinned = builder._open_held_mayo_source(
+            first, allow_extra_links=True,
+        )
+        try:
+            c.eq(pinned.identity[5], 2)
+        finally:
+            os.close(pinned.descriptor)
+        hardlink.unlink()
+
+        before = os.lstat(first)
+        replacement = root / "replacement.mov"
+        replacement.write_bytes(b"other-source")
+        os.utime(
+            replacement,
+            ns=(before.st_atime_ns, before.st_mtime_ns),
+            follow_symlinks=False,
+        )
+
+        def replace_while_held() -> None:
+            with builder._hold_mayo_source_files((first,)):
+                os.replace(replacement, first)
+
+        c.raises(
+            replace_while_held,
+            ValueError,
+            "same-size same-mtime path replacement is caught by inode and ctime",
+        )
+
+        original_pread = builder.os.pread
+        hashed_descriptor: int | None = None
+        changed_during_read = False
+
+        def change_after_read(descriptor: int, count: int, offset: int) -> bytes:
+            nonlocal hashed_descriptor, changed_during_read
+            hashed_descriptor = descriptor
+            block = original_pread(descriptor, count, offset)
+            if not changed_during_read:
+                info = os.lstat(second)
+                os.utime(
+                    second,
+                    ns=(info.st_atime_ns, info.st_mtime_ns + 1),
+                    follow_symlinks=False,
+                )
+                changed_during_read = True
+            return block
+
+        builder.os.pread = change_after_read
+        try:
+            c.raises(
+                lambda: builder._cold_mayo_source_digest(second),
+                ValueError,
+                "cold descriptor hashing rechecks the exact identity after reads",
+            )
+        finally:
+            builder.os.pread = original_pread
+        c.true(changed_during_read and hashed_descriptor is not None)
+        c.raises(
+            lambda: os.fstat(hashed_descriptor),
+            OSError,
+            "a post-read identity failure still closes its source descriptor",
+        )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        paths = tuple(root / f"source-{index}.mov" for index in range(3))
+        for index, path in enumerate(paths):
+            path.write_bytes(f"source-{index}".encode("ascii"))
+        original_close = builder.os.close
+        close_attempts: list[int] = []
+        expected: list[int] = []
+        fail_descriptor: int | None = None
+        failed = False
+
+        def tracked_close(descriptor: int) -> None:
+            nonlocal failed
+            close_attempts.append(descriptor)
+            original_close(descriptor)
+            if descriptor == fail_descriptor and not failed:
+                failed = True
+                raise OSError("synthetic source descriptor close failure")
+
+        builder.os.close = tracked_close
+        try:
+            def close_with_failure() -> None:
+                nonlocal expected, fail_descriptor
+                with builder._hold_mayo_source_files(paths) as held:
+                    expected = [item.descriptor for item in held]
+                    fail_descriptor = expected[1]
+
+            c.raises(
+                close_with_failure,
+                OSError,
+                "a held-source close failure is surfaced",
+            )
+        finally:
+            builder.os.close = original_close
+        c.true(failed)
+        c.eq(
+            set(close_attempts),
+            set(expected),
+            "every held source descriptor is closed after one close fails",
+        )
+
+
+def test_inventory_default_hashes_and_attested_resolver_never_hashes_sources(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        data, exports, probe, inspect_arkit = _inventory_fixture(root)
+        original_cold_digest = builder._cold_mayo_source_digest
+        cold_hashes: list[Path] = []
+
+        def tracked_sha256(path: str | Path) -> str:
+            cold_hashes.append(Path(path))
+            return original_cold_digest(path)
+
+        builder._cold_mayo_source_digest = tracked_sha256
+        try:
+            cold = builder.inventory_mayo_sources(
+                data,
+                exports,
+                probe_video=probe,
+                inspect_arkit=inspect_arkit,
+                enforce_frozen=True,
+            )
+        finally:
+            builder._cold_mayo_source_digest = original_cold_digest
+        c.eq(len(cold_hashes), 58, "the compatible default resolver hashes every source")
+        salt = b"w" * 32
+        attestation = _live_source_attestation(
+            data, exports, cold, salt,
+        )
+        metadata_calls = Counter()
+
+        def counted_probe(path: Path):
+            metadata_calls["video"] += 1
+            return probe(path)
+
+        def counted_inspection(path: Path):
+            metadata_calls["arkit"] += 1
+            return inspect_arkit(path)
+
+        original_sha256_file = builder.sha256_file
+        original_pread = builder.os.pread
+        builder._cold_mayo_source_digest = lambda _path: (
+            (_ for _ in ()).throw(
+                AssertionError("warm attested inventory hashed raw source bytes")
+            )
+        )
+        builder.sha256_file = lambda _path: (_ for _ in ()).throw(
+            AssertionError("warm attested inventory called fallback SHA-256")
+        )
+        builder.os.pread = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("warm attested resolver read raw source bytes")
+        )
+        resolver = None
+        descriptors: list[int] = []
+        try:
+            with builder._attested_mayo_digest_resolver(
+                attestation,
+                salt=salt,
+                data_root=data,
+                legacy_export_root=exports,
+            ) as resolver:
+                warm = builder.inventory_mayo_sources(
+                    data,
+                    exports,
+                    probe_video=counted_probe,
+                    inspect_arkit=counted_inspection,
+                    digest_resolver=resolver,
+                    enforce_frozen=True,
+                )
+                descriptors = resolver.held_descriptors
+        finally:
+            builder.os.pread = original_pread
+            builder.sha256_file = original_sha256_file
+            builder._cold_mayo_source_digest = original_cold_digest
+        c.eq(warm.counts, cold.counts)
+        c.eq(
+            tuple(item.source_sha256 for item in warm.video_instances),
+            tuple(item.source_sha256 for item in cold.video_instances),
+        )
+        c.eq(metadata_calls, {"video": 50, "arkit": 8})
+        c.true(len(descriptors) >= 60, "source and approved-root descriptors stay held")
+        for descriptor in descriptors:
+            c.raises(
+                lambda descriptor=descriptor: os.fstat(descriptor),
+                OSError,
+                "warm resolver closes every held descriptor",
+            )
+
+
+def test_attested_resolver_fails_closed_on_source_root_and_topology_drift(c: Check):
+    mutations = (
+        "source-addition", "source-removal", "source-replacement",
+        "source-name-swap", "root-swap", "legacy-topology",
+    )
+    with tempfile.TemporaryDirectory() as td:
+        outer = Path(td)
+        for mutation in mutations:
+            root = outer / mutation
+            root.mkdir()
+            data, exports, cold, probe, inspect_arkit = _inventory(root)
+            salt = bytes(mutation[0], "ascii") * 32
+            attestation = _live_source_attestation(
+                data, exports, cold, salt,
+            )
+            if mutation == "source-addition":
+                (cold.video_instances[0].session_path / "unexpected.mp4").write_bytes(
+                    b"unexpected canonical source"
+                )
+            elif mutation == "source-removal":
+                cold.video_instances[2].path.rename(root / "removed.mov")
+            elif mutation == "source-replacement":
+                victim = cold.video_instances[0].path
+                info = os.lstat(victim)
+                replacement = victim.with_name("replacement.mov")
+                replacement.write_bytes(b"x" * info.st_size)
+                os.utime(
+                    replacement,
+                    ns=(info.st_atime_ns, info.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                os.replace(replacement, victim)
+            elif mutation == "source-name-swap":
+                first, second = (item.path for item in cold.video_instances[:2])
+                parked = first.with_name("parked.mov")
+                first.rename(parked)
+                second.rename(first)
+                parked.rename(second)
+            elif mutation == "root-swap":
+                retired = root / "retired-data"
+                data.rename(retired)
+                data.mkdir(mode=0o755)
+                data.chmod(0o755)
+            elif mutation == "legacy-topology":
+                victim = (
+                    cold.existing_export_videos[0].export_dir
+                    / builder.EXISTING_EXPORT_FILES[0]
+                )
+                info = os.lstat(victim)
+                replacement = victim.with_name("replacement.json")
+                replacement.write_bytes(b"x" * info.st_size)
+                os.utime(
+                    replacement,
+                    ns=(info.st_atime_ns, info.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                os.replace(replacement, victim)
+
+            def warm_inventory() -> None:
+                with builder._attested_mayo_digest_resolver(
+                    attestation,
+                    salt=salt,
+                    data_root=data,
+                    legacy_export_root=exports,
+                ) as resolver:
+                    builder.inventory_mayo_sources(
+                        data,
+                        exports,
+                        probe_video=probe,
+                        inspect_arkit=inspect_arkit,
+                        digest_resolver=resolver,
+                        enforce_frozen=True,
+                    )
+
+            c.raises(
+                warm_inventory,
+                ValueError,
+                f"{mutation} cannot reuse the attested digests",
+            )
 
 
 def _sequence_with_gap() -> object:

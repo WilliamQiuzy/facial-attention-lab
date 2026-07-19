@@ -1665,9 +1665,22 @@ def inventory_mayo_sources(
     *,
     probe_video: Callable[[Path], VideoMetadata] = _probe_video,
     inspect_arkit: Callable[[Path], ARKitInspection] = inspect_arkit_csv,
+    digest_resolver: Callable[[Path], str] | None = None,
     enforce_frozen: bool = True,
 ) -> MayoInventory:
     """Inspect the live source tree; frozen counts are a gate, never a substitute."""
+    if digest_resolver is not None and not callable(digest_resolver):
+        raise ValueError("Mayo source digest resolver must be callable")
+    resolve_digest = (
+        _cold_mayo_source_digest if digest_resolver is None else digest_resolver
+    )
+
+    def source_digest(path: Path) -> str:
+        observed = resolve_digest(path)
+        if type(observed) is not str or _SHA256.fullmatch(observed) is None:
+            raise ValueError("Mayo source digest resolver returned a noncanonical SHA-256")
+        return observed
+
     data = _require_directory(data_root, "Mayo data root")
     exports = _require_directory(export_root, "Mayo existing export root")
     sessions = sorted(
@@ -1689,7 +1702,7 @@ def inventory_mayo_sources(
             session_path=session,
             path=video,
             metadata=metadata,
-            source_sha256=sha256_file(video),
+            source_sha256=source_digest(video),
             export_dir=_complete_export(exports, session.name),
         ))
 
@@ -1746,7 +1759,7 @@ def inventory_mayo_sources(
                 path=path,
                 row_count=inspection.row_count,
                 feature_names=tuple(inspection.feature_names),
-                source_sha256=sha256_file(path),
+                source_sha256=source_digest(path),
                 missing_source_frames=inspection.missing_source_frames,
             ))
     if len({asset.source_sha256 for asset in arkit_assets}) != len(arkit_assets):
@@ -1779,7 +1792,7 @@ def inventory_mayo_sources(
             "live Mayo inventory drifted from the frozen contract: "
             + json.dumps(differences, sort_keys=True)
         )
-    return MayoInventory(
+    inventory = MayoInventory(
         data_root=data,
         export_root=exports,
         counts=counts,
@@ -1793,6 +1806,12 @@ def inventory_mayo_sources(
         arkit_trajectories=tuple(arkit_assets),
         metadata_only_sessions=tuple(metadata_only),
     )
+    verifier = getattr(digest_resolver, "verify_inventory", None)
+    if verifier is not None:
+        if not callable(verifier):
+            raise ValueError("Mayo source digest resolver verifier must be callable")
+        verifier(inventory)
+    return inventory
 
 
 def _require_salt(salt: bytes) -> bytes:
@@ -5651,6 +5670,174 @@ def _regular_snapshot(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
+@dataclass(frozen=True)
+class _HeldMayoSource:
+    path: Path
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+    allow_extra_links: bool = False
+
+    def assert_unchanged(self) -> None:
+        _assert_held_mayo_source(self)
+
+
+def _require_mayo_source_stat(
+    info: os.stat_result,
+    field: str,
+    *,
+    allow_extra_links: bool,
+) -> None:
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or int(info.st_uid) != os.geteuid()
+        or int(info.st_nlink) < 1
+        or (not allow_extra_links and int(info.st_nlink) != 1)
+    ):
+        link_contract = (
+            "at least one hard link during the controlled pin phase"
+            if allow_extra_links else "exactly one hard link"
+        )
+        raise ValueError(
+            f"{field} must be a current-owner regular file with {link_contract}"
+        )
+
+
+def _open_held_mayo_source(
+    path: str | Path,
+    *,
+    field: str = "Mayo source",
+    allow_extra_links: bool = False,
+) -> _HeldMayoSource:
+    if type(allow_extra_links) is not bool:
+        raise ValueError("Mayo source hard-link exception must be boolean")
+    checked = _require_regular_file(path, field)
+    before = os.lstat(checked)
+    _require_mayo_source_stat(
+        before, field, allow_extra_links=allow_extra_links,
+    )
+    try:
+        descriptor = os.open(
+            checked,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise ValueError(f"{field} could not be opened without following links") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(checked)
+        _require_mayo_source_stat(
+            opened, field, allow_extra_links=allow_extra_links,
+        )
+        _require_mayo_source_stat(
+            current, field, allow_extra_links=allow_extra_links,
+        )
+        identity = _regular_snapshot(opened)
+        if (
+            _regular_snapshot(before) != identity
+            or _regular_snapshot(current) != identity
+        ):
+            raise ValueError(f"{field} changed identity while it was opened")
+        return _HeldMayoSource(
+            path=checked,
+            descriptor=descriptor,
+            identity=identity,
+            allow_extra_links=allow_extra_links,
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_held_mayo_source(
+    held: _HeldMayoSource,
+    field: str = "held Mayo source",
+) -> None:
+    if not isinstance(held, _HeldMayoSource):
+        raise ValueError(f"{field} has the wrong held-source type")
+    try:
+        opened = os.fstat(held.descriptor)
+        linked = os.lstat(held.path)
+    except OSError as exc:
+        raise ValueError(f"{field} is no longer reachable at its live name") from exc
+    _require_mayo_source_stat(
+        opened, field, allow_extra_links=held.allow_extra_links,
+    )
+    _require_mayo_source_stat(
+        linked, field, allow_extra_links=held.allow_extra_links,
+    )
+    if (
+        _regular_snapshot(opened) != held.identity
+        or _regular_snapshot(linked) != held.identity
+    ):
+        raise ValueError(f"{field} changed while its descriptor was held")
+
+
+def _assert_all_held_mayo_sources(
+    held_sources: Sequence[_HeldMayoSource],
+) -> None:
+    errors: list[BaseException] = []
+    for held in held_sources:
+        try:
+            held.assert_unchanged()
+        except BaseException as exc:
+            errors.append(exc)
+    if errors:
+        cause = _linear_cleanup_cause(errors[0], errors[1:])
+        assert cause is not None
+        raise cause
+
+
+def _sha256_held_mayo_source(held: _HeldMayoSource) -> str:
+    """Hash only the inode already bound to the live source name."""
+    held.assert_unchanged()
+    digest = hashlib.sha256()
+    offset = 0
+    size = held.identity[6]
+    while offset < size:
+        try:
+            block = os.pread(
+                held.descriptor, min(1024 * 1024, size - offset), offset,
+            )
+        except OSError as exc:
+            raise ValueError("held Mayo source could not be read") from exc
+        if not block:
+            raise ValueError("held Mayo source was truncated while it was hashed")
+        digest.update(block)
+        offset += len(block)
+    held.assert_unchanged()
+    return digest.hexdigest()
+
+
+@contextmanager
+def _hold_mayo_source_files(
+    paths: Sequence[str | Path],
+    *,
+    allow_extra_links: bool = False,
+):
+    if type(paths) not in {tuple, list} or not paths:
+        raise ValueError("held Mayo source paths must be a nonempty exact sequence")
+    descriptors = ExitStack()
+    held_sources: list[_HeldMayoSource] = []
+    try:
+        for path in paths:
+            held = _open_held_mayo_source(
+                path, allow_extra_links=allow_extra_links,
+            )
+            descriptors.callback(os.close, held.descriptor)
+            held_sources.append(held)
+        _assert_all_held_mayo_sources(held_sources)
+        yield tuple(held_sources)
+        _assert_all_held_mayo_sources(held_sources)
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
+def _cold_mayo_source_digest(path: Path) -> str:
+    with _hold_mayo_source_files((path,)) as held:
+        return _sha256_held_mayo_source(held[0])
+
+
 def _source_attestation_hmac_token(
     salt: bytes,
     domain: str,
@@ -5794,6 +5981,36 @@ def _source_attestation_relative_path_token(
         _source_attestation_canonical_bytes({
             "root_token": root,
             "components": checked,
+        }),
+    )
+
+
+def _source_attestation_session_token(
+    salt: bytes,
+    data_root_token: str,
+    session_name: str,
+) -> str:
+    root = _require_source_attestation_token(data_root_token, "data root")
+    if type(session_name) is not str:
+        raise ValueError("source attestation session component type is invalid")
+    try:
+        encoded = session_name.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("source attestation session component is not UTF-8") from exc
+    if (
+        session_name in {"", ".", ".."}
+        or "/" in session_name
+        or "\\" in session_name
+        or "\0" in session_name
+        or len(encoded) > 255
+    ):
+        raise ValueError("source attestation session component is unsafe")
+    return _source_attestation_hmac_token(
+        salt,
+        "session",
+        _source_attestation_canonical_bytes({
+            "data_root_token": root,
+            "session_name": session_name,
         }),
     )
 
@@ -6335,6 +6552,384 @@ def _load_source_digest_attestation(
     if payload != _source_attestation_canonical_bytes(canonical) + b"\n":
         raise ValueError("private source digest attestation bytes are noncanonical")
     return canonical, digest
+
+
+@dataclass(frozen=True)
+class _HeldMayoSourceRoot:
+    path: Path
+    descriptor: int = dataclass_field(repr=False)
+    identity: tuple[int, ...]
+
+
+def _open_held_mayo_source_root(
+    path: str | Path,
+    field: str,
+) -> _HeldMayoSourceRoot:
+    checked = _require_owned_nonwritable_directory(path, field)
+    before = os.lstat(checked)
+    try:
+        descriptor = os.open(
+            checked,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise ValueError(f"{field} could not be opened without following links") from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = os.lstat(checked)
+        for info in (before, opened, current):
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or int(info.st_uid) != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o022
+            ):
+                raise ValueError(
+                    f"{field} must be a current-owner non-group/world-writable directory"
+                )
+        identity = _directory_snapshot(opened)
+        if (
+            _directory_snapshot(before) != identity
+            or _directory_snapshot(current) != identity
+        ):
+            raise ValueError(f"{field} changed identity while it was opened")
+        return _HeldMayoSourceRoot(checked, descriptor, identity)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_held_mayo_source_root(
+    held: _HeldMayoSourceRoot,
+    field: str,
+) -> None:
+    try:
+        opened = os.fstat(held.descriptor)
+        linked = os.lstat(held.path)
+    except OSError as exc:
+        raise ValueError(f"{field} is no longer reachable at its live name") from exc
+    for info in (opened, linked):
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or int(info.st_uid) != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            raise ValueError(
+                f"{field} must remain current-owner and non-group/world-writable"
+            )
+    if (
+        _directory_snapshot(opened) != held.identity
+        or _directory_snapshot(linked) != held.identity
+    ):
+        raise ValueError(f"{field} changed while its descriptor was held")
+
+
+class _AttestedMayoDigestResolver:
+    """Resolve source digests from a HMAC-verified, descriptor-bound witness."""
+
+    def __init__(
+        self,
+        attestation: dict[str, object],
+        *,
+        salt: bytes,
+        data_root: str | Path,
+        legacy_export_root: str | Path,
+    ):
+        self._salt = _require_salt(salt)
+        self._descriptors = ExitStack()
+        self._held_by_token: dict[str, _HeldMayoSource] = {}
+        self._held_topology: list[_HeldMayoSource] = []
+        self._verified_inventory = False
+        self._closed = False
+        try:
+            self._data = _open_held_mayo_source_root(
+                data_root, "Mayo data root",
+            )
+            self._descriptors.callback(os.close, self._data.descriptor)
+            self._exports = _open_held_mayo_source_root(
+                legacy_export_root, "Mayo legacy export root",
+            )
+            self._descriptors.callback(os.close, self._exports.descriptor)
+            expected_roots = {
+                "data_root": {
+                    "path": self._data.path,
+                    "stat_identity": list(self._data.identity),
+                },
+                "legacy_export_root": {
+                    "path": self._exports.path,
+                    "stat_identity": list(self._exports.identity),
+                },
+            }
+            self._attestation = _validate_source_digest_attestation(
+                attestation,
+                salt=self._salt,
+                expected_approved_roots=expected_roots,
+            )
+            roots_by_role = {
+                str(row["role"]): str(row["root_token"])
+                for row in self._attestation["approved_roots"]
+            }
+            self._data_root_token = roots_by_role["data_root"]
+            self._entries_by_token = {
+                str(row["path_token"]): row
+                for row in self._attestation["source_entries"]
+            }
+            self._sessions_by_token = {
+                str(row["session_token"]): row
+                for row in self._attestation["session_classifications"]
+            }
+            self._assert_roots_unchanged()
+        except BaseException as primary:
+            try:
+                self._descriptors.close()
+            except BaseException as cleanup_error:
+                raise primary.with_traceback(primary.__traceback__) from cleanup_error
+            raise
+
+    @property
+    def held_descriptors(self) -> list[int]:
+        return [
+            self._data.descriptor,
+            self._exports.descriptor,
+            *(held.descriptor for held in self._held_by_token.values()),
+            *(held.descriptor for held in self._held_topology),
+        ]
+
+    def _assert_open(self) -> None:
+        if self._closed:
+            raise ValueError("attested Mayo digest resolver is closed")
+
+    def _assert_roots_unchanged(self) -> None:
+        _assert_held_mayo_source_root(self._data, "held Mayo data root")
+        _assert_held_mayo_source_root(
+            self._exports, "held Mayo legacy export root",
+        )
+
+    def _path_token(self, path: str | Path) -> tuple[Path, str]:
+        checked = _lexical_absolute(path)
+        try:
+            relative = checked.relative_to(self._data.path)
+        except ValueError as exc:
+            raise ValueError("Mayo source path is outside the attested data root") from exc
+        token = _source_attestation_relative_path_token(
+            self._salt, self._data_root_token, relative.parts,
+        )
+        return checked, token
+
+    def __call__(self, path: Path) -> str:
+        self._assert_open()
+        self._assert_roots_unchanged()
+        checked, token = self._path_token(path)
+        entry = self._entries_by_token.get(token)
+        if entry is None:
+            raise ValueError("Mayo source path is absent from the attested file set")
+        existing = self._held_by_token.get(token)
+        if existing is not None:
+            if existing.path != checked:
+                raise ValueError("Mayo source token resolved to multiple live paths")
+            existing.assert_unchanged()
+            return str(entry["source_sha256"])
+        held = _open_held_mayo_source(checked, field="attested Mayo source")
+        try:
+            if held.identity != tuple(entry["stat_identity"]):
+                raise ValueError("Mayo source identity differs from its attestation")
+        except BaseException:
+            os.close(held.descriptor)
+            raise
+        self._descriptors.callback(os.close, held.descriptor)
+        self._held_by_token[token] = held
+        held.assert_unchanged()
+        return str(entry["source_sha256"])
+
+    def _hold_legacy_export(
+        self,
+        path: Path,
+        expected_identity: object,
+    ) -> list[int]:
+        identity = _require_source_attestation_identity(
+            expected_identity, "legacy export topology",
+        )
+        held = _open_held_mayo_source(
+            path, field="attested Mayo legacy export",
+        )
+        try:
+            if held.identity != tuple(identity):
+                raise ValueError(
+                    "Mayo legacy export identity differs from its attestation"
+                )
+        except BaseException:
+            os.close(held.descriptor)
+            raise
+        self._descriptors.callback(os.close, held.descriptor)
+        self._held_topology.append(held)
+        return identity
+
+    def verify_inventory(self, inventory: MayoInventory) -> None:
+        self._assert_open()
+        if not isinstance(inventory, MayoInventory):
+            raise ValueError("attested digest resolver requires a MayoInventory")
+        if (
+            inventory.data_root != self._data.path
+            or inventory.export_root != self._exports.path
+        ):
+            raise ValueError("Mayo inventory roots differ from the attested roots")
+        self._assert_roots_unchanged()
+        assets = (
+            *(("video", item) for item in inventory.video_instances),
+            *(("arkit", item) for item in inventory.arkit_trajectories),
+        )
+        observed_tokens: set[str] = set()
+        for kind, asset in assets:
+            checked, token = self._path_token(asset.path)
+            entry = self._entries_by_token.get(token)
+            held = self._held_by_token.get(token)
+            if (
+                entry is None
+                or held is None
+                or held.path != checked
+                or entry["kind"] != kind
+                or not hmac.compare_digest(
+                    str(entry["source_sha256"]), asset.source_sha256,
+                )
+            ):
+                raise ValueError("Mayo inventory source set differs from its attestation")
+            held.assert_unchanged()
+            observed_tokens.add(token)
+        if observed_tokens != set(self._entries_by_token):
+            raise ValueError("Mayo inventory did not resolve the exact attested file set")
+
+        complete_sessions = {
+            asset.session_path.name: asset.export_dir
+            for asset in inventory.existing_export_videos
+        }
+        observed_sessions: list[dict[str, object]] = []
+        live_sessions = sorted(
+            (
+                item for item in self._data.path.iterdir()
+                if item.is_dir() and not _is_symlink(item)
+            ),
+            key=lambda item: item.name,
+        )
+        for session in live_sessions:
+            session_token = _source_attestation_session_token(
+                self._salt, self._data_root_token, session.name,
+            )
+            expected = self._sessions_by_token.get(session_token)
+            if expected is None:
+                raise ValueError("Mayo session set differs from its attestation")
+            export_dir = complete_sessions.get(session.name)
+            complete = export_dir is not None
+            observed: dict[str, object] = {
+                "session_token": session_token,
+                "lookup_outcome": (
+                    "complete_export" if complete else "no_complete_export"
+                ),
+                "legacy_export_root_token": expected[
+                    "legacy_export_root_token"
+                ],
+            }
+            for name, field in zip(
+                EXISTING_EXPORT_FILES,
+                _SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS,
+            ):
+                observed[field] = (
+                    self._hold_legacy_export(
+                        Path(export_dir) / name, expected[field],
+                    )
+                    if complete else None
+                )
+            if observed != expected:
+                raise ValueError(
+                    "Mayo legacy export topology differs from its attestation"
+                )
+            observed_sessions.append(observed)
+        if (
+            {str(row["session_token"]) for row in observed_sessions}
+            != set(self._sessions_by_token)
+        ):
+            raise ValueError("Mayo session set is incomplete relative to its attestation")
+        self._assert_all_unchanged()
+        self._verified_inventory = True
+
+    def _assert_all_unchanged(self) -> None:
+        errors: list[BaseException] = []
+        for check in (
+            self._assert_roots_unchanged,
+            lambda: _assert_all_held_mayo_sources(
+                tuple(self._held_by_token.values())
+                + tuple(self._held_topology)
+            ),
+        ):
+            try:
+                check()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            cause = _linear_cleanup_cause(errors[0], errors[1:])
+            assert cause is not None
+            raise cause
+
+    def assert_complete(self) -> None:
+        self._assert_open()
+        if (
+            not self._verified_inventory
+            or set(self._held_by_token) != set(self._entries_by_token)
+        ):
+            raise ValueError("attested Mayo digest resolution is incomplete")
+        self._assert_all_unchanged()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        errors: list[BaseException] = []
+        try:
+            self._assert_all_unchanged()
+        except BaseException as exc:
+            errors.append(exc)
+        try:
+            self._descriptors.close()
+        except BaseException as exc:
+            errors.append(exc)
+        self._closed = True
+        if errors:
+            cause = _linear_cleanup_cause(errors[0], errors[1:])
+            assert cause is not None
+            raise cause
+
+
+@contextmanager
+def _attested_mayo_digest_resolver(
+    attestation: dict[str, object],
+    *,
+    salt: bytes,
+    data_root: str | Path,
+    legacy_export_root: str | Path,
+):
+    resolver = _AttestedMayoDigestResolver(
+        attestation,
+        salt=salt,
+        data_root=data_root,
+        legacy_export_root=legacy_export_root,
+    )
+    primary: BaseException | None = None
+    traceback = None
+    try:
+        yield resolver
+        resolver.assert_complete()
+    except BaseException as exc:
+        primary = exc
+        traceback = exc.__traceback__
+    cleanup_error: BaseException | None = None
+    try:
+        resolver.close()
+    except BaseException as exc:
+        cleanup_error = exc
+    if primary is not None:
+        if cleanup_error is not None:
+            raise primary.with_traceback(traceback) from cleanup_error
+        raise primary.with_traceback(traceback)
+    if cleanup_error is not None:
+        raise cleanup_error
 
 
 def _open_nofollow_directory_at(
