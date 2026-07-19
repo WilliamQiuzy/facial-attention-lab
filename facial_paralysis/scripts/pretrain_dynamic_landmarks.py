@@ -14,6 +14,7 @@ import secrets
 import stat
 import statistics
 import sys
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Callable, Iterator
@@ -45,6 +46,64 @@ def _authorization_factories(
     from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
 
     return inputs_cli._authorization_factories(args)
+
+
+def _transaction_authorizer(authorizer: Callable[[], object]):
+    """Run one expensive live authorizer once inside a transaction boundary."""
+    missing = object()
+    authorization: object = missing
+
+    def authorize():
+        nonlocal authorization
+        if authorization is missing:
+            authorization = authorizer()
+        return authorization
+
+    return authorize
+
+
+def _require_publication_edge_authorization(
+    *,
+    stage: str,
+    evidence,
+    authorization: object,
+) -> None:
+    """Compare one fresh live generation closure to its frozen stage receipt."""
+    if stage == "ravdess":
+        expected_schema = evidence.source_schema
+        commitments = {
+            "manifest_sha256": getattr(
+                authorization, "manifest_sha256", None,
+            ),
+        }
+    elif stage == "mayo":
+        expected_schema = "mayo_mediapipe_clinical23_ssl_v2"
+        generation_commitment = getattr(authorization, "commitment", None)
+        if not isinstance(generation_commitment, Mapping):
+            raise ValueError("live Mayo generation commitment is unavailable")
+        commitments = {
+            "collection_manifest_sha256": getattr(
+                authorization, "collection_manifest_sha256", None,
+            ),
+            "exposure_manifest_sha256": getattr(
+                authorization, "exposure_manifest_sha256", None,
+            ),
+            "generation_commitment_sha256": ssl_core._canonical_sha256(
+                generation_commitment,
+            ),
+        }
+    else:
+        raise ValueError("publication-edge SSL stage is unsupported")
+    if (
+        getattr(authorization, "schema", None) != expected_schema
+        or ssl_core._canonical_sha256(commitments)
+        != evidence.upstream_manifest_commitments_sha256
+        or getattr(authorization, "generation_closure_hmac", None)
+        != evidence.upstream_generation_closure_hmac
+        or getattr(authorization, "key_file_identity_sha256", None)
+        != evidence.canonical_key_identity_sha256
+    ):
+        raise ValueError("live SSL generation changed before publication")
 
 
 def _producer_sha256() -> str:
@@ -237,6 +296,177 @@ def _close_descriptor_sequence(descriptors: tuple[int, ...]) -> None:
     closer.__exit__(*sys.exc_info())
 
 
+def _generation_lease_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_uid),
+        int(value.st_gid),
+        int(value.st_nlink),
+        int(value.st_size),
+    )
+
+
+def _validate_generation_lease(
+    *,
+    parent_descriptor: int,
+    parent_path: Path,
+    parent_identity: tuple[int, ...],
+    descriptor: int,
+    lock_name: str,
+    lock_identity: tuple[int, ...],
+    private_parent: bool,
+) -> None:
+    parent_opened = os.fstat(parent_descriptor)
+    parent_current = os.stat(parent_path, follow_symlinks=False)
+    if (
+        _anchor_identity(parent_opened) != parent_identity
+        or _anchor_identity(parent_current) != parent_identity
+        or not stat.S_ISDIR(parent_opened.st_mode)
+        or parent_opened.st_uid != os.geteuid()
+        or (
+            stat.S_IMODE(parent_opened.st_mode) != 0o700
+            if private_parent
+            else stat.S_IMODE(parent_opened.st_mode) & 0o022 != 0
+        )
+    ):
+        raise ValueError("generation lease parent changed")
+    opened = os.fstat(descriptor)
+    current = os.stat(
+        lock_name,
+        dir_fd=parent_descriptor,
+        follow_symlinks=False,
+    )
+    if (
+        _generation_lease_identity(opened) != lock_identity
+        or _generation_lease_identity(current) != lock_identity
+        or not stat.S_ISREG(opened.st_mode)
+        or opened.st_uid != os.geteuid()
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or opened.st_nlink != 1
+        or opened.st_size != 0
+    ):
+        raise ValueError("generation lease storage is unsafe")
+
+
+@contextmanager
+def _shared_generation_leases(
+    args: argparse.Namespace,
+) -> Iterator[Callable[[], None]]:
+    """Freeze both upstream generations through final result publication."""
+    leases = sorted(
+        (
+            (
+                args.ravdess_data_root.absolute(),
+                ".derived_semantic23.lock",
+                False,
+            ),
+            (
+                PRETRAINING_ROOT.absolute(),
+                ".mayo_ssl_cache.lock",
+                True,
+            ),
+        ),
+        key=lambda item: os.fspath(item[0] / item[1]),
+    )
+    closer = ExitStack()
+    held: list[
+        tuple[int, Path, tuple[int, ...], int, str, tuple[int, ...], bool]
+    ] = []
+    try:
+        for parent_path, lock_name, private_parent in leases:
+            parent_descriptor = os.open(
+                parent_path,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            closer.callback(os.close, parent_descriptor)
+            parent_info = os.fstat(parent_descriptor)
+            parent_identity = _anchor_identity(parent_info)
+            if (
+                not stat.S_ISDIR(parent_info.st_mode)
+                or parent_info.st_uid != os.geteuid()
+                or (
+                    stat.S_IMODE(parent_info.st_mode) != 0o700
+                    if private_parent
+                    else stat.S_IMODE(parent_info.st_mode) & 0o022 != 0
+                )
+            ):
+                raise ValueError("generation lease parent is unsafe")
+            try:
+                descriptor = os.open(
+                    lock_name,
+                    os.O_RDONLY
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=parent_descriptor,
+                )
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise ValueError(
+                        "generation lease must not be a symlink"
+                    ) from exc
+                raise
+            closer.callback(os.close, descriptor)
+            lock_identity = _generation_lease_identity(os.fstat(descriptor))
+            _validate_generation_lease(
+                parent_descriptor=parent_descriptor,
+                parent_path=parent_path,
+                parent_identity=parent_identity,
+                descriptor=descriptor,
+                lock_name=lock_name,
+                lock_identity=lock_identity,
+                private_parent=private_parent,
+            )
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            _validate_generation_lease(
+                parent_descriptor=parent_descriptor,
+                parent_path=parent_path,
+                parent_identity=parent_identity,
+                descriptor=descriptor,
+                lock_name=lock_name,
+                lock_identity=lock_identity,
+                private_parent=private_parent,
+            )
+            held.append((
+                parent_descriptor,
+                parent_path,
+                parent_identity,
+                descriptor,
+                lock_name,
+                lock_identity,
+                private_parent,
+            ))
+
+        def validate() -> None:
+            for (
+                parent_descriptor,
+                parent_path,
+                parent_identity,
+                descriptor,
+                lock_name,
+                lock_identity,
+                private_parent,
+            ) in held:
+                _validate_generation_lease(
+                    parent_descriptor=parent_descriptor,
+                    parent_path=parent_path,
+                    parent_identity=parent_identity,
+                    descriptor=descriptor,
+                    lock_name=lock_name,
+                    lock_identity=lock_identity,
+                    private_parent=private_parent,
+                )
+
+        yield validate
+        validate()
+    finally:
+        closer.__exit__(*sys.exc_info())
+
+
 @contextmanager
 def _exclusive_results_lock(
     run_root: Path,
@@ -281,6 +511,18 @@ def _exclusive_results_lock(
             + ((descriptor,) if descriptor is not None else ())
         )
         _close_descriptor_sequence(descriptors)
+
+
+@contextmanager
+def _exclusive_results_transaction(
+    run_root: Path,
+    args: argparse.Namespace,
+) -> Iterator[
+    tuple[int, str, int, tuple[int, ...], Callable[[], None]]
+]:
+    with _shared_generation_leases(args) as validate_generation_leases:
+        with _exclusive_results_lock(run_root) as locked:
+            yield (*locked, validate_generation_leases)
 
 
 def _rename_directory_no_replace(
@@ -646,6 +888,7 @@ def _publish_validated_results(
     inputs_root: Path,
     privacy_forbidden,
     validate_result_tree: Callable[..., None],
+    final_authorization: Callable[[], None],
 ) -> None:
     """Publish and classify one exact result tree through held descriptors."""
     staging = run_root / staging_name
@@ -660,6 +903,7 @@ def _publish_validated_results(
     _validate_results_lock(results_lock, lock_name, run_descriptor)
     os.fsync(run_descriptor)
     validate_result_tree()
+    _quiet_call(final_authorization)
     rename_error: BaseException | None = None
     try:
         _rename_directory_no_replace(
@@ -741,9 +985,11 @@ def _run_two_stage(
     if bridge_root != (PRETRAINING_ROOT / "bridge").absolute():
         raise ValueError("bridge root is outside the canonical namespace")
     _preflight_live_inputs(args)
-    ravdess_authorizer, mayo_authorizer = _quiet_call(
+    raw_ravdess_authorizer, raw_mayo_authorizer = _quiet_call(
         _authorization_factories, args,
     )
+    ravdess_authorizer = _transaction_authorizer(raw_ravdess_authorizer)
+    mayo_authorizer = _transaction_authorizer(raw_mayo_authorizer)
     privacy_forbidden = _quiet_call(
         _privacy_forbidden,
         args, ravdess_authorizer, mayo_authorizer,
@@ -761,8 +1007,12 @@ def _run_two_stage(
         ).encode("ascii"),
         privacy_forbidden,
     )
-    with _exclusive_results_lock(run_root) as (
-        results_lock, lock_name, run_descriptor, run_identity,
+    with _exclusive_results_transaction(run_root, args) as (
+        results_lock,
+        lock_name,
+        run_descriptor,
+        run_identity,
+        validate_generation_leases,
     ):
         names = set(os.listdir(run_descriptor))
         if "results" in names:
@@ -797,6 +1047,9 @@ def _run_two_stage(
 
         execution: list[dict[str, object]] = []
         reload_checks: list[tuple[Path, object, object, str]] = []
+        publication_lineages: list[
+            tuple[Path, object, str, Path, object, str]
+        ] = []
         retained_runtime: list[object] = []
         checkpoint_directories = {checkpoints}
         for seed in seeds:
@@ -879,6 +1132,14 @@ def _run_two_stage(
             reload_checks.append((
                 mayo_path, mayo_receipt, mayo_evidence, mayo_fingerprint,
             ))
+            publication_lineages.append((
+                ravdess_path,
+                ravdess_receipt,
+                ravdess_fingerprint,
+                mayo_path,
+                mayo_receipt,
+                mayo_fingerprint,
+            ))
             execution.append({
                 "seed": seed,
                 "ravdess_only": _stage_report(
@@ -934,6 +1195,68 @@ def _run_two_stage(
             ) != expected:
                 raise ValueError("checkpoint changed during result finalization")
         expected_files = _expected_result_files(args.mode, seeds)
+
+        def final_authorization() -> None:
+            for (
+                ravdess_path,
+                ravdess_receipt,
+                expected_ravdess,
+                mayo_path,
+                mayo_receipt,
+                expected_mayo,
+            ) in publication_lineages:
+                final_ravdess = ssl_core.load_ssl_checkpoint(
+                    ravdess_path,
+                    receipt=ravdess_receipt,
+                    stage_evidence=ravdess_evidence,
+                )
+                if (
+                    ssl_core.ssl_checkpoint_fingerprint(final_ravdess)
+                    != expected_ravdess
+                ):
+                    raise ValueError(
+                        "RAVDESS checkpoint changed before publication"
+                    )
+                final_mayo_evidence = ssl_core.authorize_frozen_ssl_stage(
+                    stage="mayo",
+                    mode=args.mode,
+                    inputs_root=inputs_root,
+                    bridge_root=bridge_root,
+                    ravdess_authorizer=ravdess_authorizer,
+                    mayo_authorizer=mayo_authorizer,
+                    producer_sha256=producer_sha256,
+                    prior_ravdess_checkpoint=final_ravdess,
+                    prior_ravdess_evidence=ravdess_evidence,
+                )
+                final_mayo = ssl_core.load_ssl_checkpoint(
+                    mayo_path,
+                    receipt=mayo_receipt,
+                    stage_evidence=final_mayo_evidence,
+                )
+                if (
+                    ssl_core.ssl_checkpoint_fingerprint(final_mayo)
+                    != expected_mayo
+                ):
+                    raise ValueError(
+                        "Mayo checkpoint changed before publication"
+                    )
+            validate_generation_leases()
+            edge_mayo = raw_mayo_authorizer()
+            validate_generation_leases()
+            edge_ravdess = raw_ravdess_authorizer()
+            validate_generation_leases()
+            _require_publication_edge_authorization(
+                stage="mayo",
+                evidence=mayo_evidence,
+                authorization=edge_mayo,
+            )
+            _require_publication_edge_authorization(
+                stage="ravdess",
+                evidence=ravdess_evidence,
+                authorization=edge_ravdess,
+            )
+            validate_generation_leases()
+
         with _hold_exact_result_tree(
             run_descriptor, staging.name, expected_files,
         ) as validate_result_tree:
@@ -983,6 +1306,7 @@ def _run_two_stage(
                 inputs_root=inputs_root,
                 privacy_forbidden=privacy_forbidden,
                 validate_result_tree=validate_result_tree,
+                final_authorization=final_authorization,
             )
 
     return summary

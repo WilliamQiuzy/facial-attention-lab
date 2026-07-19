@@ -1827,7 +1827,10 @@ def authorize_committed_ravdess_semantic23(
     ] = []
     try:
         lock_descriptor, lock_identity = _acquire_output_lock(
-            parent_descriptor, lock_name, create_if_missing=False
+            parent_descriptor,
+            lock_name,
+            create_if_missing=False,
+            shared=True,
         )
         _assert_no_unresolved_ravdess_state(parent_descriptor, output.name)
         output_descriptor = _open_directory_at(
@@ -2401,8 +2404,11 @@ def _acquire_output_lock(
     lock_name: str,
     *,
     create_if_missing: bool = True,
+    shared: bool = False,
 ) -> tuple[int, tuple[int, int]]:
     lock_name = _safe_entry_name(lock_name)
+    if shared and create_if_missing:
+        raise ValueError("a shared read lease cannot create an output lock")
     created = False
     if not create_if_missing:
         try:
@@ -2465,7 +2471,8 @@ def _acquire_output_lock(
                 or (int(current.st_dev), int(current.st_ino)) != identity):
             raise ValueError("output lock path identity or stat changed during open")
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            fcntl.flock(descriptor, lock_mode | fcntl.LOCK_NB)
         except OSError as exc:
             if exc.errno in {errno.EACCES, errno.EAGAIN}:
                 raise BlockingIOError(

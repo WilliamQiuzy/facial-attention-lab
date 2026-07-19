@@ -2957,8 +2957,11 @@ def output_parent_lock(
     output_root: str | Path,
     *,
     create_if_missing: bool = True,
+    shared: bool = False,
 ):
     output = _lexical_absolute(output_root)
+    if shared and create_if_missing:
+        raise ValueError("a shared read lease cannot create an output lock")
     parent = _require_private_directory(
         _assert_no_symlink_components(output.parent), "output parent",
     )
@@ -3002,7 +3005,8 @@ def output_parent_lock(
         ):
             raise ValueError("output lock path identity changed during open")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            fcntl.flock(fd, lock_mode | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError("another Mayo SSL builder holds the output lock") from exc
         acquired = True
@@ -3027,10 +3031,11 @@ def output_parent_lock(
             int(parent_after_acquire.st_gid),
         ) != parent_identity:
             raise ValueError("output parent changed while flock was acquired")
-        if output in _HELD_OUTPUT_LOCKS:
-            raise RuntimeError("output lock is already held in this process")
-        _HELD_OUTPUT_LOCKS.add(output)
-        registered = True
+        if not shared:
+            if output in _HELD_OUTPUT_LOCKS:
+                raise RuntimeError("output lock is already held in this process")
+            _HELD_OUTPUT_LOCKS.add(output)
+            registered = True
         yield
         parent_after = os.lstat(parent)
         _require_private_directory_stat(parent_after, "output parent")
@@ -8539,7 +8544,9 @@ def authorize_committed_mayo_ssl_generation(
         "expected_classification_integrity_id": expected_exposure_classification,
     }
     forbidden_tokens = _private_root_forbidden_tokens((data, exports))
-    with output_parent_lock(output, create_if_missing=False), \
+    with output_parent_lock(
+            output, create_if_missing=False, shared=True,
+        ), \
             _hold_committed_mayo_generation(output, exposure) as held:
         _assert_no_unresolved_generation_state(
             output, exposure, **evidence_authority,

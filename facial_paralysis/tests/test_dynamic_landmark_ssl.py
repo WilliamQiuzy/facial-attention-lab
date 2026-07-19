@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -3113,6 +3114,12 @@ def _synthetic_runner_fixture(root: Path, frozen: dict[str, object]):
     }
     for directory in roots.values():
         directory.mkdir(mode=0o700)
+    for lease in (
+        roots["ravdess"] / ".derived_semantic23.lock",
+        module.PRETRAINING_ROOT / ".mayo_ssl_cache.lock",
+    ):
+        lease.touch(exist_ok=True)
+        lease.chmod(0o600)
     ravdess_key = root / "ravdess.key"
     mayo_key = root / "mayo.key"
     for path in (ravdess_key, mayo_key):
@@ -3334,6 +3341,8 @@ def test_two_stage_all_live_inputs_fail_preflight_without_mutation(c: Check):
                 )
                 missing = Path(arguments[arguments.index(flag) + 1])
                 if missing.is_dir():
+                    for child in missing.iterdir():
+                        child.unlink()
                     missing.rmdir()
                 else:
                     missing.unlink()
@@ -3656,6 +3665,7 @@ def test_results_publication_classifies_commit_faults_and_rechecks_tree(c: Check
                 inputs_root=inputs,
                 privacy_forbidden=object(),
                 validate_result_tree=validate,
+                final_authorization=lambda: None,
             )
         return run_root, staging
 
@@ -3852,6 +3862,324 @@ def test_receipt_bound_smoke_runner_publishes_one_private_atomic_result(c: Check
             ))
 
 
+def test_smoke_runner_bounds_expensive_live_authorizers_to_transaction_edges(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, _roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            counts = {"ravdess": 0, "mayo": 0}
+            raw_ravdess = frozen["ravdess_authorizer"]
+            raw_mayo = frozen["mayo_authorizer"]
+
+            def require_complete_staging() -> None:
+                staging = [
+                    path for path in run_root.iterdir()
+                    if path.name.startswith(".results.staging-")
+                ]
+                c.eq(len(staging), 1, "publication-edge authorization is late")
+                c.true((
+                    staging[0] / "checkpoints" / "ravdess_only.pt"
+                ).is_file())
+                c.true((
+                    staging[0] / "checkpoints" / "ravdess_then_mayo.pt"
+                ).is_file())
+                c.true((
+                    staging[0] / "reports" / "execution_only.json"
+                ).is_file())
+
+            def counted_ravdess():
+                counts["ravdess"] += 1
+                if counts["ravdess"] == 2:
+                    require_complete_staging()
+                return raw_ravdess()
+
+            def counted_mayo():
+                counts["mayo"] += 1
+                if counts["mayo"] == 2:
+                    require_complete_staging()
+                return raw_mayo()
+
+            module._authorization_factories = lambda _args: (
+                counted_ravdess, counted_mayo,
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                module.main(arguments)
+            c.eq(
+                counts,
+                {"ravdess": 2, "mayo": 2},
+                "one live authorization at transaction entry and one before publish",
+            )
+
+
+def test_results_transaction_holds_both_generation_leases_through_edge_auth(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, _run_root, roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            locks = (
+                roots["ravdess"] / ".derived_semantic23.lock",
+                module.PRETRAINING_ROOT / ".mayo_ssl_cache.lock",
+            )
+            for path in locks:
+                path.write_bytes(b"")
+                path.chmod(0o600)
+            counts = {"ravdess": 0, "mayo": 0}
+            raw_ravdess = frozen["ravdess_authorizer"]
+            raw_mayo = frozen["mayo_authorizer"]
+            contender = (
+                "import fcntl,os,sys; "
+                "fd=os.open(sys.argv[1],os.O_RDWR); "
+                "fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+            )
+
+            def require_both_leases() -> None:
+                for path in locks:
+                    result = subprocess.run(
+                        [sys.executable, "-c", contender, str(path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                    c.true(
+                        result.returncode != 0,
+                        f"exclusive contender must be blocked for {path.name}",
+                    )
+
+            def counted_ravdess():
+                counts["ravdess"] += 1
+                if counts["ravdess"] == 2:
+                    require_both_leases()
+                return raw_ravdess()
+
+            def counted_mayo():
+                counts["mayo"] += 1
+                if counts["mayo"] == 2:
+                    require_both_leases()
+                return raw_mayo()
+
+            module._authorization_factories = lambda _args: (
+                counted_ravdess, counted_mayo,
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                module.main(arguments)
+            c.eq(counts, {"ravdess": 2, "mayo": 2})
+
+
+def test_production_read_authorizers_support_reentrant_shared_leases(c: Check):
+    from scripts import build_mayo_ssl_cache as mayo_cli
+    from scripts import prepare_ravdess_semantic23 as ravdess_cli
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        root.chmod(0o700)
+
+        ravdess_parent = root / "ravdess"
+        ravdess_parent.mkdir(mode=0o700)
+        ravdess_lock_name = ".derived_semantic23.lock"
+        ravdess_lock = ravdess_parent / ravdess_lock_name
+        ravdess_lock.touch()
+        ravdess_lock.chmod(0o600)
+        ravdess_parent_descriptor = os.open(
+            ravdess_parent, os.O_RDONLY | os.O_DIRECTORY,
+        )
+        ravdess_outer = os.open(ravdess_lock, os.O_RDONLY)
+        fcntl.flock(ravdess_outer, fcntl.LOCK_SH)
+        try:
+            descriptor, identity = ravdess_cli._acquire_output_lock(
+                ravdess_parent_descriptor,
+                ravdess_lock_name,
+                create_if_missing=False,
+                shared=True,
+            )
+            ravdess_cli._release_output_lock(
+                ravdess_parent,
+                ravdess_parent_descriptor,
+                (
+                    ravdess_parent.stat().st_dev,
+                    ravdess_parent.stat().st_ino,
+                ),
+                ravdess_lock_name,
+                descriptor,
+                identity,
+            )
+        finally:
+            os.close(ravdess_outer)
+            os.close(ravdess_parent_descriptor)
+
+        mayo_output = root / "mayo-cache"
+        mayo_lock = root / ".mayo-cache.lock"
+        mayo_lock.touch()
+        mayo_lock.chmod(0o600)
+        mayo_outer = os.open(mayo_lock, os.O_RDONLY)
+        fcntl.flock(mayo_outer, fcntl.LOCK_SH)
+        try:
+            with mayo_cli.output_parent_lock(
+                mayo_output,
+                create_if_missing=False,
+                shared=True,
+            ):
+                c.true(
+                    mayo_output not in mayo_cli._HELD_OUTPUT_LOCKS,
+                    "a read lease never grants output mutation authority",
+                )
+        finally:
+            os.close(mayo_outer)
+
+
+def test_generation_lease_path_swap_is_rejected_before_result_rename(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            raw_ravdess = frozen["ravdess_authorizer"]
+            raw_mayo = frozen["mayo_authorizer"]
+            mayo_calls = 0
+            lock_path = roots["ravdess"] / ".derived_semantic23.lock"
+
+            def swap_lock_path_at_edge():
+                nonlocal mayo_calls
+                mayo_calls += 1
+                authorization = raw_mayo()
+                if mayo_calls == 2:
+                    replacement = lock_path.with_name(".replacement.lock")
+                    replacement.touch()
+                    replacement.chmod(0o600)
+                    os.replace(replacement, lock_path)
+                return authorization
+
+            module._authorization_factories = lambda _args: (
+                raw_ravdess, swap_lock_path_at_edge,
+            )
+            c.raises(
+                lambda: module.main(arguments),
+                ValueError,
+                "a canonical generation lease swap blocks result rename",
+            )
+            c.eq(mayo_calls, 2)
+            c.true(
+                not (run_root / "results").exists(),
+                "lease identity is revalidated before canonical publication",
+            )
+            residues = [
+                path for path in run_root.iterdir()
+                if path.name.startswith(".results.staging-")
+            ]
+            c.eq(len(residues), 1)
+            c.eq(stat.S_IMODE(residues[0].stat().st_mode), 0o700)
+
+
+def test_publication_edge_reauthorization_rejects_drift_after_final_scan(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, ravdess, _mayo):
+            module, arguments, run_root, _roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            original_scan = module._scan_private_results
+            scan_calls = 0
+
+            def drift_after_final_scan(*args, **kwargs):
+                nonlocal scan_calls
+                original_scan(*args, **kwargs)
+                scan_calls += 1
+                if scan_calls == 3:
+                    ravdess.manifest_sha256 = "9" * 64
+
+            module._scan_private_results = drift_after_final_scan
+            try:
+                c.raises(
+                    lambda: module.main(arguments),
+                    ValueError,
+                    "a live generation change after the final scan blocks rename",
+                )
+            finally:
+                module._scan_private_results = original_scan
+            c.eq(scan_calls, 3, "failure occurs at the publication edge")
+            c.true(not (run_root / "results").exists())
+            residues = [
+                path for path in run_root.iterdir()
+                if path.name.startswith(".results.staging-")
+            ]
+            c.eq(len(residues), 1)
+            c.eq(stat.S_IMODE(residues[0].stat().st_mode), 0o700)
+            c.true((
+                residues[0] / "reports" / "execution_only.json"
+            ).is_file())
+
+
+def test_publication_edge_compares_a_fresh_independent_authorization(
+    c: Check,
+):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(root) as (frozen, _ravdess, _mayo):
+            module, arguments, run_root, _roots = _synthetic_runner_fixture(
+                root, frozen,
+            )
+            raw_ravdess = frozen["ravdess_authorizer"]
+            raw_mayo = frozen["mayo_authorizer"]
+            ravdess_calls = 0
+
+            def fresh_ravdess():
+                nonlocal ravdess_calls
+                ravdess_calls += 1
+                authorization = raw_ravdess()
+                if ravdess_calls == 1:
+                    return authorization
+                values = dict(vars(authorization))
+                values["manifest_sha256"] = "9" * 64
+                return types.SimpleNamespace(**values)
+
+            module._authorization_factories = lambda _args: (
+                fresh_ravdess, raw_mayo,
+            )
+            compared: list[str] = []
+            original_compare = module._require_publication_edge_authorization
+
+            def observed_compare(*, stage, evidence, authorization):
+                compared.append(stage)
+                return original_compare(
+                    stage=stage,
+                    evidence=evidence,
+                    authorization=authorization,
+                )
+
+            module._require_publication_edge_authorization = observed_compare
+            try:
+                c.raises(
+                    lambda: module.main(arguments),
+                    ValueError,
+                    "a fresh changed authorization blocks result publication",
+                )
+            finally:
+                module._require_publication_edge_authorization = original_compare
+            c.eq(ravdess_calls, 2)
+            c.eq(
+                compared,
+                ["mayo", "ravdess"],
+                "both independently refreshed generations are compared",
+            )
+            c.true(not (run_root / "results").exists())
+            residues = [
+                path for path in run_root.iterdir()
+                if path.name.startswith(".results.staging-")
+            ]
+            c.eq(len(residues), 1)
+            c.eq(stat.S_IMODE(residues[0].stat().st_mode), 0o700)
+
+
 def test_receipt_bound_formal_runner_publishes_three_seed_contract(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -3914,6 +4242,69 @@ def test_receipt_bound_formal_runner_publishes_three_seed_contract(c: Check):
                 path.name.startswith(".results.staging-")
                 for path in run_root.iterdir()
             ))
+
+
+def test_formal_publication_reauthorizes_every_seed_lineage(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _frozen_bridge_inputs(
+            root, mode="formal",
+        ) as (frozen, _ravdess, _mayo):
+            module, arguments, _run_root, _roots = _synthetic_runner_fixture(
+                root / "formal-lineage", frozen,
+            )
+            counts = {"ravdess": 0, "mayo": 0}
+            raw_ravdess = frozen["ravdess_authorizer"]
+            raw_mayo = frozen["mayo_authorizer"]
+
+            def counted_ravdess():
+                counts["ravdess"] += 1
+                return raw_ravdess()
+
+            def counted_mayo():
+                counts["mayo"] += 1
+                return raw_mayo()
+
+            module._authorization_factories = lambda _args: (
+                counted_ravdess, counted_mayo,
+            )
+            original_authorize = module.ssl_core.authorize_frozen_ssl_stage
+            final_mayo_priors: list[str] = []
+
+            def observed_authorize(*args, **kwargs):
+                evidence = original_authorize(*args, **kwargs)
+                if kwargs.get("stage") == "mayo":
+                    final_mayo_priors.append(
+                        module.ssl_core.ssl_checkpoint_fingerprint(
+                            kwargs["prior_ravdess_checkpoint"],
+                        )
+                    )
+                return evidence
+
+            module.ssl_core.authorize_frozen_ssl_stage = observed_authorize
+            try:
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    module.main(arguments)
+            finally:
+                module.ssl_core.authorize_frozen_ssl_stage = original_authorize
+            c.eq(counts, {"ravdess": 2, "mayo": 2})
+            c.eq(
+                len(final_mayo_priors),
+                6,
+                "each formal seed is authorized during training and publication",
+            )
+            c.eq(
+                len(set(final_mayo_priors)),
+                3,
+                "formal authorization binds three distinct priors",
+            )
+            c.true(
+                all(
+                    final_mayo_priors.count(prior) == 2
+                    for prior in set(final_mayo_priors)
+                ),
+                "every formal prior is reauthorized exactly once before publication",
+            )
 
 
 def test_two_stage_failure_retains_private_staging_and_blocks_retry(c: Check):
