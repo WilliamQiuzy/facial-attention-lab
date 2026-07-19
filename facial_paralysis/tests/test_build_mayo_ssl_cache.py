@@ -59,6 +59,66 @@ def _sha(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _source_attestation_fixture(
+    salt: bytes,
+    *,
+    source_count: int = 2,
+    session_count: int = 2,
+) -> dict[str, object]:
+    root_tokens = tuple(
+        builder._source_attestation_hmac_token(
+            salt, "approved-root", f"root-{index}".encode("ascii"),
+        )
+        for index in range(2)
+    )
+    source_entries = []
+    for index in range(source_count):
+        source_sha256 = f"{index + 1:064x}"[-64:]
+        source_entries.append({
+            "kind": "video" if index % 2 == 0 else "arkit",
+            "root_token": root_tokens[index % 2],
+            "path_token": builder._source_attestation_hmac_token(
+                salt, "relative-path", f"member-{index}".encode("ascii"),
+            ),
+            "content_token": builder._source_attestation_hmac_token(
+                salt, "source-content", source_sha256.encode("ascii"),
+            ),
+            "source_sha256": source_sha256,
+            "stat_identity": [
+                1, index + 10, stat.S_IFREG | 0o600, os.geteuid(),
+                os.getegid(), 1, index + 100, index + 1000, index + 2000,
+            ],
+        })
+    session_classifications = []
+    for index in range(session_count):
+        complete = index % 2 == 0
+        session_classifications.append({
+            "session_token": builder._source_attestation_hmac_token(
+                salt, "session", f"session-{index}".encode("ascii"),
+            ),
+            "lookup_outcome": (
+                "complete_export" if complete else "no_complete_export"
+            ),
+            **{
+                f"{name.replace('.', '_')}_stat_identity": (
+                    [
+                        1, 100 + file_index, stat.S_IFREG | 0o600,
+                        os.geteuid(), os.getegid(), 1, 10 + file_index,
+                        3000 + file_index, 4000 + file_index,
+                    ]
+                    if complete else None
+                )
+                for file_index, name in enumerate(builder.EXISTING_EXPORT_FILES)
+            },
+        })
+    return builder._build_source_digest_attestation(
+        approved_root_tokens=root_tokens,
+        source_entries=source_entries,
+        session_classifications=session_classifications,
+        salt=salt,
+    )
+
+
 def _prepend_duplicate_json_field(
     payload: bytes,
     field: str,
@@ -6716,6 +6776,313 @@ def test_canonical_mayo_key_requires_exactly_32_bytes(c: Check):
                 ValueError,
                 f"canonical Mayo key length {length} is rejected",
             )
+
+
+def test_source_digest_attestation_schema_and_private_round_trip(c: Check):
+    salt = b"a" * 32
+    attestation = _source_attestation_fixture(salt)
+    c.eq(set(attestation), {
+        "schema", "approved_root_tokens", "source_entries",
+        "session_classifications", "entry_set_digest",
+        "legacy_export_topology_hmac", "source_identity_aggregate_hmac",
+        "object_hmac",
+    }, "private source attestation has one exact top-level schema")
+    c.eq(attestation["schema"], "mayo_source_digest_attestation_v1")
+    c.eq(len(attestation["approved_root_tokens"]), 2)
+    c.eq(len(attestation["source_entries"]), 2)
+    c.eq(len(attestation["session_classifications"]), 2)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "generation"
+        root.mkdir(mode=0o700)
+        root.chmod(0o700)
+        target = root / "source_digest_attestation.json"
+        original_public_validator = builder.validate_public_manifest
+        builder.validate_public_manifest = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("private attestation called the public writer path")
+        )
+        try:
+            identity = builder._write_source_digest_attestation_exclusive(
+                target, attestation, salt=salt,
+            )
+        finally:
+            builder.validate_public_manifest = original_public_validator
+        info = os.lstat(target)
+        c.eq(stat.S_IMODE(info.st_mode), 0o600)
+        c.eq(info.st_uid, os.geteuid())
+        c.eq(info.st_nlink, 1)
+        c.eq(tuple(identity), builder._regular_snapshot(info))
+        observed, digest = builder._load_source_digest_attestation(
+            target, salt=salt,
+        )
+        c.eq(observed, attestation)
+        c.eq(digest, _sha(target.read_bytes()))
+        c.raises(
+            lambda: builder._write_source_digest_attestation_exclusive(
+                target, attestation, salt=salt,
+            ),
+            FileExistsError,
+            "the private attestation writer never replaces an existing witness",
+        )
+
+
+def test_source_digest_attestation_rejects_schema_hmac_and_limits(c: Check):
+    salt = b"b" * 32
+    canonical = _source_attestation_fixture(salt)
+    malformed = []
+    extra = dict(canonical)
+    extra["unexpected"] = "field"
+    malformed.append(extra)
+    wrong_type = json.loads(json.dumps(canonical))
+    wrong_type["source_entries"][0]["stat_identity"][6] = True
+    malformed.append(wrong_type)
+    wrong_digest = json.loads(json.dumps(canonical))
+    wrong_digest["source_entries"][0]["source_sha256"] = "A" * 64
+    malformed.append(wrong_digest)
+    wrong_token = json.loads(json.dumps(canonical))
+    wrong_token["source_entries"][0]["content_token"] = "0" * 64
+    malformed.append(wrong_token)
+    wrong_hmac = dict(canonical)
+    wrong_hmac["object_hmac"] = "f" * 64
+    malformed.append(wrong_hmac)
+    wrong_mode = json.loads(json.dumps(canonical))
+    wrong_mode["source_entries"][0]["stat_identity"][2] = stat.S_IFDIR | 0o700
+    malformed.append(wrong_mode)
+    wrong_owner = json.loads(json.dumps(canonical))
+    wrong_owner["source_entries"][0]["stat_identity"][3] = os.geteuid() + 1
+    malformed.append(wrong_owner)
+    wrong_links = json.loads(json.dumps(canonical))
+    wrong_links["source_entries"][0]["stat_identity"][5] = 2
+    malformed.append(wrong_links)
+    overlong_token = json.loads(json.dumps(canonical))
+    overlong_token["approved_root_tokens"][0] = "a" * 129
+    malformed.append(overlong_token)
+    for value in malformed:
+        c.raises(
+            lambda value=value: builder._validate_source_digest_attestation(
+                value, salt=salt,
+            ),
+            ValueError,
+            "schema, primitive type, digest, token, and HMAC drift fail closed",
+        )
+    c.raises(
+        lambda: _source_attestation_fixture(salt, source_count=129),
+        ValueError,
+        "source entry count is capped before serialization",
+    )
+    c.raises(
+        lambda: _source_attestation_fixture(salt, session_count=66),
+        ValueError,
+        "session classification count is capped before serialization",
+    )
+    root_token = canonical["approved_root_tokens"][0]
+    c.true(
+        builder._source_attestation_hmac_token(
+            salt, "approved-root", b"same-material",
+        ) != builder._source_attestation_hmac_token(
+            salt, "relative-path", b"same-material",
+        ),
+        "HMAC domains cannot be substituted",
+    )
+    c.raises(
+        lambda: builder._source_attestation_relative_path_token(
+            salt, root_token, ("x" * 256,),
+        ),
+        ValueError,
+        "relative path components are capped at 255 encoded bytes",
+    )
+    c.raises(
+        lambda: builder._require_source_attestation_depth(
+            {"a": {"b": {"c": {"d": {"e": []}}}}},
+        ),
+        ValueError,
+        "canonical JSON container depth is capped at four",
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "private"
+        root.mkdir(mode=0o700)
+        root.chmod(0o700)
+
+        duplicate = root / "duplicate.json"
+        duplicate.write_bytes(
+            builder._source_attestation_canonical_bytes(canonical).replace(
+                b'"schema":',
+                b'"schema":"hidden-private-value","schema":',
+                1,
+            ) + b"\n"
+        )
+        duplicate.chmod(0o600)
+        c.raises(
+            lambda: builder._load_source_digest_attestation(
+                duplicate, salt=salt,
+            ),
+            ValueError,
+            "duplicate JSON keys fail before last-value-wins parsing",
+        )
+
+        unsafe_mode = root / "unsafe-mode.json"
+        builder._write_source_digest_attestation_exclusive(
+            unsafe_mode, canonical, salt=salt,
+        )
+        unsafe_mode.chmod(0o644)
+        c.raises(
+            lambda: builder._load_source_digest_attestation(
+                unsafe_mode, salt=salt,
+            ),
+            ValueError,
+            "private attestation requires exact mode 0600",
+        )
+
+        linked = root / "linked.json"
+        builder._write_source_digest_attestation_exclusive(
+            linked, canonical, salt=salt,
+        )
+        alias = root / "linked-alias.json"
+        os.link(linked, alias)
+        c.raises(
+            lambda: builder._load_source_digest_attestation(linked, salt=salt),
+            ValueError,
+            "private attestation rejects additional hard links",
+        )
+        alias.unlink()
+
+        wrong_file_owner = root / "wrong-owner.json"
+        builder._write_source_digest_attestation_exclusive(
+            wrong_file_owner, canonical, salt=salt,
+        )
+        original_geteuid = builder.os.geteuid
+        builder.os.geteuid = lambda: original_geteuid() + 1
+        try:
+            c.raises(
+                lambda: builder._load_source_digest_attestation(
+                    wrong_file_owner, salt=salt,
+                ),
+                ValueError,
+                "private attestation requires current ownership",
+            )
+        finally:
+            builder.os.geteuid = original_geteuid
+
+        oversized = root / "oversized.json"
+        oversized.write_bytes(b"{" + b" " * builder._MAX_SOURCE_ATTESTATION_BYTES)
+        oversized.chmod(0o600)
+        decoded = []
+        original_decode = builder._decode_unique_json_object
+        builder._decode_unique_json_object = lambda *_args, **_kwargs: decoded.append(True)
+        try:
+            c.raises(
+                lambda: builder._load_source_digest_attestation(
+                    oversized, salt=salt,
+                ),
+                ValueError,
+                "oversized input is rejected from stat before JSON parsing",
+            )
+        finally:
+            builder._decode_unique_json_object = original_decode
+        c.eq(decoded, [], "oversized attestation never reaches its JSON parser")
+
+
+def test_v4_generation_commitment_binds_source_attestation(c: Check):
+    commitment = {
+        "schema": "mayo_cache_generation_commitment_v4",
+        "collection_manifest_sha256": "1" * 64,
+        "exposure_manifest_sha256": "2" * 64,
+        "mediapipe_file_count": 50,
+        "arkit_file_count": 8,
+        "cache_file_count": 58,
+        "cache_tree_aggregate_sha256": "3" * 64,
+        "generation_aggregate_sha256": "4" * 64,
+        "inventory_counts_sha256": "5" * 64,
+        "collection_classification_integrity_id": "agg_" + "6" * 64,
+        "exposure_classification_integrity_id": "agg_" + "7" * 64,
+        "source_attestation_sha256": "8" * 64,
+        "source_attestation_entry_count": 58,
+        "source_identity_aggregate_hmac": "9" * 64,
+    }
+    c.eq(builder._validate_generation_commitment(commitment), commitment)
+    malformed = []
+    extra = dict(commitment)
+    extra["unexpected"] = None
+    malformed.append(extra)
+    wrong_digest = dict(commitment)
+    wrong_digest["source_attestation_sha256"] = "A" * 64
+    malformed.append(wrong_digest)
+    wrong_count_type = dict(commitment)
+    wrong_count_type["source_attestation_entry_count"] = True
+    malformed.append(wrong_count_type)
+    wrong_count_bound = dict(commitment)
+    wrong_count_bound["source_attestation_entry_count"] = 129
+    malformed.append(wrong_count_bound)
+    wrong_identity_hmac = dict(commitment)
+    wrong_identity_hmac["source_identity_aggregate_hmac"] = "short"
+    malformed.append(wrong_identity_hmac)
+    for value in malformed:
+        c.raises(
+            lambda value=value: builder._validate_generation_commitment(value),
+            ValueError,
+            "v4 commitment additions have exact fields, types, and bounds",
+        )
+
+
+def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check):
+    salt = b"c" * 32
+    source_digest = _sha(b"private source bytes")
+    private_path = Path("/private/PHI_source/session/private.mov")
+    tokens = builder._source_attestation_private_tokens(
+        (private_path,), (source_digest,), salt,
+    )
+    safe_payload = json.dumps({
+        "recording_id": builder.hmac_identifier(
+            "rec", salt, "mayo-mediapipe-recording", source_digest,
+        )
+    }, sort_keys=True).encode("utf-8")
+    builder._assert_bytes_omit_private_tokens(
+        safe_payload, tokens, "safe public manifest",
+    )
+
+    public_leaks = (
+        json.dumps({"private_digest": source_digest}).encode("utf-8"),
+        source_digest.encode("ascii").hex().encode("ascii"),
+        base64.b64encode(salt),
+        b"diagnostic private.mov failure",
+    )
+    for payload in public_leaks:
+        c.raises(
+            lambda payload=payload: builder._assert_bytes_omit_private_tokens(
+                payload, tokens, "public artifact",
+            ),
+            ValueError,
+            "manifests, reversible encodings, key material, and path components fail",
+        )
+
+    compressed = io.BytesIO()
+    np.savez_compressed(compressed, hidden=np.asarray(source_digest))
+    c.raises(
+        lambda: builder._assert_npz_expanded_omits_private_tokens(
+            compressed.getvalue(), tokens, "public compact cache",
+        ),
+        ValueError,
+        "private digest hidden in compressed NPY content is rejected",
+    )
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        print(source_digest)
+        print(base64.b64encode(salt).decode("ascii"), file=sys.stderr)
+    for stream_name, value in (
+        ("stdout", stdout.getvalue()), ("stderr", stderr.getvalue()),
+    ):
+        c.raises(
+            lambda value=value, stream_name=stream_name: (
+                builder._assert_bytes_omit_private_tokens(
+                    value.encode("utf-8"), tokens, stream_name,
+                )
+            ),
+            ValueError,
+            f"private attestation material is forbidden from {stream_name}",
+        )
 
 
 def test_committed_mayo_generation_exposes_narrow_read_only_authorizer(c: Check):

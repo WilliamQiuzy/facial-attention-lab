@@ -168,6 +168,11 @@ _MAX_EXACT_PRIVATE_TREE_REGULAR_BYTES = 256 * 1024 * 1024
 _MAX_NPY_HEADER_BYTES = 4096
 _MAX_MAYO_NPZ_CENTRAL_RECORD_BYTES = 1024
 _MAX_MAYO_MANIFEST_BYTES = 4 * 1024 * 1024
+_MAX_SOURCE_ATTESTATION_BYTES = 1024 * 1024
+_MAX_SOURCE_ATTESTATION_ENTRIES = 128
+_MAX_SOURCE_ATTESTATION_SESSIONS = 65
+_MAX_SOURCE_ATTESTATION_DEPTH = 4
+_MAX_SOURCE_ATTESTATION_TOKEN_BYTES = 128
 _MAX_MAYO_TERMINAL_EVIDENCE_JOURNALS = 64
 _MAX_MAYO_TERMINAL_EVIDENCE_BYTES = 4 * 1024 * 1024
 _MAX_MAYO_ARCHIVED_EVIDENCE_GENERATIONS = 4
@@ -176,6 +181,30 @@ _MAX_MAYO_ARCHIVED_EVIDENCE_BYTES = 4 * (
 )
 _MAYO_TRANSACTION_SCHEMA_V3 = "mayo_cache_exposure_transaction_v3"
 _MAYO_TRANSACTION_SCHEMA_V4 = "mayo_cache_exposure_transaction_v4"
+SOURCE_DIGEST_ATTESTATION_SCHEMA = "mayo_source_digest_attestation_v1"
+SOURCE_DIGEST_ATTESTATION_FILENAME = "source_digest_attestation.json"
+_SOURCE_ATTESTATION_DOMAINS = frozenset({
+    "approved-root", "relative-path", "source-content", "session",
+    "legacy-export-topology", "source-identity-aggregate", "whole-object",
+})
+_SOURCE_ATTESTATION_TOP_FIELDS = frozenset({
+    "schema", "approved_root_tokens", "source_entries",
+    "session_classifications", "entry_set_digest",
+    "legacy_export_topology_hmac", "source_identity_aggregate_hmac",
+    "object_hmac",
+})
+_SOURCE_ATTESTATION_ENTRY_FIELDS = frozenset({
+    "kind", "root_token", "path_token", "content_token", "source_sha256",
+    "stat_identity",
+})
+_SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS = tuple(
+    f"{name.replace('.', '_')}_stat_identity"
+    for name in EXISTING_EXPORT_FILES
+)
+_SOURCE_ATTESTATION_SESSION_FIELDS = frozenset({
+    "session_token", "lookup_outcome",
+    *_SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS,
+})
 
 
 class InventoryDriftError(ValueError):
@@ -5605,6 +5634,447 @@ def _regular_snapshot(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _source_attestation_hmac_token(
+    salt: bytes,
+    domain: str,
+    material: bytes,
+) -> str:
+    """Return one domain-separated private source-attestation token."""
+    if type(domain) is not str or domain not in _SOURCE_ATTESTATION_DOMAINS:
+        raise ValueError("source attestation HMAC domain is invalid")
+    if (
+        type(material) is not bytes
+        or not material
+        or len(material) > _MAX_SOURCE_ATTESTATION_BYTES
+    ):
+        raise ValueError("source attestation HMAC material is invalid")
+    message = (
+        SOURCE_DIGEST_ATTESTATION_SCHEMA.encode("ascii")
+        + b"\0" + domain.encode("ascii")
+        + b"\0" + len(material).to_bytes(8, "big")
+        + material
+    )
+    return hmac.new(_require_salt(salt), message, hashlib.sha256).hexdigest()
+
+
+def _source_attestation_approved_root_token(salt: bytes, root: Path) -> str:
+    if not isinstance(root, Path) or not root.is_absolute():
+        raise ValueError("source attestation approved root must be an absolute Path")
+    material = os.fsencode(os.path.normpath(os.fspath(root)))
+    if not material or len(material) > _MAX_SOURCE_ATTESTATION_BYTES:
+        raise ValueError("source attestation approved root is invalid")
+    return _source_attestation_hmac_token(
+        salt, "approved-root", material,
+    )
+
+
+def _source_attestation_relative_path_token(
+    salt: bytes,
+    root_token: str,
+    components: Sequence[str],
+) -> str:
+    root = _require_source_attestation_token(root_token, "approved root")
+    if (
+        type(components) not in {tuple, list}
+        or not components
+        or len(components) > _MAX_SOURCE_ATTESTATION_DEPTH
+    ):
+        raise ValueError("source attestation relative path depth is invalid")
+    checked: list[str] = []
+    for component in components:
+        if type(component) is not str:
+            raise ValueError("source attestation relative component type is invalid")
+        encoded = component.encode("utf-8")
+        if (
+            component in {"", ".", ".."}
+            or "/" in component
+            or "\\" in component
+            or "\0" in component
+            or len(encoded) > 255
+        ):
+            raise ValueError("source attestation relative component is unsafe")
+        checked.append(component)
+    return _source_attestation_hmac_token(
+        salt,
+        "relative-path",
+        _source_attestation_canonical_bytes({
+            "root_token": root,
+            "components": checked,
+        }),
+    )
+
+
+def _source_attestation_canonical_bytes(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("source attestation is not canonical JSON") from exc
+
+
+def _require_source_attestation_token(value: object, field: str) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{field} token type is invalid")
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{field} token is not ASCII") from exc
+    if (
+        not encoded
+        or len(encoded) > _MAX_SOURCE_ATTESTATION_TOKEN_BYTES
+        or _SHA256.fullmatch(value) is None
+    ):
+        raise ValueError(f"{field} token is noncanonical")
+    return value
+
+
+def _require_source_attestation_identity(
+    value: object,
+    field: str,
+) -> list[int]:
+    if type(value) is not list or len(value) != 9:
+        raise ValueError(f"{field} stat identity is not exact")
+    if any(type(item) is not int for item in value):
+        raise ValueError(f"{field} stat identity types are invalid")
+    if (
+        any(item < 0 or item > (2 ** 63 - 1) for item in value)
+        or value[0] == 0
+        or value[1] == 0
+        or not stat.S_ISREG(value[2])
+        or value[3] != os.geteuid()
+        or value[5] != 1
+    ):
+        raise ValueError(f"{field} stat identity is unsafe")
+    return list(value)
+
+
+def _require_source_attestation_depth(value: object) -> None:
+    def walk(item: object, depth: int) -> None:
+        if type(item) is dict:
+            if depth > _MAX_SOURCE_ATTESTATION_DEPTH:
+                raise ValueError("source attestation exceeds its JSON depth limit")
+            for key, child in item.items():
+                if (
+                    type(key) is not str
+                    or len(key.encode("utf-8")) > 255
+                ):
+                    raise ValueError("source attestation key is unsafe")
+                walk(child, depth + 1)
+        elif type(item) is list:
+            if depth > _MAX_SOURCE_ATTESTATION_DEPTH:
+                raise ValueError("source attestation exceeds its JSON depth limit")
+            for child in item:
+                walk(child, depth + 1)
+        elif item is not None and type(item) not in {str, int, bool}:
+            raise ValueError("source attestation primitive type is invalid")
+
+    walk(value, 1)
+
+
+def _normalize_source_attestation_entries(
+    value: object,
+    *,
+    approved_root_tokens: tuple[str, str],
+    salt: bytes,
+) -> list[dict[str, object]]:
+    if (
+        type(value) not in {list, tuple}
+        or len(value) > _MAX_SOURCE_ATTESTATION_ENTRIES
+    ):
+        raise ValueError("source attestation entry count is invalid")
+    entries: list[dict[str, object]] = []
+    identities: set[tuple[str, str]] = set()
+    for index, raw in enumerate(value):
+        if type(raw) is not dict or set(raw) != _SOURCE_ATTESTATION_ENTRY_FIELDS:
+            raise ValueError("source attestation entry schema is not exact")
+        kind = raw["kind"]
+        if type(kind) is not str or kind not in {"video", "arkit"}:
+            raise ValueError("source attestation entry kind is invalid")
+        root_token = _require_source_attestation_token(
+            raw["root_token"], "source root",
+        )
+        if root_token not in approved_root_tokens:
+            raise ValueError("source attestation entry uses an unapproved root")
+        path_token = _require_source_attestation_token(
+            raw["path_token"], "source path",
+        )
+        content_token = _require_source_attestation_token(
+            raw["content_token"], "source content",
+        )
+        source_sha256 = raw["source_sha256"]
+        if (
+            type(source_sha256) is not str
+            or _SHA256.fullmatch(source_sha256) is None
+        ):
+            raise ValueError("source attestation private digest is invalid")
+        expected_content_token = _source_attestation_hmac_token(
+            salt, "source-content", source_sha256.encode("ascii"),
+        )
+        if not hmac.compare_digest(content_token, expected_content_token):
+            raise ValueError("source content token does not bind its private digest")
+        identity_key = (root_token, path_token)
+        if identity_key in identities:
+            raise ValueError("source attestation repeats a source path token")
+        identities.add(identity_key)
+        entries.append({
+            "kind": kind,
+            "root_token": root_token,
+            "path_token": path_token,
+            "content_token": content_token,
+            "source_sha256": source_sha256,
+            "stat_identity": _require_source_attestation_identity(
+                raw["stat_identity"], f"source entry {index}",
+            ),
+        })
+    entries.sort(key=lambda item: (
+        str(item["root_token"]), str(item["path_token"]), str(item["kind"]),
+    ))
+    return entries
+
+
+def _normalize_source_attestation_sessions(value: object) -> list[dict[str, object]]:
+    if (
+        type(value) not in {list, tuple}
+        or len(value) > _MAX_SOURCE_ATTESTATION_SESSIONS
+    ):
+        raise ValueError("source attestation session count is invalid")
+    sessions: list[dict[str, object]] = []
+    observed_tokens: set[str] = set()
+    for index, raw in enumerate(value):
+        if type(raw) is not dict or set(raw) != _SOURCE_ATTESTATION_SESSION_FIELDS:
+            raise ValueError("source attestation session schema is not exact")
+        session_token = _require_source_attestation_token(
+            raw["session_token"], "source session",
+        )
+        if session_token in observed_tokens:
+            raise ValueError("source attestation repeats a session token")
+        observed_tokens.add(session_token)
+        outcome = raw["lookup_outcome"]
+        if (
+            type(outcome) is not str
+            or outcome not in {"complete_export", "no_complete_export"}
+        ):
+            raise ValueError("source attestation lookup outcome is invalid")
+        session: dict[str, object] = {
+            "session_token": session_token,
+            "lookup_outcome": outcome,
+        }
+        for field in _SOURCE_ATTESTATION_EXPORT_IDENTITY_FIELDS:
+            identity = raw[field]
+            if outcome == "complete_export":
+                session[field] = _require_source_attestation_identity(
+                    identity, f"session classification {index} {field}",
+                )
+            elif identity is not None:
+                raise ValueError(
+                    "incomplete legacy export cannot retain file identities"
+                )
+            else:
+                session[field] = None
+        sessions.append(session)
+    sessions.sort(key=lambda item: str(item["session_token"]))
+    return sessions
+
+
+def _source_attestation_entry_set_digest(
+    entries: list[dict[str, object]],
+) -> str:
+    return hashlib.sha256(_source_attestation_canonical_bytes(entries)).hexdigest()
+
+
+def _source_attestation_aggregate_hmac(
+    salt: bytes,
+    domain: str,
+    value: object,
+) -> str:
+    return _source_attestation_hmac_token(
+        salt, domain, _source_attestation_canonical_bytes(value),
+    )
+
+
+def _validate_source_digest_attestation(
+    value: object,
+    *,
+    salt: bytes,
+) -> dict[str, object]:
+    _require_salt(salt)
+    if type(value) is not dict or set(value) != _SOURCE_ATTESTATION_TOP_FIELDS:
+        raise ValueError("source attestation top-level schema is not exact")
+    if type(value["schema"]) is not str or (
+        value["schema"] != SOURCE_DIGEST_ATTESTATION_SCHEMA
+    ):
+        raise ValueError("source attestation schema version is invalid")
+    roots = value["approved_root_tokens"]
+    if type(roots) is not list or len(roots) != 2:
+        raise ValueError("source attestation must bind exactly two roots")
+    approved_roots = tuple(
+        _require_source_attestation_token(item, "approved root")
+        for item in roots
+    )
+    if len(set(approved_roots)) != 2 or list(approved_roots) != sorted(approved_roots):
+        raise ValueError("source attestation approved roots are noncanonical")
+    entries = _normalize_source_attestation_entries(
+        value["source_entries"],
+        approved_root_tokens=approved_roots,
+        salt=salt,
+    )
+    if value["source_entries"] != entries:
+        raise ValueError("source attestation entries are not canonically ordered")
+    sessions = _normalize_source_attestation_sessions(
+        value["session_classifications"],
+    )
+    if value["session_classifications"] != sessions:
+        raise ValueError("source attestation sessions are not canonically ordered")
+    entry_set_digest = value["entry_set_digest"]
+    if (
+        type(entry_set_digest) is not str
+        or _SHA256.fullmatch(entry_set_digest) is None
+        or not hmac.compare_digest(
+            entry_set_digest, _source_attestation_entry_set_digest(entries),
+        )
+    ):
+        raise ValueError("source attestation entry-set digest is invalid")
+    legacy_hmac = _require_source_attestation_token(
+        value["legacy_export_topology_hmac"], "legacy export topology",
+    )
+    expected_legacy_hmac = _source_attestation_aggregate_hmac(
+        salt, "legacy-export-topology", sessions,
+    )
+    if not hmac.compare_digest(legacy_hmac, expected_legacy_hmac):
+        raise ValueError("source attestation legacy topology HMAC is invalid")
+    identity_hmac = _require_source_attestation_token(
+        value["source_identity_aggregate_hmac"], "source identity aggregate",
+    )
+    expected_identity_hmac = _source_attestation_aggregate_hmac(
+        salt,
+        "source-identity-aggregate",
+        {
+            "approved_root_tokens": list(approved_roots),
+            "source_entries": entries,
+        },
+    )
+    if not hmac.compare_digest(identity_hmac, expected_identity_hmac):
+        raise ValueError("source attestation identity aggregate HMAC is invalid")
+    object_hmac = _require_source_attestation_token(
+        value["object_hmac"], "source attestation object",
+    )
+    authenticated = dict(value)
+    authenticated.pop("object_hmac")
+    expected_object_hmac = _source_attestation_aggregate_hmac(
+        salt, "whole-object", authenticated,
+    )
+    if not hmac.compare_digest(object_hmac, expected_object_hmac):
+        raise ValueError("source attestation whole-object HMAC is invalid")
+    canonical = {
+        "schema": SOURCE_DIGEST_ATTESTATION_SCHEMA,
+        "approved_root_tokens": list(approved_roots),
+        "source_entries": entries,
+        "session_classifications": sessions,
+        "entry_set_digest": entry_set_digest,
+        "legacy_export_topology_hmac": legacy_hmac,
+        "source_identity_aggregate_hmac": identity_hmac,
+        "object_hmac": object_hmac,
+    }
+    _require_source_attestation_depth(canonical)
+    if len(_source_attestation_canonical_bytes(canonical)) + 1 > (
+        _MAX_SOURCE_ATTESTATION_BYTES
+    ):
+        raise ValueError("source attestation exceeds its canonical byte limit")
+    return canonical
+
+
+def _build_source_digest_attestation(
+    *,
+    approved_root_tokens: Sequence[str],
+    source_entries: Sequence[Mapping[str, object]],
+    session_classifications: Sequence[Mapping[str, object]],
+    salt: bytes,
+) -> dict[str, object]:
+    _require_salt(salt)
+    if (
+        type(approved_root_tokens) not in {tuple, list}
+        or len(approved_root_tokens) != 2
+        or type(source_entries) not in {tuple, list}
+        or len(source_entries) > _MAX_SOURCE_ATTESTATION_ENTRIES
+        or type(session_classifications) not in {tuple, list}
+        or len(session_classifications) > _MAX_SOURCE_ATTESTATION_SESSIONS
+    ):
+        raise ValueError("source attestation builder inputs exceed frozen bounds")
+    roots = sorted(
+        _require_source_attestation_token(item, "approved root")
+        for item in approved_root_tokens
+    )
+    if len(roots) != 2 or len(set(roots)) != 2:
+        raise ValueError("source attestation must bind two unique roots")
+    entries = _normalize_source_attestation_entries(
+        list(source_entries),
+        approved_root_tokens=(roots[0], roots[1]),
+        salt=salt,
+    )
+    sessions = _normalize_source_attestation_sessions(
+        list(session_classifications),
+    )
+    payload: dict[str, object] = {
+        "schema": SOURCE_DIGEST_ATTESTATION_SCHEMA,
+        "approved_root_tokens": roots,
+        "source_entries": entries,
+        "session_classifications": sessions,
+        "entry_set_digest": _source_attestation_entry_set_digest(entries),
+        "legacy_export_topology_hmac": _source_attestation_aggregate_hmac(
+            salt, "legacy-export-topology", sessions,
+        ),
+        "source_identity_aggregate_hmac": _source_attestation_aggregate_hmac(
+            salt,
+            "source-identity-aggregate",
+            {"approved_root_tokens": roots, "source_entries": entries},
+        ),
+    }
+    payload["object_hmac"] = _source_attestation_aggregate_hmac(
+        salt, "whole-object", payload,
+    )
+    return _validate_source_digest_attestation(payload, salt=salt)
+
+
+def _write_source_digest_attestation_exclusive(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    salt: bytes,
+) -> tuple[int, ...]:
+    if type(payload) is not dict:
+        raise ValueError("private source attestation payload must be an exact object")
+    canonical = _validate_source_digest_attestation(payload, salt=salt)
+    serialized = _source_attestation_canonical_bytes(canonical) + b"\n"
+    if len(serialized) > _MAX_SOURCE_ATTESTATION_BYTES:
+        raise ValueError("source attestation exceeds its canonical byte limit")
+    return _write_private_bytes_exclusive(
+        path, serialized, "private source digest attestation",
+    )
+
+
+def _load_source_digest_attestation(
+    path: Path,
+    *,
+    salt: bytes,
+) -> tuple[dict[str, object], str]:
+    payload, digest, _size = _read_regular_bytes(
+        path,
+        "private source digest attestation",
+        max_bytes=_MAX_SOURCE_ATTESTATION_BYTES,
+    )
+    decoded = _decode_unique_json_object(
+        payload, "private source digest attestation",
+    )
+    canonical = _validate_source_digest_attestation(decoded, salt=salt)
+    if payload != _source_attestation_canonical_bytes(canonical) + b"\n":
+        raise ValueError("private source digest attestation bytes are noncanonical")
+    return canonical, digest
+
+
 def _open_nofollow_directory_at(
     parent_descriptor: int,
     name: str,
@@ -7533,17 +8003,28 @@ def _validate_staging(
 
 
 def _validate_generation_commitment(value: object) -> dict[str, object]:
-    required = {
+    required_v3 = {
         "schema", "collection_manifest_sha256", "exposure_manifest_sha256",
         "mediapipe_file_count", "arkit_file_count", "cache_file_count",
         "cache_tree_aggregate_sha256", "generation_aggregate_sha256",
         "inventory_counts_sha256", "collection_classification_integrity_id",
         "exposure_classification_integrity_id",
     }
-    if not isinstance(value, dict) or set(value) != required:
+    required_v4 = required_v3 | {
+        "source_attestation_sha256", "source_attestation_entry_count",
+        "source_identity_aggregate_hmac",
+    }
+    if type(value) is not dict:
         raise ValueError("transaction generation commitment has a noncanonical schema")
-    if value["schema"] != "mayo_cache_generation_commitment_v3":
+    schema = value.get("schema")
+    if schema == "mayo_cache_generation_commitment_v3":
+        required = required_v3
+    elif schema == "mayo_cache_generation_commitment_v4":
+        required = required_v4
+    else:
         raise ValueError("transaction generation commitment has the wrong version")
+    if set(value) != required:
+        raise ValueError("transaction generation commitment has a noncanonical schema")
     for key in (
         "collection_manifest_sha256", "exposure_manifest_sha256",
         "cache_tree_aggregate_sha256", "generation_aggregate_sha256",
@@ -7551,6 +8032,16 @@ def _validate_generation_commitment(value: object) -> dict[str, object]:
     ):
         if not isinstance(value[key], str) or _SHA256.fullmatch(value[key]) is None:
             raise ValueError("transaction generation commitment digest is invalid")
+    if schema == "mayo_cache_generation_commitment_v4":
+        if (
+            type(value["source_attestation_sha256"]) is not str
+            or _SHA256.fullmatch(value["source_attestation_sha256"]) is None
+        ):
+            raise ValueError("transaction source attestation digest is invalid")
+        _require_source_attestation_token(
+            value["source_identity_aggregate_hmac"],
+            "transaction source identity aggregate",
+        )
     for key in (
         "collection_classification_integrity_id",
         "exposure_classification_integrity_id",
@@ -7563,12 +8054,20 @@ def _validate_generation_commitment(value: object) -> dict[str, object]:
         ):
             raise ValueError("transaction classification commitment is invalid")
     for key in ("mediapipe_file_count", "arkit_file_count", "cache_file_count"):
-        if not isinstance(value[key], int) or isinstance(value[key], bool) or value[key] < 0:
+        if type(value[key]) is not int or value[key] < 0:
             raise ValueError("transaction generation commitment count is invalid")
     if value["cache_file_count"] != (
         value["mediapipe_file_count"] + value["arkit_file_count"]
     ):
         raise ValueError("transaction generation commitment counts disagree")
+    if schema == "mayo_cache_generation_commitment_v4" and (
+        type(value["source_attestation_entry_count"]) is not int
+        or value["source_attestation_entry_count"] < 0
+        or value["source_attestation_entry_count"] > (
+            _MAX_SOURCE_ATTESTATION_ENTRIES
+        )
+    ):
+        raise ValueError("transaction source attestation entry count is invalid")
     return dict(value)
 
 
@@ -7670,6 +8169,80 @@ def _private_root_forbidden_tokens(
                     if len(token) >= 4:
                         tokens.add(token)
     return tuple(sorted(tokens, key=lambda token: (-len(token), token)))
+
+
+def _source_attestation_private_tokens(
+    private_paths: Sequence[Path],
+    source_sha256: Sequence[str],
+    salt: bytes,
+) -> tuple[bytes, ...]:
+    """Expand private source material into direct reversible leak sentinels."""
+    if (
+        type(private_paths) not in {tuple, list}
+        or type(source_sha256) not in {tuple, list}
+        or len(private_paths) > _MAX_SOURCE_ATTESTATION_ENTRIES
+        or len(source_sha256) > _MAX_SOURCE_ATTESTATION_ENTRIES
+        or any(not isinstance(path, Path) for path in private_paths)
+        or any(
+            type(digest) is not str or _SHA256.fullmatch(digest) is None
+            for digest in source_sha256
+        )
+    ):
+        raise ValueError("source attestation private leak inputs are invalid")
+    key = _require_salt(salt)
+    raw_values: set[bytes] = {key}
+    for path in private_paths:
+        rendered = os.fsencode(os.fspath(path))
+        raw_values.add(rendered)
+        for component in path.parts:
+            encoded = os.fsencode(component)
+            if len(encoded) >= 4 and component not in {path.anchor, "/"}:
+                raw_values.add(encoded)
+    for digest in source_sha256:
+        raw_values.add(digest.encode("ascii"))
+        raw_values.add(bytes.fromhex(digest))
+
+    tokens: set[bytes] = set()
+    for raw in raw_values:
+        if not raw:
+            continue
+        representations = {
+            raw,
+            raw.hex().encode("ascii"),
+            raw.hex().upper().encode("ascii"),
+            base64.b64encode(raw),
+            base64.urlsafe_b64encode(raw),
+            base64.b64encode(raw).rstrip(b"="),
+            base64.urlsafe_b64encode(raw).rstrip(b"="),
+        }
+        for representation in representations:
+            if len(representation) < 4:
+                continue
+            tokens.add(representation)
+            try:
+                text = representation.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+                tokens.add(text.encode(encoding))
+    return tuple(sorted(tokens, key=lambda token: (-len(token), token)))
+
+
+def _assert_bytes_omit_private_tokens(
+    payload: bytes,
+    tokens: tuple[bytes, ...],
+    field: str,
+) -> None:
+    if (
+        type(payload) is not bytes
+        or type(tokens) is not tuple
+        or any(type(token) is not bytes or not token for token in tokens)
+        or type(field) is not str
+        or not field
+    ):
+        raise ValueError("private material scan inputs are invalid")
+    if any(token in payload for token in tokens):
+        raise ValueError(f"{field} contains private source material")
 
 
 def _assert_descriptor_omits_private_tokens(
