@@ -7805,8 +7805,9 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
     encoded_path = Path(
         "/vault/data/ordinary_component"  # deliberately has ordinary names
     ) / unicode_component / surrogate_component
+    boundary_component_path = Path("/vault/data/x.mov")
     encoded_tokens = builder._source_attestation_private_tokens(
-        (encoded_path,), (source_digest,), salt,
+        (encoded_path, boundary_component_path), (source_digest,), salt,
     )
     c.true(b"ordinary_component" in encoded_tokens)
     full_path_percent = urllib.parse.quote_from_bytes(
@@ -7884,6 +7885,47 @@ def test_attestation_private_material_is_rejected_from_public_artifacts(c: Check
             ),
             ValueError,
             "bounded component representations remain private leak sentinels",
+        )
+    for boundary_leak in (
+        b"/caf\xc3\xa9",
+        b"caf\xc3\xa9/",
+        b"/x.mov",
+        b"x.mov/",
+        b"/data",
+        b"data/",
+    ):
+        c.raises(
+            lambda boundary_leak=boundary_leak: (
+                builder._assert_bytes_omit_private_tokens(
+                    boundary_leak,
+                    encoded_tokens,
+                    "raw component boundary leak artifact",
+                )
+            ),
+            ValueError,
+            "raw components match only at real path or string boundaries",
+        )
+    builder._assert_private_token_chunks_omit(
+        (b"/da", b"tabase"),
+        encoded_tokens,
+        "safe split component prefix",
+    )
+    for boundary_chunks in (
+        (b"/ca", b"f\xc3", b"\xa9"),
+        (b"x.", b"mov", b"/"),
+        (b"/da", b"ta"),
+        (b"da", b"ta", b"/"),
+    ):
+        c.raises(
+            lambda boundary_chunks=boundary_chunks: (
+                builder._assert_private_token_chunks_omit(
+                    boundary_chunks,
+                    encoded_tokens,
+                    "split raw component boundary leak",
+                )
+            ),
+            ValueError,
+            "bounded raw-component matching carries context across chunks",
         )
     c.raises(
         lambda: builder._assert_private_token_chunks_omit(

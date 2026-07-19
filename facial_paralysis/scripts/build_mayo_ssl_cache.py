@@ -36,7 +36,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field as dataclass_field
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence, Union
 
 import cv2
 import numpy as np
@@ -7329,17 +7329,28 @@ def _require_mayo_npz_headers(
 
 
 @dataclass(frozen=True)
+class _BoundaryPrivateToken:
+    value: bytes
+
+
+_PrivateScanTokens = tuple[Union[bytes, _BoundaryPrivateToken], ...]
+
+
+@dataclass(frozen=True)
 class _PrivateTokenAutomaton:
-    tokens: tuple[bytes, ...]
+    tokens: _PrivateScanTokens
     transitions: tuple[dict[int, int], ...]
     failures: tuple[int, ...]
     terminal: tuple[bool, ...]
+    boundary_terminal_lengths: tuple[tuple[int, ...], ...]
+    max_boundary_token_bytes: int
 
 
 @dataclass
 class _PrivateTokenAccumulator:
     field: str
     tokens: set[bytes] = dataclass_field(default_factory=set)
+    boundary_tokens: set[bytes] = dataclass_field(default_factory=set)
     total_bytes: int = 0
 
     def add(self, token: bytes) -> None:
@@ -7347,9 +7358,14 @@ class _PrivateTokenAccumulator:
             raise ValueError(f"{self.field} privacy token is invalid")
         if token in self.tokens:
             return
+        if token in self.boundary_tokens:
+            self.boundary_tokens.remove(token)
+            self.tokens.add(token)
+            return
         if (
             len(token) > _MAX_PRIVATE_SCAN_TOKEN_BYTES
-            or len(self.tokens) >= _MAX_PRIVATE_SCAN_TOKENS
+            or len(self.tokens) + len(self.boundary_tokens)
+            >= _MAX_PRIVATE_SCAN_TOKENS
             or self.total_bytes + len(token)
             > _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES
         ):
@@ -7359,12 +7375,42 @@ class _PrivateTokenAccumulator:
         self.tokens.add(token)
         self.total_bytes += len(token)
 
-    def canonical(self) -> tuple[bytes, ...]:
-        return tuple(sorted(self.tokens, key=lambda token: (-len(token), token)))
+    def add_boundary(self, token: bytes) -> None:
+        if type(token) is not bytes or not token:
+            raise ValueError(f"{self.field} privacy boundary token is invalid")
+        if token in self.tokens or token in self.boundary_tokens:
+            return
+        if (
+            len(token) > _MAX_PRIVATE_SCAN_TOKEN_BYTES
+            or len(self.tokens) + len(self.boundary_tokens)
+            >= _MAX_PRIVATE_SCAN_TOKENS
+            or self.total_bytes + len(token)
+            > _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES
+        ):
+            raise ValueError(
+                f"{self.field} privacy tokens exceed their exact scan budget"
+            )
+        self.boundary_tokens.add(token)
+        self.total_bytes += len(token)
+
+    def canonical(self, *, include_boundaries: bool = False) -> _PrivateScanTokens:
+        exact = tuple(sorted(
+            self.tokens, key=lambda token: (-len(token), token),
+        ))
+        if not include_boundaries:
+            return exact
+        bounded = tuple(
+            _BoundaryPrivateToken(token)
+            for token in sorted(
+                self.boundary_tokens,
+                key=lambda token: (-len(token), token),
+            )
+        )
+        return (*exact, *bounded)
 
 
 def _compile_private_token_automaton(
-    tokens: tuple[bytes, ...],
+    tokens: _PrivateScanTokens,
     field: str,
 ) -> _PrivateTokenAutomaton:
     if type(tokens) is not tuple or len(tokens) > _MAX_PRIVATE_SCAN_TOKENS:
@@ -7372,17 +7418,22 @@ def _compile_private_token_automaton(
     observed: set[bytes] = set()
     total_bytes = 0
     for token in tokens:
+        raw = (
+            token if type(token) is bytes
+            else token.value if type(token) is _BoundaryPrivateToken
+            else None
+        )
         if (
-            type(token) is not bytes
-            or not token
-            or token in observed
-            or len(token) > _MAX_PRIVATE_SCAN_TOKEN_BYTES
+            raw is None
+            or not raw
+            or raw in observed
+            or len(raw) > _MAX_PRIVATE_SCAN_TOKEN_BYTES
         ):
             raise ValueError(
                 f"{field} privacy tokens exceed their exact scan budget"
             )
-        observed.add(token)
-        total_bytes += len(token)
+        observed.add(raw)
+        total_bytes += len(raw)
         if total_bytes > _MAX_PRIVATE_SCAN_TOTAL_TOKEN_BYTES:
             raise ValueError(
                 f"{field} privacy tokens exceed their exact scan budget"
@@ -7390,9 +7441,12 @@ def _compile_private_token_automaton(
     transitions: list[dict[int, int]] = [{}]
     failures = [0]
     terminal = [False]
+    boundary_terminal_lengths: list[set[int]] = [set()]
     for token in tokens:
+        is_boundary = type(token) is _BoundaryPrivateToken
+        raw = token.value if is_boundary else token
         state = 0
-        for byte in token:
+        for byte in raw:
             next_state = transitions[state].get(byte)
             if next_state is None:
                 if len(transitions) >= _MAX_PRIVATE_SCAN_AUTOMATON_STATES:
@@ -7404,8 +7458,12 @@ def _compile_private_token_automaton(
                 transitions.append({})
                 failures.append(0)
                 terminal.append(False)
+                boundary_terminal_lengths.append(set())
             state = next_state
-        terminal[state] = True
+        if is_boundary:
+            boundary_terminal_lengths[state].add(len(raw))
+        else:
+            terminal[state] = True
     pending: deque[int] = deque()
     for state in transitions[0].values():
         pending.append(state)
@@ -7418,44 +7476,95 @@ def _compile_private_token_automaton(
                 fallback = failures[fallback]
             failures[state] = transitions[fallback].get(byte, 0)
             terminal[state] = terminal[state] or terminal[failures[state]]
+            boundary_terminal_lengths[state].update(
+                boundary_terminal_lengths[failures[state]]
+            )
     return _PrivateTokenAutomaton(
         tokens=tokens,
         transitions=tuple(transitions),
         failures=tuple(failures),
         terminal=tuple(terminal),
+        boundary_terminal_lengths=tuple(
+            tuple(sorted(lengths)) for lengths in boundary_terminal_lengths
+        ),
+        max_boundary_token_bytes=max(
+            (len(token.value) for token in tokens
+             if type(token) is _BoundaryPrivateToken),
+            default=0,
+        ),
     )
 
 
-def _private_token_chunk_state(
-    chunk: bytes,
-    automaton: _PrivateTokenAutomaton,
-    state: int,
-) -> tuple[int, bool]:
-    if type(chunk) is not bytes:
-        raise ValueError("private material scan chunk type is invalid")
-    for byte in chunk:
-        while state and byte not in automaton.transitions[state]:
-            state = automaton.failures[state]
-        state = automaton.transitions[state].get(byte, 0)
-        if automaton.terminal[state]:
-            return state, True
-    return state, False
+_PRIVATE_COMPONENT_BOUNDARY_BYTES = frozenset({
+    ord("/"), ord("\\"), ord('"'), ord("'"),
+})
+
+
+@dataclass
+class _PrivateTokenStreamScanner:
+    automaton: _PrivateTokenAutomaton
+    state: int = 0
+    position: int = 0
+    pending_boundary_match: bool = False
+    history: deque[int] = dataclass_field(init=False)
+
+    def __post_init__(self) -> None:
+        self.history = deque(
+            maxlen=max(1, self.automaton.max_boundary_token_bytes + 1),
+        )
+
+    def feed(self, chunk: bytes) -> bool:
+        if type(chunk) is not bytes:
+            raise ValueError("private material scan chunk type is invalid")
+        for byte in chunk:
+            if (
+                self.pending_boundary_match
+                and byte in _PRIVATE_COMPONENT_BOUNDARY_BYTES
+            ):
+                return True
+            self.pending_boundary_match = False
+            while (
+                self.state
+                and byte not in self.automaton.transitions[self.state]
+            ):
+                self.state = self.automaton.failures[self.state]
+            self.state = self.automaton.transitions[self.state].get(byte, 0)
+            self.history.append(byte)
+            if self.automaton.terminal[self.state]:
+                return True
+            for length in self.automaton.boundary_terminal_lengths[self.state]:
+                starts_stream = self.position + 1 == length
+                left_bounded = (
+                    starts_stream
+                    or (
+                        len(self.history) > length
+                        and self.history[-length - 1]
+                        in _PRIVATE_COMPONENT_BOUNDARY_BYTES
+                    )
+                )
+                if left_bounded:
+                    self.pending_boundary_match = True
+                    break
+            self.position += 1
+        return False
+
+    def finish(self) -> bool:
+        return self.pending_boundary_match
 
 
 def _private_token_chunks_contain(
     chunks: Sequence[bytes],
     automaton: _PrivateTokenAutomaton,
 ) -> bool:
-    state = 0
+    scanner = _PrivateTokenStreamScanner(automaton)
     for chunk in chunks:
-        state, matched = _private_token_chunk_state(chunk, automaton, state)
-        if matched:
+        if scanner.feed(chunk):
             return True
-    return False
+    return scanner.finish()
 
 
 def _require_private_token_automaton(
-    tokens: tuple[bytes, ...],
+    tokens: _PrivateScanTokens,
     field: str,
     matcher: _PrivateTokenAutomaton | None,
 ) -> _PrivateTokenAutomaton:
@@ -7468,7 +7577,7 @@ def _require_private_token_automaton(
 
 def _assert_private_token_chunks_omit(
     chunks: Sequence[bytes],
-    tokens: tuple[bytes, ...],
+    tokens: _PrivateScanTokens,
     field: str,
     *,
     matcher: _PrivateTokenAutomaton | None = None,
@@ -7482,7 +7591,7 @@ def _assert_private_token_chunks_omit(
 
 def _assert_npz_expanded_omits_private_tokens(
     payload: bytes,
-    tokens: tuple[bytes, ...],
+    tokens: _PrivateScanTokens,
     field: str,
     *,
     matcher: _PrivateTokenAutomaton | None = None,
@@ -7499,20 +7608,21 @@ def _assert_npz_expanded_omits_private_tokens(
                 if expanded_total > _MAX_MAYO_NPZ_EXPANDED_BYTES:
                     raise ValueError(f"{field} exceeds its expanded byte limit")
                 remaining = int(info.file_size)
-                scan_state = 0
+                scanner = _PrivateTokenStreamScanner(automaton)
                 with archive.open(info, "r") as member:
                     while remaining:
                         block = member.read(min(1024 * 1024, remaining))
                         if not block:
                             raise ValueError(f"{field} member is truncated")
                         remaining -= len(block)
-                        scan_state, matched = _private_token_chunk_state(
-                            block, automaton, scan_state,
-                        )
-                        if matched:
+                        if scanner.feed(block):
                             raise ValueError(
                                 f"{field} contains a private root representation"
                             )
+                    if scanner.finish():
+                        raise ValueError(
+                            f"{field} contains a private root representation"
+                        )
                     if member.read(1):
                         raise ValueError(f"{field} member exceeds its declared size")
     except (OSError, EOFError, RuntimeError, zipfile.BadZipFile) as exc:
@@ -8625,7 +8735,7 @@ def _source_attestation_private_tokens(
     private_paths: list[Path] | tuple[Path, ...],
     source_sha256: list[str] | tuple[str, ...],
     salt: bytes,
-) -> tuple[bytes, ...]:
+) -> _PrivateScanTokens:
     """Expand private source material into direct reversible leak sentinels."""
     if (
         type(private_paths) not in {tuple, list}
@@ -8673,6 +8783,7 @@ def _source_attestation_private_tokens(
                     "source attestation private path component is not encodable"
                 ) from exc
             if len(encoded) >= 4 and component not in {path.anchor, "/"}:
+                accumulator.add_boundary(encoded)
                 accumulator.add(b"/" + encoded + b"/")
                 component_representations = {
                     encoded.hex().encode("ascii"),
@@ -8731,12 +8842,12 @@ def _source_attestation_private_tokens(
             bytes.fromhex(digest),
             include_normal_percent=True,
         )
-    return accumulator.canonical()
+    return accumulator.canonical(include_boundaries=True)
 
 
 def _assert_bytes_omit_private_tokens(
     payload: bytes,
-    tokens: tuple[bytes, ...],
+    tokens: _PrivateScanTokens,
     field: str,
     *,
     matcher: _PrivateTokenAutomaton | None = None,
@@ -8755,7 +8866,7 @@ def _assert_bytes_omit_private_tokens(
 def _assert_descriptor_omits_private_tokens(
     descriptor: int,
     identity: tuple[int, ...],
-    tokens: tuple[bytes, ...],
+    tokens: _PrivateScanTokens,
     field: str,
     *,
     expected_sha256: str | None = None,
@@ -8778,7 +8889,7 @@ def _assert_descriptor_omits_private_tokens(
         raise ValueError(f"{field} changed before privacy scan")
     digest = hashlib.sha256()
     offset = 0
-    scan_state = 0
+    scanner = _PrivateTokenStreamScanner(automaton)
     while offset < int(before.st_size):
         block = os.pread(
             descriptor, min(1024 * 1024, int(before.st_size) - offset), offset,
@@ -8786,12 +8897,11 @@ def _assert_descriptor_omits_private_tokens(
         if not block:
             raise ValueError(f"{field} was truncated during privacy scan")
         digest.update(block)
-        scan_state, matched = _private_token_chunk_state(
-            block, automaton, scan_state,
-        )
-        if matched:
+        if scanner.feed(block):
             raise ValueError(f"{field} contains a private root representation")
         offset += len(block)
+    if scanner.finish():
+        raise ValueError(f"{field} contains a private root representation")
     after_identity = _regular_snapshot(os.fstat(descriptor))
     exact = before_identity == identity and after_identity == identity
     ctime_only = (
