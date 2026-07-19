@@ -534,7 +534,7 @@ _BRIDGE_GENERATION_SCHEMA = "dynamic_landmark_bridge_generation_v1"
 _BRIDGE_STAGE_SCHEMA = "dynamic_landmark_bridge_stage_v1"
 _BRIDGE_RECEIPT_SCHEMA = "dynamic_landmark_bridge_receipt_v1"
 _SSL_MANIFEST_SCHEMA = "dynamic_landmark_ssl_manifest_v2"
-_SSL_CONFIG_SCHEMA = "dynamic_landmark_ssl_config_v2"
+_SSL_CONFIG_SCHEMA = "dynamic_landmark_ssl_config_v3"
 _SSL_SPLIT_SCHEMA = "dynamic_landmark_ssl_split_v2"
 _SSL_SCALER_SCHEMA = "dynamic_landmark_ssl_scaler_v2"
 _MAX_BUNDLE_BYTES = 100 * 1024 * 1024
@@ -2476,6 +2476,32 @@ def _prepare_frozen_stage(
         "span_length": 4,
         "spans_per_window": 2,
         "device": "cpu",
+        "experiment_kind": "two_stage_fusion",
+        "input_arm": (
+            "semantic23_only" if stage.name == "ravdess" else "fusion"
+        ),
+        "input_active_indices": list(range(
+            23 if stage.name == "ravdess" else 95
+        )),
+        "target_schema": (
+            "semantic23_v1"
+            if stage.name == "ravdess"
+            else "mediapipe72_plus_clinical23_full95_v1"
+        ),
+        "initialization_policy": (
+            "same_seed_fresh"
+            if stage.name == "ravdess"
+            else "seed_matched_ravdess_prior"
+        ),
+        "producer_sha256": stage.record["producer_sha256"],
+        "mayo_generation_commitment_sha256": (
+            None
+            if stage.name == "ravdess"
+            else stage.record["upstream_manifest_commitments"][
+                "generation_commitment_sha256"
+            ]
+        ),
+        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
     }
     split: dict[str, object] = {
         "schema_version": _SSL_SPLIT_SCHEMA,

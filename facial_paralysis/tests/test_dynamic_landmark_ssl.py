@@ -673,6 +673,90 @@ def test_mayo_reconstruction_report_uses_inverse_scaled_equal_recording_metrics(
     c.eq(report["aggregation"], "per_recording_then_equal_recording_mean")
 
 
+def test_config_v3_binds_stage_arm_target_initialization_and_producer(c: Check):
+    producer = "a" * 64
+    commitment = "b" * 64
+    common = {
+        "schema_version": "dynamic_landmark_ssl_config_v3",
+        "mode": "formal",
+        "objective": "masked_span_smooth_l1_only",
+        "sample_rate_hz": 30.0,
+        "seeds": [0, 1, 2],
+        "optimizer": "adamw",
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "epochs": 30,
+        "batch_policy": "deterministic_microbatch_full_partition_64",
+        "span_length": 4,
+        "spans_per_window": 2,
+        "device": "cpu",
+        "producer_sha256": producer,
+        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
+        "bridge_receipt_sha256": "c" * 64,
+        "receipt_hmac": "d" * 64,
+    }
+    ravdess = {
+        **common,
+        "stage": "ravdess",
+        "source": "ravdess_openface_semantic23",
+        "development_only": False,
+        "experiment_kind": "two_stage_fusion",
+        "input_arm": "semantic23_only",
+        "input_active_indices": list(range(23)),
+        "target_schema": "semantic23_v1",
+        "initialization_policy": "same_seed_fresh",
+        "mayo_generation_commitment_sha256": None,
+    }
+    mayo = {
+        **common,
+        "stage": "mayo",
+        "source": "mayo_mediapipe_clinical23_development_only",
+        "development_only": True,
+        "experiment_kind": "mayo_input_arm_ablation",
+        "input_arm": "landmark_only",
+        "input_active_indices": list(range(72, 95)),
+        "target_schema": "mediapipe72_plus_clinical23_full95_v1",
+        "initialization_policy": "same_seed_fresh",
+        "mayo_generation_commitment_sha256": commitment,
+    }
+    c.eq(
+        ssl_core._validate_v3_training_config(
+            ravdess, stage="ravdess", mode="formal",
+            source="ravdess_openface_semantic23", producer_sha256=producer,
+            mayo_generation_commitment_sha256=None,
+        )["input_arm"],
+        "semantic23_only",
+    )
+    c.eq(
+        ssl_core._validate_v3_training_config(
+            mayo, stage="mayo", mode="formal",
+            source="mayo_mediapipe_clinical23_development_only",
+            producer_sha256=producer,
+            mayo_generation_commitment_sha256=commitment,
+        )["input_active_indices"],
+        list(range(72, 95)),
+    )
+    for mutation in (
+        {"input_arm": "semantic23_only"},
+        {"input_active_indices": list(range(95))},
+        {"target_schema": "clinical23_v2"},
+        {"initialization_policy": "seed_matched_ravdess_prior"},
+        {"schema_version": "dynamic_landmark_ssl_config_v2"},
+        {"producer_sha256": "e" * 64},
+    ):
+        invalid = {**mayo, **mutation}
+        c.raises(
+            lambda invalid=invalid: ssl_core._validate_v3_training_config(
+                invalid, stage="mayo", mode="formal",
+                source="mayo_mediapipe_clinical23_development_only",
+                producer_sha256=producer,
+                mayo_generation_commitment_sha256=commitment,
+            ),
+            ValueError,
+            "v3 config rejects cross-stage, mixed-schema, or lineage drift",
+        )
+
+
 def test_microbatch_backward_matches_full_partition_loss_gradients_and_update(c: Check):
     batch_size = 65
     valid, timestamps, source_indices = _temporal(batch=batch_size)

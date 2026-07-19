@@ -1041,9 +1041,30 @@ def test_frozen_receipts_bind_artifacts_mappings_and_hmac(c: Check):
                     ).encode("ascii")).hexdigest(),
                     f"{stage} {artifact_name} canonical core is bound by the receipt",
                 )
-                c.true(str(artifact["schema_version"]).endswith("_v2"))
+                expected_version = "_v3" if artifact_name == "config" else "_v2"
+                c.true(str(artifact["schema_version"]).endswith(expected_version))
                 c.eq(artifact["stage"], stage)
                 c.eq(artifact["mode"], "formal")
+                if artifact_name == "config":
+                    c.eq(
+                        artifact["input_arm"],
+                        "semantic23_only" if stage == "ravdess" else "fusion",
+                    )
+                    c.eq(
+                        artifact["input_active_indices"],
+                        list(range(23 if stage == "ravdess" else 95)),
+                    )
+                    c.eq(
+                        artifact["target_schema"],
+                        "semantic23_v1"
+                        if stage == "ravdess"
+                        else "mediapipe72_plus_clinical23_full95_v1",
+                    )
+                    c.eq(artifact["producer_sha256"], producer)
+                    c.eq(
+                        artifact["heldout_mask_policy"],
+                        "frozen_common_heldout_mask_v1",
+                    )
             scaler = json.loads(
                 (inputs / "artifacts" / stage / "scaler.json").read_text("ascii")
             )

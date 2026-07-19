@@ -59,6 +59,7 @@ SSL_SPLIT_SCHEMA = "dynamic_landmark_ssl_split_v1"
 SSL_SCALER_SCHEMA = "dynamic_landmark_ssl_scaler_v1"
 SSL_MANIFEST_V2_SCHEMA = "dynamic_landmark_ssl_manifest_v2"
 SSL_CONFIG_V2_SCHEMA = "dynamic_landmark_ssl_config_v2"
+SSL_CONFIG_V3_SCHEMA = "dynamic_landmark_ssl_config_v3"
 SSL_SPLIT_V2_SCHEMA = "dynamic_landmark_ssl_split_v2"
 SSL_SCALER_V2_SCHEMA = "dynamic_landmark_ssl_scaler_v2"
 BRIDGE_RECEIPT_SCHEMA = "dynamic_landmark_bridge_receipt_v1"
@@ -671,6 +672,7 @@ def _backward_full_partition_microbatches(
     source_frame_indices: torch.Tensor,
     reconstruction_mask: torch.Tensor,
     source: str,
+    input_arm: str | None = None,
 ) -> torch.Tensor:
     """Backpropagate one exact full-partition mean in deterministic row chunks."""
     if not isinstance(model, nn.Module):
@@ -714,6 +716,7 @@ def _backward_full_partition_microbatches(
             source_frame_indices[start:stop],
             reconstruction_mask=chunk_mask,
             source=source,
+            input_arm=input_arm,
         )
         chunk_loss_sum = functional.smooth_l1_loss(
             prediction[chunk_mask],
@@ -1334,6 +1337,11 @@ _V2_CONFIG_FIELDS = {
     "span_length", "spans_per_window", "device",
     "bridge_receipt_sha256", "receipt_hmac",
 }
+_V3_CONFIG_FIELDS = _V2_CONFIG_FIELDS | {
+    "experiment_kind", "input_arm", "input_active_indices", "target_schema",
+    "initialization_policy", "producer_sha256",
+    "mayo_generation_commitment_sha256", "heldout_mask_policy",
+}
 _V2_SPLIT_FIELDS = {
     "schema_version", "stage", "mode", "source", "split_seed",
     "heldout_fraction", "unit", "claim_unit", "train_group_ids",
@@ -1393,6 +1401,87 @@ def _validate_v2_training_config(
     if any(not _exact_json_value(value[name], expected_item)
            for name, expected_item in expected.items()):
         raise ValueError("receipt-bound training config is not mode-exact")
+    return dict(value)
+
+
+def _validate_v3_training_config(
+    value: Mapping[str, object],
+    *,
+    stage: str,
+    mode: str,
+    source: str,
+    producer_sha256: str,
+    mayo_generation_commitment_sha256: str | None,
+) -> dict[str, object]:
+    """Validate the arm- and lineage-bound receipt config without aliases."""
+    if type(value) is not dict or set(value) != _V3_CONFIG_FIELDS:
+        raise ValueError("receipt-bound v3 training config schema is not exact")
+    producer_sha256 = _require_sha256(producer_sha256, "bridge producer")
+    expected = {
+        "schema_version": SSL_CONFIG_V3_SCHEMA,
+        "stage": stage,
+        "mode": mode,
+        "source": source,
+        "objective": "masked_span_smooth_l1_only",
+        "sample_rate_hz": 30.0,
+        "seeds": [0] if mode == "smoke" else [0, 1, 2],
+        "development_only": stage == MAYO_DEVELOPMENT_STAGE,
+        "optimizer": "adamw",
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "epochs": 1 if mode == "smoke" else 30,
+        "batch_policy": "deterministic_microbatch_full_partition_64",
+        "span_length": 4,
+        "spans_per_window": 2,
+        "device": "cpu",
+        "producer_sha256": producer_sha256,
+        "mayo_generation_commitment_sha256": (
+            mayo_generation_commitment_sha256
+        ),
+        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
+    }
+    if any(
+        not _exact_json_value(value[name], expected_item)
+        for name, expected_item in expected.items()
+    ):
+        raise ValueError("receipt-bound v3 training config is not mode-exact")
+    if stage == RAVDESS_STAGE:
+        arm_contract = (
+            "two_stage_fusion", ARM_SEMANTIC23, list(range(23)),
+            TARGET_SEMANTIC23, "same_seed_fresh",
+        )
+    elif stage == MAYO_DEVELOPMENT_STAGE:
+        _require_sha256(
+            mayo_generation_commitment_sha256,
+            "Mayo generation commitment",
+        )
+        experiment = value.get("experiment_kind")
+        arm = value.get("input_arm")
+        if experiment == "two_stage_fusion" and arm == ARM_FUSION:
+            initialization = "seed_matched_ravdess_prior"
+        elif (
+            experiment == "mayo_input_arm_ablation"
+            and arm in {ARM_BLENDSHAPE, ARM_LANDMARK, ARM_FUSION}
+            and mode == "formal"
+        ):
+            initialization = "same_seed_fresh"
+        else:
+            raise ValueError("Mayo experiment and input arm are incompatible")
+        active = validate_ssl_input_arm(stage, arm)
+        arm_contract = (
+            experiment, arm, list(active), TARGET_FULL95, initialization,
+        )
+    else:
+        raise ValueError("receipt-bound v3 stage is unsupported")
+    observed_contract = (
+        value.get("experiment_kind"), value.get("input_arm"),
+        value.get("input_active_indices"), value.get("target_schema"),
+        value.get("initialization_policy"),
+    )
+    if not _exact_json_value(list(observed_contract), list(arm_contract)):
+        raise ValueError("receipt-bound v3 arm or target contract is invalid")
+    _require_sha256(value.get("bridge_receipt_sha256"), "bridge receipt")
+    _require_sha256(value.get("receipt_hmac"), "bridge receipt HMAC")
     return dict(value)
 
 
@@ -1543,13 +1632,13 @@ def _snapshot_frozen_ssl_stage(
     artifacts: dict[str, dict[str, object]] = {}
     field_sets = {
         "manifest": _V2_MANIFEST_FIELDS,
-        "config": _V2_CONFIG_FIELDS,
+        "config": _V3_CONFIG_FIELDS,
         "split": _V2_SPLIT_FIELDS,
         "scaler": _V2_SCALER_FIELDS,
     }
     schemas = {
         "manifest": SSL_MANIFEST_V2_SCHEMA,
-        "config": SSL_CONFIG_V2_SCHEMA,
+        "config": SSL_CONFIG_V3_SCHEMA,
         "split": SSL_SPLIT_V2_SCHEMA,
         "scaler": SSL_SCALER_V2_SCHEMA,
     }
@@ -1585,8 +1674,19 @@ def _snapshot_frozen_ssl_stage(
     config = artifacts["config"]
     split_value = artifacts["split"]
     scaler_value = artifacts["scaler"]
-    _validate_v2_training_config(
-        config, stage=stage, mode=mode, source=source,
+    upstream_commitments = receipt.get("upstream_manifest_commitments")
+    mayo_commitment = (
+        upstream_commitments.get("generation_commitment_sha256")
+        if stage == "mayo" and type(upstream_commitments) is dict
+        else None
+    )
+    _validate_v3_training_config(
+        config,
+        stage=stage,
+        mode=mode,
+        source=source,
+        producer_sha256=receipt.get("producer_sha256"),
+        mayo_generation_commitment_sha256=mayo_commitment,
     )
     sample_ids = _exact_string_list(receipt.get("sample_ids"), "sample IDs")
     source_unit_ids = _exact_string_list(
@@ -1909,6 +2009,26 @@ def _validate_training_config(
     source: str,
     development_only: bool,
 ) -> dict[str, object]:
+    if (
+        type(value) is dict
+        and value.get("schema_version") == SSL_CONFIG_V3_SCHEMA
+    ):
+        mode = value.get("mode")
+        if type(mode) is not str or mode not in {"smoke", "formal"}:
+            raise ValueError("receipt-bound training config mode is invalid")
+        validated = _validate_v3_training_config(
+            value,
+            stage=stage,
+            mode=mode,
+            source=source,
+            producer_sha256=value.get("producer_sha256"),
+            mayo_generation_commitment_sha256=value.get(
+                "mayo_generation_commitment_sha256"
+            ),
+        )
+        if validated["development_only"] is not development_only:
+            raise ValueError("receipt-bound config development claim is invalid")
+        return validated
     if (
         type(value) is dict
         and value.get("schema_version") == SSL_CONFIG_V2_SCHEMA
@@ -3308,6 +3428,13 @@ def _train_ssl_stage_impl(
     epochs = int(training_config["epochs"])
     span_length = int(training_config["span_length"])
     spans_per_window = int(training_config["spans_per_window"])
+    input_arm = str(training_config.get(
+        "input_arm",
+        ARM_SEMANTIC23
+        if stage_evidence.stage == RAVDESS_STAGE
+        else ARM_FUSION,
+    ))
+    validate_ssl_input_arm(stage_evidence.stage, input_arm)
     if seed not in tuple(training_config["seeds"]):
         raise ValueError("training seed is not registered for this frozen run mode")
 
@@ -3391,6 +3518,7 @@ def _train_ssl_stage_impl(
                 source_frame_indices=train_source_indices,
                 reconstruction_mask=train_mask,
                 source=source_key,
+                input_arm=input_arm,
             )
             optimizer.step()
             train_trace.append({
@@ -3460,6 +3588,7 @@ def _train_ssl_stage_impl(
                     heldout_source_indices,
                     reconstruction_mask=heldout_mask,
                     source=source_key,
+                    input_arm=input_arm,
                 )
                 baseline_heldout = baseline_model(
                     heldout_scaled,
@@ -3468,6 +3597,7 @@ def _train_ssl_stage_impl(
                     heldout_source_indices,
                     reconstruction_mask=heldout_mask,
                     source=source_key,
+                    input_arm=input_arm,
                 )
                 fresh_untrained_heldout = fresh_untrained_model(
                     heldout_scaled,
@@ -3476,6 +3606,7 @@ def _train_ssl_stage_impl(
                     heldout_source_indices,
                     reconstruction_mask=heldout_mask,
                     source=source_key,
+                    input_arm=input_arm,
                 )
             report = reconstruction_report(
                 trained_heldout,
