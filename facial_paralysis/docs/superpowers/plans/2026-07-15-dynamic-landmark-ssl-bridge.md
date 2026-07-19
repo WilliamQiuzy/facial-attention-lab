@@ -8,6 +8,8 @@
 
 **Tech Stack:** Tests, analysis, RAVDESS authorization, bridge construction, and training use `/Users/williamqiu/opt/anaconda3/bin/python3` exactly: Python `3.9.12`, NumPy `1.26.4`, PyTorch `2.2.1`, OpenCV `4.8.1`, with MediaPipe intentionally absent. Mayo extraction alone uses `/Users/williamqiu/.cache/facial-paralysis/mediapipe-py310/bin/python` exactly: Python `3.10.2`, NumPy `1.26.4`, PyTorch `2.2.1`, MediaPipe `0.10.35`, OpenCV `4.11.0`. The implementation also uses existing script-style `Check` tests, SHA-256/HMAC provenance, and transactional local-only outputs.
 
+> **2026-07-18 execution amendment:** Real smoke exposed five Mayo windows with exactly eight valid frames: enough for two non-overlapping four-frame masks, but no observed context after masking. `valid_quantile_span4_context_v2` supersedes `valid_quantile_span4_v1` and requires every selected window to retain at least one valid unmasked frame in addition to the two mask spans. The trainer's fail-closed context requirement is unchanged; bridge and frozen artifacts produced under v1 are stale and must not be reused.
+
 ---
 
 ## Frozen scientific and data contracts
@@ -187,7 +189,7 @@ Expected: commit succeeds; `git status --short` prints nothing.
       ravdess_packets_per_trial: int = 1
       mayo_packets_per_recording: int = 16
       ravdess_selection: str = "uniform_floor_v1"
-      mayo_selection: str = "valid_quantile_span4_v1"
+      mayo_selection: str = "valid_quantile_span4_context_v2"
 
   def uniform_floor_starts(length: int, *, count: int, window: int = 32) -> np.ndarray: ...
   def packetize_ravdess_trajectory(...): ...

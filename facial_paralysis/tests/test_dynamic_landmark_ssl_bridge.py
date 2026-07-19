@@ -134,7 +134,7 @@ def test_policy_and_all_frozen_ravdess_lengths_packetize(c: Check):
     c.eq(policy.ravdess_packets_per_trial, 1)
     c.eq(policy.mayo_packets_per_recording, 16)
     c.eq(policy.ravdess_selection, "uniform_floor_v1")
-    c.eq(policy.mayo_selection, "valid_quantile_span4_v1")
+    c.eq(policy.mayo_selection, "valid_quantile_span4_context_v2")
 
     starts = uniform_floor_starts(88, count=4, window=32)
     c.true(bool(np.array_equal(starts, np.asarray([0, 18, 37, 56], np.int64))))
@@ -193,6 +193,20 @@ def test_mayo_valid_quantile_selector_is_exact_unique_and_fail_closed(c: Check):
         )
         for start in island_starts
     ), "every selected window preserves the frozen span-four quality gate")
+
+    no_context = np.zeros(32, dtype=np.bool_)
+    no_context[:4] = True
+    no_context[8:12] = True
+    c.true(
+        not bridge_core._window_has_two_mask_spans(no_context),
+        "two mask spans must leave at least one observed context frame",
+    )
+    with_context = no_context.copy()
+    with_context[31] = True
+    c.true(
+        bridge_core._window_has_two_mask_spans(with_context),
+        "two mask spans plus one observed context frame are eligible",
+    )
 
     sparse = np.zeros(512, dtype=np.bool_)
     sparse[::8] = True

@@ -53,7 +53,7 @@ class BridgePolicy:
     ravdess_packets_per_trial: int = 1
     mayo_packets_per_recording: int = 16
     ravdess_selection: str = "uniform_floor_v1"
-    mayo_selection: str = "valid_quantile_span4_v1"
+    mayo_selection: str = "valid_quantile_span4_context_v2"
 
     def __post_init__(self) -> None:
         if (
@@ -77,9 +77,9 @@ class BridgePolicy:
                 raise ValueError(f"bridge {name} must be exactly {expected}")
         if self.ravdess_selection != "uniform_floor_v1":
             raise ValueError("RAVDESS bridge selection must be uniform_floor_v1")
-        if self.mayo_selection != "valid_quantile_span4_v1":
+        if self.mayo_selection != "valid_quantile_span4_context_v2":
             raise ValueError(
-                "Mayo bridge selection must be valid_quantile_span4_v1"
+                "Mayo bridge selection must be valid_quantile_span4_context_v2"
             )
 
 
@@ -218,6 +218,10 @@ def mayo_valid_quantile_starts(
             mode="valid",
         ) == span_length
     )
+    observed_prefix = np.concatenate((
+        np.zeros(1, dtype=np.int64),
+        np.cumsum(mask, dtype=np.int64),
+    ))
     eligible: list[int] = []
     left = 0
     right = 0
@@ -237,6 +241,10 @@ def mayo_valid_quantile_starts(
             right - left >= spans_per_window
             and int(span_starts[right - 1]) - int(span_starts[left])
             >= span_length
+            and int(
+                observed_prefix[window_start + policy.window_length]
+                - observed_prefix[window_start]
+            ) > span_length * spans_per_window
         ):
             eligible.append(window_start)
 
@@ -773,7 +781,7 @@ def _window_has_two_mask_spans(value: np.ndarray, *, span_length: int = 4) -> bo
         else:
             available += run // span_length
             run = 0
-    return available >= 2
+    return available >= 2 and int(mask.sum()) > 2 * span_length
 
 
 def _require_mask_span_capacity(value: np.ndarray, stage: str) -> None:
