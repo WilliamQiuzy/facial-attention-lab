@@ -5525,5 +5525,67 @@ def test_focused_mayo_metric_quantization_is_cross_platform_canonical(c: Check):
     )
 
 
+def test_focused_mayo_persisted_fresh_state_survives_platform_rng_drift(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _focused_local_bridge_fixture(Path(td)) as (
+            module, bridge, key, producer,
+        ):
+            authorization = module._authorize_focused_bridge(
+                bridge, key, producer_sha256="a" * 64,
+            )
+            common = module._focused_common_contract(authorization)
+            result = module._train_focused_job(
+                authorization, common,
+                phase="smoke", arm="fusion", seed=0,
+            )
+            checkpoint = Path(td) / "persisted-fresh.pt"
+            module._write_focused_checkpoint(
+                checkpoint, result,
+                authorization=authorization,
+                common=common,
+                dependency_commitment_sha256=None,
+            )
+            loaded = module._load_focused_checkpoint(
+                checkpoint,
+                authorization=authorization,
+                common=common,
+                expected_phase="smoke",
+                expected_arm="fusion",
+                expected_seed=0,
+                dependency_commitment_sha256=None,
+            )
+            module._fresh_ablation_initialization = lambda _seed: (
+                (_ for _ in ()).throw(
+                    AssertionError("cross-platform audit regenerated fresh state")
+                )
+            )
+            recomputed = module._recompute_focused_checkpoint_metrics(
+                loaded, authorization=authorization, common=common,
+            )
+            c.eq(set(recomputed), {
+                "trained", "fresh_untrained", "train_mean",
+            })
+            c.eq(loaded["metadata"]["optimizer_initial_empty"], True)
+
+            tampered = dict(result)
+            tampered_pre = {
+                name: value.clone()
+                for name, value in result["pre_model_state"].items()
+            }
+            first = next(iter(tampered_pre))
+            tampered_pre[first].view(-1)[0] += 1.0
+            tampered["pre_model_state"] = tampered_pre
+            c.raises(
+                lambda: module._write_focused_checkpoint(
+                    Path(td) / "tampered-fresh.pt", tampered,
+                    authorization=authorization,
+                    common=common,
+                    dependency_commitment_sha256=None,
+                ),
+                ValueError,
+                "persisted fresh state tamper fails before checkpoint write",
+            )
+
+
 if __name__ == "__main__":
     run_all("test_dynamic_landmark_ssl", dict(globals()))

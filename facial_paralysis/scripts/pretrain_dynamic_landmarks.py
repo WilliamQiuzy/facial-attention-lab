@@ -74,8 +74,8 @@ _FOCUSED_METRIC_QUANTIZATION_POLICY = {
     "name": "decimal_round_half_even_v1",
     "decimal_places": 7,
 }
-_FOCUSED_CHECKPOINT_SCHEMA = "focused_mayo_checkpoint_v1"
-_FOCUSED_CHECKPOINT_RECEIPT_SCHEMA = "focused_mayo_checkpoint_receipt_v1"
+_FOCUSED_CHECKPOINT_SCHEMA = "focused_mayo_checkpoint_v2"
+_FOCUSED_CHECKPOINT_RECEIPT_SCHEMA = "focused_mayo_checkpoint_receipt_v2"
 _FOCUSED_REPORT_SCHEMAS = {
     "smoke": "focused_mayo_smoke_report_v1",
     "select": "focused_mayo_selection_report_v1",
@@ -1179,10 +1179,12 @@ def _train_focused_job(
         "config": config,
         "config_sha256": ssl_core._canonical_sha256(config),
         "model_state": post_state,
+        "pre_model_state": pre_state,
         "pre_state_sha256": pre_state_sha256,
         "post_state_sha256": post_state_sha256,
         "fresh_untrained_state_sha256": fresh_state_sha256,
         "optimizer_initial_sha256": optimizer_initial_sha256,
+        "optimizer_initial_empty": True,
         "train_mask_schedule_sha256": ssl_core._canonical_sha256(
             mask_schedule,
         ),
@@ -1202,8 +1204,10 @@ def _focused_checkpoint_metadata(
     common: Mapping[str, object],
     dependency_commitment_sha256: str | None,
 ) -> dict[str, object]:
-    if type(result) is not dict or not isinstance(
-        result.get("model_state"), Mapping,
+    if (
+        type(result) is not dict
+        or not isinstance(result.get("model_state"), Mapping)
+        or not isinstance(result.get("pre_model_state"), Mapping)
     ):
         raise ValueError("focused checkpoint result is malformed")
     phase = result.get("phase")
@@ -1218,6 +1222,11 @@ def _focused_checkpoint_metadata(
         or result.get("epochs") != contract["epochs"]
         or result.get("post_state_sha256")
         != ssl_core._model_state_sha256(result["model_state"])
+        or result.get("pre_state_sha256")
+        != ssl_core._model_state_sha256(result["pre_model_state"])
+        or result.get("fresh_untrained_state_sha256")
+        != result.get("pre_state_sha256")
+        or result.get("optimizer_initial_empty") is not True
     ):
         raise ValueError("focused checkpoint result violates its job contract")
     if dependency_commitment_sha256 is not None:
@@ -1233,7 +1242,7 @@ def _focused_checkpoint_metadata(
     elif metrics is not None:
         raise ValueError("focused smoke checkpoint cannot contain heldout metrics")
     metadata: dict[str, object] = {
-        "schema_version": "focused_mayo_checkpoint_metadata_v1",
+        "schema_version": "focused_mayo_checkpoint_metadata_v2",
         "phase": phase,
         "arm": arm,
         "seed": seed,
@@ -1261,6 +1270,7 @@ def _focused_checkpoint_metadata(
             "fresh_untrained_state_sha256",
         ),
         "optimizer_initial_sha256": result.get("optimizer_initial_sha256"),
+        "optimizer_initial_empty": result["optimizer_initial_empty"],
         "train_mask_schedule_sha256": result.get(
             "train_mask_schedule_sha256",
         ),
@@ -1297,13 +1307,17 @@ def _focused_checkpoint_metadata(
 
 
 def _focused_checkpoint_fingerprint(
-    metadata: Mapping[str, object], model_state: Mapping[str, torch.Tensor],
+    metadata: Mapping[str, object],
+    model_state: Mapping[str, torch.Tensor],
+    pre_model_state: Mapping[str, torch.Tensor],
 ) -> str:
     digest = hashlib.sha256()
     digest.update(b"focused-mayo-checkpoint-fingerprint-v1\0")
     digest.update(ssl_core._canonical_sha256(metadata).encode("ascii"))
     digest.update(b"\0")
     digest.update(ssl_core._model_state_sha256(model_state).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(ssl_core._model_state_sha256(pre_model_state).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -1339,12 +1353,17 @@ def _write_focused_checkpoint(
         dependency_commitment_sha256=dependency_commitment_sha256,
     )
     model_state = result["model_state"]
+    pre_model_state = result["pre_model_state"]
     assert isinstance(model_state, Mapping)
-    fingerprint = _focused_checkpoint_fingerprint(metadata, model_state)
+    assert isinstance(pre_model_state, Mapping)
+    fingerprint = _focused_checkpoint_fingerprint(
+        metadata, model_state, pre_model_state,
+    )
     payload = {
         "schema_version": _FOCUSED_CHECKPOINT_SCHEMA,
         "metadata": metadata,
         "model_state": model_state,
+        "pre_model_state": pre_model_state,
         "checkpoint_fingerprint": fingerprint,
     }
     output = io.BytesIO()
@@ -1461,14 +1480,22 @@ def _load_focused_checkpoint(
     except (RuntimeError, TypeError, ValueError) as exc:
         raise ValueError("focused checkpoint payload is unsafe") from exc
     if type(loaded) is not dict or set(loaded) != {
-        "schema_version", "metadata", "model_state", "checkpoint_fingerprint",
+        "schema_version", "metadata", "model_state", "pre_model_state",
+        "checkpoint_fingerprint",
     } or loaded.get("schema_version") != _FOCUSED_CHECKPOINT_SCHEMA:
         raise ValueError("focused checkpoint payload schema is not exact")
     metadata = loaded.get("metadata")
     model_state = loaded.get("model_state")
-    if type(metadata) is not dict or not isinstance(model_state, Mapping):
+    pre_model_state = loaded.get("pre_model_state")
+    if (
+        type(metadata) is not dict
+        or not isinstance(model_state, Mapping)
+        or not isinstance(pre_model_state, Mapping)
+    ):
         raise ValueError("focused checkpoint metadata or state is malformed")
-    fingerprint = _focused_checkpoint_fingerprint(metadata, model_state)
+    fingerprint = _focused_checkpoint_fingerprint(
+        metadata, model_state, pre_model_state,
+    )
     if (
         loaded.get("checkpoint_fingerprint") != fingerprint
         or receipt.get("checkpoint_fingerprint") != fingerprint
@@ -1480,6 +1507,11 @@ def _load_focused_checkpoint(
         or metadata.get("dependency_commitment_sha256")
         != dependency_commitment_sha256
         or metadata.get("trainer_sha256") != authorization.trainer_sha256
+        or metadata.get("pre_state_sha256")
+        != ssl_core._model_state_sha256(pre_model_state)
+        or metadata.get("fresh_untrained_state_sha256")
+        != ssl_core._model_state_sha256(pre_model_state)
+        or metadata.get("optimizer_initial_empty") is not True
         or metadata.get("metric_quantization_policy")
         != _FOCUSED_METRIC_QUANTIZATION_POLICY
         or metadata.get("runtime_environment", {}).get("device_type")
@@ -1488,6 +1520,8 @@ def _load_focused_checkpoint(
         raise ValueError("focused checkpoint payload contradicts its receipt")
     model = ssl_core.DynamicLandmarkSSLModel().to("cpu")
     model.load_state_dict(model_state, strict=True)
+    pre_model = ssl_core.DynamicLandmarkSSLModel().to("cpu")
+    pre_model.load_state_dict(pre_model_state, strict=True)
     if ssl_core._model_state_sha256(model.state_dict()) != metadata.get(
         "post_state_sha256",
     ):
@@ -1496,6 +1530,7 @@ def _load_focused_checkpoint(
     return {
         "metadata": metadata,
         "model_state": ssl_core._clone_model_state(model),
+        "pre_model_state": ssl_core._clone_model_state(pre_model),
         "checkpoint_fingerprint": fingerprint,
         "receipt": receipt,
         "receipt_file_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
@@ -1907,6 +1942,8 @@ def _validate_focused_selection_phase(
             != metadata.get("pre_state_sha256")
             or row.get("optimizer_initial_sha256")
             != metadata.get("optimizer_initial_sha256")
+            or row.get("optimizer_initial_empty") is not True
+            or metadata.get("optimizer_initial_empty") is not True
             or not ssl_core._exact_json_value(metadata.get("metrics"), metrics)
         ):
             raise ValueError("focused selection row contradicts its checkpoint")
@@ -2005,16 +2042,19 @@ def _validate_focused_winner_phase(
             dependency_commitment_sha256=str(selection_sha256),
         )
         metadata = loaded["metadata"]
-        expected_pre, expected_optimizer = _fresh_ablation_initialization(seed)
         if (
             row.get("checkpoint_fingerprint")
             != loaded["checkpoint_fingerprint"]
             or row.get("checkpoint_receipt_sha256")
             != loaded["receipt_file_sha256"]
-            or row.get("pre_state_sha256") != expected_pre
-            or row.get("optimizer_initial_sha256") != expected_optimizer
-            or metadata.get("pre_state_sha256") != expected_pre
-            or metadata.get("optimizer_initial_sha256") != expected_optimizer
+            or row.get("pre_state_sha256")
+            != metadata.get("pre_state_sha256")
+            or row.get("optimizer_initial_sha256")
+            != metadata.get("optimizer_initial_sha256")
+            or row.get("optimizer_initial_empty") is not True
+            or metadata.get("fresh_untrained_state_sha256")
+            != metadata.get("pre_state_sha256")
+            or metadata.get("optimizer_initial_empty") is not True
             or not ssl_core._exact_json_value(metadata.get("metrics"), metrics)
         ):
             raise ValueError("focused winner is not a fresh exact seed job")
@@ -2040,7 +2080,12 @@ def _recompute_focused_checkpoint_metrics(
 ) -> dict[str, object]:
     metadata = loaded.get("metadata")
     model_state = loaded.get("model_state")
-    if type(metadata) is not dict or not isinstance(model_state, Mapping):
+    pre_model_state = loaded.get("pre_model_state")
+    if (
+        type(metadata) is not dict
+        or not isinstance(model_state, Mapping)
+        or not isinstance(pre_model_state, Mapping)
+    ):
         raise ValueError("focused audit checkpoint is malformed")
     arm = metadata.get("arm")
     seed = metadata.get("seed")
@@ -2070,13 +2115,8 @@ def _recompute_focused_checkpoint_metrics(
         heldout_features, heldout_valid, source=ssl_core.MAYO_SOURCE,
     )
     with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(int(seed))
         fresh = ssl_core.DynamicLandmarkSSLModel().to("cpu")
-        fresh_state = ssl_core._clone_model_state(fresh)
-        if ssl_core._model_state_sha256(fresh_state) != metadata.get(
-            "pre_state_sha256",
-        ):
-            raise ValueError("focused audit fresh initialization changed")
+        fresh.load_state_dict(pre_model_state, strict=True)
         trained = ssl_core.DynamicLandmarkSSLModel().to("cpu")
         trained.load_state_dict(model_state, strict=True)
         trained.eval()
@@ -2246,6 +2286,7 @@ def _build_focused_selection(
             "checkpoint_receipt_sha256": loaded["receipt_file_sha256"],
             "pre_state_sha256": result["pre_state_sha256"],
             "optimizer_initial_sha256": result["optimizer_initial_sha256"],
+            "optimizer_initial_empty": True,
             "metrics": metrics,
         }
         rows.append(row)
@@ -2347,6 +2388,7 @@ def _build_focused_winner(
             "checkpoint_receipt_sha256": loaded["receipt_file_sha256"],
             "pre_state_sha256": result["pre_state_sha256"],
             "optimizer_initial_sha256": result["optimizer_initial_sha256"],
+            "optimizer_initial_empty": True,
             "metrics": metrics,
         })
         runtimes.append(_validate_focused_runtime_environment(
