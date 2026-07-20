@@ -1065,6 +1065,7 @@ def test_freeze_stage_can_bind_one_formal_mayo_ablation_arm(c: Check):
         c.eq(config["input_arm"], "landmark_only")
         c.eq(config["input_active_indices"], list(range(72, 95)))
         c.eq(config["initialization_policy"], "same_seed_fresh")
+        c.eq(config["heldout_mask_policy"], "frozen_common_heldout_mask_v1")
         bridge_core.verify_frozen_bridge_stage(
             run_root / "inputs",
             bridge,
@@ -1345,7 +1346,7 @@ def test_frozen_receipts_bind_artifacts_mappings_and_hmac(c: Check):
                     c.eq(artifact["producer_sha256"], producer)
                     c.eq(
                         artifact["heldout_mask_policy"],
-                        "frozen_common_heldout_mask_v1",
+                        "deterministic_recomputed_heldout_mask_seed_10000_v1",
                     )
             scaler = json.loads(
                 (inputs / "artifacts" / stage / "scaler.json").read_text("ascii")
@@ -1546,7 +1547,8 @@ def test_cli_has_exact_subcommands_and_live_mayo_roots_are_preoutput_required(c:
             subcommands.update(choices)
     c.eq(subcommands, {
         "initialize-mayo-key", "inventory", "build-bundles",
-        "freeze-stage", "verify-determinism",
+        "freeze-stage", "verify-determinism", "freeze-mayo-ablation",
+        "verify-mayo-ablation",
     })
 
     with tempfile.TemporaryDirectory() as temporary:
@@ -1562,6 +1564,16 @@ def test_cli_has_exact_subcommands_and_live_mayo_roots_are_preoutput_required(c:
                 "--run-id", "missing-root-check",
             ],
             "verify-determinism": ["--bridge-root", str(target)],
+            "freeze-mayo-ablation": [
+                "--bridge-root", str(target), "--run-root", str(
+                    cli.PRETRAINING_ROOT / "ablation" / "mayo-input-arm-v1"
+                ),
+            ],
+            "verify-mayo-ablation": [
+                "--bridge-root", str(target), "--run-root", str(
+                    cli.PRETRAINING_ROOT / "ablation" / "mayo-input-arm-v1"
+                ),
+            ],
         }
         for command, tail in commands.items():
             full = [command, *common, *tail]
@@ -2210,9 +2222,57 @@ def test_cli_synthetic_five_command_flow_is_private_and_deterministic(c: Check):
             "deterministic", "modes_ok", "privacy_ok", "size_ok",
         )))
 
+        ablation_run = pretraining / "ablation" / "mayo-input-arm-v1"
+        result, stdout, stderr = _captured_cli_call(cli, [
+            "freeze-mayo-ablation", *common, "--bridge-root", str(bridge),
+            "--run-root", str(ablation_run),
+        ])
+        c.eq(result, 0)
+        c.eq(stderr, "")
+        outputs.extend((stdout, stderr))
+        c.eq(json.loads(stdout), {
+            "arm_count": 3,
+            "mode": "formal",
+            "sample_count": 32,
+            "stage_count": 1,
+        })
+        c.true((ablation_run / "inputs" / "common" / "heldout_mask.npz").is_file())
+        frozen_ablation = _tree_bytes(ablation_run)
+        c.raises(lambda: cli.main([
+            "freeze-mayo-ablation", *common, "--bridge-root", str(bridge),
+            "--run-root", str(ablation_run),
+        ]), ValueError, "the CLI never replaces committed ablation inputs")
+        c.eq(_tree_bytes(ablation_run), frozen_ablation)
+
+        result, stdout, stderr = _captured_cli_call(cli, [
+            "verify-mayo-ablation", *common, "--bridge-root", str(bridge),
+            "--run-root", str(ablation_run),
+        ])
+        c.eq(result, 0)
+        c.eq(stderr, "")
+        outputs.extend((stdout, stderr))
+        ablation_verification = json.loads(stdout)
+        c.eq(set(ablation_verification), {
+            "arm_count", "deterministic", "heldout_mask_sha256", "mode",
+            "modes_ok", "non_0600_private_file_count", "privacy_ok",
+            "sample_count", "stage_count",
+        })
+        c.eq(ablation_verification["arm_count"], 3)
+        c.eq(ablation_verification["mode"], "formal")
+        c.true(all(ablation_verification[name] for name in (
+            "deterministic", "modes_ok", "privacy_ok",
+        )))
+
+        wrong_ablation_run = pretraining / "ablation" / "wrong"
+        c.raises(lambda: cli.main([
+            "freeze-mayo-ablation", *common, "--bridge-root", str(bridge),
+            "--run-root", str(wrong_ablation_run),
+        ]), ValueError, "ablation freeze is bound to its canonical namespace")
+        c.true(not wrong_ablation_run.exists())
+
         persisted = b"\n".join(
             path.read_bytes()
-            for root in (bridge, run_root)
+            for root in (bridge, run_root, ablation_run)
             for path in root.rglob("*") if path.is_file()
         ).decode("latin1")
         emitted = "".join(outputs)

@@ -49,9 +49,11 @@ from src.pretraining import dynamic_landmark_ssl as _dynamic_landmark_ssl  # noq
 from src.pretraining.dynamic_landmark_ssl_bridge import (  # noqa: E402
     build_bridge_bundles,
     freeze_bridge_stage,
+    freeze_mayo_ablation_inputs,
     initialize_owner_only_key,
     verify_bridge_generation,
     verify_frozen_bridge_stage,
+    verify_frozen_mayo_ablation_inputs,
 )
 
 
@@ -1621,6 +1623,12 @@ def _parser() -> argparse.ArgumentParser:
     _add_authorization_arguments(verify)
     verify.add_argument("--bridge-root", type=Path, required=True)
     verify.add_argument("--run-root", type=Path)
+
+    for name in ("freeze-mayo-ablation", "verify-mayo-ablation"):
+        ablation = subparsers.add_parser(name)
+        _add_authorization_arguments(ablation)
+        ablation.add_argument("--bridge-root", type=Path, required=True)
+        ablation.add_argument("--run-root", type=Path, required=True)
     return parser
 
 
@@ -1646,6 +1654,16 @@ def _mode_for_committed_run_root(value: Path) -> str:
     if observed.parent == smoke and _SAFE_RUN_ID.fullmatch(observed.name):
         return "smoke"
     raise ValueError("run-root verification is confined to a canonical mode namespace")
+
+
+def _mayo_ablation_run_root(value: Path) -> Path:
+    observed = Path(os.path.abspath(os.path.expanduser(os.fspath(value))))
+    expected = Path(os.path.abspath(os.path.expanduser(os.fspath(
+        PRETRAINING_ROOT / "ablation" / "mayo-input-arm-v1"
+    ))))
+    if observed != expected:
+        raise ValueError("Mayo ablation run root is not the canonical path")
+    return _canonical(PRETRAINING_ROOT) / "ablation" / "mayo-input-arm-v1"
 
 
 @dataclass(frozen=True)
@@ -3125,6 +3143,99 @@ def _run_mayo_cli_captured(
     return _CapturedMayoCommandResult(json_line=result_json_line)
 
 
+def _verify_mayo_ablation_cli(
+    args: argparse.Namespace,
+    *,
+    run_root: Path,
+    bridge: Path,
+    ravdess_authorizer: Callable[[], object],
+    mayo_authorizer: Callable[[], object],
+    producer_sha256: str,
+) -> dict[str, object]:
+    inventory_before: tuple[object, object] | None = None
+    scan_result: tuple[bool, bool, int] | None = None
+
+    def capture_inventory_before() -> None:
+        nonlocal inventory_before
+        if inventory_before is not None:
+            raise ValueError("live privacy inventory was captured more than once")
+        inventory_before = _live_privacy_inventories(args)
+
+    def finalize_under_destination_locks() -> None:
+        nonlocal scan_result
+        if inventory_before is None:
+            raise ValueError("live privacy inventory facts are missing")
+        inventory_after = _live_privacy_inventories(args)
+        if inventory_before[0] != inventory_after[0]:
+            raise ValueError("live privacy inventory changed during verification")
+        ravdess_captured = tuple(getattr(
+            ravdess_authorizer, "captured_authorizations", (),
+        ))
+        mayo_captured = tuple(getattr(
+            mayo_authorizer, "captured_authorizations", (),
+        ))
+        if not ravdess_captured or not mayo_captured:
+            raise ValueError("live privacy authorization facts are missing")
+        if inventory_before[1] is None and inventory_after[1] is None:
+            mayo_privacy_inventory = _authorized_mayo_privacy_inventory(
+                mayo_captured,
+            )
+        else:
+            if inventory_before[1] != inventory_after[1]:
+                raise ValueError("live privacy inventory changed during verification")
+            mayo_privacy_inventory = inventory_after[1]
+        forbidden = _build_live_forbidden_tokens(
+            mayo_roots=(args.mayo_data_root, args.mayo_existing_export_root),
+            ravdess_authorization=ravdess_captured,
+            mayo_authorization=mayo_captured,
+            ravdess_inventory=inventory_before[0],
+            mayo_inventory=mayo_privacy_inventory,
+        )
+        scan_result = _scan_private_trees(
+            (bridge, run_root), forbidden=forbidden,
+        )
+
+    result = verify_frozen_mayo_ablation_inputs(
+        run_root / "inputs",
+        bridge,
+        mayo_input_arm="fusion",
+        ravdess_authorizer=ravdess_authorizer,
+        mayo_authorizer=mayo_authorizer,
+        producer_sha256=producer_sha256,
+        before_authorization=capture_inventory_before,
+        finalize_locked=finalize_under_destination_locks,
+    )
+    if scan_result is None:
+        raise ValueError("locked privacy scan result is missing")
+    modes_ok, privacy_ok, non_0600 = scan_result
+    summary = {
+        "arm_count": 3,
+        "deterministic": True,
+        "heldout_mask_sha256": result["heldout_mask_sha256"],
+        "mode": result["mode"],
+        "modes_ok": modes_ok,
+        "non_0600_private_file_count": non_0600,
+        "privacy_ok": privacy_ok,
+        "sample_count": result["sample_count"],
+        "stage_count": result["stage_count"],
+    }
+    if (
+        set(summary) != {
+            "arm_count", "deterministic", "heldout_mask_sha256", "mode",
+            "modes_ok", "non_0600_private_file_count", "privacy_ok",
+            "sample_count", "stage_count",
+        }
+        or summary["mode"] != "formal"
+        or summary["arm_count"] != 3
+        or not all(bool(summary[name]) for name in (
+            "deterministic", "modes_ok", "privacy_ok",
+        ))
+        or summary["non_0600_private_file_count"] != 0
+    ):
+        raise ValueError("Mayo ablation verification did not satisfy all claims")
+    return summary
+
+
 def _run_mayo_cli_operation(args: argparse.Namespace) -> object:
     ravdess_authorizer, mayo_authorizer = _authorization_factories(args)
     producer = _producer_sha256()
@@ -3160,6 +3271,24 @@ def _run_mayo_cli_operation(args: argparse.Namespace) -> object:
     bridge = _require_exact_path(
         args.bridge_root, canonical_bridge, "bridge root",
     )
+    if args.command in {"freeze-mayo-ablation", "verify-mayo-ablation"}:
+        run_root = _mayo_ablation_run_root(args.run_root)
+        if args.command == "freeze-mayo-ablation":
+            return freeze_mayo_ablation_inputs(
+                run_root,
+                bridge,
+                ravdess_authorizer=ravdess_authorizer,
+                mayo_authorizer=mayo_authorizer,
+                producer_sha256=producer,
+            )
+        return _verify_mayo_ablation_cli(
+            args,
+            run_root=run_root,
+            bridge=bridge,
+            ravdess_authorizer=ravdess_authorizer,
+            mayo_authorizer=mayo_authorizer,
+            producer_sha256=producer,
+        )
     if args.command == "freeze-stage":
         run_root = _run_root(args.mode, args.run_id)
         return freeze_bridge_stage(

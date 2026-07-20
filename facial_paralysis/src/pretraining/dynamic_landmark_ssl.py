@@ -1442,6 +1442,15 @@ def _validate_v3_training_config(
     if type(value) is not dict or set(value) != _V3_CONFIG_FIELDS:
         raise ValueError("receipt-bound v3 training config schema is not exact")
     producer_sha256 = _require_sha256(producer_sha256, "bridge producer")
+    experiment = value.get("experiment_kind")
+    heldout_mask_policy = (
+        "frozen_common_heldout_mask_v1"
+        if (
+            stage == MAYO_DEVELOPMENT_STAGE
+            and experiment == "mayo_input_arm_ablation"
+        )
+        else "deterministic_recomputed_heldout_mask_seed_10000_v1"
+    )
     expected = {
         "schema_version": SSL_CONFIG_V3_SCHEMA,
         "stage": stage,
@@ -1463,7 +1472,7 @@ def _validate_v3_training_config(
         "mayo_generation_commitment_sha256": (
             mayo_generation_commitment_sha256
         ),
-        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
+        "heldout_mask_policy": heldout_mask_policy,
     }
     if any(
         not _exact_json_value(value[name], expected_item)
@@ -1480,7 +1489,6 @@ def _validate_v3_training_config(
             mayo_generation_commitment_sha256,
             "Mayo generation commitment",
         )
-        experiment = value.get("experiment_kind")
         arm = value.get("input_arm")
         if experiment == "two_stage_fusion" and arm == ARM_FUSION:
             initialization = "seed_matched_ravdess_prior"

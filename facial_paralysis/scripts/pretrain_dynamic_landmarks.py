@@ -46,6 +46,7 @@ _MAX_EXACT_RESULT_TREE_ENTRIES = 64
 _MAX_EXACT_RESULT_TREE_DEPTH = 4
 _MAX_EXACT_RESULT_TREE_REGULAR_BYTES = 128 * 1024 * 1024
 _ABLATION_ARMS = (ARM_BLENDSHAPE, ARM_LANDMARK, ARM_FUSION)
+_ABLATION_BASELINES = ("trained", "fresh_untrained", "train_mean")
 _FORMAL_SEEDS = (0, 1, 2)
 _MAYO_ABLATION_NAMESPACE = (
     PRETRAINING_ROOT / "ablation" / "mayo-input-arm-v1"
@@ -272,6 +273,30 @@ def _finite_nonnegative(value: object) -> float:
     return observed
 
 
+def _normalize_ablation_metric(value: object) -> dict[str, object]:
+    if (
+        type(value) is not dict
+        or set(value) != {
+            "raw_mae", "standardized_mae", "standardized_smooth_l1",
+        }
+        or type(value["raw_mae"]) is not dict
+        or set(value["raw_mae"]) != {
+            "blendshape72", "clinical23", "equal_block_macro", "full95",
+        }
+    ):
+        raise ValueError("ablation common-target metric schema is not exact")
+    return {
+        "raw_mae": {
+            name: _finite_nonnegative(metric)
+            for name, metric in value["raw_mae"].items()
+        },
+        "standardized_mae": _finite_nonnegative(value["standardized_mae"]),
+        "standardized_smooth_l1": _finite_nonnegative(
+            value["standardized_smooth_l1"]
+        ),
+    }
+
+
 def _ablation_statistics(
     runs: list[dict[str, object]],
 ) -> tuple[dict[str, object], dict[str, object]]:
@@ -288,28 +313,13 @@ def _ablation_statistics(
             or seed not in _FORMAL_SEEDS
             or isinstance(seed, bool)
             or type(metrics) is not dict
-            or set(metrics) != {
-                "raw_mae", "standardized_mae", "standardized_smooth_l1",
-            }
-            or type(metrics["raw_mae"]) is not dict
-            or set(metrics["raw_mae"]) != {
-                "blendshape72", "clinical23", "equal_block_macro", "full95",
-            }
+            or set(metrics) != set(_ABLATION_BASELINES)
             or (arm, seed) in indexed
         ):
             raise ValueError("ablation metric matrix is not exact")
-        normalized_raw = {
-            name: _finite_nonnegative(value)
-            for name, value in metrics["raw_mae"].items()
-        }
         indexed[(str(arm), int(seed))] = {
-            "raw_mae": normalized_raw,
-            "standardized_mae": _finite_nonnegative(
-                metrics["standardized_mae"]
-            ),
-            "standardized_smooth_l1": _finite_nonnegative(
-                metrics["standardized_smooth_l1"]
-            ),
+            baseline: _normalize_ablation_metric(metrics[baseline])
+            for baseline in _ABLATION_BASELINES
         }
     if set(indexed) != {
         (arm, seed) for arm in _ABLATION_ARMS for seed in _FORMAL_SEEDS
@@ -325,23 +335,29 @@ def _ablation_statistics(
     aggregate: dict[str, object] = {}
     for arm in _ABLATION_ARMS:
         aggregate[arm] = {
-            "raw_mae": {
-                name: summarize([
-                    indexed[(arm, seed)]["raw_mae"][name]  # type: ignore[index]
+            baseline: {
+                "raw_mae": {
+                    name: summarize([
+                        indexed[(arm, seed)][baseline]["raw_mae"][name]  # type: ignore[index]
+                        for seed in _FORMAL_SEEDS
+                    ])
+                    for name in (
+                        "blendshape72", "clinical23", "equal_block_macro",
+                        "full95",
+                    )
+                },
+                "standardized_mae": summarize([
+                    indexed[(arm, seed)][baseline]["standardized_mae"]  # type: ignore[index]
                     for seed in _FORMAL_SEEDS
-                ])
-                for name in (
-                    "blendshape72", "clinical23", "equal_block_macro", "full95",
-                )
-            },
-            "standardized_mae": summarize([
-                indexed[(arm, seed)]["standardized_mae"]  # type: ignore[list-item]
-                for seed in _FORMAL_SEEDS
-            ]),
-            "standardized_smooth_l1": summarize([
-                indexed[(arm, seed)]["standardized_smooth_l1"]  # type: ignore[list-item]
-                for seed in _FORMAL_SEEDS
-            ]),
+                ]),
+                "standardized_smooth_l1": summarize([
+                    indexed[(arm, seed)][baseline][
+                        "standardized_smooth_l1"
+                    ]  # type: ignore[index]
+                    for seed in _FORMAL_SEEDS
+                ]),
+            }
+            for baseline in _ABLATION_BASELINES
         }
 
     paired: dict[str, object] = {}
@@ -356,8 +372,8 @@ def _ablation_statistics(
         ):
             values = {
                 str(seed): (
-                    indexed[(left, seed)]["raw_mae"][name]  # type: ignore[index]
-                    - indexed[(right, seed)]["raw_mae"][name]  # type: ignore[index]
+                    indexed[(left, seed)]["trained"]["raw_mae"][name]  # type: ignore[index]
+                    - indexed[(right, seed)]["trained"]["raw_mae"][name]  # type: ignore[index]
                 )
                 for seed in _FORMAL_SEEDS
             }
@@ -368,8 +384,8 @@ def _ablation_statistics(
         for name in ("standardized_mae", "standardized_smooth_l1"):
             values = {
                 str(seed): (
-                    indexed[(left, seed)][name]  # type: ignore[operator]
-                    - indexed[(right, seed)][name]  # type: ignore[operator]
+                    indexed[(left, seed)]["trained"][name]  # type: ignore[index]
+                    - indexed[(right, seed)]["trained"][name]  # type: ignore[index]
                 )
                 for seed in _FORMAL_SEEDS
             }
@@ -478,32 +494,17 @@ def _fresh_ablation_initialization(seed: int) -> tuple[str, str]:
     return model_digest, optimizer_digest
 
 
-def _ablation_trained_metrics(result: object) -> dict[str, object]:
+def _ablation_common_target_metrics(result: object) -> dict[str, object]:
     report = getattr(result, "heldout_report", None)
     if type(report) is not dict:
         raise ValueError("ablation training report is unavailable")
     common = report.get("common_target_metrics")
-    if type(common) is not dict or type(common.get("trained")) is not dict:
+    if type(common) is not dict or set(common) != set(_ABLATION_BASELINES):
         raise ValueError("ablation common-target metrics are unavailable")
-    trained = common["trained"]
     metrics = {
-        "raw_mae": dict(trained["raw_mae"]),
-        "standardized_mae": trained["standardized_mae"],
-        "standardized_smooth_l1": trained["standardized_smooth_l1"],
+        baseline: _normalize_ablation_metric(common[baseline])
+        for baseline in _ABLATION_BASELINES
     }
-    # Reuse the exact statistics validator as the metric-shape oracle.
-    if (
-        set(metrics["raw_mae"]) != {
-            "blendshape72", "clinical23", "equal_block_macro", "full95",
-        }
-        or any(
-            _finite_nonnegative(value) < 0.0
-            for value in metrics["raw_mae"].values()
-        )
-    ):
-        raise ValueError("ablation trained metrics are not exact")
-    _finite_nonnegative(metrics["standardized_mae"])
-    _finite_nonnegative(metrics["standardized_smooth_l1"])
     return metrics
 
 
@@ -1812,7 +1813,7 @@ def _run_mayo_ablation(
                 publication_lineages.append((
                     arm, seed, path, checkpoint_receipt, fingerprint,
                 ))
-                metrics = _quiet_call(_ablation_trained_metrics, result)
+                metrics = _quiet_call(_ablation_common_target_metrics, result)
                 metric_rows.append({
                     "arm": arm,
                     "seed": seed,
@@ -1833,7 +1834,7 @@ def _run_mayo_ablation(
                     "pre_state_sha256": model_init,
                     "optimizer_initial_state_sha256": optimizer_init,
                     "heldout_mask_sha256": common_mask_sha256,
-                    "metrics": metrics,
+                    "common_target_metrics": metrics,
                     "per_recording_metrics": per_recording,
                 })
 

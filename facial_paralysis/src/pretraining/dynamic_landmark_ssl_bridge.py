@@ -2673,7 +2673,14 @@ def _prepare_frozen_stage(
                 "generation_commitment_sha256"
             ]
         ),
-        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
+        "heldout_mask_policy": (
+            "frozen_common_heldout_mask_v1"
+            if (
+                stage.name == "mayo"
+                and experiment_kind == "mayo_input_arm_ablation"
+            )
+            else "deterministic_recomputed_heldout_mask_seed_10000_v1"
+        ),
     }
     split: dict[str, object] = {
         "schema_version": _SSL_SPLIT_SCHEMA,

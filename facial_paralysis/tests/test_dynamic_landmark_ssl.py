@@ -732,7 +732,6 @@ def test_config_v3_binds_stage_arm_target_initialization_and_producer(c: Check):
         "spans_per_window": 2,
         "device": "cpu",
         "producer_sha256": producer,
-        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
         "bridge_receipt_sha256": "c" * 64,
         "receipt_hmac": "d" * 64,
     }
@@ -747,6 +746,9 @@ def test_config_v3_binds_stage_arm_target_initialization_and_producer(c: Check):
         "target_schema": "semantic23_v1",
         "initialization_policy": "same_seed_fresh",
         "mayo_generation_commitment_sha256": None,
+        "heldout_mask_policy": (
+            "deterministic_recomputed_heldout_mask_seed_10000_v1"
+        ),
     }
     mayo = {
         **common,
@@ -759,6 +761,7 @@ def test_config_v3_binds_stage_arm_target_initialization_and_producer(c: Check):
         "target_schema": "mediapipe72_plus_clinical23_full95_v1",
         "initialization_policy": "same_seed_fresh",
         "mayo_generation_commitment_sha256": commitment,
+        "heldout_mask_policy": "frozen_common_heldout_mask_v1",
     }
     c.eq(
         ssl_core._validate_v3_training_config(
@@ -3736,24 +3739,41 @@ def test_mayo_ablation_result_contract_and_paired_statistics(c: Check):
     for arm_index, arm in enumerate(arms):
         for seed in seeds:
             base = float(arm_index * 10 + seed)
+
+            def metric(offset):
+                return {
+                    "raw_mae": {
+                        "blendshape72": base + offset + 1.0,
+                        "clinical23": base + offset + 2.0,
+                        "equal_block_macro": base + offset + 1.5,
+                        "full95": base + offset + 1.25,
+                    },
+                    "standardized_mae": base + offset + 3.0,
+                    "standardized_smooth_l1": base + offset + 4.0,
+                }
+
             runs.append({
                 "arm": arm,
                 "seed": seed,
                 "metrics": {
-                    "raw_mae": {
-                        "blendshape72": base + 1.0,
-                        "clinical23": base + 2.0,
-                        "equal_block_macro": base + 1.5,
-                        "full95": base + 1.25,
-                    },
-                    "standardized_mae": base + 3.0,
-                    "standardized_smooth_l1": base + 4.0,
+                    "trained": metric(0.0),
+                    "fresh_untrained": metric(100.0),
+                    "train_mean": metric(200.0),
                 },
             })
     aggregate, paired = module._ablation_statistics(runs)
     c.eq(set(aggregate), set(arms))
-    c.eq(aggregate["fusion"]["raw_mae"]["full95"], {
+    c.eq(set(aggregate["fusion"]), {
+        "trained", "fresh_untrained", "train_mean",
+    })
+    c.eq(aggregate["fusion"]["trained"]["raw_mae"]["full95"], {
         "mean": 22.25, "sd": 1.0,
+    })
+    c.eq(aggregate["fusion"]["fresh_untrained"]["raw_mae"]["full95"], {
+        "mean": 122.25, "sd": 1.0,
+    })
+    c.eq(aggregate["fusion"]["train_mean"]["raw_mae"]["full95"], {
+        "mean": 222.25, "sd": 1.0,
     })
     fusion_minus_landmark = paired["fusion_minus_landmark_only"]
     c.eq(fusion_minus_landmark["raw_mae"]["clinical23"]["by_seed"], {
@@ -3761,6 +3781,14 @@ def test_mayo_ablation_result_contract_and_paired_statistics(c: Check):
     })
     c.eq(fusion_minus_landmark["raw_mae"]["clinical23"]["mean"], 10.0)
     c.eq(fusion_minus_landmark["raw_mae"]["clinical23"]["sd"], 0.0)
+    c.raises(
+        lambda: module._ablation_statistics([
+            {**run, "metrics": {"trained": run["metrics"]["trained"]}}
+            for run in runs
+        ]),
+        ValueError,
+        "all preregistered baselines are required in every run",
+    )
 
 
 def test_mayo_ablation_runner_publishes_one_exact_nine_job_tree(c: Check):
@@ -3822,13 +3850,19 @@ def test_mayo_ablation_runner_publishes_one_exact_nine_job_tree(c: Check):
                     {report["shared_heldout_mask_sha256"]},
                 )
                 c.true(all(run["optimizer_steps"] == 30 for run in seeded))
-                c.true(all(set(run["metrics"]["raw_mae"]) == {
+                c.true(all(set(run["common_target_metrics"]) == {
+                    "trained", "fresh_untrained", "train_mean",
+                } for run in seeded))
+                c.true(all(set(run["common_target_metrics"]["trained"]["raw_mae"]) == {
                     "blendshape72", "clinical23", "equal_block_macro", "full95",
                 } for run in seeded))
                 c.true(all("per_recording_metrics" in run for run in seeded))
             c.eq(set(report["aggregate"]), {
                 "blendshape_only", "landmark_only", "fusion",
             })
+            c.true(all(set(report["aggregate"][arm]) == {
+                "trained", "fresh_untrained", "train_mean",
+            } for arm in report["aggregate"]))
             c.eq(set(report["paired_differences"]), {
                 "landmark_only_minus_blendshape_only",
                 "fusion_minus_blendshape_only",
