@@ -5190,17 +5190,23 @@ def test_focused_mayo_local_dispatch_never_enters_live_authorization(c: Check):
     module = _load_runner()
     calls: list[tuple[str, str]] = []
     events: list[str] = []
+    canonical_parser = module._parser()
 
-    def formal_producer():
-        events.append("formal_producer")
-        return "e" * 64
+    def forbidden_formal_producer():
+        raise AssertionError("focused dispatch computed the formal producer")
 
     def focused_trainer():
         events.append("focused_trainer")
         return "f" * 64
 
-    module._producer_sha256 = formal_producer
+    class RecordingParser:
+        def parse_args(self, argv):
+            events.append("parse")
+            return canonical_parser.parse_args(argv)
+
+    module._producer_sha256 = forbidden_formal_producer
     module._focused_trainer_sha256 = focused_trainer
+    module._parser = RecordingParser
 
     def forbidden_live(_args):
         raise AssertionError("local focused phases cannot construct live authorizers")
@@ -5224,10 +5230,41 @@ def test_focused_mayo_local_dispatch_never_enters_live_authorization(c: Check):
         ("winner", "f" * 64),
     ])
     c.eq(events, [
-        "formal_producer", "focused_trainer", "focused_run",
-        "formal_producer", "focused_trainer", "focused_run",
-        "formal_producer", "focused_trainer", "focused_run",
+        "focused_trainer", "parse", "focused_run",
+        "focused_trainer", "parse", "focused_run",
+        "focused_trainer", "parse", "focused_run",
     ])
+
+    class ParsedFormal:
+        def parse_args(self, _argv):
+            events.append("parse_mismatch")
+            return argparse.Namespace(command="two-stage")
+
+    module._parser = ParsedFormal
+    c.raises(
+        lambda: module.main(["focused-mayo"]),
+        ValueError,
+        "a focused argv hint cannot parse as a formal command",
+    )
+    c.eq(events[-2:], ["focused_trainer", "parse_mismatch"])
+
+    class ParsedFocused:
+        def parse_args(self, _argv):
+            events.append("parse_reverse_mismatch")
+            return argparse.Namespace(command="focused-mayo", phase="smoke")
+
+    def formal_producer():
+        events.append("formal_producer")
+        return "e" * 64
+
+    module._producer_sha256 = formal_producer
+    module._parser = ParsedFocused
+    c.raises(
+        lambda: module.main(["dry-run"]),
+        ValueError,
+        "a non-focused argv hint cannot parse as focused Mayo",
+    )
+    c.eq(events[-2:], ["formal_producer", "parse_reverse_mismatch"])
 
 
 @contextmanager

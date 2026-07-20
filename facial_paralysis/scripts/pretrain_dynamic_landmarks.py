@@ -4537,8 +4537,21 @@ def _run_focused_phase(
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
-    producer_sha256 = _producer_sha256()
-    args = _parser().parse_args(argv)
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    focused_hint = bool(
+        arguments
+        and type(arguments[0]) is str
+        and arguments[0] == "focused-mayo"
+    )
+    producer_sha256: str | None = None
+    focused_trainer_sha256: str | None = None
+    if focused_hint:
+        focused_trainer_sha256 = _focused_trainer_sha256()
+    else:
+        producer_sha256 = _producer_sha256()
+    args = _parser().parse_args(list(arguments))
+    if (args.command == "focused-mayo") is not focused_hint:
+        raise ValueError("pretraining command hint and parsed command disagree")
     if args.command == "dry-run":
         result = _formal_job_matrix()
         print(json.dumps(
@@ -4546,8 +4559,10 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         ))
         return result
     if args.command == "focused-mayo":
+        if focused_trainer_sha256 is None:
+            raise RuntimeError("focused trainer was not frozen before parsing")
         result = _run_focused_phase(
-            args, producer_sha256=_focused_trainer_sha256(),
+            args, producer_sha256=focused_trainer_sha256,
         )
         encoded = json.dumps(
             result, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -4556,6 +4571,8 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         return result
     if args.command not in {"two-stage", "mayo-ablation"}:
         raise ValueError("unsupported pretraining command")
+    if producer_sha256 is None:
+        raise RuntimeError("formal producer was not frozen before parsing")
     from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
 
     captured = inputs_cli._run_mayo_cli_captured(
