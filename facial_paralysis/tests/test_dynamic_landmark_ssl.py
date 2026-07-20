@@ -5490,16 +5490,22 @@ def test_focused_mayo_metric_quantization_is_cross_platform_canonical(c: Check):
     module = _load_runner()
     c.eq(module._FOCUSED_METRIC_QUANTIZATION_POLICY, {
         "name": "decimal_round_half_even_v1",
-        "decimal_places": 7,
+        "decimal_places": 6,
     })
+    for h200, mac in (
+        (0.3178904, 0.3178905),
+        (0.3121977, 0.3121978),
+        (0.3309565, 0.3309564),
+        (0.2456530, 0.2456531),
+    ):
+        c.eq(
+            module._canonical_focused_metric(h200),
+            module._canonical_focused_metric(mac),
+        )
     baseline = 0.12345631
-    c.eq(
-        module._canonical_focused_metric(baseline),
-        module._canonical_focused_metric(baseline + 9e-10),
-    )
     c.true(
         module._canonical_focused_metric(baseline)
-        != module._canonical_focused_metric(baseline + 2e-7)
+        != module._canonical_focused_metric(baseline + 2.1e-6)
     )
     rows = [
         {"seed": seed, "metrics": {

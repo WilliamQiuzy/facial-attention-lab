@@ -72,7 +72,7 @@ _FOCUSED_PRIMARY_METRIC = (
 )
 _FOCUSED_METRIC_QUANTIZATION_POLICY = {
     "name": "decimal_round_half_even_v1",
-    "decimal_places": 7,
+    "decimal_places": 6,
 }
 _FOCUSED_CHECKPOINT_SCHEMA = "focused_mayo_checkpoint_v2"
 _FOCUSED_CHECKPOINT_RECEIPT_SCHEMA = "focused_mayo_checkpoint_receipt_v2"
