@@ -5505,6 +5505,38 @@ def test_public_semantic_gate_requires_canonical_ids_and_exact_mayo_v4(c: Check)
         c.true(not output.exists(), "invalid Mayo closure never publishes")
 
 
+def test_mayo_v4_validator_snapshots_mutable_commitment(c: Check):
+    _ravdess, mayo = _synthetic_authorizations()
+    original = mayo.commitment
+    validated = bridge_core._validate_exact_mayo_v4_authorization(
+        mayo,
+        recording_count=mayo.recording_count,
+        arkit_count=mayo.arkit_count,
+        collection_sha256=mayo.collection_manifest_sha256,
+        exposure_sha256=mayo.exposure_manifest_sha256,
+    )
+    before = bridge_core._json_sha256(validated)
+    c.true(validated is not original,
+           "validated commitment must not alias upstream mutable state")
+
+    original["source_attestation_sha256"] = "0" * 64
+    c.eq(validated["source_attestation_sha256"], "7" * 64,
+         "post-validation upstream mutation cannot change the snapshot")
+    c.eq(bridge_core._json_sha256(validated), before,
+         "publication digest remains bound to validated bytes")
+    c.raises(
+        lambda: bridge_core._validate_exact_mayo_v4_authorization(
+            mayo,
+            recording_count=mayo.recording_count,
+            arkit_count=mayo.arkit_count,
+            collection_sha256=mayo.collection_manifest_sha256,
+            exposure_sha256=mayo.exposure_manifest_sha256,
+        ),
+        ValueError,
+        "mutated live authorization is rejected on revalidation",
+    )
+
+
 def test_build_freeze_and_verify_reject_exact_mayo_v3_downgrade(c: Check):
     ravdess, mayo = _synthetic_authorizations()
     producer = "f" * 64

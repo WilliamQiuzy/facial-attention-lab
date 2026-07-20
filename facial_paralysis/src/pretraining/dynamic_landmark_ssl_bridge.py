@@ -592,6 +592,11 @@ def _validate_exact_mayo_v4_authorization(
         or set(commitment) != _MAYO_V4_COMMITMENT_FIELDS
     ):
         raise ValueError("Mayo v4 generation commitment field set is noncanonical")
+    # Validate and publish from one scalar-only snapshot.  The live authorizer
+    # may expose a mutable mapping, so retaining it here would leave a window
+    # where its bytes could change after closure validation but before the
+    # bridge computes the persisted commitment digest.
+    commitment = dict(commitment)
     if commitment.get("schema") != "mayo_cache_generation_commitment_v4":
         raise ValueError("Mayo v4 generation commitment schema is noncanonical")
     for field in (
