@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 import runpy
 import stat
@@ -5057,6 +5058,432 @@ def test_two_stage_failure_retains_private_staging_and_blocks_retry(c: Check):
                 module.ssl_core.train_ssl_stage = original_train
             c.eq(retry_train_calls, 0)
             c.true(not (run_root / "results").exists())
+
+
+def test_focused_mayo_parser_is_fixed_and_has_no_tuning_surface(c: Check):
+    module = _load_runner()
+    parser = module._parser()
+    for phase in ("smoke", "select", "winner", "audit"):
+        parsed = parser.parse_args(["focused-mayo", "--phase", phase])
+        c.eq(parsed.command, "focused-mayo")
+        c.eq(parsed.phase, phase)
+    c.eq(
+        module._FOCUSED_NAMESPACE,
+        module.PRETRAINING_ROOT / "development" / "focused-modality-v1",
+    )
+    for flag, value in (
+        ("--arm", "fusion"),
+        ("--seed", "0"),
+        ("--epochs", "5"),
+        ("--run-root", "elsewhere"),
+        ("--bridge-root", "elsewhere"),
+    ):
+        with redirect_stderr(io.StringIO()):
+            c.raises(
+                lambda flag=flag, value=value: parser.parse_args([
+                    "focused-mayo", "--phase", "select", flag, value,
+                ]),
+                SystemExit,
+                f"focused Mayo rejects tuning/path override {flag}",
+            )
+
+
+def test_focused_mayo_job_contracts_fairness_and_fixed_budgets(c: Check):
+    module = _load_runner()
+    smoke = module._focused_job_contract("smoke")
+    c.eq(smoke["arms"], ["fusion"])
+    c.eq(smoke["seeds"], [0])
+    c.eq(smoke["epochs"], 1)
+    c.eq(smoke["evaluate_heldout"], False)
+    selection = module._focused_job_contract("select")
+    c.eq(selection["arms"], [
+        "blendshape_only", "landmark_only", "fusion",
+    ])
+    c.eq(selection["seeds"], [0])
+    c.eq(selection["epochs"], 5)
+    c.eq(selection["target_schema"], (
+        "mediapipe72_plus_clinical23_full95_v1"
+    ))
+    winner = module._focused_job_contract(
+        "winner", selected_arm="landmark_only",
+    )
+    c.eq(winner["arms"], ["landmark_only"])
+    c.eq(winner["seeds"], [0, 1, 2])
+    c.eq(winner["epochs"], 30)
+    c.eq(winner["initialization"], "same_seed_fresh")
+    c.raises(
+        lambda: module._focused_job_contract("winner"),
+        ValueError,
+        "winner cannot run without an authenticated selected arm",
+    )
+
+
+def test_focused_mayo_selection_metric_ties_and_nonfinite_fail_closed(c: Check):
+    module = _load_runner()
+    rows = [
+        {"arm": arm, "primary_metric": metric}
+        for arm, metric in (
+            ("blendshape_only", 0.25),
+            ("landmark_only", 0.20),
+            ("fusion", 0.20),
+        )
+    ]
+    selected = module._select_focused_arm(rows)
+    c.eq(selected["selected_arm"], "landmark_only")
+    c.eq(selected["tie_break_order"], [
+        "blendshape_only", "landmark_only", "fusion",
+    ])
+    c.eq(selected["metric_path"], (
+        "common_target_metrics.trained.raw_mae.equal_block_macro"
+    ))
+    for value in (float("nan"), float("inf"), -1.0):
+        invalid = [dict(row) for row in rows]
+        invalid[0]["primary_metric"] = value
+        c.raises(
+            lambda invalid=invalid: module._select_focused_arm(invalid),
+            ValueError,
+            "selection rejects every nonfinite or negative primary metric",
+        )
+
+
+def test_focused_mayo_exact_phase_artifact_contracts(c: Check):
+    module = _load_runner()
+    c.eq(module._expected_focused_result_files("smoke"), {
+        "checkpoint.pt", "checkpoint.pt.receipt.json", "report.json",
+    })
+    c.eq(module._expected_focused_result_files("select"), {
+        "blendshape_only.pt", "blendshape_only.pt.receipt.json",
+        "landmark_only.pt", "landmark_only.pt.receipt.json",
+        "fusion.pt", "fusion.pt.receipt.json", "report.json",
+    })
+    c.eq(
+        module._expected_focused_result_files(
+            "winner", selected_arm="fusion",
+        ),
+        {
+            "seed_0.pt", "seed_0.pt.receipt.json",
+            "seed_1.pt", "seed_1.pt.receipt.json",
+            "seed_2.pt", "seed_2.pt.receipt.json", "report.json",
+        },
+    )
+    c.raises(
+        lambda: module._expected_focused_result_files(
+            "winner", selected_arm="caller_supplied_unknown",
+        ),
+        ValueError,
+        "winner artifact contract rejects a caller-selected arm",
+    )
+
+
+def test_focused_mayo_smoke_deadline_is_monotonic_and_prepublication(c: Check):
+    module = _load_runner()
+    c.eq(module._focused_smoke_elapsed(10.0, 909.9), 899.9)
+    for end in (910.000001, float("inf"), float("nan"), 9.0):
+        c.raises(
+            lambda end=end: module._focused_smoke_elapsed(10.0, end),
+            ValueError,
+            "invalid or over-budget smoke cannot be published",
+        )
+
+
+def test_focused_mayo_local_dispatch_never_enters_live_authorization(c: Check):
+    module = _load_runner()
+    calls: list[tuple[str, str]] = []
+    module._producer_sha256 = lambda: "f" * 64
+    module._focused_trainer_sha256 = lambda: "f" * 64
+
+    def forbidden_live(_args):
+        raise AssertionError("local focused phases cannot construct live authorizers")
+
+    def captured(args, *, producer_sha256):
+        calls.append((args.phase, producer_sha256))
+        return {"phase": args.phase, "published": True}
+
+    module._authorization_factories = forbidden_live
+    module._run_focused_phase = captured
+    for phase in ("smoke", "select", "winner"):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+            result = module.main(["focused-mayo", "--phase", phase])
+        c.eq(result, {"phase": phase, "published": True})
+        c.eq(json.loads(stdout.getvalue()), result)
+    c.eq(calls, [
+        ("smoke", "f" * 64),
+        ("select", "f" * 64),
+        ("winner", "f" * 64),
+    ])
+
+
+@contextmanager
+def _focused_local_bridge_fixture(root: Path):
+    saved_contract = {
+        name: getattr(bridge_core, name) for name in _PRODUCTION_BRIDGE_CONTRACT
+    }
+    try:
+        ravdess, mayo = _synthetic_authorizations_with_mayo_exclusion()
+        producer = "f" * 64
+        private = root / "pretraining"
+        private.mkdir(mode=0o700)
+        bridge = private / "bridge"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        key = private / ".mayo_ssl_hmac.key"
+        key.write_bytes(mayo.private_key)
+        key.chmod(0o600)
+        yield _load_runner(), bridge, key, producer
+    finally:
+        _set_bridge_contract(saved_contract)
+
+
+def test_focused_mayo_local_bridge_authorization_is_keyed_and_offline(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _focused_local_bridge_fixture(Path(td)) as (
+            module, bridge, key, producer,
+        ):
+            module._authorization_factories = lambda _args: (_ for _ in ()).throw(
+                AssertionError("focused local authorization called live sources")
+            )
+            authorization = module._authorize_focused_bridge(
+                bridge, key, producer_sha256=producer,
+            )
+            c.eq(authorization.stage, "mayo")
+            c.eq(authorization.producer_sha256, producer)
+            c.eq(len(authorization.bridge_generation_sha256), 64)
+            c.eq(len(authorization.bundle_sha256), 64)
+            c.eq(authorization.feature_width, 95)
+            c.eq(authorization.exclusion_count, 2)
+
+            closure_path = bridge / "bundle_generation.json"
+            original = json.loads(closure_path.read_text(encoding="ascii"))
+            tampered = json.loads(json.dumps(original))
+            tampered["stages"]["mayo"]["bundle_sha256"] = "0" * 64
+            closure_path.write_text(
+                json.dumps(tampered, sort_keys=True, separators=(",", ":")),
+                encoding="ascii",
+            )
+            closure_path.chmod(0o600)
+            c.raises(
+                lambda: module._authorize_focused_bridge(
+                    bridge, key, producer_sha256=producer,
+                ),
+                ValueError,
+                "a self-consistent-looking field edit cannot bypass keyed closure",
+            )
+
+
+def test_focused_mayo_common_contract_is_recording_disjoint_and_shared(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _focused_local_bridge_fixture(Path(td)) as (
+            module, bridge, key, producer,
+        ):
+            authorization = module._authorize_focused_bridge(
+                bridge, key, producer_sha256=producer,
+            )
+            contract = module._focused_common_contract(authorization)
+            c.eq(contract["scaler_policy"], (
+                "focused_train_unique_canonical_frame_scaler_v1"
+            ))
+            c.eq(contract["target_schema"], (
+                "mediapipe72_plus_clinical23_full95_v1"
+            ))
+            c.eq(contract["scaler"].mean.shape, torch.Size([95]))
+            c.true(bool(torch.isfinite(contract["scaler"].mean).all()))
+            c.true(bool(torch.isfinite(contract["scaler"].scale).all()))
+            split = contract["split"]
+            train_groups = {
+                authorization.group_ids[int(index)]
+                for index in split.train_indices.tolist()
+            }
+            heldout_groups = {
+                authorization.group_ids[int(index)]
+                for index in split.heldout_indices.tolist()
+            }
+            c.true(not train_groups.intersection(heldout_groups))
+            c.eq(
+                sorted((*split.train_indices.tolist(), *split.heldout_indices.tolist())),
+                list(range(authorization.sample_count)),
+            )
+            mask = contract["heldout_mask"]
+            c.eq(mask.dtype, torch.bool)
+            c.eq(mask.shape, torch.Size([
+                len(split.heldout_indices), 4, 32,
+            ]))
+            c.true(bool(mask.any()))
+
+
+def test_focused_mayo_v3_configs_are_narrow_and_leave_formal_contracts_exact(c: Check):
+    module = _load_runner()
+    common = {
+        "producer_sha256": "f" * 64,
+        "mayo_generation_commitment_sha256": "e" * 64,
+        "bridge_receipt_sha256": "d" * 64,
+        "receipt_hmac": "c" * 64,
+    }
+    cases = (
+        ("smoke", "fusion", [0], 1, "smoke"),
+        ("select", "blendshape_only", [0], 5, "formal"),
+        ("select", "landmark_only", [0], 5, "formal"),
+        ("select", "fusion", [0], 5, "formal"),
+        ("winner", "fusion", [0, 1, 2], 30, "formal"),
+    )
+    for phase, arm, seeds, epochs, mode in cases:
+        config = module._focused_training_config(
+            phase, arm=arm, **common,
+        )
+        c.eq(config["seeds"], seeds)
+        c.eq(config["epochs"], epochs)
+        c.eq(config["mode"], mode)
+        c.eq(config["target_schema"], ssl_core.TARGET_FULL95)
+        c.eq(module._validate_focused_training_config(config), config)
+    selection = module._focused_training_config(
+        "select", arm="fusion", **common,
+    )
+    for field, value in (("epochs", 30), ("seeds", [0, 1, 2])):
+        invalid = dict(selection)
+        invalid[field] = value
+        c.raises(
+            lambda invalid=invalid: module._validate_focused_training_config(
+                invalid,
+            ),
+            ValueError,
+            "focused selection budget cannot alias the old formal budget",
+        )
+
+
+def test_focused_mayo_smoke_job_checkpoint_round_trip_is_local(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _focused_local_bridge_fixture(Path(td)) as (
+            module, bridge, key, producer,
+        ):
+            trainer = "a" * 64
+            authorization = module._authorize_focused_bridge(
+                bridge, key, producer_sha256=trainer,
+            )
+            c.eq(authorization.producer_sha256, producer)
+            c.eq(authorization.trainer_sha256, trainer)
+            common = module._focused_common_contract(authorization)
+            result = module._train_focused_job(
+                authorization, common,
+                phase="smoke", arm="fusion", seed=0,
+            )
+            c.eq(result["phase"], "smoke")
+            c.eq(result["arm"], "fusion")
+            c.eq(result["seed"], 0)
+            c.eq(result["epochs"], 1)
+            c.true(math.isfinite(result["train_loss"]))
+            c.eq(result["metrics"], None)
+            checkpoint = Path(td) / "checkpoint.pt"
+            receipt = module._write_focused_checkpoint(
+                checkpoint, result,
+                authorization=authorization,
+                common=common,
+                dependency_commitment_sha256=None,
+            )
+            loaded = module._load_focused_checkpoint(
+                checkpoint,
+                authorization=authorization,
+                common=common,
+                expected_phase="smoke",
+                expected_arm="fusion",
+                expected_seed=0,
+                dependency_commitment_sha256=None,
+            )
+            c.eq(loaded["checkpoint_fingerprint"], (
+                receipt["checkpoint_fingerprint"]
+            ))
+            c.eq(stat.S_IMODE(checkpoint.stat().st_mode), 0o600)
+            c.eq(
+                stat.S_IMODE(Path(f"{checkpoint}.receipt.json").stat().st_mode),
+                0o600,
+            )
+
+
+def test_focused_mayo_reports_are_keyed_path_free_and_tamper_evident(c: Check):
+    module = _load_runner()
+    key = b"k" * 32
+    core = {
+        "schema_version": "focused_mayo_smoke_report_v1",
+        "phase": "smoke",
+        "published": True,
+        "bridge_generation_sha256": "a" * 64,
+        "bridge_producer_sha256": "b" * 64,
+        "trainer_sha256": "c" * 64,
+    }
+    report = module._sign_focused_report("smoke", core, key)
+    encoded = module._canonical_json_bytes(report)
+    c.eq(module._validate_focused_report_bytes(
+        encoded, phase="smoke", private_key=key,
+    ), report)
+    c.true(b"/" not in encoded)
+    tampered = dict(report)
+    tampered["published"] = False
+    c.raises(
+        lambda: module._validate_focused_report_bytes(
+            module._canonical_json_bytes(tampered),
+            phase="smoke", private_key=key,
+        ),
+        ValueError,
+        "focused report mutation is rejected by its authority HMAC",
+    )
+
+
+def test_focused_mayo_device_policy_is_fixed_cuda_else_cpu(c: Check):
+    module = _load_runner()
+    original = module.torch.cuda.is_available
+    try:
+        module.torch.cuda.is_available = lambda: True
+        cuda = module._focused_runtime_environment()
+        c.eq(cuda["device_policy"], "cuda_if_available_else_cpu_v1")
+        c.eq(cuda["device_type"], "cuda")
+        c.eq(cuda["torch_version"], str(torch.__version__))
+        module.torch.cuda.is_available = lambda: False
+        cpu = module._focused_runtime_environment()
+        c.eq(cpu["device_type"], "cpu")
+        c.eq(cpu["cuda_runtime_version"], (
+            "none" if torch.version.cuda is None else str(torch.version.cuda)
+        ))
+    finally:
+        module.torch.cuda.is_available = original
+
+
+def test_focused_mayo_smoke_publishes_one_exact_atomic_tree(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _focused_local_bridge_fixture(Path(td)) as (
+            module, bridge, key, _producer,
+        ):
+            module.PRETRAINING_ROOT = bridge.parent
+            module._FOCUSED_BRIDGE_ROOT = bridge
+            module._FOCUSED_MAYO_KEY = key
+            module._FOCUSED_NAMESPACE = (
+                bridge.parent / "development" / "focused-modality-v1"
+            )
+            result = module._run_focused_phase(
+                argparse.Namespace(phase="smoke"),
+                producer_sha256=module._focused_trainer_sha256(),
+            )
+            c.eq(result["phase"], "smoke")
+            c.eq(result["published"], True)
+            output = module._FOCUSED_NAMESPACE / "smoke"
+            c.eq({path.name for path in output.iterdir()}, {
+                "checkpoint.pt", "checkpoint.pt.receipt.json", "report.json",
+            })
+            c.eq(stat.S_IMODE(output.stat().st_mode), 0o700)
+            c.true(all(
+                stat.S_IMODE(path.stat().st_mode) == 0o600
+                for path in output.iterdir()
+            ))
+            c.raises(
+                lambda: module._run_focused_phase(
+                    argparse.Namespace(phase="smoke"),
+                    producer_sha256=module._focused_trainer_sha256(),
+                ),
+                FileExistsError,
+                "focused smoke never overwrites its published generation",
+            )
 
 
 if __name__ == "__main__":
