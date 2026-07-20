@@ -19,6 +19,8 @@ from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdo
 from pathlib import Path
 from typing import Callable, Iterator
 
+import torch
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PRETRAINING_ROOT = (
     PROJECT_ROOT / "outputs" / "dynamic_landmark" / "pretraining"
@@ -32,12 +34,22 @@ if __name__ == "__main__":
     canonical_runner._entrypoint()
 
 from src.pretraining import dynamic_landmark_ssl as ssl_core  # noqa: E402
+from src.models.dynamic_landmark import (  # noqa: E402
+    ARM_BLENDSHAPE,
+    ARM_FUSION,
+    ARM_LANDMARK,
+)
 
 
 _RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _MAX_EXACT_RESULT_TREE_ENTRIES = 64
 _MAX_EXACT_RESULT_TREE_DEPTH = 4
 _MAX_EXACT_RESULT_TREE_REGULAR_BYTES = 128 * 1024 * 1024
+_ABLATION_ARMS = (ARM_BLENDSHAPE, ARM_LANDMARK, ARM_FUSION)
+_FORMAL_SEEDS = (0, 1, 2)
+_MAYO_ABLATION_NAMESPACE = (
+    PRETRAINING_ROOT / "ablation" / "mayo-input-arm-v1"
+)
 
 
 def _authorization_factories(
@@ -166,18 +178,333 @@ class _PathRedactingArgumentParser(argparse.ArgumentParser):
 def _parser() -> argparse.ArgumentParser:
     parser = _PathRedactingArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+
+    def add_execution_arguments(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--run-root", type=Path, required=True)
+        command.add_argument("--bridge-root", type=Path, required=True)
+        command.add_argument("--ravdess-data-root", type=Path, required=True)
+        command.add_argument("--ravdess-key", type=Path, required=True)
+        command.add_argument("--mayo-data-root", type=Path, required=True)
+        command.add_argument(
+            "--mayo-existing-export-root", type=Path, required=True,
+        )
+        command.add_argument("--mayo-cache-root", type=Path, required=True)
+        command.add_argument(
+            "--mayo-exposure-manifest", type=Path, required=True,
+        )
+        command.add_argument("--mayo-key", type=Path, required=True)
+
     command = commands.add_parser("two-stage")
     command.add_argument("--mode", choices=("smoke", "formal"), required=True)
-    command.add_argument("--run-root", type=Path, required=True)
-    command.add_argument("--bridge-root", type=Path, required=True)
-    command.add_argument("--ravdess-data-root", type=Path, required=True)
-    command.add_argument("--ravdess-key", type=Path, required=True)
-    command.add_argument("--mayo-data-root", type=Path, required=True)
-    command.add_argument("--mayo-existing-export-root", type=Path, required=True)
-    command.add_argument("--mayo-cache-root", type=Path, required=True)
-    command.add_argument("--mayo-exposure-manifest", type=Path, required=True)
-    command.add_argument("--mayo-key", type=Path, required=True)
+    add_execution_arguments(command)
+    add_execution_arguments(commands.add_parser("mayo-ablation"))
+    commands.add_parser("dry-run")
     return parser
+
+
+def _formal_job_matrix() -> dict[str, object]:
+    """Return the preregistered path-free formal job schedule."""
+    jobs: list[dict[str, object]] = []
+    for seed in _FORMAL_SEEDS:
+        jobs.extend((
+            {
+                "experiment": "two_stage_fusion",
+                "stage": "ravdess",
+                "input_arm": ssl_core.ARM_SEMANTIC23,
+                "target_schema": ssl_core.TARGET_SEMANTIC23,
+                "seed": seed,
+                "epochs": 30,
+                "optimizer": "adamw",
+                "initialization": "same_seed_fresh",
+            },
+            {
+                "experiment": "two_stage_fusion",
+                "stage": "mayo",
+                "input_arm": ARM_FUSION,
+                "target_schema": ssl_core.TARGET_FULL95,
+                "seed": seed,
+                "epochs": 30,
+                "optimizer": "adamw",
+                "initialization": "seed_matched_ravdess_prior",
+            },
+        ))
+    for arm in _ABLATION_ARMS:
+        for seed in _FORMAL_SEEDS:
+            jobs.append({
+                "experiment": "mayo_input_arm_ablation",
+                "stage": "mayo",
+                "input_arm": arm,
+                "target_schema": ssl_core.TARGET_FULL95,
+                "seed": seed,
+                "epochs": 30,
+                "optimizer": "adamw",
+                "initialization": "same_seed_fresh",
+            })
+    return {
+        "schema_version": "dynamic_landmark_ssl_job_matrix_v1",
+        "jobs": jobs,
+    }
+
+
+def _expected_ablation_result_files(
+    arms: tuple[str, ...] = _ABLATION_ARMS,
+    seeds: tuple[int, ...] = _FORMAL_SEEDS,
+) -> set[str]:
+    if arms != _ABLATION_ARMS or seeds != _FORMAL_SEEDS:
+        raise ValueError("Mayo ablation result matrix is not exact")
+    expected = {
+        "reports/mayo_input_arm_ablation.json",
+    }
+    for arm in arms:
+        for seed in seeds:
+            checkpoint = f"checkpoints/{arm}/seed_{seed}.pt"
+            expected.add(checkpoint)
+            expected.add(f"{checkpoint}.receipt.json")
+    return expected
+
+
+def _finite_nonnegative(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("ablation metric must be finite and nonnegative")
+    observed = float(value)
+    if observed < 0.0 or observed == float("inf") or observed != observed:
+        raise ValueError("ablation metric must be finite and nonnegative")
+    return observed
+
+
+def _ablation_statistics(
+    runs: list[dict[str, object]],
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Aggregate exact common-target metrics and paired seed differences."""
+    if type(runs) is not list or len(runs) != 9:
+        raise ValueError("ablation statistics require exactly nine jobs")
+    indexed: dict[tuple[str, int], dict[str, object]] = {}
+    for run in runs:
+        if type(run) is not dict or set(run) != {"arm", "seed", "metrics"}:
+            raise ValueError("ablation metric row schema is not exact")
+        arm, seed, metrics = run["arm"], run["seed"], run["metrics"]
+        if (
+            arm not in _ABLATION_ARMS
+            or seed not in _FORMAL_SEEDS
+            or isinstance(seed, bool)
+            or type(metrics) is not dict
+            or set(metrics) != {
+                "raw_mae", "standardized_mae", "standardized_smooth_l1",
+            }
+            or type(metrics["raw_mae"]) is not dict
+            or set(metrics["raw_mae"]) != {
+                "blendshape72", "clinical23", "equal_block_macro", "full95",
+            }
+            or (arm, seed) in indexed
+        ):
+            raise ValueError("ablation metric matrix is not exact")
+        normalized_raw = {
+            name: _finite_nonnegative(value)
+            for name, value in metrics["raw_mae"].items()
+        }
+        indexed[(str(arm), int(seed))] = {
+            "raw_mae": normalized_raw,
+            "standardized_mae": _finite_nonnegative(
+                metrics["standardized_mae"]
+            ),
+            "standardized_smooth_l1": _finite_nonnegative(
+                metrics["standardized_smooth_l1"]
+            ),
+        }
+    if set(indexed) != {
+        (arm, seed) for arm in _ABLATION_ARMS for seed in _FORMAL_SEEDS
+    }:
+        raise ValueError("ablation metric matrix is incomplete")
+
+    def summarize(values: list[float]) -> dict[str, float]:
+        return {
+            "mean": statistics.fmean(values),
+            "sd": statistics.stdev(values),
+        }
+
+    aggregate: dict[str, object] = {}
+    for arm in _ABLATION_ARMS:
+        aggregate[arm] = {
+            "raw_mae": {
+                name: summarize([
+                    indexed[(arm, seed)]["raw_mae"][name]  # type: ignore[index]
+                    for seed in _FORMAL_SEEDS
+                ])
+                for name in (
+                    "blendshape72", "clinical23", "equal_block_macro", "full95",
+                )
+            },
+            "standardized_mae": summarize([
+                indexed[(arm, seed)]["standardized_mae"]  # type: ignore[list-item]
+                for seed in _FORMAL_SEEDS
+            ]),
+            "standardized_smooth_l1": summarize([
+                indexed[(arm, seed)]["standardized_smooth_l1"]  # type: ignore[list-item]
+                for seed in _FORMAL_SEEDS
+            ]),
+        }
+
+    paired: dict[str, object] = {}
+    for left, right in (
+        (ARM_LANDMARK, ARM_BLENDSHAPE),
+        (ARM_FUSION, ARM_BLENDSHAPE),
+        (ARM_FUSION, ARM_LANDMARK),
+    ):
+        comparison: dict[str, object] = {"raw_mae": {}}
+        for name in (
+            "blendshape72", "clinical23", "equal_block_macro", "full95",
+        ):
+            values = {
+                str(seed): (
+                    indexed[(left, seed)]["raw_mae"][name]  # type: ignore[index]
+                    - indexed[(right, seed)]["raw_mae"][name]  # type: ignore[index]
+                )
+                for seed in _FORMAL_SEEDS
+            }
+            comparison["raw_mae"][name] = {  # type: ignore[index]
+                "by_seed": values,
+                **summarize(list(values.values())),
+            }
+        for name in ("standardized_mae", "standardized_smooth_l1"):
+            values = {
+                str(seed): (
+                    indexed[(left, seed)][name]  # type: ignore[operator]
+                    - indexed[(right, seed)][name]  # type: ignore[operator]
+                )
+                for seed in _FORMAL_SEEDS
+            }
+            comparison[name] = {
+                "by_seed": values,
+                **summarize(list(values.values())),
+            }
+        paired[f"{left}_minus_{right}"] = comparison
+    return aggregate, paired
+
+
+def _ablation_inputs_root(run_root: Path) -> Path:
+    """Return the one common atomically frozen Mayo ablation input tree."""
+    return _private_directory(run_root / "inputs", "ablation inputs")
+
+
+def _common_ablation_evidence(
+    evidence_by_arm: Mapping[str, object],
+) -> tuple[str, str, str]:
+    """Require the arm snapshots to share one split, scaler, and source."""
+    if set(evidence_by_arm) != set(_ABLATION_ARMS):
+        raise ValueError("ablation evidence arm set is not exact")
+    common_fields = (
+        "source", "cache_commitment_sha256", "cache_count", "split_unit",
+        "claim_unit", "patient_held_out", "train_indices_sha256",
+        "heldout_indices_sha256", "group_ids_sha256", "scaler_sha256",
+        "train_count", "heldout_count", "development_only",
+        "sample_ids_sha256", "source_unit_ids_sha256",
+        "cache_integrity_ids_sha256", "original_mapping_sha256",
+        "bundle_sha256", "bundle_size_bytes", "bundle_file_count",
+        "sample_count", "source_unit_count", "unique_group_count",
+        "upstream_cache_count", "exclusion_count", "feature_names_sha256",
+        "adapter_sha256", "temporal_policy_sha256",
+        "bridge_generation_sha256", "upstream_manifest_commitments_sha256",
+        "upstream_generation_closure_hmac", "canonical_key_identity_sha256",
+        "source_schema", "mode", "target_schema", "experiment_kind",
+        "initialization_policy",
+    )
+    first = evidence_by_arm[_ABLATION_ARMS[0]]
+    baseline = tuple(getattr(first, name) for name in common_fields)
+    for arm in _ABLATION_ARMS:
+        evidence = evidence_by_arm[arm]
+        if (
+            tuple(getattr(evidence, name) for name in common_fields) != baseline
+            or getattr(evidence, "stage", None) != "mayo"
+            or getattr(evidence, "mode", None) != "formal"
+            or getattr(evidence, "experiment_kind", None)
+            != "mayo_input_arm_ablation"
+            or getattr(evidence, "input_arm", None) != arm
+            or getattr(evidence, "target_schema", None) != ssl_core.TARGET_FULL95
+            or getattr(evidence, "initialization_policy", None)
+            != "same_seed_fresh"
+            or getattr(evidence, "prior_checkpoint_sha256", None) is not None
+        ):
+            raise ValueError("ablation arms do not share one frozen input contract")
+    return (
+        str(getattr(first, "heldout_indices_sha256")),
+        str(getattr(first, "scaler_sha256")),
+        str(getattr(first, "cache_commitment_sha256")),
+    )
+
+
+def _materialized_heldout_mask(
+    evidence: object,
+) -> tuple[torch.Tensor, bytes, str]:
+    """Load the one persisted common formal held-out mask before any job."""
+    mask = ssl_core.load_frozen_mayo_ablation_mask(evidence)
+    payload = ssl_core._tensor_fingerprint_bytes(mask)
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != ssl_core._mask_sha256(mask):
+        raise RuntimeError("materialized held-out mask digest is inconsistent")
+    return mask, payload, digest
+
+
+def _fresh_ablation_initialization(seed: int) -> tuple[str, str]:
+    """Fingerprint the same-seed model and empty AdamW state pre-job."""
+    if isinstance(seed, bool) or seed not in _FORMAL_SEEDS:
+        raise ValueError("ablation initialization seed is unsupported")
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(seed)
+        model = ssl_core.DynamicLandmarkSSLModel().to("cpu")
+        model_digest = ssl_core._model_state_sha256(model.state_dict())
+        parameter_by_name = dict(model.named_parameters())
+        trainable_names = ssl_core._trainable_parameter_names(model, "mayo")
+        optimizer = torch.optim.AdamW(
+            [parameter_by_name[name] for name in trainable_names],
+            lr=0.001,
+            weight_decay=0.0001,
+        )
+        initial_state = optimizer.state_dict()
+        if initial_state.get("state") != {}:
+            raise RuntimeError("fresh AdamW unexpectedly contains mutable state")
+        optimizer_material = {
+            "schema_version": "adamw_empty_named_state_v1",
+            "trainable_parameters": [
+                {
+                    "name": name,
+                    "shape": list(parameter_by_name[name].shape),
+                    "dtype": str(parameter_by_name[name].dtype),
+                }
+                for name in trainable_names
+            ],
+            "state_dict": initial_state,
+        }
+        optimizer_digest = ssl_core._canonical_sha256(optimizer_material)
+    return model_digest, optimizer_digest
+
+
+def _ablation_trained_metrics(result: object) -> dict[str, object]:
+    report = getattr(result, "heldout_report", None)
+    if type(report) is not dict:
+        raise ValueError("ablation training report is unavailable")
+    common = report.get("common_target_metrics")
+    if type(common) is not dict or type(common.get("trained")) is not dict:
+        raise ValueError("ablation common-target metrics are unavailable")
+    trained = common["trained"]
+    metrics = {
+        "raw_mae": dict(trained["raw_mae"]),
+        "standardized_mae": trained["standardized_mae"],
+        "standardized_smooth_l1": trained["standardized_smooth_l1"],
+    }
+    # Reuse the exact statistics validator as the metric-shape oracle.
+    if (
+        set(metrics["raw_mae"]) != {
+            "blendshape72", "clinical23", "equal_block_macro", "full95",
+        }
+        or any(
+            _finite_nonnegative(value) < 0.0
+            for value in metrics["raw_mae"].values()
+        )
+    ):
+        raise ValueError("ablation trained metrics are not exact")
+    _finite_nonnegative(metrics["standardized_mae"])
+    _finite_nonnegative(metrics["standardized_smooth_l1"])
+    return metrics
 
 
 def _private_directory(path: Path, name: str) -> Path:
@@ -1312,18 +1639,382 @@ def _run_two_stage(
     return summary
 
 
+def _run_mayo_ablation(
+    args: argparse.Namespace,
+    *,
+    producer_sha256: str,
+) -> dict[str, object]:
+    """Run and atomically publish the exact nine-job Mayo-only ablation."""
+    run_root = _private_directory(args.run_root.absolute(), "ablation run root")
+    if run_root != _MAYO_ABLATION_NAMESPACE.absolute():
+        raise ValueError("ablation run root is outside its canonical namespace")
+    inputs_root = _ablation_inputs_root(run_root)
+    bridge_root = _private_directory(
+        args.bridge_root.absolute(), "bridge generation",
+    )
+    if bridge_root != (PRETRAINING_ROOT / "bridge").absolute():
+        raise ValueError("bridge root is outside the canonical namespace")
+    _preflight_live_inputs(args)
+    raw_ravdess_authorizer, raw_mayo_authorizer = _quiet_call(
+        _authorization_factories, args,
+    )
+    ravdess_authorizer = _transaction_authorizer(raw_ravdess_authorizer)
+    mayo_authorizer = _transaction_authorizer(raw_mayo_authorizer)
+    privacy_forbidden = _quiet_call(
+        _privacy_forbidden,
+        args, ravdess_authorizer, mayo_authorizer,
+    )
+    summary = {
+        "arm_count": 3,
+        "checkpoint_count": 9,
+        "job_count": 9,
+        "mode": "formal",
+        "seed_count": 3,
+        "stage_count": 1,
+    }
+    _assert_summary_private(
+        json.dumps(
+            summary, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("ascii"),
+        privacy_forbidden,
+    )
+    with _exclusive_results_transaction(run_root, args) as (
+        results_lock,
+        lock_name,
+        run_descriptor,
+        run_identity,
+        validate_generation_leases,
+    ):
+        names = set(os.listdir(run_descriptor))
+        if "results" in names:
+            raise FileExistsError("results generation already exists")
+        if any(name.startswith(".results.staging-") for name in names):
+            raise ValueError("unresolved results staging state blocks execution")
+
+        evidence_by_arm = {
+            arm: _quiet_call(
+                ssl_core.authorize_frozen_ssl_stage,
+                stage="mayo",
+                mode="formal",
+                inputs_root=inputs_root,
+                bridge_root=bridge_root,
+                ravdess_authorizer=ravdess_authorizer,
+                mayo_authorizer=mayo_authorizer,
+                producer_sha256=producer_sha256,
+                experiment_kind="mayo_input_arm_ablation",
+                mayo_input_arm=arm,
+            )
+            for arm in _ABLATION_ARMS
+        }
+        (
+            common_split_sha256,
+            common_scaler_sha256,
+            common_cache_sha256,
+        ) = _quiet_call(_common_ablation_evidence, evidence_by_arm)
+        common_mask, common_mask_bytes, common_mask_sha256 = _quiet_call(
+            _materialized_heldout_mask, evidence_by_arm[ARM_FUSION],
+        )
+
+        initialization: dict[tuple[str, int], tuple[str, str]] = {}
+        for seed in _FORMAL_SEEDS:
+            seed_digests: list[tuple[str, str]] = []
+            for arm in _ABLATION_ARMS:
+                digests = _quiet_call(_fresh_ablation_initialization, seed)
+                initialization[(arm, seed)] = digests
+                seed_digests.append(digests)
+            if len(set(seed_digests)) != 1:
+                raise ValueError(
+                    "same-seed ablation model or optimizer initialization differs"
+                )
+
+        staging = run_root / f".results.staging-{secrets.token_hex(16)}"
+        staging.mkdir(mode=0o700)
+        os.chmod(staging, 0o700)
+        staged_status = staging.stat()
+        staged_identity = (staged_status.st_dev, staged_status.st_ino)
+        checkpoints = staging / "checkpoints"
+        reports = staging / "reports"
+        checkpoints.mkdir(mode=0o700)
+        reports.mkdir(mode=0o700)
+        os.chmod(checkpoints, 0o700)
+        os.chmod(reports, 0o700)
+
+        arm_directories: dict[str, Path] = {}
+        checkpoint_directories = {checkpoints}
+        for arm in _ABLATION_ARMS:
+            directory = checkpoints / arm
+            directory.mkdir(mode=0o700)
+            os.chmod(directory, 0o700)
+            arm_directories[arm] = directory
+            checkpoint_directories.add(directory)
+
+        metric_rows: list[dict[str, object]] = []
+        report_runs: list[dict[str, object]] = []
+        reload_checks: list[tuple[Path, object, object, str]] = []
+        publication_lineages: list[
+            tuple[str, int, Path, object, str]
+        ] = []
+        retained_runtime: list[object] = list(evidence_by_arm.values())
+        for arm in _ABLATION_ARMS:
+            evidence = evidence_by_arm[arm]
+            for seed in _FORMAL_SEEDS:
+                result = _quiet_call(
+                    ssl_core.train_ssl_stage,
+                    stage_evidence=evidence,
+                    seed=seed,
+                    heldout_mask=common_mask,
+                )
+                receipt = result.training_receipt
+                model_init, optimizer_init = initialization[(arm, seed)]
+                if (
+                    receipt.input_arm != arm
+                    or receipt.target_schema != ssl_core.TARGET_FULL95
+                    or receipt.experiment_kind != "mayo_input_arm_ablation"
+                    or receipt.initialization_policy != "same_seed_fresh"
+                    or receipt.prior_checkpoint_sha256 is not None
+                    or receipt.seed != seed
+                    or receipt.epochs != 30
+                    or receipt.optimizer != "adamw"
+                    or receipt.optimizer_steps != 30
+                    or receipt.pre_state_sha256 != model_init
+                    or receipt.heldout_mask_schedule_sha256
+                    != common_mask_sha256
+                    or receipt.heldout_indices_sha256 != common_split_sha256
+                    or receipt.scaler_sha256 != common_scaler_sha256
+                    or receipt.cache_binding_sha256 != common_cache_sha256
+                ):
+                    raise ValueError("ablation job violated its frozen contract")
+                payload = _quiet_call(
+                    ssl_core.build_ssl_checkpoint_payload, result,
+                )
+                path = arm_directories[arm] / f"seed_{seed}.pt"
+                checkpoint_receipt = _quiet_call(
+                    ssl_core.save_ssl_checkpoint,
+                    path,
+                    payload,
+                    stage_evidence=evidence,
+                )
+                persisted = _quiet_call(
+                    ssl_core.load_ssl_checkpoint,
+                    path,
+                    receipt=checkpoint_receipt,
+                    stage_evidence=evidence,
+                )
+                fingerprint = _quiet_call(
+                    ssl_core.ssl_checkpoint_fingerprint, persisted,
+                )
+                retained_runtime.extend((
+                    result, checkpoint_receipt, persisted,
+                ))
+                reload_checks.append((
+                    path, checkpoint_receipt, evidence, fingerprint,
+                ))
+                publication_lineages.append((
+                    arm, seed, path, checkpoint_receipt, fingerprint,
+                ))
+                metrics = _quiet_call(_ablation_trained_metrics, result)
+                metric_rows.append({
+                    "arm": arm,
+                    "seed": seed,
+                    "metrics": metrics,
+                })
+                per_recording = result.heldout_report.get(
+                    "per_recording_metrics",
+                )
+                if type(per_recording) is not list or not per_recording:
+                    raise ValueError(
+                        "ablation private per-recording metrics are unavailable"
+                    )
+                report_runs.append({
+                    "arm": arm,
+                    "seed": seed,
+                    "checkpoint_fingerprint": fingerprint,
+                    "optimizer_steps": receipt.optimizer_steps,
+                    "pre_state_sha256": model_init,
+                    "optimizer_initial_state_sha256": optimizer_init,
+                    "heldout_mask_sha256": common_mask_sha256,
+                    "metrics": metrics,
+                    "per_recording_metrics": per_recording,
+                })
+
+        aggregate, paired = _quiet_call(_ablation_statistics, metric_rows)
+        report = {
+            "schema_version": "dynamic_landmark_ssl_ablation_report_v1",
+            "mode": "formal",
+            "experiment_kind": "mayo_input_arm_ablation",
+            "arms": list(_ABLATION_ARMS),
+            "seeds": list(_FORMAL_SEEDS),
+            "job_count": 9,
+            "epochs": 30,
+            "optimizer": "adamw",
+            "target_schema": ssl_core.TARGET_FULL95,
+            "shared_split_sha256": common_split_sha256,
+            "shared_scaler_sha256": common_scaler_sha256,
+            "shared_cache_sha256": common_cache_sha256,
+            "shared_heldout_mask_sha256": common_mask_sha256,
+            "heldout_mask_materialized_once": True,
+            "input_mask_after_common_scaler": True,
+            "prior_ravdess": False,
+            "early_stopping": False,
+            "retry_count": 0,
+            "aggregation": "per_recording_then_equal_recording_mean",
+            "runs": report_runs,
+            "aggregate": aggregate,
+            "paired_differences": paired,
+            "medical_generalization": False,
+            "hb_evaluation": False,
+        }
+        report_path = reports / "mayo_input_arm_ablation.json"
+        _quiet_call(_write_private_json, report_path, report)
+        (
+            _report_resolved,
+            report_bytes,
+            _report_sha256,
+            _report_identity,
+        ) = _quiet_call(
+            ssl_core._private_regular_file_snapshot,
+            report_path,
+            "Mayo ablation report",
+        )
+        report_value = _quiet_call(
+            ssl_core._strict_json_mapping,
+            report_bytes,
+            "Mayo ablation report",
+        )
+        if not ssl_core._exact_json_value(report_value, report):
+            raise ValueError("Mayo ablation report changed after writing")
+        for path, receipt, evidence, expected in reload_checks:
+            reloaded = _quiet_call(
+                ssl_core.load_ssl_checkpoint,
+                path,
+                receipt=receipt,
+                stage_evidence=evidence,
+            )
+            if _quiet_call(
+                ssl_core.ssl_checkpoint_fingerprint, reloaded,
+            ) != expected:
+                raise ValueError("ablation checkpoint changed during finalization")
+
+        def final_authorization() -> None:
+            edge_ravdess = _transaction_authorizer(raw_ravdess_authorizer)
+            edge_mayo = _transaction_authorizer(raw_mayo_authorizer)
+            final_evidence = {
+                arm: ssl_core.authorize_frozen_ssl_stage(
+                    stage="mayo",
+                    mode="formal",
+                    inputs_root=inputs_root,
+                    bridge_root=bridge_root,
+                    ravdess_authorizer=edge_ravdess,
+                    mayo_authorizer=edge_mayo,
+                    producer_sha256=producer_sha256,
+                    experiment_kind="mayo_input_arm_ablation",
+                    mayo_input_arm=arm,
+                )
+                for arm in _ABLATION_ARMS
+            }
+            _common_ablation_evidence(final_evidence)
+            final_mask = ssl_core.load_frozen_mayo_ablation_mask(
+                final_evidence[ARM_FUSION]
+            )
+            if (
+                ssl_core._tensor_fingerprint_bytes(final_mask)
+                != common_mask_bytes
+                or ssl_core._mask_sha256(final_mask) != common_mask_sha256
+            ):
+                raise ValueError(
+                    "common Mayo ablation mask changed before publication"
+                )
+            for arm, seed, path, receipt, expected in publication_lineages:
+                loaded = ssl_core.load_ssl_checkpoint(
+                    path,
+                    receipt=receipt,
+                    stage_evidence=final_evidence[arm],
+                )
+                if ssl_core.ssl_checkpoint_fingerprint(loaded) != expected:
+                    raise ValueError(
+                        "ablation checkpoint changed before publication"
+                    )
+                if loaded["metadata"]["seed"] != seed:
+                    raise ValueError(
+                        "ablation checkpoint seed changed before publication"
+                    )
+            validate_generation_leases()
+
+        expected_files = _expected_ablation_result_files()
+        with _hold_exact_result_tree(
+            run_descriptor, staging.name, expected_files,
+        ) as validate_result_tree:
+            _quiet_call(
+                _scan_private_results,
+                (inputs_root, staging),
+                privacy_forbidden,
+            )
+            for directory in sorted(
+                checkpoint_directories,
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                _quiet_call(_fsync_directory, directory)
+            _quiet_call(_fsync_directory, reports)
+            _quiet_call(_fsync_directory, staging)
+            if "results" in set(os.listdir(run_descriptor)):
+                raise FileExistsError(
+                    "results generation appeared during execution"
+                )
+            before_publish = os.stat(
+                staging.name,
+                dir_fd=run_descriptor,
+                follow_symlinks=False,
+            )
+            if (before_publish.st_dev, before_publish.st_ino) != staged_identity:
+                raise ValueError(
+                    "results staging identity changed before publication"
+                )
+            validate_result_tree()
+            _validate_run_root(run_descriptor, run_root, run_identity)
+            _validate_results_lock(results_lock, lock_name, run_descriptor)
+            os.fsync(run_descriptor)
+            # Scan the common parent as well as every arm-specific frozen tree.
+            _quiet_call(
+                _scan_private_results,
+                (inputs_root, staging),
+                privacy_forbidden,
+            )
+            _publish_validated_results(
+                run_descriptor=run_descriptor,
+                run_root=run_root,
+                run_identity=run_identity,
+                results_lock=results_lock,
+                lock_name=lock_name,
+                staging_name=staging.name,
+                staged_identity=staged_identity,
+                inputs_root=run_root / "inputs",
+                privacy_forbidden=privacy_forbidden,
+                validate_result_tree=validate_result_tree,
+                final_authorization=final_authorization,
+            )
+    return summary
+
+
 def main(argv: list[str] | None = None) -> dict[str, object]:
     producer_sha256 = _producer_sha256()
     args = _parser().parse_args(argv)
-    if args.command != "two-stage":
+    if args.command == "dry-run":
+        result = _formal_job_matrix()
+        print(json.dumps(
+            result, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ))
+        return result
+    if args.command not in {"two-stage", "mayo-ablation"}:
         raise ValueError("unsupported pretraining command")
     from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
 
     captured = inputs_cli._run_mayo_cli_captured(
         args,
-        lambda: _run_two_stage(
-            args,
-            producer_sha256=producer_sha256,
+        lambda: (
+            _run_two_stage(args, producer_sha256=producer_sha256)
+            if args.command == "two-stage"
+            else _run_mayo_ablation(args, producer_sha256=producer_sha256)
         ),
     )
     print(captured.json_line)

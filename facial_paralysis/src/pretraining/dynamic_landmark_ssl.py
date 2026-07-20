@@ -1332,6 +1332,18 @@ _BRIDGE_RECEIPT_FIELDS = {
     "original_canonical_frame_indices", "original_source_frame_indices",
     "original_timestamps", "receipt_hmac",
 }
+_MAYO_ABLATION_ARMS = (ARM_BLENDSHAPE, ARM_LANDMARK, ARM_FUSION)
+_MAYO_ABLATION_COMMON_RECEIPT_FIELDS = {
+    "schema", "mode", "stage", "experiment_kind", "arms",
+    "bridge_generation_sha256", "common_artifact_sha256",
+    "heldout_mask_sha256", "heldout_mask_size_bytes",
+    "arm_receipt_sha256", "bundle_sha256",
+    "upstream_manifest_commitments", "upstream_generation_closure_hmac",
+    "canonical_key_identity_sha256", "receipt_hmac",
+}
+_MAYO_ABLATION_COMMON_RECEIPT_SCHEMA = (
+    "dynamic_landmark_mayo_ablation_common_receipt_v1"
+)
 _V2_MANIFEST_FIELDS = {
     "schema_version", "stage", "mode", "source", "source_schema",
     "sample_ids", "source_unit_ids", "group_ids", "sample_count",
@@ -1778,6 +1790,226 @@ def _snapshot_frozen_ssl_stage(
     )
 
 
+def _snapshot_frozen_mayo_ablation_stage(
+    *,
+    inputs_root: Path,
+    bridge_root: Path,
+    live_authorization: object,
+    mayo_input_arm: str,
+) -> _FrozenStageSnapshot:
+    """Capture one arm from the single common Mayo ablation input tree."""
+    if mayo_input_arm not in _MAYO_ABLATION_ARMS:
+        raise ValueError("Mayo ablation snapshot arm is unsupported")
+    paths = {
+        "receipt": inputs_root / "receipts" / f"{mayo_input_arm}.json",
+        "common_receipt": inputs_root / "receipts" / "common.json",
+        "manifest": inputs_root / "common" / "manifest.json",
+        "config": inputs_root / "configs" / f"{mayo_input_arm}.json",
+        "split": inputs_root / "common" / "split.json",
+        "scaler": inputs_root / "common" / "scaler.json",
+        "heldout_mask": inputs_root / "common" / "heldout_mask.npz",
+        "bundle": bridge_root / "bundles" / "mayo_bundle.npz",
+    }
+    files: dict[str, _SSLCacheArtifactAuthorization] = {}
+    payloads: dict[str, bytes] = {}
+    for name, path in paths.items():
+        file_authorization, payload = _private_file_snapshot(
+            path,
+            f"frozen Mayo ablation {name}",
+            max_bytes=(
+                _MAX_FROZEN_BUNDLE_BYTES
+                if name in {"bundle", "heldout_mask"}
+                else _MAX_FROZEN_JSON_BYTES
+            ),
+        )
+        files[name] = file_authorization
+        payloads[name] = payload
+    receipt = _strict_json_mapping(
+        payloads["receipt"], f"Mayo ablation {mayo_input_arm} receipt",
+    )
+    if (
+        set(receipt) != _BRIDGE_RECEIPT_FIELDS
+        or receipt.get("schema") != BRIDGE_RECEIPT_SCHEMA
+        or receipt.get("stage") != MAYO_DEVELOPMENT_STAGE
+        or receipt.get("mode") != "formal"
+    ):
+        raise ValueError("Mayo ablation arm receipt schema is not exact")
+    private_key = getattr(live_authorization, "private_key", None)
+    key_identity = getattr(
+        live_authorization, "key_file_identity_sha256", None,
+    )
+    if type(private_key) is not bytes or len(private_key) != 32:
+        raise ValueError("Mayo ablation authorization lacks its canonical key")
+    key_identity = _require_sha256(key_identity, "Mayo canonical key identity")
+    if receipt.get("canonical_key_identity_sha256") != key_identity:
+        raise ValueError("Mayo ablation arm receipt names another key")
+    unsigned_arm = dict(receipt)
+    observed_arm_hmac = unsigned_arm.pop("receipt_hmac", None)
+    expected_arm_hmac = hmac.new(
+        private_key,
+        b"dynamic-landmark-bridge-receipt-v1\0"
+        + _canonical_json_bytes(unsigned_arm),
+        hashlib.sha256,
+    ).hexdigest()
+    if type(observed_arm_hmac) is not str or not hmac.compare_digest(
+        observed_arm_hmac, expected_arm_hmac,
+    ):
+        raise ValueError("Mayo ablation arm receipt HMAC is invalid")
+    common_receipt = _strict_json_mapping(
+        payloads["common_receipt"], "Mayo ablation common receipt",
+    )
+    if (
+        set(common_receipt) != _MAYO_ABLATION_COMMON_RECEIPT_FIELDS
+        or common_receipt.get("schema")
+        != _MAYO_ABLATION_COMMON_RECEIPT_SCHEMA
+        or common_receipt.get("mode") != "formal"
+        or common_receipt.get("stage") != MAYO_DEVELOPMENT_STAGE
+        or common_receipt.get("experiment_kind")
+        != "mayo_input_arm_ablation"
+        or common_receipt.get("arms") != list(_MAYO_ABLATION_ARMS)
+        or common_receipt.get("canonical_key_identity_sha256") != key_identity
+    ):
+        raise ValueError("Mayo ablation common receipt schema is not exact")
+    unsigned_common = dict(common_receipt)
+    observed_common_hmac = unsigned_common.pop("receipt_hmac", None)
+    expected_common_hmac = hmac.new(
+        private_key,
+        b"dynamic-landmark-mayo-ablation-common-receipt-v1\0"
+        + _canonical_json_bytes(unsigned_common),
+        hashlib.sha256,
+    ).hexdigest()
+    if type(observed_common_hmac) is not str or not hmac.compare_digest(
+        observed_common_hmac, expected_common_hmac,
+    ):
+        raise ValueError("Mayo ablation common receipt HMAC is invalid")
+    common_digests = common_receipt.get("common_artifact_sha256")
+    arm_receipts = common_receipt.get("arm_receipt_sha256")
+    if (
+        type(common_digests) is not dict
+        or set(common_digests) != {"manifest", "split", "scaler"}
+        or type(arm_receipts) is not dict
+        or set(arm_receipts) != set(_MAYO_ABLATION_ARMS)
+        or arm_receipts.get(mayo_input_arm)
+        != hashlib.sha256(payloads["receipt"]).hexdigest()
+    ):
+        raise ValueError("Mayo ablation receipt cross-links are incomplete")
+    core_digests = receipt.get("artifact_core_sha256")
+    if type(core_digests) is not dict or set(core_digests) != {
+        "manifest", "config", "split", "scaler",
+    }:
+        raise ValueError("Mayo ablation arm artifact digests are not exact")
+    artifacts: dict[str, dict[str, object]] = {}
+    field_sets = {
+        "manifest": _V2_MANIFEST_FIELDS,
+        "config": _V3_CONFIG_FIELDS,
+        "split": _V2_SPLIT_FIELDS,
+        "scaler": _V2_SCALER_FIELDS,
+    }
+    receipt_sha256 = hashlib.sha256(payloads["receipt"]).hexdigest()
+    for name, expected_fields in field_sets.items():
+        core = _strict_json_mapping(
+            payloads[name], f"Mayo ablation {name} core",
+        )
+        expected_core_fields = expected_fields - {
+            "bridge_receipt_sha256", "receipt_hmac",
+        }
+        if (
+            set(core) != expected_core_fields
+            or hashlib.sha256(_canonical_json_bytes(core)).hexdigest()
+            != core_digests.get(name)
+            or (
+                name != "config"
+                and hashlib.sha256(payloads[name]).hexdigest()
+                != common_digests.get(name)
+            )
+        ):
+            raise ValueError(f"Mayo ablation {name} core is invalid")
+        artifacts[name] = {
+            **core,
+            "bridge_receipt_sha256": receipt_sha256,
+            "receipt_hmac": observed_arm_hmac,
+        }
+    manifest = artifacts["manifest"]
+    config = artifacts["config"]
+    split_value = artifacts["split"]
+    scaler_value = artifacts["scaler"]
+    upstream_commitments = receipt.get("upstream_manifest_commitments")
+    mayo_commitment = (
+        upstream_commitments.get("generation_commitment_sha256")
+        if type(upstream_commitments) is dict else None
+    )
+    _validate_v3_training_config(
+        config,
+        stage=MAYO_DEVELOPMENT_STAGE,
+        mode="formal",
+        source=MAYO_SOURCE,
+        producer_sha256=receipt.get("producer_sha256"),
+        mayo_generation_commitment_sha256=mayo_commitment,
+    )
+    if (
+        config.get("experiment_kind") != "mayo_input_arm_ablation"
+        or config.get("input_arm") != mayo_input_arm
+        or common_receipt.get("bridge_generation_sha256")
+        != receipt.get("bridge_generation_sha256")
+        or common_receipt.get("bundle_sha256") != receipt.get("bundle_sha256")
+        or common_receipt.get("upstream_manifest_commitments")
+        != receipt.get("upstream_manifest_commitments")
+        or common_receipt.get("upstream_generation_closure_hmac")
+        != receipt.get("upstream_generation_closure_hmac")
+    ):
+        raise ValueError("Mayo ablation common and arm receipts disagree")
+    mask_sha256 = hashlib.sha256(payloads["heldout_mask"]).hexdigest()
+    if (
+        common_receipt.get("heldout_mask_sha256") != mask_sha256
+        or common_receipt.get("heldout_mask_size_bytes")
+        != len(payloads["heldout_mask"])
+    ):
+        raise ValueError("Mayo ablation held-out mask receipt is invalid")
+    try:
+        with np.load(io.BytesIO(payloads["heldout_mask"]), allow_pickle=False) as cached:
+            if cached.files != ["heldout_mask"]:
+                raise ValueError("Mayo ablation held-out mask schema is invalid")
+            mask = np.asarray(cached["heldout_mask"])
+    except (OSError, EOFError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("Mayo ablation"):
+            raise
+        raise ValueError("Mayo ablation held-out mask is unsafe") from exc
+    heldout = _index_array(
+        split_value.get("heldout_indices"),
+        int(receipt.get("sample_count", 0)),
+        "Mayo ablation held-out indices",
+    )
+    if (
+        mask.dtype != np.bool_
+        or mask.shape != (len(heldout), 4, 32)
+        or not bool(mask.any())
+    ):
+        raise ValueError("Mayo ablation held-out mask shape is invalid")
+    group_ids = _exact_string_list(receipt.get("group_ids"), "group IDs")
+    if manifest.get("group_ids") != list(group_ids):
+        raise ValueError("Mayo ablation manifest group order is invalid")
+    if (
+        files["bundle"].sha256 != receipt.get("bundle_sha256")
+        or files["bundle"].identity.size != receipt.get("bundle_size_bytes")
+    ):
+        raise ValueError("Mayo ablation bundle bytes contradict its receipt")
+    _parse_training_cache_payloads(
+        (payloads["bundle"],),
+        stage=MAYO_DEVELOPMENT_STAGE,
+        group_ids=group_ids,
+    )
+    return _FrozenStageSnapshot(
+        stage=MAYO_DEVELOPMENT_STAGE,
+        mode="formal",
+        files=files,
+        receipt=receipt,
+        manifest=manifest,
+        config=config,
+        split=split_value,
+        scaler=scaler_value,
+    )
+
+
 def _capture_frozen_ssl_stage(
     *,
     stage: str,
@@ -1805,28 +2037,69 @@ def _capture_frozen_ssl_stage(
         captured["mayo"].append(value)
         return value
 
+    try:
+        common_tree = set(os.listdir(inputs_root)) == {
+            "common", "receipts", "configs",
+        }
+    except OSError as exc:
+        raise ValueError("frozen SSL inputs are unavailable") from exc
+
     def finalize_locked() -> None:
         if not captured[stage]:
             raise ValueError(f"{stage} live authorization was not captured")
-        snapshots.append(_snapshot_frozen_ssl_stage(
-            stage=stage,
-            mode=mode,
-            inputs_root=inputs_root,
-            bridge_root=bridge_root,
-            live_authorization=captured[stage][-1],
-        ))
+        if (
+            stage == MAYO_DEVELOPMENT_STAGE
+            and mode == "formal"
+            and experiment_kind == "mayo_input_arm_ablation"
+            and common_tree
+        ):
+            snapshots.append(_snapshot_frozen_mayo_ablation_stage(
+                inputs_root=inputs_root,
+                bridge_root=bridge_root,
+                live_authorization=captured[stage][-1],
+                mayo_input_arm=mayo_input_arm,
+            ))
+        else:
+            snapshots.append(_snapshot_frozen_ssl_stage(
+                stage=stage,
+                mode=mode,
+                inputs_root=inputs_root,
+                bridge_root=bridge_root,
+                live_authorization=captured[stage][-1],
+            ))
 
-    verify_frozen_bridge_stage(
-        inputs_root,
-        bridge_root,
-        mode=mode,
-        ravdess_authorizer=capture_ravdess,
-        mayo_authorizer=capture_mayo,
-        producer_sha256=producer_sha256,
-        experiment_kind=experiment_kind,
-        mayo_input_arm=mayo_input_arm,
-        finalize_locked=finalize_locked,
+    common_ablation = (
+        stage == MAYO_DEVELOPMENT_STAGE
+        and mode == "formal"
+        and experiment_kind == "mayo_input_arm_ablation"
+        and common_tree
     )
+    if common_ablation:
+        from .dynamic_landmark_ssl_bridge import (
+            verify_frozen_mayo_ablation_inputs,
+        )
+
+        verify_frozen_mayo_ablation_inputs(
+            inputs_root,
+            bridge_root,
+            mayo_input_arm=mayo_input_arm,
+            ravdess_authorizer=capture_ravdess,
+            mayo_authorizer=capture_mayo,
+            producer_sha256=producer_sha256,
+            finalize_locked=finalize_locked,
+        )
+    else:
+        verify_frozen_bridge_stage(
+            inputs_root,
+            bridge_root,
+            mode=mode,
+            ravdess_authorizer=capture_ravdess,
+            mayo_authorizer=capture_mayo,
+            producer_sha256=producer_sha256,
+            experiment_kind=experiment_kind,
+            mayo_input_arm=mayo_input_arm,
+            finalize_locked=finalize_locked,
+        )
     if len(snapshots) != 1:
         raise RuntimeError("frozen SSL verifier did not finalize exactly once")
     return snapshots[0]
@@ -3334,6 +3607,70 @@ def _load_authorized_training_cache(
     return (*tensors, cache_commitment, len(payloads))
 
 
+def load_frozen_mayo_ablation_mask(
+    stage_evidence: SSLStageEvidence,
+) -> torch.Tensor:
+    """Load and rederive the one receipt-bound held-out mask for all arms."""
+    _require_public_receipt_bound_stage(stage_evidence)
+    if (
+        stage_evidence.stage != MAYO_DEVELOPMENT_STAGE
+        or stage_evidence.mode != "formal"
+        or stage_evidence.experiment_kind != "mayo_input_arm_ablation"
+        or stage_evidence.input_arm not in _MAYO_ABLATION_ARMS
+    ):
+        raise ValueError("frozen Mayo ablation mask requires exact arm evidence")
+    authorization = stage_evidence._runtime_authorization
+    assert isinstance(authorization, _SSLStageAuthorization)
+    frozen = authorization.frozen_stage
+    if not isinstance(frozen, _FrozenSSLStageAuthorization):
+        raise ValueError("frozen Mayo ablation mask lacks input authority")
+    files = frozen.snapshot.files
+    if "heldout_mask" not in files or "common_receipt" not in files:
+        raise ValueError("frozen Mayo ablation mask artifact is unavailable")
+    mask_payload, common_payload = _reopen_authorized_cache_artifacts((
+        files["heldout_mask"], files["common_receipt"],
+    ))
+    common = _strict_json_mapping(
+        common_payload, "Mayo ablation common receipt",
+    )
+    if (
+        common.get("schema") != _MAYO_ABLATION_COMMON_RECEIPT_SCHEMA
+        or common.get("heldout_mask_sha256")
+        != hashlib.sha256(mask_payload).hexdigest()
+        or common.get("heldout_mask_size_bytes") != len(mask_payload)
+    ):
+        raise ValueError("frozen Mayo ablation mask receipt changed")
+    try:
+        with np.load(io.BytesIO(mask_payload), allow_pickle=False) as cached:
+            if cached.files != ["heldout_mask"]:
+                raise ValueError("frozen Mayo ablation mask schema is invalid")
+            observed = torch.as_tensor(
+                np.asarray(cached["heldout_mask"]).copy(), dtype=torch.bool,
+            )
+    except (OSError, EOFError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc).startswith("frozen Mayo"):
+            raise
+        raise ValueError("frozen Mayo ablation mask is unsafe") from exc
+    features, valid, timestamps, source_indices, _binding, _count = (
+        _load_authorized_training_cache(stage_evidence)
+    )
+    heldout = torch.as_tensor(
+        authorization.split.heldout_indices, dtype=torch.int64,
+    )
+    expected = make_contiguous_span_mask(
+        valid.index_select(0, heldout),
+        timestamps.index_select(0, heldout),
+        source_indices.index_select(0, heldout),
+        expected_source_step=1,
+        span_length=4,
+        spans_per_window=2,
+        seed=10_000,
+    )
+    if observed.shape != expected.shape or not torch.equal(observed, expected):
+        raise ValueError("frozen Mayo ablation mask contradicts common inputs")
+    return observed.clone()
+
+
 def _mask_sha256(mask: torch.Tensor) -> str:
     return hashlib.sha256(_tensor_fingerprint_bytes(mask)).hexdigest()
 
@@ -3527,6 +3864,7 @@ def _train_ssl_stage_impl(
     seed: int,
     prior_ravdess_checkpoint: Mapping[str, object] | None = None,
     prior_stage_evidence: SSLStageEvidence | None = None,
+    heldout_mask: torch.Tensor | None = None,
 ) -> SSLTrainingResult:
     """Run the one authorized deterministic CPU training/evaluation path."""
     _require_authorized_stage_evidence(stage_evidence)
@@ -3539,6 +3877,20 @@ def _train_ssl_stage_impl(
     seed = int(seed)
     authorization = stage_evidence._runtime_authorization
     assert isinstance(authorization, _SSLStageAuthorization)
+    common_ablation_mask = (
+        stage_evidence.experiment_kind == "mayo_input_arm_ablation"
+        and isinstance(authorization.frozen_stage, _FrozenSSLStageAuthorization)
+        and "heldout_mask"
+        in authorization.frozen_stage.snapshot.files
+    )
+    if heldout_mask is not None and (
+        not common_ablation_mask or not isinstance(heldout_mask, torch.Tensor)
+    ):
+        raise ValueError(
+            "an external held-out mask is legal only for common Mayo ablation"
+        )
+    if common_ablation_mask and heldout_mask is None:
+        raise ValueError("common Mayo ablation requires its persisted held-out mask")
     features, valid_mask, timestamps, source_indices, cache_binding, cache_count = (
         _load_authorized_training_cache(stage_evidence)
     )
@@ -3567,6 +3919,31 @@ def _train_ssl_stage_impl(
     validate_ssl_input_arm(stage_evidence.stage, input_arm)
     if seed not in tuple(training_config["seeds"]):
         raise ValueError("training seed is not registered for this frozen run mode")
+    authorized_heldout_mask: torch.Tensor | None = None
+    if common_ablation_mask:
+        heldout_tensor_indices = torch.as_tensor(
+            heldout_indices, dtype=torch.int64,
+        )
+        expected_heldout_mask = make_contiguous_span_mask(
+            valid_mask.index_select(0, heldout_tensor_indices),
+            timestamps.index_select(0, heldout_tensor_indices),
+            source_indices.index_select(0, heldout_tensor_indices),
+            expected_source_step=expected_source_step,
+            span_length=span_length,
+            spans_per_window=spans_per_window,
+            seed=10_000,
+        )
+        assert heldout_mask is not None
+        if (
+            heldout_mask.device.type != "cpu"
+            or heldout_mask.dtype != torch.bool
+            or heldout_mask.shape != expected_heldout_mask.shape
+            or not torch.equal(heldout_mask, expected_heldout_mask)
+        ):
+            raise ValueError(
+                "persisted Mayo ablation held-out mask changed or mismatched"
+            )
+        authorized_heldout_mask = heldout_mask.detach().clone()
 
     with torch.random.fork_rng(devices=[]):
         torch.manual_seed(seed)
@@ -3708,14 +4085,18 @@ def _train_ssl_stage_impl(
             heldout_scaled = authorization.scaler.transform(
                 heldout_features, heldout_valid, source=stage_evidence.source
             )
-            heldout_mask = make_contiguous_span_mask(
-                heldout_valid,
-                heldout_times,
-                heldout_source_indices,
-                expected_source_step=expected_source_step,
-                span_length=span_length,
-                spans_per_window=spans_per_window,
-                seed=10_000,
+            heldout_mask = (
+                authorized_heldout_mask
+                if authorized_heldout_mask is not None
+                else make_contiguous_span_mask(
+                    heldout_valid,
+                    heldout_times,
+                    heldout_source_indices,
+                    expected_source_step=expected_source_step,
+                    span_length=span_length,
+                    spans_per_window=spans_per_window,
+                    seed=10_000,
+                )
             )
             heldout_mask_sha256 = _mask_sha256(heldout_mask)
             with torch.no_grad():
@@ -3878,6 +4259,7 @@ def train_ssl_stage(
     seed: int,
     prior_ravdess_checkpoint: Mapping[str, object] | None = None,
     prior_stage_evidence: SSLStageEvidence | None = None,
+    heldout_mask: torch.Tensor | None = None,
 ) -> SSLTrainingResult:
     _require_public_receipt_bound_stage(stage_evidence)
     return _train_ssl_stage_impl(
@@ -3885,6 +4267,7 @@ def train_ssl_stage(
         seed=seed,
         prior_ravdess_checkpoint=prior_ravdess_checkpoint,
         prior_stage_evidence=prior_stage_evidence,
+        heldout_mask=heldout_mask,
     )
 
 
@@ -5145,7 +5528,8 @@ __all__ = [
     "masked_smooth_l1", "deterministic_group_split", "resample_trajectory_30hz",
     "fit_source_scaler", "reconstruction_report", "build_ssl_stage_evidence",
     "authorize_frozen_ssl_stage",
-    "initialize_mayo_ssl_model", "train_ssl_stage",
+    "initialize_mayo_ssl_model", "load_frozen_mayo_ablation_mask",
+    "train_ssl_stage",
     "build_ssl_checkpoint_payload", "ssl_checkpoint_fingerprint",
     "validate_ssl_checkpoint_payload", "save_ssl_checkpoint", "load_ssl_checkpoint",
     "authorize_ssl_checkpoint_receipt",

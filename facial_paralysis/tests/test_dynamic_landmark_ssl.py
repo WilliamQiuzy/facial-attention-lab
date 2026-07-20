@@ -195,6 +195,41 @@ def _frozen_bridge_inputs(
         _set_bridge_contract(saved_contract)
 
 
+@contextmanager
+def _frozen_common_ablation_inputs(root: Path):
+    saved_contract = {
+        name: getattr(bridge_core, name) for name in _PRODUCTION_BRIDGE_CONTRACT
+    }
+    try:
+        ravdess, mayo = _synthetic_authorizations_with_mayo_exclusion()
+        producer = "f" * 64
+        bridge = root / "bridge"
+        run_root = root / "ablation" / "mayo-input-arm-v1"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        bridge_core.freeze_mayo_ablation_inputs(
+            run_root,
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        yield {
+            "inputs_root": run_root / "inputs",
+            "bridge_root": bridge,
+            "mode": "formal",
+            "ravdess_authorizer": lambda: ravdess,
+            "mayo_authorizer": lambda: mayo,
+            "producer_sha256": producer,
+        }, ravdess, mayo
+    finally:
+        _set_bridge_contract(saved_contract)
+
+
 def _cache_commitment(groups: list[str], cache_paths: list[Path]) -> str:
     digest = hashlib.sha256()
     digest.update(b"dynamic-landmark-ssl-cache-commitment-v1\x00")
@@ -1572,6 +1607,95 @@ def test_formal_mayo_ablation_authorizes_fresh_without_ravdess_prior(c: Check):
                 second.training_receipt.heldout_mask_schedule_sha256,
                 "all arms and seeds reuse one frozen heldout mask",
             )
+
+
+def test_common_mayo_ablation_tree_authorizes_all_arms_and_one_mask(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _frozen_common_ablation_inputs(Path(td)) as (
+            frozen, _ravdess, _mayo,
+        ):
+            evidence = {
+                arm: ssl_core.authorize_frozen_ssl_stage(
+                    stage="mayo",
+                    experiment_kind="mayo_input_arm_ablation",
+                    mayo_input_arm=arm,
+                    **frozen,
+                )
+                for arm in ("blendshape_only", "landmark_only", "fusion")
+            }
+            c.eq({item.input_arm for item in evidence.values()}, {
+                "blendshape_only", "landmark_only", "fusion",
+            })
+            c.eq(len({item.train_indices_sha256 for item in evidence.values()}), 1)
+            c.eq(len({item.heldout_indices_sha256 for item in evidence.values()}), 1)
+            c.eq(len({item.scaler_sha256 for item in evidence.values()}), 1)
+            common_mask = ssl_core.load_frozen_mayo_ablation_mask(
+                evidence["fusion"],
+            )
+            c.eq(common_mask.dtype, torch.bool)
+            c.eq(common_mask.ndim, 3)
+            c.true(bool(common_mask.any()))
+            digest = ssl_core._mask_sha256(common_mask)
+            results = {
+                arm: ssl_core.train_ssl_stage(
+                    stage_evidence=item,
+                    seed=0,
+                    heldout_mask=common_mask,
+                )
+                for arm, item in evidence.items()
+            }
+            c.eq(len({
+                result.training_receipt.pre_state_sha256
+                for result in results.values()
+            }), 1)
+            c.eq({
+                result.training_receipt.heldout_mask_schedule_sha256
+                for result in results.values()
+            }, {digest})
+            c.true(all(
+                result.training_receipt.epochs == 30
+                and result.training_receipt.optimizer_steps == 30
+                and result.training_receipt.prior_checkpoint_sha256 is None
+                for result in results.values()
+            ))
+
+
+def test_common_mayo_ablation_mask_mismatch_fails_before_optimizer(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        with _frozen_common_ablation_inputs(Path(td)) as (
+            frozen, _ravdess, _mayo,
+        ):
+            evidence = ssl_core.authorize_frozen_ssl_stage(
+                stage="mayo",
+                experiment_kind="mayo_input_arm_ablation",
+                mayo_input_arm="fusion",
+                **frozen,
+            )
+            mask = ssl_core.load_frozen_mayo_ablation_mask(evidence)
+            changed = mask.clone()
+            changed.reshape(-1)[0] = ~changed.reshape(-1)[0]
+            optimizer_calls = 0
+            original_adamw = torch.optim.AdamW
+
+            def forbidden_optimizer(*_args, **_kwargs):
+                nonlocal optimizer_calls
+                optimizer_calls += 1
+                raise AssertionError("OPTIMIZER_REACHED")
+
+            torch.optim.AdamW = forbidden_optimizer
+            try:
+                c.raises(
+                    lambda: ssl_core.train_ssl_stage(
+                        stage_evidence=evidence,
+                        seed=0,
+                        heldout_mask=changed,
+                    ),
+                    ValueError,
+                    "a changed persisted mask fails before training",
+                )
+            finally:
+                torch.optim.AdamW = original_adamw
+            c.eq(optimizer_calls, 0)
 
 
 def test_frozen_exclusion_count_tamper_matrix_precedes_optimizer(c: Check):
@@ -3413,6 +3537,101 @@ def _synthetic_runner_fixture(root: Path, frozen: dict[str, object]):
     return module, arguments, run_root, roots
 
 
+@contextmanager
+def _synthetic_ablation_runner_fixture(root: Path):
+    saved_contract = {
+        name: getattr(bridge_core, name) for name in _PRODUCTION_BRIDGE_CONTRACT
+    }
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ravdess, mayo = _synthetic_authorizations_with_mayo_exclusion()
+        producer = "f" * 64
+        pretraining = root / "pretraining"
+        pretraining.mkdir(mode=0o700)
+        bridge = pretraining / "bridge"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        run_root = (
+            pretraining / "ablation" / "mayo-input-arm-v1"
+        )
+        bridge_core.freeze_mayo_ablation_inputs(
+            run_root,
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+
+        module = _load_runner()
+        module.PRETRAINING_ROOT = pretraining.resolve()
+        module._MAYO_ABLATION_NAMESPACE = run_root.resolve()
+        module._authorization_factories = lambda _args: (
+            lambda: ravdess, lambda: mayo,
+        )
+        module._producer_sha256 = lambda: producer
+
+        roots = {
+            "mayo": root / "raw-mayo-root-secret",
+            "legacy": root / "legacy-export-root-secret",
+            "ravdess": root / "ravdess-root",
+            "mayo_cache": root / "mayo-cache",
+        }
+        for directory in roots.values():
+            directory.mkdir(mode=0o700)
+        for lease in (
+            roots["ravdess"] / ".derived_semantic23.lock",
+            pretraining / ".mayo_ssl_cache.lock",
+        ):
+            lease.touch(exist_ok=True)
+            lease.chmod(0o600)
+        ravdess_key = root / "ravdess.key"
+        mayo_key = root / "mayo.key"
+        for path in (ravdess_key, mayo_key):
+            path.write_bytes(b"k" * 32)
+            path.chmod(0o600)
+        exposure = root / "mayo-exposure.json"
+        exposure.write_text("{}", encoding="ascii")
+        exposure.chmod(0o600)
+
+        def synthetic_privacy(args, ravdess_authorizer, mayo_authorizer):
+            from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
+
+            tokens: set[bytes] = set()
+            for private_root in (
+                args.mayo_data_root, args.mayo_existing_export_root,
+            ):
+                for representation in inputs_cli._root_text_representations(
+                    private_root,
+                ):
+                    inputs_cli._add_text_variants(tokens, representation)
+            for authorization in (ravdess_authorizer(), mayo_authorizer()):
+                inputs_cli._add_binary_variants(
+                    tokens, authorization.private_key,
+                )
+            return inputs_cli._PrivacyForbidden(tokens=tuple(sorted(tokens)))
+
+        module._privacy_forbidden = synthetic_privacy
+        arguments = [
+            "mayo-ablation",
+            "--run-root", str(run_root),
+            "--bridge-root", str(bridge),
+            "--ravdess-data-root", str(roots["ravdess"]),
+            "--ravdess-key", str(ravdess_key),
+            "--mayo-data-root", str(roots["mayo"]),
+            "--mayo-existing-export-root", str(roots["legacy"]),
+            "--mayo-cache-root", str(roots["mayo_cache"]),
+            "--mayo-exposure-manifest", str(exposure),
+            "--mayo-key", str(mayo_key),
+        ]
+        yield module, arguments, run_root, roots
+    finally:
+        _set_bridge_contract(saved_contract)
+
+
 def test_real_pretraining_runner_requires_the_exact_two_stage_command(c: Check):
     module = _load_runner()
     c.true(module._RUN_ID.fullmatch("preflight-seed0") is not None)
@@ -3454,6 +3673,181 @@ def test_real_pretraining_runner_requires_the_exact_two_stage_command(c: Check):
             SystemExit,
             "mere mode selection cannot bypass frozen input authorization",
         )
+
+
+def test_formal_dry_run_matrix_is_path_free_and_exact(c: Check):
+    module = _load_runner()
+    matrix = module._formal_job_matrix()
+    c.eq(matrix["schema_version"], "dynamic_landmark_ssl_job_matrix_v1")
+    jobs = matrix["jobs"]
+    c.eq(len(jobs), 15)
+    c.eq(
+        [(job["experiment"], job["stage"], job["input_arm"], job["seed"])
+         for job in jobs[:6]],
+        [
+            ("two_stage_fusion", stage, arm, seed)
+            for seed in (0, 1, 2)
+            for stage, arm in (
+                ("ravdess", "semantic23_only"), ("mayo", "fusion"),
+            )
+        ],
+    )
+    c.eq(
+        [(job["experiment"], job["stage"], job["input_arm"], job["seed"])
+         for job in jobs[6:]],
+        [
+            ("mayo_input_arm_ablation", "mayo", arm, seed)
+            for arm in ("blendshape_only", "landmark_only", "fusion")
+            for seed in (0, 1, 2)
+        ],
+    )
+    c.true(all(job["epochs"] == 30 for job in jobs))
+    c.true(all(job["optimizer"] == "adamw" for job in jobs))
+    c.true(all(job["target_schema"] in {
+        "semantic23_v1", "mediapipe72_plus_clinical23_full95_v1",
+    } for job in jobs))
+    encoded = json.dumps(matrix, sort_keys=True)
+    c.true("/" not in encoded and "\\\\" not in encoded)
+    c.true("root" not in encoded.lower() and "path" not in encoded.lower())
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        result = module.main(["dry-run"])
+    c.eq(stderr.getvalue(), "")
+    c.eq(json.loads(stdout.getvalue()), matrix)
+    c.eq(result, matrix)
+
+
+def test_mayo_ablation_result_contract_and_paired_statistics(c: Check):
+    module = _load_runner()
+    arms = ("blendshape_only", "landmark_only", "fusion")
+    seeds = (0, 1, 2)
+    expected = module._expected_ablation_result_files(arms, seeds)
+    c.eq(len(expected), 19)
+    c.true("reports/mayo_input_arm_ablation.json" in expected)
+    c.true(all(
+        f"checkpoints/{arm}/seed_{seed}.pt" in expected
+        and f"checkpoints/{arm}/seed_{seed}.pt.receipt.json" in expected
+        for arm in arms for seed in seeds
+    ))
+
+    runs = []
+    for arm_index, arm in enumerate(arms):
+        for seed in seeds:
+            base = float(arm_index * 10 + seed)
+            runs.append({
+                "arm": arm,
+                "seed": seed,
+                "metrics": {
+                    "raw_mae": {
+                        "blendshape72": base + 1.0,
+                        "clinical23": base + 2.0,
+                        "equal_block_macro": base + 1.5,
+                        "full95": base + 1.25,
+                    },
+                    "standardized_mae": base + 3.0,
+                    "standardized_smooth_l1": base + 4.0,
+                },
+            })
+    aggregate, paired = module._ablation_statistics(runs)
+    c.eq(set(aggregate), set(arms))
+    c.eq(aggregate["fusion"]["raw_mae"]["full95"], {
+        "mean": 22.25, "sd": 1.0,
+    })
+    fusion_minus_landmark = paired["fusion_minus_landmark_only"]
+    c.eq(fusion_minus_landmark["raw_mae"]["clinical23"]["by_seed"], {
+        "0": 10.0, "1": 10.0, "2": 10.0,
+    })
+    c.eq(fusion_minus_landmark["raw_mae"]["clinical23"]["mean"], 10.0)
+    c.eq(fusion_minus_landmark["raw_mae"]["clinical23"]["sd"], 0.0)
+
+
+def test_mayo_ablation_runner_publishes_one_exact_nine_job_tree(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        with _synthetic_ablation_runner_fixture(root) as (
+            module, arguments, run_root, roots,
+        ):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                result = module.main(arguments)
+            c.eq(stderr.getvalue(), "")
+            c.eq(result, {
+                "arm_count": 3,
+                "checkpoint_count": 9,
+                "job_count": 9,
+                "mode": "formal",
+                "seed_count": 3,
+                "stage_count": 1,
+            })
+            c.eq(json.loads(stdout.getvalue()), result)
+            results = run_root / "results"
+            files = {
+                str(path.relative_to(results))
+                for path in results.rglob("*") if path.is_file()
+            }
+            c.eq(
+                files,
+                module._expected_ablation_result_files(),
+                "nine checkpoints, nine receipts, and one report publish together",
+            )
+            report = json.loads((
+                results / "reports" / "mayo_input_arm_ablation.json"
+            ).read_text(encoding="ascii"))
+            c.eq(report["schema_version"], "dynamic_landmark_ssl_ablation_report_v1")
+            c.eq(report["job_count"], 9)
+            c.eq(len(report["runs"]), 9)
+            c.eq(report["epochs"], 30)
+            c.eq(report["target_schema"], (
+                "mediapipe72_plus_clinical23_full95_v1"
+            ))
+            c.eq(report["prior_ravdess"], False)
+            c.eq(report["early_stopping"], False)
+            c.eq(report["retry_count"], 0)
+            c.eq(len(report["shared_heldout_mask_sha256"]), 64)
+            for seed in (0, 1, 2):
+                seeded = [
+                    run for run in report["runs"] if run["seed"] == seed
+                ]
+                c.eq(len(seeded), 3)
+                c.eq(len({run["pre_state_sha256"] for run in seeded}), 1)
+                c.eq(
+                    len({run["optimizer_initial_state_sha256"] for run in seeded}),
+                    1,
+                )
+                c.eq(
+                    {run["heldout_mask_sha256"] for run in seeded},
+                    {report["shared_heldout_mask_sha256"]},
+                )
+                c.true(all(run["optimizer_steps"] == 30 for run in seeded))
+                c.true(all(set(run["metrics"]["raw_mae"]) == {
+                    "blendshape72", "clinical23", "equal_block_macro", "full95",
+                } for run in seeded))
+                c.true(all("per_recording_metrics" in run for run in seeded))
+            c.eq(set(report["aggregate"]), {
+                "blendshape_only", "landmark_only", "fusion",
+            })
+            c.eq(set(report["paired_differences"]), {
+                "landmark_only_minus_blendshape_only",
+                "fusion_minus_blendshape_only",
+                "fusion_minus_landmark_only",
+            })
+            persisted = b"\n".join(
+                path.read_bytes() for path in sorted(results.rglob("*"))
+                if path.is_file()
+            ) + stdout.getvalue().encode("utf-8")
+            for private_root in (roots["mayo"], roots["legacy"]):
+                raw = str(private_root).encode("utf-8")
+                c.true(raw not in persisted)
+                c.true(raw.hex().encode("ascii") not in persisted)
+                c.true(base64.b64encode(raw) not in persisted)
+                c.true(base64.urlsafe_b64encode(raw) not in persisted)
+            c.true(not any(
+                path.name.startswith(".results.staging-")
+                for path in run_root.iterdir()
+            ))
 
 
 def test_pretraining_runner_captures_native_mayo_root_output(c: Check):

@@ -1091,6 +1091,147 @@ def test_freeze_stage_can_bind_one_formal_mayo_ablation_arm(c: Check):
         )
 
 
+def test_formal_mayo_ablation_freezes_one_common_tree_and_three_configs(c: Check):
+    ravdess, mayo = _synthetic_authorizations()
+    producer = "f" * 64
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary)
+        bridge = parent / "bridge"
+        run_root = parent / "ablation" / "mayo-input-arm-v1"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        result = bridge_core.freeze_mayo_ablation_inputs(
+            run_root,
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        c.eq(result, {
+            "arm_count": 3,
+            "mode": "formal",
+            "sample_count": 32,
+            "stage_count": 1,
+        })
+        inputs = run_root / "inputs"
+        files = {
+            str(path.relative_to(inputs))
+            for path in inputs.rglob("*") if path.is_file()
+        }
+        c.eq(files, {
+            "common/manifest.json",
+            "common/split.json",
+            "common/scaler.json",
+            "common/heldout_mask.npz",
+            "receipts/common.json",
+            "receipts/blendshape_only.json",
+            "receipts/landmark_only.json",
+            "receipts/fusion.json",
+            "configs/blendshape_only.json",
+            "configs/landmark_only.json",
+            "configs/fusion.json",
+        })
+        c.true(all(
+            stat.S_IMODE(path.stat().st_mode) == 0o600
+            for path in inputs.rglob("*") if path.is_file()
+        ))
+        mask_payload = (inputs / "common" / "heldout_mask.npz").read_bytes()
+        with np.load(io.BytesIO(mask_payload), allow_pickle=False) as cached:
+            c.eq(cached.files, ["heldout_mask"])
+            heldout_mask = np.asarray(cached["heldout_mask"])
+        c.eq(heldout_mask.dtype, np.dtype(np.bool_))
+        c.eq(heldout_mask.shape[1:], (4, 32))
+        c.true(bool(heldout_mask.any()))
+        common = json.loads((
+            inputs / "receipts" / "common.json"
+        ).read_text("ascii"))
+        c.eq(common["heldout_mask_sha256"], hashlib.sha256(
+            mask_payload
+        ).hexdigest())
+        c.eq(common["arms"], [
+            "blendshape_only", "landmark_only", "fusion",
+        ])
+        for arm in common["arms"]:
+            receipt = json.loads((
+                inputs / "receipts" / f"{arm}.json"
+            ).read_text("ascii"))
+            config = json.loads((
+                inputs / "configs" / f"{arm}.json"
+            ).read_text("ascii"))
+            c.eq(config["input_arm"], arm)
+            c.eq(receipt["artifact_core_sha256"]["config"], hashlib.sha256(
+                (inputs / "configs" / f"{arm}.json").read_bytes()
+            ).hexdigest())
+        for arm in common["arms"]:
+            verified = bridge_core.verify_frozen_mayo_ablation_inputs(
+                inputs,
+                bridge,
+                mayo_input_arm=arm,
+                ravdess_authorizer=lambda: ravdess,
+                mayo_authorizer=lambda: mayo,
+                producer_sha256=producer,
+            )
+            c.eq(verified["mayo_input_arm"], arm)
+            c.eq(verified["heldout_mask_sha256"], common[
+                "heldout_mask_sha256"
+            ])
+        c.raises(
+            lambda: bridge_core.freeze_mayo_ablation_inputs(
+                run_root,
+                bridge,
+                ravdess_authorizer=lambda: ravdess,
+                mayo_authorizer=lambda: mayo,
+                producer_sha256=producer,
+            ),
+            FileExistsError,
+            "the common ablation input tree is immutable",
+        )
+
+
+def test_formal_mayo_ablation_mask_tamper_fails_every_arm(c: Check):
+    ravdess, mayo = _synthetic_authorizations()
+    producer = "f" * 64
+    with tempfile.TemporaryDirectory() as temporary:
+        parent = Path(temporary)
+        bridge = parent / "bridge"
+        run_root = parent / "ablation"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        bridge_core.freeze_mayo_ablation_inputs(
+            run_root,
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        path = run_root / "inputs" / "common" / "heldout_mask.npz"
+        payload = bytearray(path.read_bytes())
+        payload[-1] ^= 1
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        for arm in ("blendshape_only", "landmark_only", "fusion"):
+            c.raises(
+                lambda arm=arm: bridge_core.verify_frozen_mayo_ablation_inputs(
+                    run_root / "inputs",
+                    bridge,
+                    mayo_input_arm=arm,
+                    ravdess_authorizer=lambda: ravdess,
+                    mayo_authorizer=lambda: mayo,
+                    producer_sha256=producer,
+                ),
+                ValueError,
+                "one changed common mask invalidates every arm",
+            )
+
+
 def test_frozen_receipts_bind_artifacts_mappings_and_hmac(c: Check):
     ravdess, mayo = _synthetic_authorizations()
     producer = "f" * 64

@@ -147,6 +147,22 @@ class _PreparedFrozenInputs:
     mayo: _PreparedFrozenStage
 
 
+@dataclass(frozen=True)
+class _PreparedMayoAblationInputs:
+    mode: str
+    common_artifacts: Mapping[str, bytes]
+    heldout_mask_bytes: bytes
+    common_receipt: Mapping[str, object]
+    common_receipt_bytes: bytes
+    arm_stages: Mapping[str, _PreparedFrozenStage]
+
+
+_MAYO_ABLATION_ARMS = ("blendshape_only", "landmark_only", "fusion")
+_MAYO_ABLATION_COMMON_RECEIPT_SCHEMA = (
+    "dynamic_landmark_mayo_ablation_common_receipt_v1"
+)
+
+
 class _MayoMaskQualityExclusion(ValueError):
     """One source cannot provide 64 distinct frozen span-four windows."""
 
@@ -2771,6 +2787,163 @@ def _prepare_frozen_inputs(
     )
 
 
+def _artifact_core_bytes(payload: bytes, field: str) -> bytes:
+    value = _decode_unique_json(payload)
+    if type(value) is not dict:
+        raise ValueError(f"{field} artifact is not an exact object")
+    core = dict(value)
+    if set(core).isdisjoint({"bridge_receipt_sha256", "receipt_hmac"}):
+        raise ValueError(f"{field} artifact lacks its receipt cross-link")
+    core.pop("bridge_receipt_sha256", None)
+    core.pop("receipt_hmac", None)
+    return _json_bytes(core)
+
+
+def _materialize_frozen_mayo_heldout_mask(
+    stage: _PreparedBridgeStage,
+    split_bytes: bytes,
+) -> bytes:
+    """Build the one persisted formal held-out mask used by every arm."""
+    from .dynamic_landmark_ssl import make_contiguous_span_mask
+    import torch
+
+    split = _decode_unique_json(split_bytes)
+    if type(split) is not dict or type(split.get("heldout_indices")) is not list:
+        raise ValueError("Mayo ablation split cannot materialize its held-out mask")
+    heldout = np.asarray(split["heldout_indices"], dtype=np.int64)
+    with np.load(io.BytesIO(stage.bundle_bytes), allow_pickle=False) as cached:
+        valid = np.asarray(cached["valid_mask"])[heldout]
+        timestamps = np.asarray(cached["timestamps"])[heldout]
+        source_indices = np.asarray(cached["source_frame_indices"])[heldout]
+    mask = make_contiguous_span_mask(
+        torch.as_tensor(valid, dtype=torch.bool),
+        torch.as_tensor(timestamps, dtype=torch.float32),
+        torch.as_tensor(source_indices, dtype=torch.int64),
+        expected_source_step=1,
+        span_length=4,
+        spans_per_window=2,
+        seed=10_000,
+    ).detach().cpu().numpy()
+    buffer = io.BytesIO()
+    np.savez(buffer, heldout_mask=np.ascontiguousarray(mask, dtype=np.bool_))
+    payload = buffer.getvalue()
+    if not payload or len(payload) > _MAX_BUNDLE_BYTES:
+        raise ValueError("Mayo ablation held-out mask exceeds its private bound")
+    return payload
+
+
+def _prepare_mayo_ablation_inputs(
+    generation: _PreparedBridgeGeneration,
+) -> _PreparedMayoAblationInputs:
+    generation_sha256 = hashlib.sha256(generation.generation_bytes).hexdigest()
+    arm_stages = {
+        arm: _prepare_frozen_stage(
+            generation.mayo,
+            mode="formal",
+            bridge_generation_sha256=generation_sha256,
+            experiment_kind="mayo_input_arm_ablation",
+            mayo_input_arm=arm,
+        )
+        for arm in _MAYO_ABLATION_ARMS
+    }
+    common_artifacts: dict[str, bytes] = {}
+    for name in ("manifest", "split", "scaler"):
+        cores = tuple(
+            _artifact_core_bytes(stage.artifacts[name], f"Mayo {name}")
+            for stage in arm_stages.values()
+        )
+        if any(not hmac.compare_digest(cores[0], item) for item in cores[1:]):
+            raise RuntimeError(f"Mayo ablation {name} differs across arms")
+        common_artifacts[name] = cores[0]
+    heldout_mask_bytes = _materialize_frozen_mayo_heldout_mask(
+        generation.mayo, common_artifacts["split"],
+    )
+    common_receipt: dict[str, object] = {
+        "schema": _MAYO_ABLATION_COMMON_RECEIPT_SCHEMA,
+        "mode": "formal",
+        "stage": "mayo",
+        "experiment_kind": "mayo_input_arm_ablation",
+        "arms": list(_MAYO_ABLATION_ARMS),
+        "bridge_generation_sha256": generation_sha256,
+        "common_artifact_sha256": {
+            name: hashlib.sha256(payload).hexdigest()
+            for name, payload in common_artifacts.items()
+        },
+        "heldout_mask_sha256": hashlib.sha256(
+            heldout_mask_bytes
+        ).hexdigest(),
+        "heldout_mask_size_bytes": len(heldout_mask_bytes),
+        "arm_receipt_sha256": {
+            arm: hashlib.sha256(stage.receipt_bytes).hexdigest()
+            for arm, stage in arm_stages.items()
+        },
+        "bundle_sha256": generation.mayo.record["bundle_sha256"],
+        "upstream_manifest_commitments": generation.mayo.record[
+            "upstream_manifest_commitments"
+        ],
+        "upstream_generation_closure_hmac": generation.mayo.record[
+            "upstream_generation_closure_hmac"
+        ],
+        "canonical_key_identity_sha256": (
+            generation.mayo.canonical_key_identity_sha256
+        ),
+    }
+    common_receipt["receipt_hmac"] = hmac.new(
+        generation.mayo.private_key,
+        b"dynamic-landmark-mayo-ablation-common-receipt-v1\0"
+        + _json_bytes(common_receipt),
+        hashlib.sha256,
+    ).hexdigest()
+    return _PreparedMayoAblationInputs(
+        mode="formal",
+        common_artifacts=common_artifacts,
+        heldout_mask_bytes=heldout_mask_bytes,
+        common_receipt=common_receipt,
+        common_receipt_bytes=_json_bytes(common_receipt),
+        arm_stages=arm_stages,
+    )
+
+
+def _mayo_ablation_inputs_equal(
+    first: _PreparedMayoAblationInputs,
+    second: _PreparedMayoAblationInputs,
+) -> bool:
+    if (
+        first.mode != second.mode
+        or not hmac.compare_digest(
+            first.common_receipt_bytes, second.common_receipt_bytes,
+        )
+        or not hmac.compare_digest(
+            first.heldout_mask_bytes, second.heldout_mask_bytes,
+        )
+        or set(first.common_artifacts) != set(second.common_artifacts)
+        or set(first.arm_stages) != set(second.arm_stages)
+    ):
+        return False
+    if any(
+        not hmac.compare_digest(
+            first.common_artifacts[name], second.common_artifacts[name],
+        )
+        for name in first.common_artifacts
+    ):
+        return False
+    return all(
+        hmac.compare_digest(
+            first.arm_stages[arm].receipt_bytes,
+            second.arm_stages[arm].receipt_bytes,
+        )
+        and hmac.compare_digest(
+            _artifact_core_bytes(
+                first.arm_stages[arm].artifacts["config"], "Mayo config",
+            ),
+            _artifact_core_bytes(
+                second.arm_stages[arm].artifacts["config"], "Mayo config",
+            ),
+        )
+        for arm in _MAYO_ABLATION_ARMS
+    )
+
+
 def _frozen_inputs_equal(
     first: _PreparedFrozenInputs,
     second: _PreparedFrozenInputs,
@@ -2918,6 +3091,170 @@ def _write_frozen_inputs_fd(
                 os.close(stage_fd)
         _fsync_directory_fd(receipts_fd)
         _fsync_directory_fd(artifacts_fd)
+        _fsync_directory_fd(staging_fd)
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
+def _validate_mayo_ablation_inputs_fd(
+    root_fd: int,
+    expected: _PreparedMayoAblationInputs,
+) -> None:
+    if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+        raise ValueError("Mayo ablation inputs root is unsafe")
+    tree_before = _snapshot_exact_private_tree_fd(root_fd)
+    if set(os.listdir(root_fd)) != {"common", "receipts", "configs"}:
+        raise ValueError("Mayo ablation inputs top-level schema is not exact")
+    descriptors = ExitStack()
+    try:
+        common_fd, _ = _open_private_directory_at(
+            root_fd, "common", "Mayo ablation common directory",
+        )
+        descriptors.callback(os.close, common_fd)
+        receipts_fd, _ = _open_private_directory_at(
+            root_fd, "receipts", "Mayo ablation receipt directory",
+        )
+        descriptors.callback(os.close, receipts_fd)
+        configs_fd, _ = _open_private_directory_at(
+            root_fd, "configs", "Mayo ablation config directory",
+        )
+        descriptors.callback(os.close, configs_fd)
+        if set(os.listdir(common_fd)) != {
+            "manifest.json", "split.json", "scaler.json", "heldout_mask.npz",
+        }:
+            raise ValueError("Mayo ablation common file set is not exact")
+        if set(os.listdir(receipts_fd)) != {
+            "common.json",
+            *(f"{arm}.json" for arm in _MAYO_ABLATION_ARMS),
+        }:
+            raise ValueError("Mayo ablation receipt file set is not exact")
+        if set(os.listdir(configs_fd)) != {
+            f"{arm}.json" for arm in _MAYO_ABLATION_ARMS
+        }:
+            raise ValueError("Mayo ablation config file set is not exact")
+        common_receipt = _read_private_file_at(
+            receipts_fd, "common.json", "Mayo ablation common receipt",
+        )
+        _assert_frozen_json_private(common_receipt)
+        if not hmac.compare_digest(
+            common_receipt, expected.common_receipt_bytes,
+        ):
+            raise ValueError("Mayo ablation common receipt changed")
+        for name, payload in expected.common_artifacts.items():
+            observed = _read_private_file_at(
+                common_fd, f"{name}.json", f"Mayo ablation {name}",
+            )
+            _assert_frozen_json_private(observed)
+            if not hmac.compare_digest(observed, payload):
+                raise ValueError(f"Mayo ablation common {name} changed")
+        observed_mask = _read_private_file_at(
+            common_fd,
+            "heldout_mask.npz",
+            "Mayo ablation held-out mask",
+        )
+        if not hmac.compare_digest(
+            observed_mask, expected.heldout_mask_bytes,
+        ):
+            raise ValueError("Mayo ablation held-out mask changed")
+        try:
+            with np.load(io.BytesIO(observed_mask), allow_pickle=False) as cached:
+                if cached.files != ["heldout_mask"]:
+                    raise ValueError("Mayo ablation held-out mask schema is not exact")
+                mask = np.asarray(cached["heldout_mask"])
+        except (OSError, EOFError, KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, ValueError) and str(exc).startswith(
+                "Mayo ablation"
+            ):
+                raise
+            raise ValueError("Mayo ablation held-out mask is unsafe") from exc
+        if (
+            mask.dtype != np.bool_
+            or mask.ndim != 3
+            or mask.shape[1:] != (4, 32)
+            or not bool(mask.any())
+        ):
+            raise ValueError("Mayo ablation held-out mask tensor is invalid")
+        for arm in _MAYO_ABLATION_ARMS:
+            stage = expected.arm_stages[arm]
+            observed_receipt = _read_private_file_at(
+                receipts_fd, f"{arm}.json", f"Mayo ablation {arm} receipt",
+            )
+            _assert_frozen_json_private(observed_receipt)
+            if not hmac.compare_digest(observed_receipt, stage.receipt_bytes):
+                raise ValueError(f"Mayo ablation {arm} receipt changed")
+            config = _read_private_file_at(
+                configs_fd, f"{arm}.json", f"Mayo ablation {arm} config",
+            )
+            _assert_frozen_json_private(config)
+            expected_config = _artifact_core_bytes(
+                stage.artifacts["config"], f"Mayo ablation {arm} config",
+            )
+            if not hmac.compare_digest(config, expected_config):
+                raise ValueError(f"Mayo ablation {arm} config changed")
+        _require_exact_tree_unchanged(
+            root_fd, tree_before, "Mayo ablation frozen inputs",
+        )
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
+def _write_mayo_ablation_inputs_fd(
+    staging_fd: int,
+    prepared: _PreparedMayoAblationInputs,
+    ledger: _OwnedTreeLedger,
+) -> None:
+    descriptors = ExitStack()
+    try:
+        directories: dict[str, int] = {}
+        for name in ("common", "receipts", "configs"):
+            descriptor, status = _mkdir_private_directory_at(
+                staging_fd, name, f"Mayo ablation {name} directory",
+            )
+            descriptors.callback(os.close, descriptor)
+            ledger.record(name, "directory", status)
+            directories[name] = descriptor
+        for name, payload in prepared.common_artifacts.items():
+            _write_private_file_at(
+                directories["common"],
+                f"{name}.json",
+                payload,
+                ledger=ledger,
+                relative=f"common/{name}.json",
+            )
+        _write_private_file_at(
+            directories["common"],
+            "heldout_mask.npz",
+            prepared.heldout_mask_bytes,
+            ledger=ledger,
+            relative="common/heldout_mask.npz",
+        )
+        _write_private_file_at(
+            directories["receipts"],
+            "common.json",
+            prepared.common_receipt_bytes,
+            ledger=ledger,
+            relative="receipts/common.json",
+        )
+        for arm in _MAYO_ABLATION_ARMS:
+            stage = prepared.arm_stages[arm]
+            _write_private_file_at(
+                directories["receipts"],
+                f"{arm}.json",
+                stage.receipt_bytes,
+                ledger=ledger,
+                relative=f"receipts/{arm}.json",
+            )
+            _write_private_file_at(
+                directories["configs"],
+                f"{arm}.json",
+                _artifact_core_bytes(
+                    stage.artifacts["config"], f"Mayo ablation {arm} config",
+                ),
+                ledger=ledger,
+                relative=f"configs/{arm}.json",
+            )
+        for descriptor in directories.values():
+            _fsync_directory_fd(descriptor)
         _fsync_directory_fd(staging_fd)
     finally:
         descriptors.__exit__(*sys.exc_info())
@@ -3757,12 +4094,21 @@ def freeze_bridge_stage(
     ravdess_authorizer: Callable[[], object],
     mayo_authorizer: Callable[[], object],
     producer_sha256: str,
+    _mayo_ablation: bool = False,
 ) -> dict[str, object]:
     """Atomically freeze one immutable, mode-bound SSL inputs generation."""
     if not callable(ravdess_authorizer) or not callable(mayo_authorizer):
         raise ValueError("bridge authorizers must be callable")
     if type(mode) is not str or mode not in {"smoke", "formal"}:
         raise ValueError("bridge freeze mode must be exactly smoke or formal")
+    if type(_mayo_ablation) is not bool:
+        raise ValueError("Mayo ablation freeze selector must be boolean")
+    if _mayo_ablation and (
+        mode != "formal"
+        or experiment_kind != "mayo_input_arm_ablation"
+        or mayo_input_arm != "fusion"
+    ):
+        raise ValueError("Mayo ablation common freeze contract is not exact")
     bridge_parent: _DirectoryAnchor | None = None
     bridge_anchor: _DirectoryAnchor | None = None
     bridge_lock: _DestinationLock | None = None
@@ -3863,11 +4209,15 @@ def freeze_bridge_stage(
             ),
         )
         _validate_generation_fd(bridge_anchor.descriptor, first_generation)
-        first = _prepare_frozen_inputs(
-            first_generation,
-            mode=mode,
-            experiment_kind=experiment_kind,
-            mayo_input_arm=mayo_input_arm,
+        first = (
+            _prepare_mayo_ablation_inputs(first_generation)
+            if _mayo_ablation
+            else _prepare_frozen_inputs(
+                first_generation,
+                mode=mode,
+                experiment_kind=experiment_kind,
+                mayo_input_arm=mayo_input_arm,
+            )
         )
         _assert_destination_lock_at(
             inputs_lock,
@@ -3886,8 +4236,14 @@ def freeze_bridge_stage(
         staging_identity = _inode_identity(staging_stat)
         ledger = _OwnedTreeLedger.create(staging_stat)
         _assert_directory_anchor(run_anchor, "run root")
-        _write_frozen_inputs_fd(staging_fd, first, ledger)
-        _validate_frozen_inputs_fd(staging_fd, first)
+        if _mayo_ablation:
+            assert isinstance(first, _PreparedMayoAblationInputs)
+            _write_mayo_ablation_inputs_fd(staging_fd, first, ledger)
+            _validate_mayo_ablation_inputs_fd(staging_fd, first)
+        else:
+            assert isinstance(first, _PreparedFrozenInputs)
+            _write_frozen_inputs_fd(staging_fd, first, ledger)
+            _validate_frozen_inputs_fd(staging_fd, first)
 
         second_generation = _prepare_live_generation(
             ravdess_authorizer,
@@ -3903,15 +4259,34 @@ def freeze_bridge_stage(
         if not _prepared_equal(first_generation, second_generation):
             raise ValueError("upstream authorization changed during stage freeze")
         _validate_generation_fd(bridge_anchor.descriptor, second_generation)
-        second = _prepare_frozen_inputs(
-            second_generation,
-            mode=mode,
-            experiment_kind=experiment_kind,
-            mayo_input_arm=mayo_input_arm,
+        second = (
+            _prepare_mayo_ablation_inputs(second_generation)
+            if _mayo_ablation
+            else _prepare_frozen_inputs(
+                second_generation,
+                mode=mode,
+                experiment_kind=experiment_kind,
+                mayo_input_arm=mayo_input_arm,
+            )
         )
-        if not _frozen_inputs_equal(first, second):
+        inputs_equal = (
+            _mayo_ablation_inputs_equal(first, second)
+            if _mayo_ablation
+            and isinstance(first, _PreparedMayoAblationInputs)
+            and isinstance(second, _PreparedMayoAblationInputs)
+            else _frozen_inputs_equal(first, second)
+            if isinstance(first, _PreparedFrozenInputs)
+            and isinstance(second, _PreparedFrozenInputs)
+            else False
+        )
+        if not inputs_equal:
             raise ValueError("frozen inputs changed during stage freeze")
-        _validate_frozen_inputs_fd(staging_fd, second)
+        if _mayo_ablation:
+            assert isinstance(second, _PreparedMayoAblationInputs)
+            _validate_mayo_ablation_inputs_fd(staging_fd, second)
+        else:
+            assert isinstance(second, _PreparedFrozenInputs)
+            _validate_frozen_inputs_fd(staging_fd, second)
         _require_entry_absent_at(
             run_anchor.descriptor, "inputs", "frozen inputs generation",
         )
@@ -3936,7 +4311,12 @@ def freeze_bridge_stage(
         _fsync_directory_fd(run_anchor.descriptor)
         _assert_directory_anchor(run_anchor, "run root")
         _assert_directory_anchor(run_parent, "run root parent")
-        _validate_frozen_inputs_fd(staging_fd, second)
+        if _mayo_ablation:
+            assert isinstance(second, _PreparedMayoAblationInputs)
+            _validate_mayo_ablation_inputs_fd(staging_fd, second)
+        else:
+            assert isinstance(second, _PreparedFrozenInputs)
+            _validate_frozen_inputs_fd(staging_fd, second)
         destination = _entry_stat_at(run_anchor.descriptor, "inputs")
         if destination is None or _inode_identity(destination) != ledger.root_identity:
             raise RuntimeError("frozen inputs name no longer binds staged storage")
@@ -3956,6 +4336,15 @@ def freeze_bridge_stage(
             "bridge destination lock",
         )
         _assert_directory_anchor(bridge_parent, "bridge generation parent")
+        if _mayo_ablation:
+            return {
+                "arm_count": 3,
+                "mode": "formal",
+                "sample_count": int(
+                    second_generation.mayo.record["sample_count"]
+                ),
+                "stage_count": 1,
+            }
         return {
             "mode": mode,
             "sample_count": int(
@@ -4034,6 +4423,28 @@ def freeze_bridge_stage(
             raise cleanup_cause
 
 
+def freeze_mayo_ablation_inputs(
+    run_root: str | Path,
+    bridge_root: str | Path,
+    *,
+    ravdess_authorizer: Callable[[], object],
+    mayo_authorizer: Callable[[], object],
+    producer_sha256: str,
+) -> dict[str, object]:
+    """Atomically freeze the one common formal Mayo ablation input tree."""
+    return freeze_bridge_stage(
+        run_root,
+        bridge_root,
+        mode="formal",
+        experiment_kind="mayo_input_arm_ablation",
+        mayo_input_arm="fusion",
+        ravdess_authorizer=ravdess_authorizer,
+        mayo_authorizer=mayo_authorizer,
+        producer_sha256=producer_sha256,
+        _mayo_ablation=True,
+    )
+
+
 def verify_frozen_bridge_stage(
     inputs_root: str | Path,
     bridge_root: str | Path,
@@ -4047,6 +4458,7 @@ def verify_frozen_bridge_stage(
     before_authorization: Callable[[], None] | None = None,
     finalize_locked: Callable[[], None] | None = None,
     include_generation_result: bool = False,
+    _mayo_ablation: bool = False,
 ) -> dict[str, object]:
     """Reauthorize and byte-verify one committed mode-bound input tree."""
     if not callable(ravdess_authorizer) or not callable(mayo_authorizer):
@@ -4057,8 +4469,15 @@ def verify_frozen_bridge_stage(
         before_authorization is not None and not callable(before_authorization)
         or finalize_locked is not None and not callable(finalize_locked)
         or type(include_generation_result) is not bool
+        or type(_mayo_ablation) is not bool
     ):
         raise ValueError("bridge verification callbacks are malformed")
+    if _mayo_ablation and (
+        mode != "formal"
+        or experiment_kind != "mayo_input_arm_ablation"
+        or mayo_input_arm not in _MAYO_ABLATION_ARMS
+    ):
+        raise ValueError("Mayo ablation verification contract is not exact")
     inputs = _lexical_absolute(inputs_root)
     bridge = _lexical_absolute(bridge_root)
     if inputs.name != "inputs":
@@ -4127,13 +4546,22 @@ def verify_frozen_bridge_stage(
         first_validation = _validate_generation_fd(
             bridge_anchor.descriptor, first_generation,
         )
-        first = _prepare_frozen_inputs(
-            first_generation,
-            mode=mode,
-            experiment_kind=experiment_kind,
-            mayo_input_arm=mayo_input_arm,
+        first = (
+            _prepare_mayo_ablation_inputs(first_generation)
+            if _mayo_ablation
+            else _prepare_frozen_inputs(
+                first_generation,
+                mode=mode,
+                experiment_kind=experiment_kind,
+                mayo_input_arm=mayo_input_arm,
+            )
         )
-        _validate_frozen_inputs_fd(inputs_anchor.descriptor, first)
+        if _mayo_ablation:
+            assert isinstance(first, _PreparedMayoAblationInputs)
+            _validate_mayo_ablation_inputs_fd(inputs_anchor.descriptor, first)
+        else:
+            assert isinstance(first, _PreparedFrozenInputs)
+            _validate_frozen_inputs_fd(inputs_anchor.descriptor, first)
         second_generation = _prepare_live_generation(
             ravdess_authorizer,
             mayo_authorizer,
@@ -4142,27 +4570,51 @@ def verify_frozen_bridge_stage(
         )
         if not _prepared_equal(first_generation, second_generation):
             raise ValueError("upstream authorization changed during input verification")
-        second = _prepare_frozen_inputs(
-            second_generation,
-            mode=mode,
-            experiment_kind=experiment_kind,
-            mayo_input_arm=mayo_input_arm,
+        second = (
+            _prepare_mayo_ablation_inputs(second_generation)
+            if _mayo_ablation
+            else _prepare_frozen_inputs(
+                second_generation,
+                mode=mode,
+                experiment_kind=experiment_kind,
+                mayo_input_arm=mayo_input_arm,
+            )
         )
-        if not _frozen_inputs_equal(first, second):
+        inputs_equal = (
+            _mayo_ablation_inputs_equal(first, second)
+            if _mayo_ablation
+            and isinstance(first, _PreparedMayoAblationInputs)
+            and isinstance(second, _PreparedMayoAblationInputs)
+            else _frozen_inputs_equal(first, second)
+            if isinstance(first, _PreparedFrozenInputs)
+            and isinstance(second, _PreparedFrozenInputs)
+            else False
+        )
+        if not inputs_equal:
             raise ValueError("mode-bound inputs are nondeterministic")
         second_validation = _validate_generation_fd(
             bridge_anchor.descriptor, second_generation,
         )
         if second_validation != first_validation:
             raise ValueError("committed bridge validation facts changed")
-        _validate_frozen_inputs_fd(inputs_anchor.descriptor, second)
+        if _mayo_ablation:
+            assert isinstance(second, _PreparedMayoAblationInputs)
+            _validate_mayo_ablation_inputs_fd(inputs_anchor.descriptor, second)
+        else:
+            assert isinstance(second, _PreparedFrozenInputs)
+            _validate_frozen_inputs_fd(inputs_anchor.descriptor, second)
         if finalize_locked is not None:
             finalize_locked()
         if _validate_generation_fd(
             bridge_anchor.descriptor, second_generation,
         ) != second_validation:
             raise ValueError("committed bridge changed during locked finalization")
-        _validate_frozen_inputs_fd(inputs_anchor.descriptor, second)
+        if _mayo_ablation:
+            assert isinstance(second, _PreparedMayoAblationInputs)
+            _validate_mayo_ablation_inputs_fd(inputs_anchor.descriptor, second)
+        else:
+            assert isinstance(second, _PreparedFrozenInputs)
+            _validate_frozen_inputs_fd(inputs_anchor.descriptor, second)
         for anchor, field in anchors:
             _assert_directory_anchor(anchor, field)
         _reject_transaction_residue_at(
@@ -4198,6 +4650,19 @@ def verify_frozen_bridge_stage(
             )):
                 raise ValueError("bridge determinism aggregate gate failed")
             return result
+        if _mayo_ablation:
+            assert isinstance(second, _PreparedMayoAblationInputs)
+            return {
+                "heldout_mask_sha256": hashlib.sha256(
+                    second.heldout_mask_bytes
+                ).hexdigest(),
+                "mayo_input_arm": mayo_input_arm,
+                "mode": "formal",
+                "sample_count": int(
+                    second_generation.mayo.record["sample_count"]
+                ),
+                "stage_count": 1,
+            }
         return {
             "mode": mode,
             "sample_count": int(second_generation.ravdess.record["sample_count"])
@@ -4227,6 +4692,33 @@ def verify_frozen_bridge_stage(
                         finally:
                             if bridge_parent is not None:
                                 _close_anchor(bridge_parent)
+
+
+def verify_frozen_mayo_ablation_inputs(
+    inputs_root: str | Path,
+    bridge_root: str | Path,
+    *,
+    mayo_input_arm: str,
+    ravdess_authorizer: Callable[[], object],
+    mayo_authorizer: Callable[[], object],
+    producer_sha256: str,
+    before_authorization: Callable[[], None] | None = None,
+    finalize_locked: Callable[[], None] | None = None,
+) -> dict[str, object]:
+    """Verify one selected arm against the common formal ablation tree."""
+    return verify_frozen_bridge_stage(
+        inputs_root,
+        bridge_root,
+        mode="formal",
+        experiment_kind="mayo_input_arm_ablation",
+        mayo_input_arm=mayo_input_arm,
+        ravdess_authorizer=ravdess_authorizer,
+        mayo_authorizer=mayo_authorizer,
+        producer_sha256=producer_sha256,
+        before_authorization=before_authorization,
+        finalize_locked=finalize_locked,
+        _mayo_ablation=True,
+    )
 
 
 def verify_bridge_generation(
@@ -4343,6 +4835,7 @@ __all__ = [
     "PrivateTrajectoryMapping",
     "build_bridge_bundles",
     "freeze_bridge_stage",
+    "freeze_mayo_ablation_inputs",
     "initialize_owner_only_key",
     "mayo_valid_quantile_starts",
     "packetize_mayo_trajectory",
@@ -4350,4 +4843,5 @@ __all__ = [
     "uniform_floor_starts",
     "verify_bridge_generation",
     "verify_frozen_bridge_stage",
+    "verify_frozen_mayo_ablation_inputs",
 ]
