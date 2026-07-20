@@ -19,6 +19,7 @@ import sys
 import time
 from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -69,6 +70,10 @@ _FOCUSED_EXPERIMENTS = {
 _FOCUSED_PRIMARY_METRIC = (
     "common_target_metrics.trained.raw_mae.equal_block_macro"
 )
+_FOCUSED_METRIC_QUANTIZATION_POLICY = {
+    "name": "decimal_round_half_even_v1",
+    "decimal_places": 7,
+}
 _FOCUSED_CHECKPOINT_SCHEMA = "focused_mayo_checkpoint_v1"
 _FOCUSED_CHECKPOINT_RECEIPT_SCHEMA = "focused_mayo_checkpoint_receipt_v1"
 _FOCUSED_REPORT_SCHEMAS = {
@@ -652,6 +657,9 @@ def _focused_common_contract(
         "heldout_mask_policy": "focused_common_heldout_mask_seed_10000_v1",
         "heldout_mask_sha256": result["heldout_mask_sha256"],
         "target_schema": result["target_schema"],
+        "metric_quantization_policy": dict(
+            _FOCUSED_METRIC_QUANTIZATION_POLICY,
+        ),
     }
     result["public_contract"] = public_contract
     result["common_contract_sha256"] = ssl_core._canonical_sha256(
@@ -930,10 +938,42 @@ def _focused_metric_bundle(value: object) -> dict[str, object]:
         "trained", "fresh_untrained", "train_mean",
     }:
         raise ValueError("focused metrics do not contain the exact baselines")
-    return {
+    normalized = {
         name: _normalize_ablation_metric(value[name])
         for name in ("trained", "fresh_untrained", "train_mean")
     }
+    return {
+        name: {
+            "raw_mae": {
+                metric: _canonical_focused_metric(observed)
+                for metric, observed in normalized[name]["raw_mae"].items()
+            },
+            "standardized_mae": _canonical_focused_metric(
+                normalized[name]["standardized_mae"],
+            ),
+            "standardized_smooth_l1": _canonical_focused_metric(
+                normalized[name]["standardized_smooth_l1"],
+            ),
+        }
+        for name in ("trained", "fresh_untrained", "train_mean")
+    }
+
+
+def _canonical_focused_metric(value: object) -> float:
+    """Canonicalize cross-platform diagnostics before any decision or audit."""
+    observed = _finite_nonnegative(value)
+    places = _FOCUSED_METRIC_QUANTIZATION_POLICY["decimal_places"]
+    quantum = Decimal(1).scaleb(-int(places))
+    try:
+        canonical = Decimal(str(observed)).quantize(
+            quantum, rounding=ROUND_HALF_EVEN,
+        )
+    except InvalidOperation as exc:
+        raise ValueError("focused metric cannot be canonicalized") from exc
+    result = float(canonical)
+    if not math.isfinite(result) or result < 0.0:
+        raise ValueError("focused canonical metric is invalid")
+    return 0.0 if result == 0.0 else result
 
 
 def _train_focused_job(
@@ -1233,6 +1273,9 @@ def _focused_checkpoint_metadata(
         "metrics": metrics,
         "dependency_commitment_sha256": dependency_commitment_sha256,
         "runtime_environment": runtime,
+        "metric_quantization_policy": dict(
+            _FOCUSED_METRIC_QUANTIZATION_POLICY,
+        ),
         "claim_scope": "recording_heldout_development_reconstruction_only",
     }
     digest_fields = (
@@ -1437,6 +1480,8 @@ def _load_focused_checkpoint(
         or metadata.get("dependency_commitment_sha256")
         != dependency_commitment_sha256
         or metadata.get("trainer_sha256") != authorization.trainer_sha256
+        or metadata.get("metric_quantization_policy")
+        != _FOCUSED_METRIC_QUANTIZATION_POLICY
         or metadata.get("runtime_environment", {}).get("device_type")
         not in {"cpu", "cuda"}
     ):
@@ -1543,7 +1588,7 @@ def _select_focused_arm(rows: list[dict[str, object]]) -> dict[str, object]:
             or row.get("arm") != expected_arm
         ):
             raise ValueError("focused selection arm order is not exact")
-        metrics.append(_finite_nonnegative(row["primary_metric"]))
+        metrics.append(_canonical_focused_metric(row["primary_metric"]))
     selected_index = min(range(len(metrics)), key=lambda index: (
         metrics[index], index,
     ))
@@ -1645,6 +1690,9 @@ def _focused_lineage_fields(
         "trainer_sha256": authorization.trainer_sha256,
         "bundle_sha256": authorization.bundle_sha256,
         "common_contract_sha256": common["common_contract_sha256"],
+        "metric_quantization_policy": dict(
+            _FOCUSED_METRIC_QUANTIZATION_POLICY,
+        ),
     }
 
 
@@ -1672,8 +1720,11 @@ def _focused_winner_aggregates(
         raise ValueError("focused winner rows are not seed-exact")
 
     def summarize(values: list[float]) -> dict[str, float]:
-        checked = [_finite_nonnegative(value) for value in values]
-        return {"mean": statistics.fmean(checked), "sd": statistics.stdev(checked)}
+        checked = [_canonical_focused_metric(value) for value in values]
+        return {
+            "mean": _canonical_focused_metric(statistics.fmean(checked)),
+            "sd": _canonical_focused_metric(statistics.stdev(checked)),
+        }
 
     result: dict[str, object] = {}
     for baseline in ("trained", "fresh_untrained", "train_mean"):
@@ -1731,7 +1782,8 @@ def _validate_focused_smoke_phase(
     expected_fields = {
         "schema_version", "phase", "status", "bridge_generation_sha256",
         "bridge_producer_sha256", "trainer_sha256", "bundle_sha256",
-        "common_contract_sha256", "runtime_environment", "arm", "seed",
+        "common_contract_sha256", "metric_quantization_policy",
+        "runtime_environment", "arm", "seed",
         "epochs", "elapsed_seconds", "train_loss",
         "heldout_evaluation_computed", "checkpoint_fingerprint",
         "checkpoint_receipt_sha256", "claim_scope", "authority_hmac",
@@ -1792,7 +1844,8 @@ def _validate_focused_selection_phase(
     expected_fields = {
         "schema_version", "phase", "status", "bridge_generation_sha256",
         "bridge_producer_sha256", "trainer_sha256", "bundle_sha256",
-        "common_contract_sha256", "runtime_environment",
+        "common_contract_sha256", "metric_quantization_policy",
+        "runtime_environment",
         "smoke_report_sha256", "arm_order", "seed", "epochs",
         "optimizer", "initialization_policy", "primary_metric",
         "runs", "selected_arm", "selected_metric",
@@ -1908,7 +1961,8 @@ def _validate_focused_winner_phase(
     expected_fields = {
         "schema_version", "phase", "status", "bridge_generation_sha256",
         "bridge_producer_sha256", "trainer_sha256", "bundle_sha256",
-        "common_contract_sha256", "runtime_environment",
+        "common_contract_sha256", "metric_quantization_policy",
+        "runtime_environment",
         "selection_report_sha256", "selected_run_commitment_sha256",
         "selected_arm", "seeds", "epochs", "optimizer",
         "initialization_policy", "runs", "aggregates", "claim_scope",

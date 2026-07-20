@@ -5486,5 +5486,44 @@ def test_focused_mayo_smoke_publishes_one_exact_atomic_tree(c: Check):
             )
 
 
+def test_focused_mayo_metric_quantization_is_cross_platform_canonical(c: Check):
+    module = _load_runner()
+    c.eq(module._FOCUSED_METRIC_QUANTIZATION_POLICY, {
+        "name": "decimal_round_half_even_v1",
+        "decimal_places": 7,
+    })
+    baseline = 0.12345631
+    c.eq(
+        module._canonical_focused_metric(baseline),
+        module._canonical_focused_metric(baseline + 9e-10),
+    )
+    c.true(
+        module._canonical_focused_metric(baseline)
+        != module._canonical_focused_metric(baseline + 2e-7)
+    )
+    rows = [
+        {"seed": seed, "metrics": {
+            name: {
+                "raw_mae": {
+                    metric: baseline + seed * 1e-7
+                    for metric in (
+                        "blendshape72", "clinical23",
+                        "equal_block_macro", "full95",
+                    )
+                },
+                "standardized_mae": baseline + seed * 1e-7,
+                "standardized_smooth_l1": baseline + seed * 1e-7,
+            }
+            for name in ("trained", "fresh_untrained", "train_mean")
+        }}
+        for seed in (0, 1, 2)
+    ]
+    aggregates = module._focused_winner_aggregates(rows)
+    c.eq(
+        aggregates["trained"]["raw_mae"]["equal_block_macro"]["mean"],
+        module._canonical_focused_metric(baseline + 1e-7),
+    )
+
+
 if __name__ == "__main__":
     run_all("test_dynamic_landmark_ssl", dict(globals()))
