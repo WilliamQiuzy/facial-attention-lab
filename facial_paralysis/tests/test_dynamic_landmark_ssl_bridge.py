@@ -395,6 +395,83 @@ def _set_bridge_contract(values: dict[str, int]) -> None:
         setattr(bridge_core, name, value)
 
 
+def _mayo_v4_generation_aggregate(commitment: dict[str, object]) -> str:
+    digest = hashlib.sha256()
+    digest.update(
+        f"collection:{commitment['collection_manifest_sha256']}\n".encode(
+            "ascii"
+        )
+    )
+    digest.update(
+        f"exposure:{commitment['exposure_manifest_sha256']}\n".encode(
+            "ascii"
+        )
+    )
+    digest.update(
+        f"caches:{commitment['cache_tree_aggregate_sha256']}\n".encode(
+            "ascii"
+        )
+    )
+    digest.update(
+        (
+            f"source-attestation:{commitment['source_attestation_sha256']}:"
+            f"{commitment['source_identity_aggregate_hmac']}\n"
+        ).encode("ascii")
+    )
+    return digest.hexdigest()
+
+
+def _mayo_v4_generation_closure(
+    commitment: dict[str, object],
+    recordings: tuple[object, ...],
+    key: bytes,
+) -> str:
+    closure_rows = [
+        {
+            "recording_id": recording.recording_id,
+            "group_id": recording.group_id,
+            "cache_integrity_id": recording.cache_integrity_id,
+            "cache_sha256": recording.cache_sha256,
+            "cache_size_bytes": recording.cache_size_bytes,
+        }
+        for recording in recordings
+    ]
+    material = json.dumps({
+        "commitment": commitment,
+        "collection_manifest_sha256": commitment[
+            "collection_manifest_sha256"
+        ],
+        "recordings": closure_rows,
+    }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+    return hmac.new(
+        key,
+        b"mayo-ssl-committed-generation-v1\0" + material,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _with_recomputed_mayo_v4_closure(
+    mayo: object,
+    *,
+    recompute_aggregate: bool = True,
+    **changes: object,
+) -> object:
+    values = dict(vars(mayo))
+    values.update(changes)
+    commitment = dict(values["commitment"])
+    if recompute_aggregate:
+        commitment["generation_aggregate_sha256"] = (
+            _mayo_v4_generation_aggregate(commitment)
+        )
+    values["commitment"] = commitment
+    values["generation_closure_hmac"] = _mayo_v4_generation_closure(
+        commitment,
+        tuple(values["recordings"]),
+        bytes(values["private_key"]),
+    )
+    return SimpleNamespace(**values)
+
+
 def _synthetic_authorizations():
     _set_bridge_contract({
         "_FROZEN_RAVDESS_TRIAL_COUNT": 2,
@@ -455,29 +532,38 @@ def _synthetic_authorizations():
             target_frame_indices_30hz=canonical,
         ))
     commitment = {
-        "schema": "mayo_cache_generation_commitment_v3",
+        "schema": "mayo_cache_generation_commitment_v4",
         "collection_manifest_sha256": "c" * 64,
         "exposure_manifest_sha256": "d" * 64,
         "mediapipe_file_count": 2,
         "arkit_file_count": 1,
         "cache_file_count": 3,
         "cache_tree_aggregate_sha256": "6" * 64,
-        "generation_aggregate_sha256": "7" * 64,
+        "generation_aggregate_sha256": "0" * 64,
         "inventory_counts_sha256": "8" * 64,
         "collection_classification_integrity_id": "agg_" + "9" * 64,
         "exposure_classification_integrity_id": "agg_" + "a" * 64,
+        "source_attestation_sha256": "7" * 64,
+        "source_attestation_entry_count": 58,
+        "source_identity_aggregate_hmac": "f" * 64,
     }
+    commitment["generation_aggregate_sha256"] = (
+        _mayo_v4_generation_aggregate(commitment)
+    )
+    mayo_key = b"m" * 32
     mayo = SimpleNamespace(
         schema="mayo_mediapipe_clinical23_ssl_v2",
         collection_manifest_sha256="c" * 64,
         exposure_manifest_sha256="d" * 64,
-        generation_closure_hmac="e" * 64,
+        generation_closure_hmac=_mayo_v4_generation_closure(
+            commitment, tuple(mayo_recordings), mayo_key,
+        ),
         recording_count=2,
         arkit_count=1,
         expected_recording_count=2,
         commitment=commitment,
         recordings=tuple(mayo_recordings),
-        private_key=b"m" * 32,
+        private_key=mayo_key,
         key_file_identity_sha256="2" * 64,
     )
     return ravdess, mayo
@@ -503,8 +589,7 @@ def _synthetic_authorizations_with_mayo_exclusion():
     commitment = dict(mayo.commitment)
     commitment["mediapipe_file_count"] = 4
     commitment["cache_file_count"] = 5
-    changed = dict(vars(mayo))
-    changed.update({
+    changed = _with_recomputed_mayo_v4_closure(mayo, **{
         "recording_count": 4,
         "expected_recording_count": 4,
         "commitment": commitment,
@@ -522,7 +607,7 @@ def _synthetic_authorizations_with_mayo_exclusion():
         "_FROZEN_MAYO_CACHE_COUNT": 5,
         "_FROZEN_MAYO_SAMPLE_COUNT": 32,
     })
-    return ravdess, SimpleNamespace(**changed)
+    return ravdess, changed
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes]:
@@ -1234,7 +1319,7 @@ def test_freeze_stage_reauthorizes_and_retains_failed_private_staging(c: Check):
         c.true(close_injected)
         c.true(
             _linear_exception_chain_contains(
-                observed, ValueError, "upstream authorization changed",
+                observed, ValueError, "Mayo v4 generation closure",
             )
             and _linear_exception_chain_contains(
                 observed, OSError, "synthetic frozen staging close failure",
@@ -1930,10 +2015,11 @@ def test_cli_synthetic_five_command_flow_is_private_and_deterministic(c: Check):
         ravdess_key.parent.mkdir(parents=True)
         ravdess_key.write_bytes(ravdess.private_key)
         ravdess_key.chmod(0o600)
-        mayo_values = dict(vars(mayo))
-        mayo_values["private_key"] = first_bytes
-        mayo_values["privacy_inventory"] = synthetic_mayo_inventory
-        mayo = SimpleNamespace(**mayo_values)
+        mayo = _with_recomputed_mayo_v4_closure(
+            mayo,
+            private_key=first_bytes,
+            privacy_inventory=synthetic_mayo_inventory,
+        )
         bridge = pretraining / "bridge"
         result, stdout, stderr = _captured_cli_call(
             cli, ["inventory", *common],
@@ -5277,7 +5363,7 @@ def test_public_semantic_gate_uses_original_frozen_counts_before_staging(c: Chec
             _set_bridge_contract(synthetic_contract)
 
 
-def test_public_semantic_gate_requires_canonical_ids_and_exact_mayo_v3(c: Check):
+def test_public_semantic_gate_requires_canonical_ids_and_exact_mayo_v4(c: Check):
     producer = "f" * 64
 
     def invalid_ravdess_id(field: str):
@@ -5299,6 +5385,28 @@ def test_public_semantic_gate_requires_canonical_ids_and_exact_mayo_v3(c: Check)
         commitment = dict(mayo.commitment)
         commitment.update(changes)
         return ravdess, _namespace_with(mayo, commitment=commitment)
+
+    def commitment_without(field: str):
+        ravdess, mayo = _synthetic_authorizations()
+        commitment = dict(mayo.commitment)
+        commitment.pop(field)
+        return ravdess, _namespace_with(mayo, commitment=commitment)
+
+    def exact_v3_downgrade():
+        ravdess, mayo = _synthetic_authorizations()
+        commitment = dict(mayo.commitment)
+        commitment["schema"] = "mayo_cache_generation_commitment_v3"
+        for field in (
+            "source_attestation_sha256",
+            "source_attestation_entry_count",
+            "source_identity_aggregate_hmac",
+        ):
+            commitment.pop(field)
+        commitment["generation_aggregate_sha256"] = "7" * 64
+        downgraded = _with_recomputed_mayo_v4_closure(
+            mayo, recompute_aggregate=False, commitment=commitment,
+        )
+        return ravdess, downgraded
 
     def commitment_with_extra_field():
         return invalid_commitment(unexpected_field="must-fail")
@@ -5324,19 +5432,44 @@ def test_public_semantic_gate_requires_canonical_ids_and_exact_mayo_v3(c: Check)
         ("Mayo group ID", lambda: invalid_mayo_id("group_id")),
         ("Mayo cache ID", lambda: invalid_mayo_id("cache_integrity_id")),
         ("jointly shrunken RAVDESS", jointly_shrunken_ravdess),
-        ("Mayo v3 exact field set", commitment_with_extra_field),
-        ("Mayo v3 lowercase digest", lambda: invalid_commitment(
+        ("Mayo v4 exact field set", commitment_with_extra_field),
+        ("Mayo v3 downgrade", exact_v3_downgrade),
+        ("Mayo v4 missing attestation digest", lambda: commitment_without(
+            "source_attestation_sha256",
+        )),
+        ("Mayo v4 lowercase digest", lambda: invalid_commitment(
             cache_tree_aggregate_sha256="G" * 64,
         )),
-        ("Mayo v3 48/8/56-equivalent counts", lambda: invalid_commitment(
+        ("Mayo v4 lowercase attestation digest", lambda: invalid_commitment(
+            source_attestation_sha256="A" * 64,
+        )),
+        ("Mayo v4 exact attestation entry count", lambda: invalid_commitment(
+            source_attestation_entry_count=57,
+        )),
+        ("Mayo v4 exact attestation entry count type", lambda: invalid_commitment(
+            source_attestation_entry_count=True,
+        )),
+        ("Mayo v4 source identity HMAC", lambda: invalid_commitment(
+            source_identity_aggregate_hmac="short",
+        )),
+        ("Mayo v4 48/8/56-equivalent counts", lambda: invalid_commitment(
             mediapipe_file_count=1,
             cache_file_count=2,
         )),
-        ("Mayo v3 authorization digest binding", lambda: invalid_commitment(
+        ("Mayo v4 authorization digest binding", lambda: invalid_commitment(
             collection_manifest_sha256="0" * 64,
         )),
-        ("Mayo v3 classification commitment", lambda: invalid_commitment(
+        ("Mayo v4 classification commitment", lambda: invalid_commitment(
             exposure_classification_integrity_id="agg_invalid",
+        )),
+        ("Mayo v4 source digest generation coupling", lambda: invalid_commitment(
+            source_attestation_sha256="0" * 64,
+        )),
+        ("Mayo v4 source HMAC generation coupling", lambda: invalid_commitment(
+            source_identity_aggregate_hmac="1" * 64,
+        )),
+        ("Mayo v4 exact generation aggregate", lambda: invalid_commitment(
+            generation_aggregate_sha256="2" * 64,
         )),
     )
     for label, factory in cases:
@@ -5354,6 +5487,74 @@ def test_public_semantic_gate_requires_canonical_ids_and_exact_mayo_v3(c: Check)
             c.true(not output.exists(), f"{label} never publishes")
             c.true(not any("staging" in path.name for path in root.iterdir()),
                    f"{label} rejects before staging")
+
+    ravdess, mayo = _synthetic_authorizations()
+    invalid_closure = _namespace_with(
+        mayo, generation_closure_hmac="0" * 64,
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        output = Path(temporary).resolve() / "bridge"
+        observed = _caught(lambda: bridge_core.build_bridge_bundles(
+            output,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: invalid_closure,
+            producer_sha256=producer,
+        ))
+        c.true(isinstance(observed, ValueError),
+               "Mayo v4 authorization closure is rejected")
+        c.true(not output.exists(), "invalid Mayo closure never publishes")
+
+
+def test_build_freeze_and_verify_reject_exact_mayo_v3_downgrade(c: Check):
+    ravdess, mayo = _synthetic_authorizations()
+    producer = "f" * 64
+    commitment = dict(mayo.commitment)
+    commitment["schema"] = "mayo_cache_generation_commitment_v3"
+    for field in (
+        "source_attestation_sha256",
+        "source_attestation_entry_count",
+        "source_identity_aggregate_hmac",
+    ):
+        commitment.pop(field)
+    commitment["generation_aggregate_sha256"] = "7" * 64
+    downgraded = _with_recomputed_mayo_v4_closure(
+        mayo, recompute_aggregate=False, commitment=commitment,
+    )
+
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary).resolve()
+        rejected = root / "rejected-bridge"
+        c.raises(lambda: bridge_core.build_bridge_bundles(
+            rejected,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: downgraded,
+            producer_sha256=producer,
+        ), ValueError, "build-bundles rejects an exact legacy v3 authorization")
+        c.true(not rejected.exists(), "v3 build publishes no bridge")
+
+        bridge = root / "bridge"
+        bridge_core.build_bridge_bundles(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: mayo,
+            producer_sha256=producer,
+        )
+        run = root / "smoke" / "downgrade"
+        c.raises(lambda: bridge_core.freeze_bridge_stage(
+            run,
+            bridge,
+            mode="smoke",
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: downgraded,
+            producer_sha256=producer,
+        ), ValueError, "freeze-stage rejects an exact legacy v3 authorization")
+        c.true(not (run / "inputs").exists(), "v3 freeze publishes no inputs")
+        c.raises(lambda: bridge_core.verify_bridge_generation(
+            bridge,
+            ravdess_authorizer=lambda: ravdess,
+            mayo_authorizer=lambda: downgraded,
+            producer_sha256=producer,
+        ), ValueError, "verify-determinism rejects an exact legacy v3 authorization")
 
 
 def _overwrite_private_file_at(directory_fd: int, name: str, payload: bytes) -> None:

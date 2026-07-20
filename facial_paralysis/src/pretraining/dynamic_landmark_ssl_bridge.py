@@ -510,7 +510,8 @@ _FROZEN_MAYO_EXCLUSION_COUNT = 2
 _FROZEN_MAYO_ARKIT_COUNT = 8
 _FROZEN_MAYO_CACHE_COUNT = 56
 _FROZEN_MAYO_SAMPLE_COUNT = 736
-_MAYO_V3_COMMITMENT_FIELDS = frozenset({
+_FROZEN_MAYO_SOURCE_ATTESTATION_ENTRY_COUNT = 58
+_MAYO_V4_COMMITMENT_FIELDS = frozenset({
     "schema",
     "collection_manifest_sha256",
     "exposure_manifest_sha256",
@@ -522,6 +523,9 @@ _MAYO_V3_COMMITMENT_FIELDS = frozenset({
     "inventory_counts_sha256",
     "collection_classification_integrity_id",
     "exposure_classification_integrity_id",
+    "source_attestation_sha256",
+    "source_attestation_entry_count",
+    "source_identity_aggregate_hmac",
 })
 _BUNDLE_FIELDS = frozenset({
     "features",
@@ -572,6 +576,160 @@ def _authorization_key_identity(value: object, field: str) -> str:
         getattr(value, "key_file_identity_sha256", None),
         f"{field} canonical key identity",
     )
+
+
+def _validate_exact_mayo_v4_authorization(
+    authorization: object,
+    *,
+    recording_count: int,
+    arkit_count: int,
+    collection_sha256: str,
+    exposure_sha256: str,
+) -> Mapping[str, object]:
+    commitment = getattr(authorization, "commitment", None)
+    if (
+        not isinstance(commitment, Mapping)
+        or set(commitment) != _MAYO_V4_COMMITMENT_FIELDS
+    ):
+        raise ValueError("Mayo v4 generation commitment field set is noncanonical")
+    if commitment.get("schema") != "mayo_cache_generation_commitment_v4":
+        raise ValueError("Mayo v4 generation commitment schema is noncanonical")
+    for field in (
+        "collection_manifest_sha256",
+        "exposure_manifest_sha256",
+        "cache_tree_aggregate_sha256",
+        "generation_aggregate_sha256",
+        "inventory_counts_sha256",
+        "source_attestation_sha256",
+        "source_identity_aggregate_hmac",
+    ):
+        _require_sha256(commitment.get(field), f"Mayo commitment {field}")
+    for field in (
+        "collection_classification_integrity_id",
+        "exposure_classification_integrity_id",
+    ):
+        value = commitment.get(field)
+        if type(value) is not str or _MAYO_AGGREGATE_ID_RE.fullmatch(value) is None:
+            raise ValueError(f"Mayo commitment {field} is noncanonical")
+    commitment_mediapipe = _exact_integer(
+        commitment.get("mediapipe_file_count"),
+        "Mayo commitment MediaPipe count",
+    )
+    commitment_arkit = _exact_integer(
+        commitment.get("arkit_file_count"), "Mayo commitment ARKit count",
+    )
+    commitment_cache = _exact_integer(
+        commitment.get("cache_file_count"), "Mayo commitment cache count",
+    )
+    source_entry_count = _exact_integer(
+        commitment.get("source_attestation_entry_count"),
+        "Mayo commitment source attestation entry count",
+    )
+    if (
+        commitment_mediapipe != _FROZEN_MAYO_MEDIAPIPE_COUNT
+        or commitment_arkit != _FROZEN_MAYO_ARKIT_COUNT
+        or commitment_cache != _FROZEN_MAYO_CACHE_COUNT
+        or commitment_cache != commitment_mediapipe + commitment_arkit
+        or commitment_mediapipe != recording_count
+        or commitment_arkit != arkit_count
+        or source_entry_count != _FROZEN_MAYO_SOURCE_ATTESTATION_ENTRY_COUNT
+    ):
+        raise ValueError("Mayo v4 generation commitment counts do not close")
+    if (
+        not hmac.compare_digest(
+            str(commitment["collection_manifest_sha256"]), collection_sha256,
+        )
+        or not hmac.compare_digest(
+            str(commitment["exposure_manifest_sha256"]), exposure_sha256,
+        )
+    ):
+        raise ValueError(
+            "Mayo v4 generation commitment digests disagree with authorization"
+        )
+
+    # The attestation digest commits the authorizer-validated canonical object,
+    # including its two roots, 58 source entries, 65 session classifications,
+    # and 13-complete/52-incomplete legacy-export topology.  Reproducing the
+    # builder's v4 aggregate here prevents either that digest or the root/entry
+    # identity HMAC from being substituted at the bridge boundary.
+    generation_aggregate = hashlib.sha256()
+    generation_aggregate.update(
+        f"collection:{commitment['collection_manifest_sha256']}\n".encode(
+            "ascii"
+        )
+    )
+    generation_aggregate.update(
+        f"exposure:{commitment['exposure_manifest_sha256']}\n".encode("ascii")
+    )
+    generation_aggregate.update(
+        f"caches:{commitment['cache_tree_aggregate_sha256']}\n".encode("ascii")
+    )
+    generation_aggregate.update(
+        (
+            f"source-attestation:{commitment['source_attestation_sha256']}:"
+            f"{commitment['source_identity_aggregate_hmac']}\n"
+        ).encode("ascii")
+    )
+    if not hmac.compare_digest(
+        str(commitment["generation_aggregate_sha256"]),
+        generation_aggregate.hexdigest(),
+    ):
+        raise ValueError(
+            "Mayo v4 generation aggregate does not bind its source attestation"
+        )
+
+    recordings = tuple(getattr(authorization, "recordings", ()))
+    if len(recordings) != recording_count:
+        raise ValueError("Mayo v4 generation closure recording count is incomplete")
+    closure_rows: list[dict[str, object]] = []
+    for recording in recordings:
+        recording_id = getattr(recording, "recording_id", None)
+        group_id = getattr(recording, "group_id", None)
+        cache_id = getattr(recording, "cache_integrity_id", None)
+        cache_sha256 = _require_sha256(
+            getattr(recording, "cache_sha256", None), "Mayo cache digest",
+        )
+        cache_size = _exact_integer(
+            getattr(recording, "cache_size_bytes", None), "Mayo cache size",
+        )
+        if (
+            type(recording_id) is not str
+            or _MAYO_RECORDING_ID_RE.fullmatch(recording_id) is None
+            or type(group_id) is not str
+            or _MAYO_GROUP_ID_RE.fullmatch(group_id) is None
+            or type(cache_id) is not str
+            or _MAYO_CACHE_ID_RE.fullmatch(cache_id) is None
+            or cache_size <= 0
+        ):
+            raise ValueError("Mayo v4 generation closure row is noncanonical")
+        closure_rows.append({
+            "recording_id": recording_id,
+            "group_id": group_id,
+            "cache_integrity_id": cache_id,
+            "cache_sha256": cache_sha256,
+            "cache_size_bytes": cache_size,
+        })
+    closure_material = json.dumps({
+        "commitment": dict(commitment),
+        "collection_manifest_sha256": collection_sha256,
+        "recordings": closure_rows,
+    }, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+    expected_closure = hmac.new(
+        _require_private_key(
+            getattr(authorization, "private_key", None), "Mayo key",
+        ),
+        b"mayo-ssl-committed-generation-v1\0" + closure_material,
+        hashlib.sha256,
+    ).hexdigest()
+    observed_closure = _require_sha256(
+        getattr(authorization, "generation_closure_hmac", None),
+        "Mayo generation closure",
+    )
+    if not hmac.compare_digest(observed_closure, expected_closure):
+        raise ValueError(
+            "Mayo v4 generation closure does not bind its commitment and caches"
+        )
+    return commitment
 
 
 def _require_frozen_public_authorizations(
@@ -685,44 +843,6 @@ def _require_frozen_public_authorizations(
     ):
         raise ValueError("Mayo authorization opaque identities do not close")
 
-    commitment = getattr(mayo, "commitment", None)
-    if not isinstance(commitment, Mapping) or set(commitment) != _MAYO_V3_COMMITMENT_FIELDS:
-        raise ValueError("Mayo v3 generation commitment field set is noncanonical")
-    if commitment.get("schema") != "mayo_cache_generation_commitment_v3":
-        raise ValueError("Mayo v3 generation commitment schema is noncanonical")
-    for field in (
-        "collection_manifest_sha256",
-        "exposure_manifest_sha256",
-        "cache_tree_aggregate_sha256",
-        "generation_aggregate_sha256",
-        "inventory_counts_sha256",
-    ):
-        _require_sha256(commitment.get(field), f"Mayo commitment {field}")
-    for field in (
-        "collection_classification_integrity_id",
-        "exposure_classification_integrity_id",
-    ):
-        value = commitment.get(field)
-        if type(value) is not str or _MAYO_AGGREGATE_ID_RE.fullmatch(value) is None:
-            raise ValueError(f"Mayo commitment {field} is noncanonical")
-    commitment_mediapipe = _exact_integer(
-        commitment.get("mediapipe_file_count"), "Mayo commitment MediaPipe count",
-    )
-    commitment_arkit = _exact_integer(
-        commitment.get("arkit_file_count"), "Mayo commitment ARKit count",
-    )
-    commitment_cache = _exact_integer(
-        commitment.get("cache_file_count"), "Mayo commitment cache count",
-    )
-    if (
-        commitment_mediapipe != _FROZEN_MAYO_MEDIAPIPE_COUNT
-        or commitment_arkit != _FROZEN_MAYO_ARKIT_COUNT
-        or commitment_cache != _FROZEN_MAYO_CACHE_COUNT
-        or commitment_cache != commitment_mediapipe + commitment_arkit
-        or commitment_mediapipe != mayo_recording_count
-        or commitment_arkit != mayo_arkit_count
-    ):
-        raise ValueError("Mayo v3 generation commitment counts do not close")
     collection_sha256 = _require_sha256(
         getattr(mayo, "collection_manifest_sha256", None),
         "Mayo collection manifest",
@@ -731,15 +851,13 @@ def _require_frozen_public_authorizations(
         getattr(mayo, "exposure_manifest_sha256", None),
         "Mayo exposure manifest",
     )
-    if (
-        not hmac.compare_digest(
-            str(commitment["collection_manifest_sha256"]), collection_sha256,
-        )
-        or not hmac.compare_digest(
-            str(commitment["exposure_manifest_sha256"]), exposure_sha256,
-        )
-    ):
-        raise ValueError("Mayo v3 generation commitment digests disagree with authorization")
+    _validate_exact_mayo_v4_authorization(
+        mayo,
+        recording_count=mayo_recording_count,
+        arkit_count=mayo_arkit_count,
+        collection_sha256=collection_sha256,
+        exposure_sha256=exposure_sha256,
+    )
 
 
 def _int_mapping_rows(value: np.ndarray) -> tuple[tuple[tuple[int, ...], ...], ...]:
@@ -1275,9 +1393,15 @@ def _prepare_mayo_stage(
         getattr(authorization, "generation_closure_hmac", None),
         "Mayo generation closure",
     )
-    commitment = getattr(authorization, "commitment", None)
-    if not isinstance(commitment, Mapping) or commitment.get("schema") != "mayo_cache_generation_commitment_v3":
-        raise ValueError("Mayo generation commitment is noncanonical")
+    commitment = _validate_exact_mayo_v4_authorization(
+        authorization,
+        recording_count=recording_count,
+        arkit_count=_exact_integer(
+            getattr(authorization, "arkit_count", None), "Mayo ARKit count",
+        ),
+        collection_sha256=collection_sha256,
+        exposure_sha256=exposure_sha256,
+    )
     features: list[np.ndarray] = []
     masks: list[np.ndarray] = []
     timestamps: list[np.ndarray] = []
