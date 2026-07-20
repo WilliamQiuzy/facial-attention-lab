@@ -866,6 +866,72 @@ def test_cold_attestation_inputs_require_unpinned_sources_and_hold_to_barrier(c:
             )
 
 
+def test_pin_retirement_barrier_rejects_same_stat_path_replacement(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        snapshots = root / "snapshots"
+        snapshots.mkdir()
+        source = root / "private.mov"
+        source.write_bytes(b"audited-private-video")
+        initial = os.lstat(source)
+        pinned = builder.pin_source_file(
+            source,
+            snapshots,
+            "video-000.mov",
+            expected_sha256=_sha(source.read_bytes()),
+        )
+
+        def replace_at_exact_barrier() -> None:
+            with builder._hold_pinned_mayo_sources_to_final_attestation(
+                (pinned,)
+            ) as barrier:
+                pinned.pinned_path.unlink()
+                replacement = root / "replacement.mov"
+                replacement.write_bytes(b"forged-private-video!")
+                c.eq(replacement.stat().st_size, initial.st_size)
+                os.utime(
+                    replacement,
+                    ns=(initial.st_atime_ns, initial.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                os.replace(replacement, source)
+                barrier.finalize_after_pin_retirement()
+
+        c.raises(
+            replace_at_exact_barrier,
+            ValueError,
+            "the final attestation barrier stays bound to the pinned inode",
+        )
+
+
+def test_pin_retirement_barrier_refreshes_final_ctime_and_holds_nlink_one(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        snapshots = root / "snapshots"
+        snapshots.mkdir()
+        source = root / "private.mov"
+        source.write_bytes(b"audited-private-video")
+        pinned = builder.pin_source_file(
+            source,
+            snapshots,
+            "video-000.mov",
+            expected_sha256=_sha(source.read_bytes()),
+        )
+        with builder._hold_pinned_mayo_sources_to_final_attestation(
+            (pinned,)
+        ) as barrier:
+            pinned.pinned_path.unlink()
+            final = barrier.finalize_after_pin_retirement()
+            c.eq(len(final), 1)
+            c.eq(final[0].identity[5], 1)
+            c.eq(
+                final[0].identity,
+                builder._regular_snapshot(os.lstat(source)),
+                "attestation identity includes ctime after hard-link retirement",
+            )
+            final[0].assert_unchanged()
+
+
 def test_v4_staging_exactly_holds_and_binds_source_attestation(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -985,6 +1051,7 @@ def test_held_committed_attestation_reuses_zero_hash_resolver_twice(c: Check):
             )
         )
         inventories = []
+        held_descriptor_counts = []
         try:
             with builder._hold_committed_mayo_generation(
                 staging,
@@ -1007,11 +1074,17 @@ def test_held_committed_attestation_reuses_zero_hash_resolver_twice(c: Check):
                         digest_resolver=resolver,
                         enforce_frozen=True,
                     ))
+                    held_descriptor_counts.append(len(resolver.held_descriptors))
         finally:
             builder._load_source_digest_attestation = original_path_loader
             builder.sha256_file = original_sha256
             builder._cold_mayo_source_digest = original_cold
         c.eq(len(inventories), 2)
+        c.eq(
+            held_descriptor_counts,
+            [112, 112],
+            "publication-edge topology verification reuses the first 52 legacy FDs",
+        )
         c.true(all(item.counts == builder.FROZEN_INVENTORY for item in inventories))
         c.eq(
             tuple(item.source_sha256 for item in inventories[0].video_instances),

@@ -363,6 +363,7 @@ class AuthorizedMayoGeneration:
     expected_recording_count: int
     commitment: dict[str, object]
     recordings: tuple[AuthorizedMayoRecording, ...]
+    privacy_inventory: MayoInventory = dataclass_field(repr=False)
     private_key: bytes = dataclass_field(repr=False)
 
 
@@ -5847,6 +5848,129 @@ def _cold_mayo_source_digest(path: Path) -> str:
         return _sha256_held_mayo_source(held[0])
 
 
+@dataclass
+class _PinnedMayoSourceAttestationBarrier:
+    """Keep audited pinned inodes open across hard-link retirement."""
+
+    snapshots: tuple[PinnedSourceSnapshot, ...]
+    initial: tuple[_HeldMayoSource, ...]
+    finalized: tuple[_HeldMayoSource, ...] | None = None
+
+    def finalize_after_pin_retirement(self) -> tuple[_HeldMayoSource, ...]:
+        if self.finalized is not None:
+            _assert_all_held_mayo_sources(self.finalized)
+            return self.finalized
+        final: list[_HeldMayoSource] = []
+        for snapshot, held in zip(self.snapshots, self.initial):
+            if snapshot.pinned_path.exists() or _is_symlink(snapshot.pinned_path):
+                raise ValueError("Mayo source pin still exists at final attestation")
+            try:
+                opened = os.fstat(held.descriptor)
+                linked = os.lstat(snapshot.original_path)
+            except OSError as exc:
+                raise ValueError(
+                    "Mayo source changed after pin retirement"
+                ) from exc
+            _require_mayo_source_stat(
+                opened, "final pinned Mayo source", allow_extra_links=False,
+            )
+            _require_mayo_source_stat(
+                linked, "final pinned Mayo source", allow_extra_links=False,
+            )
+            expected = (
+                snapshot.device, snapshot.inode,
+                snapshot.size, snapshot.mtime_ns,
+            )
+            opened_binding = (
+                int(opened.st_dev), int(opened.st_ino),
+                int(opened.st_size), int(opened.st_mtime_ns),
+            )
+            linked_binding = (
+                int(linked.st_dev), int(linked.st_ino),
+                int(linked.st_size), int(linked.st_mtime_ns),
+            )
+            identity = _regular_snapshot(opened)
+            if (
+                opened_binding != expected
+                or linked_binding != expected
+                or _regular_snapshot(linked) != identity
+            ):
+                raise ValueError(
+                    "Mayo source no longer names its verified pinned inode"
+                )
+            final.append(_HeldMayoSource(
+                path=snapshot.original_path,
+                descriptor=held.descriptor,
+                identity=identity,
+                allow_extra_links=False,
+            ))
+        self.finalized = tuple(final)
+        _assert_all_held_mayo_sources(self.finalized)
+        return self.finalized
+
+    def assert_finalized_unchanged(self) -> None:
+        if self.finalized is None:
+            raise ValueError("Mayo source pin retirement was not finalized")
+        _assert_all_held_mayo_sources(self.finalized)
+
+
+@contextmanager
+def _hold_pinned_mayo_sources_to_final_attestation(
+    snapshots: Sequence[PinnedSourceSnapshot],
+):
+    """Bind final attestation FDs before removing their verified hard links."""
+    if type(snapshots) not in {tuple, list} or not snapshots:
+        raise ValueError("pinned Mayo attestation sources must be an exact sequence")
+    frozen = tuple(snapshots)
+    if any(not isinstance(item, PinnedSourceSnapshot) for item in frozen):
+        raise ValueError("pinned Mayo attestation source has the wrong type")
+    if len({item.original_path for item in frozen}) != len(frozen):
+        raise ValueError("pinned Mayo attestation source paths are not unique")
+    descriptors = ExitStack()
+    initial: list[_HeldMayoSource] = []
+    try:
+        for snapshot in frozen:
+            held = _open_held_mayo_source(
+                snapshot.original_path,
+                field="pinned Mayo source before retirement",
+                allow_extra_links=True,
+            )
+            descriptors.callback(os.close, held.descriptor)
+            try:
+                pinned = os.lstat(snapshot.pinned_path)
+            except OSError as exc:
+                raise ValueError("verified Mayo source pin is missing") from exc
+            expected = (
+                snapshot.device, snapshot.inode,
+                snapshot.size, snapshot.mtime_ns,
+            )
+            held_binding = (
+                held.identity[0], held.identity[1],
+                held.identity[6], held.identity[7],
+            )
+            pinned_binding = (
+                int(pinned.st_dev), int(pinned.st_ino),
+                int(pinned.st_size), int(pinned.st_mtime_ns),
+            )
+            if (
+                held_binding != expected
+                or pinned_binding != expected
+                or int(pinned.st_nlink) < 2
+            ):
+                raise ValueError(
+                    "held Mayo source differs from its verified source pin"
+                )
+            initial.append(held)
+        barrier = _PinnedMayoSourceAttestationBarrier(
+            snapshots=frozen,
+            initial=tuple(initial),
+        )
+        yield barrier
+        barrier.assert_finalized_unchanged()
+    finally:
+        descriptors.__exit__(*sys.exc_info())
+
+
 def _source_attestation_hmac_token(
     salt: bytes,
     domain: str,
@@ -6647,7 +6771,7 @@ class _AttestedMayoDigestResolver:
         self._salt = _require_salt(salt)
         self._descriptors = ExitStack()
         self._held_by_token: dict[str, _HeldMayoSource] = {}
-        self._held_topology: list[_HeldMayoSource] = []
+        self._held_topology_by_path: dict[Path, _HeldMayoSource] = {}
         self._verified_inventory = False
         self._closed = False
         try:
@@ -6701,7 +6825,7 @@ class _AttestedMayoDigestResolver:
             self._data.descriptor,
             self._exports.descriptor,
             *(held.descriptor for held in self._held_by_token.values()),
-            *(held.descriptor for held in self._held_topology),
+            *(held.descriptor for held in self._held_topology_by_path.values()),
         ]
 
     def _assert_open(self) -> None:
@@ -6758,8 +6882,17 @@ class _AttestedMayoDigestResolver:
         identity = _require_source_attestation_identity(
             expected_identity, "legacy export topology",
         )
+        checked = _lexical_absolute(path)
+        existing = self._held_topology_by_path.get(checked)
+        if existing is not None:
+            if existing.identity != tuple(identity):
+                raise ValueError(
+                    "Mayo legacy export identity differs from its attestation"
+                )
+            existing.assert_unchanged()
+            return identity
         held = _open_held_mayo_source(
-            path, field="attested Mayo legacy export",
+            checked, field="attested Mayo legacy export",
         )
         try:
             if held.identity != tuple(identity):
@@ -6770,7 +6903,7 @@ class _AttestedMayoDigestResolver:
             os.close(held.descriptor)
             raise
         self._descriptors.callback(os.close, held.descriptor)
-        self._held_topology.append(held)
+        self._held_topology_by_path[checked] = held
         return identity
 
     def verify_inventory(self, inventory: MayoInventory) -> None:
@@ -6866,7 +6999,7 @@ class _AttestedMayoDigestResolver:
             self._assert_roots_unchanged,
             lambda: _assert_all_held_mayo_sources(
                 tuple(self._held_by_token.values())
-                + tuple(self._held_topology)
+                + tuple(self._held_topology_by_path.values())
             ),
         ):
             try:
@@ -6975,6 +7108,8 @@ class _HeldMayoSourceAttestationInputs:
 def _hold_mayo_source_attestation_inputs(
     inventory: MayoInventory,
     salt: bytes,
+    *,
+    held_source_files: tuple[_HeldMayoSource, ...] | None = None,
 ):
     """Capture the final nlink=1 source identity sweep and hold it to publish."""
     if (
@@ -7016,9 +7151,21 @@ def _hold_mayo_source_attestation_inputs(
             *(("arkit", item) for item in inventory.arkit_trajectories),
         )
         source_paths = tuple(asset.path for _kind, asset in assets)
-        source_files = descriptors.enter_context(
-            _hold_mayo_source_files(source_paths)
-        )
+        if held_source_files is None:
+            source_files = descriptors.enter_context(
+                _hold_mayo_source_files(source_paths)
+            )
+        else:
+            if (
+                type(held_source_files) is not tuple
+                or len(held_source_files)
+                != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT
+            ):
+                raise ValueError(
+                    "pre-held final Mayo source set is not exact"
+                )
+            source_files = held_source_files
+            _assert_all_held_mayo_sources(source_files)
         held_by_path = {item.path: item for item in source_files}
         if len(held_by_path) != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT:
             raise ValueError("formal Mayo source paths are not unique")
@@ -11003,6 +11150,7 @@ def authorize_committed_mayo_ssl_generation(
             expected_recording_count=int(FROZEN_INVENTORY["long_unique_videos"]),
             commitment=dict(commitment),
             recordings=tuple(recordings),
+            privacy_inventory=inventory,
             private_key=salt,
         )
 
@@ -11409,8 +11557,13 @@ def _run_builder_impl(
             snapshot_dir = staging / ".source_snapshots"
             _make_private_directory(snapshot_dir, "Mayo source snapshot directory")
             pinned: list[PinnedSourceSnapshot] = []
+            pinned_by_source_path: dict[Path, PinnedSourceSnapshot] = {}
             video_decode_paths: dict[Path, Path] = {}
-            for index, asset in enumerate(inventory.long_unique_videos):
+            retained_video_paths = {
+                _lexical_absolute(asset.path)
+                for asset in inventory.long_unique_videos
+            }
+            for index, asset in enumerate(inventory.video_instances):
                 item = pin_source_file(
                     asset.path,
                     snapshot_dir,
@@ -11418,7 +11571,10 @@ def _run_builder_impl(
                     expected_sha256=asset.source_sha256,
                 )
                 pinned.append(item)
-                video_decode_paths[asset.path] = item.pinned_path
+                checked_source = _lexical_absolute(asset.path)
+                pinned_by_source_path[checked_source] = item
+                if checked_source in retained_video_paths:
+                    video_decode_paths[asset.path] = item.pinned_path
             arkit_decode_paths: dict[Path, Path] = {}
             for index, asset in enumerate(inventory.arkit_trajectories):
                 item = pin_source_file(
@@ -11426,6 +11582,7 @@ def _run_builder_impl(
                     expected_sha256=asset.source_sha256,
                 )
                 pinned.append(item)
+                pinned_by_source_path[_lexical_absolute(asset.path)] = item
                 arkit_decode_paths[asset.path] = item.pinned_path
             pinned_model = pin_source_file(
                 model, snapshot_dir, "model.task",
@@ -11490,20 +11647,6 @@ def _run_builder_impl(
             validate_public_manifest(exposure)
             _write_json_exclusive(staging / "collection_manifest.json", collection)
             _write_json_exclusive(staging / "mayo_exposure_manifest.json", exposure)
-            for item in pinned:
-                assert_pinned_source_unchanged(item)
-            assert_provenance_unchanged(
-                provenance,
-                version_resolver=version_resolver,
-                dependency_artifact_resolver=dependency_artifact_resolver,
-                python_executable=(
-                    current_executable
-                    if provenance_python_executable is None
-                    else provenance_python_executable
-                ),
-            )
-            _key_guard.assert_unchanged()
-            _remove_real_tree(snapshot_dir)
             formal_attestation = inventory_factory is inventory_mayo_sources
 
             def validate_and_promote(
@@ -11553,38 +11696,71 @@ def _run_builder_impl(
                 if held_sources is not None:
                     held_sources.assert_unchanged()
 
+            def assert_pins_provenance_and_key() -> None:
+                for item in pinned:
+                    assert_pinned_source_unchanged(item)
+                assert_provenance_unchanged(
+                    provenance,
+                    version_resolver=version_resolver,
+                    dependency_artifact_resolver=dependency_artifact_resolver,
+                    python_executable=(
+                        current_executable
+                        if provenance_python_executable is None
+                        else provenance_python_executable
+                    ),
+                )
+                _key_guard.assert_unchanged()
+
             if formal_attestation:
-                with _hold_mayo_source_attestation_inputs(
-                    inventory, salt,
-                ) as held_sources:
-                    attestation_path = (
-                        staging / SOURCE_DIGEST_ATTESTATION_FILENAME
+                attested_pins = tuple(
+                    pinned_by_source_path[_lexical_absolute(path)]
+                    for path in source_paths
+                )
+                if len(attested_pins) != _FROZEN_SOURCE_ATTESTATION_ENTRY_COUNT:
+                    raise ValueError("formal Mayo source pin set is not exact")
+                with _hold_pinned_mayo_sources_to_final_attestation(
+                    attested_pins,
+                ) as pin_barrier:
+                    assert_pins_provenance_and_key()
+                    _remove_real_tree(snapshot_dir)
+                    final_source_files = (
+                        pin_barrier.finalize_after_pin_retirement()
                     )
-                    _write_source_digest_attestation_exclusive(
-                        attestation_path,
-                        held_sources.attestation,
-                        salt=salt,
-                    )
-                    source_private_tokens = _source_attestation_private_tokens(
-                        source_paths,
-                        [
-                            inventory_source_hashes[path]
-                            for path in source_paths
-                        ],
+                    with _hold_mayo_source_attestation_inputs(
+                        inventory,
                         salt,
-                    )
-                    privacy_matcher = _compile_private_token_automaton(
-                        source_private_tokens,
-                        "formal Mayo build public artifacts",
-                    )
-                    validate_and_promote(
-                        forbidden_tokens=source_private_tokens,
-                        forbidden_token_matcher=privacy_matcher,
-                        held_sources=held_sources,
-                    )
+                        held_source_files=final_source_files,
+                    ) as held_sources:
+                        attestation_path = (
+                            staging / SOURCE_DIGEST_ATTESTATION_FILENAME
+                        )
+                        _write_source_digest_attestation_exclusive(
+                            attestation_path,
+                            held_sources.attestation,
+                            salt=salt,
+                        )
+                        source_private_tokens = _source_attestation_private_tokens(
+                            source_paths,
+                            [
+                                inventory_source_hashes[path]
+                                for path in source_paths
+                            ],
+                            salt,
+                        )
+                        privacy_matcher = _compile_private_token_automaton(
+                            source_private_tokens,
+                            "formal Mayo build public artifacts",
+                        )
+                        validate_and_promote(
+                            forbidden_tokens=source_private_tokens,
+                            forbidden_token_matcher=privacy_matcher,
+                            held_sources=held_sources,
+                        )
             else:
                 # Test-only dependency-injected inventories predate the frozen
                 # 58-source schema; the public run_builder path is always formal.
+                assert_pins_provenance_and_key()
+                _remove_real_tree(snapshot_dir)
                 validate_and_promote()
             _key_guard.assert_unchanged()
         finally:

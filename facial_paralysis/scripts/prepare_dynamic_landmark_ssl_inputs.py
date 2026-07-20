@@ -40,7 +40,6 @@ if __name__ == "__main__":
 
 from scripts.build_mayo_ssl_cache import (  # noqa: E402
     authorize_committed_mayo_ssl_generation,
-    inventory_mayo_sources,
 )
 from scripts.prepare_ravdess_semantic23 import (  # noqa: E402
     audit_ravdess_inventory,
@@ -136,6 +135,7 @@ class _AuthorizationPrivacySnapshot:
     private_key: bytes = dataclass_field(repr=False)
     cache_sha256s: tuple[str, ...] = dataclass_field(repr=False)
     sensitive_values: tuple[str, ...] = dataclass_field(repr=False)
+    privacy_inventory: object | None = dataclass_field(repr=False)
 
 
 def _authorization_privacy_snapshot(
@@ -162,6 +162,7 @@ def _authorization_privacy_snapshot(
         private_key=key,
         cache_sha256s=tuple(cache_sha256s),
         sensitive_values=tuple(sensitive_values),
+        privacy_inventory=getattr(authorization, "privacy_inventory", None),
     )
 
 
@@ -2718,17 +2719,30 @@ def _json_line(value: object) -> None:
     print(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False))
 
 
-def _live_privacy_inventories(args: argparse.Namespace) -> tuple[object, object]:
+def _live_privacy_inventories(args: argparse.Namespace) -> tuple[object, None]:
+    """Audit RAVDESS live; Mayo inventory comes from its held v4 authorizer."""
     try:
         ravdess = audit_ravdess_inventory(args.ravdess_data_root)
-        mayo = inventory_mayo_sources(
-            args.mayo_data_root,
-            args.mayo_existing_export_root,
-            enforce_frozen=True,
-        )
-        return ravdess, mayo
+        return ravdess, None
     except (OSError, RuntimeError, ValueError):
         raise ValueError("live privacy inventory authorization failed") from None
+
+
+def _authorized_mayo_privacy_inventory(
+    authorizations: Sequence[object],
+) -> object:
+    if type(authorizations) not in {tuple, list} or not authorizations:
+        raise ValueError("authorized Mayo privacy inventory is missing")
+    inventories = tuple(
+        getattr(item, "privacy_inventory", None)
+        for item in authorizations
+    )
+    if any(item is None for item in inventories):
+        raise ValueError("authorized Mayo privacy inventory is incomplete")
+    first = inventories[0]
+    if any(item != first for item in inventories[1:]):
+        raise ValueError("authorized Mayo privacy inventory changed")
+    return first
 
 
 def _mayo_cli_root_forbidden(args: argparse.Namespace) -> _PrivacyForbidden:
@@ -3179,7 +3193,7 @@ def _run_mayo_cli_operation(args: argparse.Namespace) -> object:
             if inventory_before is None:
                 raise ValueError("live privacy inventory facts are missing")
             inventory_after = _live_privacy_inventories(args)
-            if inventory_before != inventory_after:
+            if inventory_before[0] != inventory_after[0]:
                 raise ValueError("live privacy inventory changed during verification")
             ravdess_captured = tuple(getattr(
                 ravdess_authorizer, "captured_authorizations", (),
@@ -3189,12 +3203,22 @@ def _run_mayo_cli_operation(args: argparse.Namespace) -> object:
             ))
             if not ravdess_captured or not mayo_captured:
                 raise ValueError("live privacy authorization facts are missing")
+            if inventory_before[1] is None and inventory_after[1] is None:
+                mayo_privacy_inventory = _authorized_mayo_privacy_inventory(
+                    mayo_captured,
+                )
+            else:
+                if inventory_before[1] != inventory_after[1]:
+                    raise ValueError(
+                        "live privacy inventory changed during verification"
+                    )
+                mayo_privacy_inventory = inventory_after[1]
             forbidden = _build_live_forbidden_tokens(
                 mayo_roots=(args.mayo_data_root, args.mayo_existing_export_root),
                 ravdess_authorization=ravdess_captured,
                 mayo_authorization=mayo_captured,
                 ravdess_inventory=inventory_before[0],
-                mayo_inventory=inventory_before[1],
+                mayo_inventory=mayo_privacy_inventory,
             )
             scan_result = _scan_private_trees(roots, forbidden=forbidden)
 

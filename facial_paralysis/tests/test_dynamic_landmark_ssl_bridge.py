@@ -1901,7 +1901,9 @@ def test_cli_synthetic_five_command_flow_is_private_and_deterministic(c: Check):
             synthetic_ravdess_inventory
         )
         cli.inventory_mayo_sources = lambda *_args, **_kwargs: (
-            synthetic_mayo_inventory
+            (_ for _ in ()).throw(
+                AssertionError("verify-determinism attempted a cold Mayo hash")
+            )
         )
         cli._producer_sha256 = lambda: producer
 
@@ -1930,6 +1932,7 @@ def test_cli_synthetic_five_command_flow_is_private_and_deterministic(c: Check):
         ravdess_key.chmod(0o600)
         mayo_values = dict(vars(mayo))
         mayo_values["private_key"] = first_bytes
+        mayo_values["privacy_inventory"] = synthetic_mayo_inventory
         mayo = SimpleNamespace(**mayo_values)
         bridge = pretraining / "bridge"
         result, stdout, stderr = _captured_cli_call(
