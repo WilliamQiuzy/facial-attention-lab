@@ -5189,13 +5189,24 @@ def test_focused_mayo_smoke_deadline_is_monotonic_and_prepublication(c: Check):
 def test_focused_mayo_local_dispatch_never_enters_live_authorization(c: Check):
     module = _load_runner()
     calls: list[tuple[str, str]] = []
-    module._producer_sha256 = lambda: "f" * 64
-    module._focused_trainer_sha256 = lambda: "f" * 64
+    events: list[str] = []
+
+    def formal_producer():
+        events.append("formal_producer")
+        return "e" * 64
+
+    def focused_trainer():
+        events.append("focused_trainer")
+        return "f" * 64
+
+    module._producer_sha256 = formal_producer
+    module._focused_trainer_sha256 = focused_trainer
 
     def forbidden_live(_args):
         raise AssertionError("local focused phases cannot construct live authorizers")
 
     def captured(args, *, producer_sha256):
+        events.append("focused_run")
         calls.append((args.phase, producer_sha256))
         return {"phase": args.phase, "published": True}
 
@@ -5211,6 +5222,11 @@ def test_focused_mayo_local_dispatch_never_enters_live_authorization(c: Check):
         ("smoke", "f" * 64),
         ("select", "f" * 64),
         ("winner", "f" * 64),
+    ])
+    c.eq(events, [
+        "formal_producer", "focused_trainer", "focused_run",
+        "formal_producer", "focused_trainer", "focused_run",
+        "formal_producer", "focused_trainer", "focused_run",
     ])
 
 
@@ -5490,13 +5506,14 @@ def test_focused_mayo_metric_quantization_is_cross_platform_canonical(c: Check):
     module = _load_runner()
     c.eq(module._FOCUSED_METRIC_QUANTIZATION_POLICY, {
         "name": "decimal_round_half_even_v1",
-        "decimal_places": 6,
+        "decimal_places": 5,
     })
     for h200, mac in (
         (0.3178904, 0.3178905),
         (0.3121977, 0.3121978),
         (0.3309565, 0.3309564),
         (0.2456530, 0.2456531),
+        (0.250592499971, 0.250592529774),
     ):
         c.eq(
             module._canonical_focused_metric(h200),
@@ -5505,7 +5522,7 @@ def test_focused_mayo_metric_quantization_is_cross_platform_canonical(c: Check):
     baseline = 0.12345631
     c.true(
         module._canonical_focused_metric(baseline)
-        != module._canonical_focused_metric(baseline + 2.1e-6)
+        != module._canonical_focused_metric(baseline + 2.1e-5)
     )
     rows = [
         {"seed": seed, "metrics": {

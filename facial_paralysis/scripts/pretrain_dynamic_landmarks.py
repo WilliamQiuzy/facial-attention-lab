@@ -72,7 +72,7 @@ _FOCUSED_PRIMARY_METRIC = (
 )
 _FOCUSED_METRIC_QUANTIZATION_POLICY = {
     "name": "decimal_round_half_even_v1",
-    "decimal_places": 6,
+    "decimal_places": 5,
 }
 _FOCUSED_CHECKPOINT_SCHEMA = "focused_mayo_checkpoint_v2"
 _FOCUSED_CHECKPOINT_RECEIPT_SCHEMA = "focused_mayo_checkpoint_receipt_v2"
@@ -4537,6 +4537,7 @@ def _run_focused_phase(
 
 
 def main(argv: list[str] | None = None) -> dict[str, object]:
+    producer_sha256 = _producer_sha256()
     args = _parser().parse_args(argv)
     if args.command == "dry-run":
         result = _formal_job_matrix()
@@ -4555,7 +4556,6 @@ def main(argv: list[str] | None = None) -> dict[str, object]:
         return result
     if args.command not in {"two-stage", "mayo-ablation"}:
         raise ValueError("unsupported pretraining command")
-    producer_sha256 = _producer_sha256()
     from scripts import prepare_dynamic_landmark_ssl_inputs as inputs_cli
 
     captured = inputs_cli._run_mayo_cli_captured(
