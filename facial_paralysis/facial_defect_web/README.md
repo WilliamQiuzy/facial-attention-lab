@@ -50,7 +50,7 @@ pnpm test:run
 pnpm build
 ```
 
-The Vite configuration verifies the actual SHA-256 bytes of exactly ten approved synthetic source files both when configuration loads and when a production build starts. A missing, changed, additional, or non-synthetic source fails the build.
+The Vite configuration verifies the actual SHA-256 bytes of exactly ten approved synthetic source files both when configuration loads and when a production build starts. A missing, changed, or non-synthetic approved source fails the build; unapproved files are neither imported nor bundled.
 
 ## Future model connection
 
