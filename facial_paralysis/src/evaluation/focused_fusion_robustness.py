@@ -6,9 +6,8 @@ artifacts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
 import math
-import statistics
 from typing import Any, Final, Optional
 
 import torch
@@ -145,8 +144,11 @@ def canonical_metric(value: object) -> Decimal:
         raise ValueError("metric must be finite")
     if metric < 0:
         raise ValueError("metric must be nonnegative")
+    precision = max(50, abs(metric.adjusted()) + 20, len(metric.as_tuple().digits) + 10)
     try:
-        return metric.quantize(_METRIC_QUANTUM, rounding=ROUND_HALF_EVEN)
+        with localcontext() as context:
+            context.prec = precision
+            return metric.quantize(_METRIC_QUANTUM, rounding=ROUND_HALF_EVEN)
     except InvalidOperation as exc:
         raise ValueError("metric cannot be represented at protocol precision") from exc
 
@@ -158,8 +160,8 @@ def _json_metric(value: object) -> float:
     return result
 
 
-def validate_metric_bundle(value: object) -> dict[str, dict[str, object]]:
-    """Validate the closed metric schema and return JSON-safe canonical values."""
+def _canonical_metric_bundle(value: object) -> dict[str, dict[str, object]]:
+    """Validate the closed metric schema while retaining exact Decimal values."""
     bundle = _exact_dict(value, _BASELINES, "metric bundle")
     normalized: dict[str, dict[str, object]] = {}
     for baseline in _BASELINES:
@@ -167,12 +169,33 @@ def validate_metric_bundle(value: object) -> dict[str, dict[str, object]]:
         raw = _exact_dict(source["raw_mae"], _RAW_MAE_KEYS, "raw_mae")
         normalized[baseline] = {
             "raw_mae": {
-                key: _json_metric(raw[key]) for key in _RAW_MAE_KEYS
+                key: canonical_metric(raw[key]) for key in _RAW_MAE_KEYS
             },
-            "standardized_mae": _json_metric(source["standardized_mae"]),
-            "standardized_smooth_l1": _json_metric(source["standardized_smooth_l1"]),
+            "standardized_mae": canonical_metric(source["standardized_mae"]),
+            "standardized_smooth_l1": canonical_metric(source["standardized_smooth_l1"]),
         }
     return normalized
+
+
+def _json_metric_bundle(value: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+    return {
+        baseline: {
+            "raw_mae": {
+                key: _json_metric(value[baseline]["raw_mae"][key])
+                for key in _RAW_MAE_KEYS
+            },
+            "standardized_mae": _json_metric(value[baseline]["standardized_mae"]),
+            "standardized_smooth_l1": _json_metric(
+                value[baseline]["standardized_smooth_l1"]
+            ),
+        }
+        for baseline in _BASELINES
+    }
+
+
+def validate_metric_bundle(value: object) -> dict[str, dict[str, object]]:
+    """Validate the closed metric schema and return JSON-safe canonical values."""
+    return _json_metric_bundle(_canonical_metric_bundle(value))
 
 
 def require_clean_replay(observed_rows: object, expected_by_seed: object) -> None:
@@ -195,12 +218,42 @@ def require_clean_replay(observed_rows: object, expected_by_seed: object) -> Non
         if item["seed"] in seen:
             raise ValueError("clean replay seeds must be unique")
         seen.add(item["seed"])
-        observed = validate_metric_bundle(item["metrics"])
-        expected = validate_metric_bundle(expected_by_seed[item["seed"]])
+        observed = _canonical_metric_bundle(item["metrics"])
+        expected = _canonical_metric_bundle(expected_by_seed[item["seed"]])
         if observed != expected:
             raise ValueError("clean replay metrics do not match expected values")
     if seen != {0, 1, 2}:
         raise ValueError("clean replay seed set is incomplete")
+
+
+def _decimal_mean(values: list[Decimal]) -> Decimal:
+    precision = max(50, max(abs(value.adjusted()) for value in values) + 30)
+    with localcontext() as context:
+        context.prec = precision
+        return sum(values, Decimal(0)) / len(values)
+
+
+def _decimal_sample_sd(values: list[Decimal], mean: Decimal) -> Decimal:
+    precision = max(50, max(abs(value.adjusted()) for value in values) + 30)
+    with localcontext() as context:
+        context.prec = precision
+        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+        return variance.sqrt()
+
+
+def _json_finite_decimal(value: Decimal) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("aggregate must be representable as a finite JSON number")
+    return result
+
+
+def _summary(values: list[Decimal]) -> dict[str, float]:
+    mean = _decimal_mean(values)
+    return {
+        "mean": _json_finite_decimal(mean),
+        "sample_sd": _json_finite_decimal(_decimal_sample_sd(values, mean)),
+    }
 
 
 def _aggregate_bundle(bundles: list[dict[str, dict[str, object]]]) -> dict[str, dict[str, object]]:
@@ -208,17 +261,12 @@ def _aggregate_bundle(bundles: list[dict[str, dict[str, object]]]) -> dict[str, 
     for baseline in _BASELINES:
         raw_result: dict[str, object] = {}
         for key in _RAW_MAE_KEYS:
-            values = [float(bundle[baseline]["raw_mae"][key]) for bundle in bundles]
-            raw_result[key] = {
-                "mean": statistics.fmean(values), "sample_sd": statistics.stdev(values),
-            }
+            values = [bundle[baseline]["raw_mae"][key] for bundle in bundles]
+            raw_result[key] = _summary(values)
         result[baseline] = {
             "raw_mae": raw_result,
             **{
-                key: {
-                    "mean": statistics.fmean([float(bundle[baseline][key]) for bundle in bundles]),
-                    "sample_sd": statistics.stdev([float(bundle[baseline][key]) for bundle in bundles]),
-                }
+                key: _summary([bundle[baseline][key] for bundle in bundles])
                 for key in _METRIC_KEYS[1:]
             },
         }
@@ -242,7 +290,7 @@ def aggregate_condition_metrics(rows: object) -> dict[str, object]:
             raise ValueError("seed must be exactly 0, 1, or 2")
         if seed in grouped[condition]:
             raise ValueError("condition seed rows must be unique")
-        grouped[condition][seed] = validate_metric_bundle(item["metrics"])
+        grouped[condition][seed] = _canonical_metric_bundle(item["metrics"])
     if any(set(by_seed) != {0, 1, 2} for by_seed in grouped.values()):
         raise ValueError("condition seed grid is incomplete")
 
@@ -250,25 +298,37 @@ def aggregate_condition_metrics(rows: object) -> dict[str, object]:
         name: _aggregate_bundle([grouped[name][seed] for seed in range(3)])
         for name in registered
     }
-    clean_mean = aggregates["clean_fusion"]["trained"]["raw_mae"]["equal_block_macro"]["mean"]
-    if not math.isfinite(clean_mean) or clean_mean == 0:
+    clean_mean = _decimal_mean([
+        grouped["clean_fusion"][seed]["trained"]["raw_mae"]["equal_block_macro"]
+        for seed in range(3)
+    ])
+    if not clean_mean.is_finite() or clean_mean == 0:
         raise ValueError("clean trained macro mean must be finite and nonzero")
     conditions: list[dict[str, object]] = []
     for name in registered:
-        mean = aggregates[name]["trained"]["raw_mae"]["equal_block_macro"]["mean"]
-        if not math.isfinite(mean):
+        mean = _decimal_mean([
+            grouped[name][seed]["trained"]["raw_mae"]["equal_block_macro"]
+            for seed in range(3)
+        ])
+        if not mean.is_finite():
             raise ValueError("condition trained macro mean must be finite")
-        degradation = 0.0 if name == "clean_fusion" else 100.0 * (mean / clean_mean - 1.0)
-        if not math.isfinite(degradation):
+        degradation = Decimal(0) if name == "clean_fusion" else Decimal(100) * (
+            mean / clean_mean - Decimal(1)
+        )
+        if not degradation.is_finite():
             raise ValueError("condition degradation must be finite")
         conditions.append({
             "condition": name,
             "seed_rows": [
-                {"condition": name, "seed": seed, "metrics": grouped[name][seed]}
+                {
+                    "condition": name,
+                    "seed": seed,
+                    "metrics": _json_metric_bundle(grouped[name][seed]),
+                }
                 for seed in range(3)
             ],
             "aggregates": aggregates[name],
-            "degradation_percent_vs_clean": float(degradation),
+            "degradation_percent_vs_clean": _json_finite_decimal(degradation),
         })
     return {"conditions": conditions}
 
@@ -292,8 +352,15 @@ def validate_deidentified_payload(value: object) -> object:
             return [validate(child) for child in item]
         if type(item) is str:
             lower = item.lower()
-            if "/" in item or "\\" in item or item.startswith("~") or lower.startswith(
+            if (
+                "/" in item
+                or "\\" in item
+                or item.startswith("~")
+                or item in (".", "..")
+                or (len(item) == 2 and item[0].isalpha() and item[1] == ":")
+                or lower.startswith(
                 ("rec_", "grp_", "sample_", "source_unit_")
+                )
             ):
                 raise ValueError("payload contains identifying or path-like string")
             return item

@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 import sys
 from dataclasses import FrozenInstanceError, replace
+from decimal import Decimal
 from pathlib import Path
 
 import torch
@@ -679,6 +680,48 @@ def test_deidentified_payload_rejects_identifiers_paths_and_private_keys(c: Chec
     ):
         c.raises(lambda unsafe=unsafe: validate_deidentified_payload(unsafe),
                  ValueError, "identifying or unsafe payload data fail closed")
+
+
+def test_exact_decimal_replay_does_not_collapse_large_canonical_metrics(c: Check):
+    observed = [
+        {
+            "condition": "clean_fusion",
+            "seed": seed,
+            "metrics": _metric_bundle(Decimal("1000000000000000.00000")),
+        }
+        for seed in range(3)
+    ]
+    expected = {
+        seed: _metric_bundle(Decimal("1000000000000000.00000"))
+        for seed in range(3)
+    }
+    expected[1] = _metric_bundle(Decimal("1000000000000000.00001"))
+    c.raises(lambda: require_clean_replay(observed, expected), ValueError,
+             "replay compares canonical Decimal metrics before JSON conversion")
+
+
+def test_aggregation_preserves_tiny_large_decimal_differences(c: Check):
+    values = tuple(Decimal("1000000000000000.0000") + Decimal(seed) / Decimal("100000")
+                   for seed in range(3))
+    rows = _all_condition_rows(values)
+    report = aggregate_condition_metrics(rows)
+    metric = report["conditions"][0]["aggregates"]["trained"]["raw_mae"]["full95"]
+    c.true(metric["sample_sd"] > 0.0,
+           "sample deviation retains canonical differences beyond float resolution")
+    c.eq(metric["sample_sd"], float(Decimal("0.00001")),
+         "Decimal sample deviation is computed before JSON conversion")
+
+
+def test_canonical_metric_supports_large_finite_decimal_values(c: Check):
+    c.eq(canonical_metric(Decimal("1e27")), Decimal("1000000000000000000000000000.00000"),
+         "finite practical Decimal metrics do not depend on the default context")
+
+
+def test_deidentified_payload_rejects_dot_and_drive_path_strings(c: Check):
+    for path_value in ("C:", ".", ".."):
+        c.raises(lambda path_value=path_value: validate_deidentified_payload(
+            {"condition": path_value}
+        ), ValueError, "dot and drive-only path forms are identifying path material")
 
 
 if __name__ == "__main__":
