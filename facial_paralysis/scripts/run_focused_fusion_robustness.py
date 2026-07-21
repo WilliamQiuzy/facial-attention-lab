@@ -555,6 +555,36 @@ def _require_private_directory(descriptor: int) -> None:
         raise ValueError("private benchmark directory storage is unsafe")
 
 
+def _require_bound_private_directory_name(
+    parent: int, name: str, descriptor: int,
+) -> None:
+    held = os.fstat(descriptor)
+    try:
+        named = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except OSError as exc:
+        raise ValueError("private benchmark directory name is unavailable") from exc
+    _require_private_directory(descriptor)
+    if (
+        not stat.S_ISDIR(named.st_mode)
+        or named.st_uid != os.geteuid()
+        or stat.S_IMODE(named.st_mode) != 0o700
+    ):
+        raise ValueError("private benchmark directory name is unsafe")
+    if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+        raise ValueError("private benchmark directory name changed")
+
+
+def _require_bound_private_directory_chain(
+    directories: list[int], components: tuple[str, ...],
+) -> None:
+    if len(directories) != len(components) + 1:
+        raise ValueError("private benchmark directory chain is incomplete")
+    for parent, name, descriptor in zip(
+        directories[:-1], components, directories[1:],
+    ):
+        _require_bound_private_directory_name(parent, name, descriptor)
+
+
 def _open_private_directory_at(parent: int, name: str) -> int:
     created = False
     try:
@@ -775,6 +805,7 @@ def _atomic_write_report(
         finally:
             os.close(descriptor)
         _validate_existing_report_at(final_directory)
+        _require_bound_private_directory_chain(directories, components)
         os.replace(
             temporary_name,
             "report.json",
@@ -784,6 +815,7 @@ def _atomic_write_report(
         temporary_name = None
         os.fsync(final_directory)
         _read_final_report_at(final_directory, payload)
+        _require_bound_private_directory_chain(directories, components)
     finally:
         if temporary_name is not None and len(directories) == len(components) + 1:
             try:

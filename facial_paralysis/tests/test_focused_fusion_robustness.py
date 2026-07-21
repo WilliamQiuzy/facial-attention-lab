@@ -1606,7 +1606,7 @@ def test_private_publisher_rejects_unsafe_anchor_parent_and_lock(c: Check):
         )
 
 
-def test_private_publisher_stays_on_held_directory_after_parent_component_swap(c: Check):
+def test_private_publisher_rejects_parent_component_swap(c: Check):
     cli = _load_cli()
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -1624,19 +1624,61 @@ def test_private_publisher_stays_on_held_directory_after_parent_component_swap(c
 
         cli.secrets.token_hex = swap_parent
         try:
-            cli._atomic_write_report(
-                report_path, b'{"status":"anchored"}',
-                private_root=private_root,
+            c.raises(
+                lambda: cli._atomic_write_report(
+                    report_path, b'{"status":"anchored"}',
+                    private_root=private_root,
+                ),
+                ValueError,
+                "an ancestor name swap fails closed",
             )
         finally:
             cli.secrets.token_hex = original_token_hex
         c.true(not report_path.exists(),
                "a swapped-in pathname tree receives no report")
-        c.eq(
-            (parked / "fixed" / "report.json").read_bytes(),
-            b'{"status":"anchored"}',
-            "publication remains anchored to the held directory inode",
-        )
+        c.true(not (parked / "fixed" / "report.json").exists(),
+               "the detached held directory receives no report")
+
+
+def test_private_publisher_rejects_parent_swap_after_final_directory_fsync(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        private_root = Path(temporary) / "benchmarks"
+        report_path = private_root / "development" / "fixed" / "report.json"
+        parked = private_root / "parked-development"
+        payload = b'{"status":"post-fsync-swap"}'
+        original_fsync = cli.os.fsync
+        swapped = False
+
+        def swap_after_final_directory_fsync(descriptor):
+            nonlocal swapped
+            original_fsync(descriptor)
+            observed = cli.os.fstat(descriptor)
+            if swapped or not stat.S_ISDIR(observed.st_mode) or not report_path.exists():
+                return
+            named = report_path.parent.stat()
+            if (observed.st_dev, observed.st_ino) != (named.st_dev, named.st_ino):
+                return
+            development = private_root / "development"
+            development.rename(parked)
+            development.mkdir(mode=0o700)
+            (development / "fixed").mkdir(mode=0o700)
+            swapped = True
+
+        cli.os.fsync = swap_after_final_directory_fsync
+        try:
+            c.raises(
+                lambda: cli._atomic_write_report(
+                    report_path, payload, private_root=private_root,
+                ),
+                ValueError,
+                "an ancestor swap after final directory fsync fails closed",
+            )
+        finally:
+            cli.os.fsync = original_fsync
+        c.true(swapped, "the test swaps the ancestor only after replace and fsync")
+        c.true(not report_path.exists(),
+               "the canonical report path is absent after the post-fsync swap")
 
 
 def test_private_publisher_serializes_two_writers_with_one_lock(c: Check):
@@ -1866,6 +1908,57 @@ def test_mocked_main_validates_and_publishes_the_fixed_report(c: Check):
            "stdout contains only status and the report digest")
     c.true("/" not in line and "\\" not in line,
            "stdout never reveals a path")
+
+
+def test_main_emits_no_success_when_publication_ancestor_name_changes(c: Check):
+    cli = _load_cli()
+    report = _valid_public_report(cli)
+    output = io.StringIO()
+    original_edge = cli._require_publication_edge
+    originals = (
+        cli.run_benchmark, cli.DEFAULT_REPORT_PATH, cli.secrets.token_hex,
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        private_root = Path(temporary) / "benchmarks"
+        target = (
+            private_root / "development" / "fixed" / "report.json"
+        )
+        parked = private_root / "parked-development"
+
+        def swap_parent(_length):
+            development = private_root / "development"
+            development.rename(parked)
+            development.mkdir(mode=0o700)
+            (development / "fixed").mkdir(mode=0o700)
+            return "f" * 32
+
+        cli.run_benchmark = lambda: report
+        cli.DEFAULT_REPORT_PATH = target
+        cli._require_publication_edge = lambda _observed: None
+        cli.secrets.token_hex = swap_parent
+
+        def invoke_main():
+            with redirect_stdout(output):
+                cli.main([])
+
+        try:
+            c.raises(
+                invoke_main,
+                ValueError,
+                "main propagates an ancestor-name publication failure",
+            )
+        finally:
+            (
+                cli.run_benchmark, cli.DEFAULT_REPORT_PATH,
+                cli.secrets.token_hex,
+            ) = originals
+            cli._require_publication_edge = original_edge
+        c.eq(output.getvalue(), "",
+             "main emits no success receipt after publication fails")
+        c.true(not target.exists(),
+               "the canonical report path is absent after the rejected swap")
+        c.true(not (parked / "fixed" / "report.json").exists(),
+               "the detached tree receives no report after the rejected swap")
 
 
 def test_real_publication_edge_rejects_source_and_lineage_drift_before_write(c: Check):
