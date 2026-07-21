@@ -338,6 +338,7 @@ def _atomic_write_report(path: Path, report: Mapping[str, object]) -> None:
         flags |= os.O_NOFOLLOW
     descriptor = os.open(temporary, flags, 0o600)
     try:
+        os.fchmod(descriptor, 0o600)
         offset = 0
         while offset < len(payload):
             written = os.write(descriptor, payload[offset:])

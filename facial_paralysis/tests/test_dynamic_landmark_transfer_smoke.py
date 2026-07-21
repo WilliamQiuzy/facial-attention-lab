@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import io
+import os
 import stat
 import sys
 from collections import OrderedDict
@@ -366,7 +367,11 @@ def test_private_atomic_report_writer_has_modes_and_no_overwrite(c: Check):
     report = _report()
     with TemporaryDirectory() as temporary:
         path = Path(temporary) / "private" / "nested" / "report.json"
-        _atomic_write_report(path, report)
+        previous_umask = os.umask(0o777)
+        try:
+            _atomic_write_report(path, report)
+        finally:
+            os.umask(previous_umask)
         c.eq(path.read_bytes(), _canonical_json_bytes(report))
         c.eq(stat.S_IMODE(path.stat().st_mode), 0o600)
         c.eq(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
