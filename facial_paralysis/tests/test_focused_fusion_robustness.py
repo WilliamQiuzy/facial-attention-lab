@@ -4,11 +4,13 @@ from __future__ import annotations
 import inspect
 import json
 import sys
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal, Inexact, Rounded, getcontext, setcontext
 from pathlib import Path
 
 import torch
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -20,10 +22,12 @@ from src.evaluation.focused_fusion_robustness import (  # noqa: E402
     aggregate_condition_metrics,
     build_condition_inputs,
     canonical_metric,
+    evaluate_fusion_conditions,
     require_clean_replay,
     validate_deidentified_payload,
     validate_metric_bundle,
 )
+from src.pretraining import dynamic_landmark_ssl as ssl_core  # noqa: E402
 
 
 class _HostileEqual:
@@ -841,6 +845,186 @@ def test_metric_schema_rejects_non_exact_or_hostile_keys_before_comparison(c: Ch
     c.raises(lambda: validate_metric_bundle(hostile_bundle), ValueError,
              "hostile equality keys fail before schema comparison")
     c.eq(hostile.comparisons, 0, "hostile key equality is never invoked")
+
+
+def _fusion_inference_fixture():
+    """Build a small, real Mayo SSL heldout partition without external data."""
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(701)
+    raw_features = torch.randn(3, 4, 32, 95, generator=generator)
+    valid_mask = torch.ones((3, 4, 32), dtype=torch.bool)
+    split = ssl_core.SSLGroupSplit(
+        train_indices=np.asarray([0], dtype=np.int64),
+        heldout_indices=np.asarray([1, 2], dtype=np.int64),
+        unit="recording",
+        claim_unit="recording_held_out_not_patient_held_out",
+        patient_held_out=False,
+    )
+    groups = ("train", "heldout_a", "heldout_b")
+    scaler = ssl_core.fit_source_scaler(
+        raw_features, valid_mask,
+        source=ssl_core.MAYO_SOURCE,
+        fit_indices=split.train_indices,
+        heldout_indices=split.heldout_indices,
+    )
+    features = scaler.transform(raw_features, valid_mask, source=ssl_core.MAYO_SOURCE)[1:]
+    valid_mask = valid_mask[1:]
+    target_mask = torch.zeros_like(valid_mask)
+    target_mask[:, :, 8:12] = True
+    timestamps = torch.arange(32, dtype=torch.float32).reshape(1, 1, 32).repeat(2, 4, 1) / 30.0
+    source_indices = torch.arange(32, dtype=torch.int64).reshape(1, 1, 32).repeat(2, 4, 1)
+
+    def model(seed: int):
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed)
+            return ssl_core.DynamicLandmarkSSLModel()
+
+    trained = {seed: model(800 + seed) for seed in range(3)}
+    fresh = {seed: model(900 + seed) for seed in range(3)}
+    return {
+        "trained_models": trained,
+        "fresh_models": fresh,
+        "features": features,
+        "valid_mask": valid_mask,
+        "timestamps": timestamps,
+        "source_frame_indices": source_indices,
+        "target_mask": target_mask,
+        "scaler": scaler,
+        "split": split,
+        "evaluated_indices": split.heldout_indices,
+        "group_ids": groups,
+    }
+
+
+def _expected_clean_metrics(fixture):
+    expected = {}
+    for seed in range(3):
+        trained = fixture["trained_models"][seed](
+            fixture["features"], fixture["valid_mask"], fixture["timestamps"],
+            fixture["source_frame_indices"], reconstruction_mask=fixture["target_mask"],
+            source="mayo", input_arm="fusion",
+        )
+        fresh = fixture["fresh_models"][seed](
+            fixture["features"], fixture["valid_mask"], fixture["timestamps"],
+            fixture["source_frame_indices"], reconstruction_mask=fixture["target_mask"],
+            source="mayo", input_arm="fusion",
+        )
+        report = ssl_core.reconstruction_report(
+            trained, fresh, fixture["features"], fixture["target_mask"],
+            baseline=fixture["scaler"], split=fixture["split"],
+            evaluated_indices=fixture["evaluated_indices"], group_ids=fixture["group_ids"],
+            source=ssl_core.MAYO_SOURCE,
+        )
+        metrics = report["common_target_metrics"]
+        expected[seed] = validate_metric_bundle({
+            "trained": metrics["trained"],
+            "fresh_untrained": metrics["untrained"],
+            "train_mean": metrics["train_mean"],
+        })
+    return expected
+
+
+def test_real_model_inference_returns_frozen_deidentified_grid(c: Check):
+    fixture = _fusion_inference_fixture()
+    expected = _expected_clean_metrics(fixture)
+    fixture["trained_models"][0].train()
+    fixture["fresh_models"][1].train()
+    model_state = {
+        id(model): {name: value.detach().clone() for name, value in model.state_dict().items()}
+        for mapping in (fixture["trained_models"], fixture["fresh_models"])
+        for model in mapping.values()
+    }
+    rng_before = torch.random.get_rng_state().clone()
+    rows = evaluate_fusion_conditions(
+        **fixture, expected_clean_metrics_by_seed=expected,
+    )
+    c.eq(len(rows), 30, "every registered condition has every seed")
+    c.eq(
+        [(row["condition"], row["seed"]) for row in rows],
+        [(condition.name, seed) for condition in BENCHMARK_CONDITIONS for seed in range(3)],
+        "rows are condition-major in frozen condition and seed order",
+    )
+    c.eq(rows[:3], [
+        {"condition": "clean_fusion", "seed": seed, "metrics": expected[seed]}
+        for seed in range(3)
+    ], "clean metrics use the exact common clean target report")
+    c.true(all(set(row) == {"condition", "seed", "metrics"} for row in rows),
+           "rows contain no identifiers or per-recording output")
+    c.true(validate_deidentified_payload(aggregate_condition_metrics(rows)) is not None,
+           "returned rows are accepted by the deidentified publication boundary")
+    c.true(torch.equal(torch.random.get_rng_state(), rng_before),
+           "inference and deterministic perturbations do not mutate global RNG")
+    for mapping in (fixture["trained_models"], fixture["fresh_models"]):
+        for model in mapping.values():
+            c.true(all(torch.equal(value, model.state_dict()[name])
+                       for name, value in model_state[id(model)].items()),
+                   "real model parameters and buffers remain unchanged")
+    c.true(fixture["trained_models"][0].training,
+           "caller training modes are restored after deterministic eval inference")
+    c.true(fixture["fresh_models"][1].training,
+           "fresh caller training modes are restored after deterministic eval inference")
+
+
+def test_clean_replay_failure_stops_before_stress_for_real_models(c: Check):
+    fixture = _fusion_inference_fixture()
+    expected = deepcopy(_expected_clean_metrics(fixture))
+    expected[0]["trained"]["standardized_mae"] += 0.00001
+    calls = [0]
+    hooks = [model.register_forward_hook(lambda *_args: calls.__setitem__(0, calls[0] + 1))
+             for mapping in (fixture["trained_models"], fixture["fresh_models"])
+             for model in mapping.values()]
+    try:
+        c.raises(lambda: evaluate_fusion_conditions(
+            **fixture, expected_clean_metrics_by_seed=expected,
+        ), ValueError, "a mismatched clean replay fails closed")
+    finally:
+        for hook in hooks:
+            hook.remove()
+    c.eq(calls[0], 6,
+         "only the three clean trained/fresh pairs run before the replay gate")
+
+
+def test_stress_conditions_keep_the_clean_target_and_scoring_mask(c: Check):
+    fixture = _fusion_inference_fixture()
+    expected = _expected_clean_metrics(fixture)
+    observed = []
+    original = ssl_core.reconstruction_report
+
+    def capture_target_and_mask(trained, fresh, target, reconstruction_mask, **kwargs):
+        observed.append((target, reconstruction_mask))
+        return original(trained, fresh, target, reconstruction_mask, **kwargs)
+
+    ssl_core.reconstruction_report = capture_target_and_mask
+    try:
+        evaluate_fusion_conditions(**fixture, expected_clean_metrics_by_seed=expected)
+    finally:
+        ssl_core.reconstruction_report = original
+    c.eq(len(observed), 30, "every real-model condition is scored once per seed")
+    c.true(all(target is fixture["features"] and mask is fixture["target_mask"]
+               for target, mask in observed),
+           "dropout and noise score only the original clean target positions")
+
+
+def test_inference_rejects_nonexact_model_maps_and_temporal_types(c: Check):
+    fixture = _fusion_inference_fixture()
+    expected = _expected_clean_metrics(fixture)
+    hostile = _HostileKey(0)
+    hostile_models = dict(fixture["trained_models"])
+    hostile_models.pop(0)
+    hostile_models[hostile] = fixture["trained_models"][1]
+    c.raises(lambda: evaluate_fusion_conditions(
+        **{**fixture, "trained_models": hostile_models},
+        expected_clean_metrics_by_seed=expected,
+    ), ValueError, "hostile model keys fail before equality")
+    c.eq(hostile.comparisons, 0, "hostile model-key equality is never invoked")
+    c.raises(lambda: evaluate_fusion_conditions(
+        **{**fixture, "timestamps": fixture["timestamps"].to(torch.int64)},
+        expected_clean_metrics_by_seed=expected,
+    ), ValueError, "timestamps require finite floating tensor provenance")
+    c.raises(lambda: evaluate_fusion_conditions(
+        **{**fixture, "source_frame_indices": fixture["source_frame_indices"].to(torch.int32)},
+        expected_clean_metrics_by_seed=expected,
+    ), ValueError, "source frame indices require exact int64 provenance")
 
 
 if __name__ == "__main__":

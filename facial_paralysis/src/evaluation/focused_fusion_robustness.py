@@ -26,6 +26,7 @@ from ..models.dynamic_landmark import (
     ARM_FUSION,
     ARM_LANDMARK,
 )
+from ..pretraining import dynamic_landmark_ssl as ssl_core
 
 
 _ConditionSpec = tuple[str, str, Optional[float], Optional[float], Optional[int]]
@@ -580,3 +581,173 @@ def build_condition_inputs(
                 ]
 
     return model_features, reconstruction_mask, condition.input_arm
+
+
+def _validate_model_map(value: object, name: str) -> dict[int, ssl_core.DynamicLandmarkSSLModel]:
+    """Validate one closed seed-to-real-model map without hostile comparisons."""
+    if type(value) is not dict:
+        raise ValueError(f"{name} must be an exact dictionary")
+    if any(type(key) is not int for key in value):
+        raise ValueError(f"{name} seed keys must have exact type int")
+    if tuple(sorted(value)) != (0, 1, 2):
+        raise ValueError(f"{name} must contain exactly seeds 0, 1, and 2")
+    for seed in range(3):
+        model = value[seed]
+        if type(model) is not ssl_core.DynamicLandmarkSSLModel:
+            raise ValueError(f"{name} values must be exact DynamicLandmarkSSLModel instances")
+        for tensor in (*model.parameters(), *model.buffers()):
+            if tensor.device.type != "cpu" or not bool(torch.isfinite(tensor).all()):
+                raise ValueError(f"{name} model state must be finite and CPU-resident")
+    return value
+
+
+def _validate_temporal_provenance(
+    timestamps: object,
+    source_frame_indices: object,
+    leading_shape: tuple[int, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if (
+        not isinstance(timestamps, torch.Tensor)
+        or timestamps.device.type != "cpu"
+        or timestamps.layout != torch.strided
+        or tuple(timestamps.shape) != leading_shape
+        or not timestamps.is_floating_point()
+        or not bool(torch.isfinite(timestamps).all())
+    ):
+        raise ValueError("timestamps must be finite CPU floating tensors matching features")
+    if (
+        not isinstance(source_frame_indices, torch.Tensor)
+        or source_frame_indices.device.type != "cpu"
+        or source_frame_indices.layout != torch.strided
+        or tuple(source_frame_indices.shape) != leading_shape
+        or source_frame_indices.dtype != torch.int64
+    ):
+        raise ValueError("source frame indices must be CPU int64 tensors matching features")
+    return timestamps, source_frame_indices
+
+
+def _condition_metrics(
+    *,
+    trained: ssl_core.DynamicLandmarkSSLModel,
+    fresh: ssl_core.DynamicLandmarkSSLModel,
+    model_features: torch.Tensor,
+    valid_mask: torch.Tensor,
+    timestamps: torch.Tensor,
+    source_frame_indices: torch.Tensor,
+    model_reconstruction_mask: torch.Tensor,
+    target: torch.Tensor,
+    scoring_reconstruction_mask: torch.Tensor,
+    scaler: ssl_core.SourceScaler,
+    split: ssl_core.SSLGroupSplit,
+    evaluated_indices: object,
+    group_ids: object,
+    input_arm: str,
+) -> dict[str, dict[str, object]]:
+    trained_prediction = trained(
+        model_features, valid_mask, timestamps, source_frame_indices,
+        reconstruction_mask=model_reconstruction_mask, source="mayo", input_arm=input_arm,
+    )
+    fresh_prediction = fresh(
+        model_features, valid_mask, timestamps, source_frame_indices,
+        reconstruction_mask=model_reconstruction_mask, source="mayo", input_arm=input_arm,
+    )
+    report = ssl_core.reconstruction_report(
+        trained_prediction, fresh_prediction, target, scoring_reconstruction_mask,
+        baseline=scaler, split=split, evaluated_indices=evaluated_indices,
+        group_ids=group_ids, source=ssl_core.MAYO_SOURCE,
+    )
+    common = report["common_target_metrics"]
+    if type(common) is not dict:
+        raise ValueError("reconstruction report common target metrics are malformed")
+    return validate_metric_bundle({
+        "trained": common["trained"],
+        "fresh_untrained": common["untrained"],
+        "train_mean": common["train_mean"],
+    })
+
+
+def evaluate_fusion_conditions(
+    *,
+    trained_models: object,
+    fresh_models: object,
+    features: torch.Tensor,
+    valid_mask: torch.Tensor,
+    timestamps: object,
+    source_frame_indices: object,
+    target_mask: torch.Tensor,
+    scaler: object,
+    split: object,
+    evaluated_indices: object,
+    group_ids: object,
+    expected_clean_metrics_by_seed: object,
+) -> list[dict[str, object]]:
+    """Evaluate the closed Fusion robustness grid with clean replay gated first.
+
+    Models run under ``eval`` and ``no_grad``; their caller-visible training modes
+    are restored even when the clean replay gate rejects the result.
+    """
+    trained = _validate_model_map(trained_models, "trained_models")
+    fresh = _validate_model_map(fresh_models, "fresh_models")
+    if any(trained[seed] is fresh[other] for seed in range(3) for other in range(3)):
+        raise ValueError("fresh models must be separate objects from trained models")
+    if type(scaler) is not ssl_core.SourceScaler:
+        raise ValueError("scaler must have exact type SourceScaler")
+    if type(split) is not ssl_core.SSLGroupSplit:
+        raise ValueError("split must have exact type SSLGroupSplit")
+
+    clean_features, clean_model_mask, clean_arm = build_condition_inputs(
+        features, valid_mask, target_mask, BENCHMARK_CONDITIONS[0],
+    )
+    checked_timestamps, checked_source_indices = _validate_temporal_provenance(
+        timestamps, source_frame_indices, tuple(features.shape[:-1]),
+    )
+    if not torch.equal(clean_model_mask, target_mask) or clean_arm != ARM_FUSION:
+        raise RuntimeError("clean Fusion registry contradicts the benchmark protocol")
+
+    models = tuple((*trained.values(), *fresh.values()))
+    modes = tuple(model.training for model in models)
+    try:
+        for model in models:
+            model.eval()
+        with torch.no_grad():
+            rows: list[dict[str, object]] = []
+            for seed in range(3):
+                rows.append({
+                    "condition": "clean_fusion",
+                    "seed": seed,
+                    "metrics": _condition_metrics(
+                        trained=trained[seed], fresh=fresh[seed],
+                        model_features=clean_features, valid_mask=valid_mask,
+                        timestamps=checked_timestamps,
+                        source_frame_indices=checked_source_indices,
+                        model_reconstruction_mask=target_mask, target=features,
+                        scoring_reconstruction_mask=target_mask, scaler=scaler,
+                        split=split, evaluated_indices=evaluated_indices,
+                        group_ids=group_ids, input_arm=ARM_FUSION,
+                    ),
+                })
+            require_clean_replay(rows, expected_clean_metrics_by_seed)
+
+            for condition in BENCHMARK_CONDITIONS[1:]:
+                model_features, model_mask, input_arm = build_condition_inputs(
+                    features, valid_mask, target_mask, condition,
+                )
+                for seed in range(3):
+                    rows.append({
+                        "condition": condition.name,
+                        "seed": seed,
+                        "metrics": _condition_metrics(
+                            trained=trained[seed], fresh=fresh[seed],
+                            model_features=model_features, valid_mask=valid_mask,
+                            timestamps=checked_timestamps,
+                            source_frame_indices=checked_source_indices,
+                            model_reconstruction_mask=model_mask, target=features,
+                            scoring_reconstruction_mask=target_mask, scaler=scaler,
+                            split=split, evaluated_indices=evaluated_indices,
+                            group_ids=group_ids, input_arm=input_arm,
+                        ),
+                    })
+    finally:
+        for model, mode in zip(models, modes):
+            model.train(mode)
+    return rows
