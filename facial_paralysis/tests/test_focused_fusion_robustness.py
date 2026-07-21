@@ -724,5 +724,18 @@ def test_deidentified_payload_rejects_dot_and_drive_path_strings(c: Check):
         ), ValueError, "dot and drive-only path forms are identifying path material")
 
 
+def test_degradation_preserves_tiny_large_decimal_difference(c: Check):
+    base = Decimal("1000000000000000000000000000.00000")
+    rows = _all_condition_rows((base, base, base))
+    for row in rows:
+        if row["condition"] == "mask_landmarks":
+            row["metrics"] = _metric_bundle(
+                Decimal("1000000000000000000000000000.00001")
+            )
+    report = aggregate_condition_metrics(rows)
+    c.eq(report["conditions"][1]["degradation_percent_vs_clean"], 1e-30,
+         "degradation division retains differences below the default Decimal context")
+
+
 if __name__ == "__main__":
     run_all("test_focused_fusion_robustness", dict(globals()))

@@ -248,6 +248,13 @@ def _json_finite_decimal(value: Decimal) -> float:
     return result
 
 
+def _decimal_degradation(mean: Decimal, clean_mean: Decimal) -> Decimal:
+    precision = max(50, abs(mean.adjusted()) + abs(clean_mean.adjusted()) + 40)
+    with localcontext() as context:
+        context.prec = precision
+        return Decimal(100) * (mean / clean_mean - Decimal(1))
+
+
 def _summary(values: list[Decimal]) -> dict[str, float]:
     mean = _decimal_mean(values)
     return {
@@ -312,8 +319,9 @@ def aggregate_condition_metrics(rows: object) -> dict[str, object]:
         ])
         if not mean.is_finite():
             raise ValueError("condition trained macro mean must be finite")
-        degradation = Decimal(0) if name == "clean_fusion" else Decimal(100) * (
-            mean / clean_mean - Decimal(1)
+        degradation = (
+            Decimal(0) if name == "clean_fusion"
+            else _decimal_degradation(mean, clean_mean)
         )
         if not degradation.is_finite():
             raise ValueError("condition degradation must be finite")
