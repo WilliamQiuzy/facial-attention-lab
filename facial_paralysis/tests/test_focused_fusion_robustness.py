@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import inspect
+import importlib.util
+import io
 import json
+import stat
 import sys
+import tempfile
+from contextlib import redirect_stdout
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal, Inexact, Rounded, getcontext, setcontext
@@ -1246,6 +1251,313 @@ def test_model_maps_require_cpu_model_state(c: Check):
     _assert_model_mapping_rejected_before_inference(
         c, fixture, trained_models=trained,
     )
+
+
+def _load_cli():
+    script = ROOT / "scripts" / "run_focused_fusion_robustness.py"
+    spec = importlib.util.spec_from_file_location(
+        "focused_fusion_robustness_cli", script,
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("focused Fusion CLI cannot be imported")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _valid_public_report(cli) -> dict:
+    aggregate = aggregate_condition_metrics(_all_condition_rows())
+    return {
+        "schema_version": "focused_fusion_robustness_report_v1",
+        "status": "complete",
+        "claim_scope": "recording_heldout_development_reconstruction_stress_only",
+        "source": "mayo",
+        "selected_arm": "fusion",
+        "seeds": [0, 1, 2],
+        "metric_policy": {
+            "canonicalization": "decimal_round_half_even_v1",
+            "decimal_places": 5,
+            "input_metric_min": 0.0,
+            "input_metric_max": 1e9,
+            "input_metric_max_digits": 64,
+            "input_metric_exponent_min": -100,
+            "input_metric_exponent_max": 100,
+            "primary_metric": "trained.raw_mae.equal_block_macro",
+            "lower_is_better": True,
+            "degradation_formula": "100*(condition_mean/clean_mean-1)",
+            "degradation_range": [-100.0, 1e16],
+        },
+        "accounting": {
+            "heldout_packets": 160,
+            "heldout_recording_groups": 10,
+            "valid_positions": 20434,
+            "scored_target_positions": 5120,
+            "scored_target_scalars": 486400,
+            "observed_context_positions": 15314,
+            "feature_width": 95,
+        },
+        "protocol_registry": [
+            {
+                "name": condition.name,
+                "input_arm": condition.input_arm,
+                "context_dropout_probability": condition.context_dropout_probability,
+                "landmark_noise_sd": condition.landmark_noise_sd,
+                "rng_seed": condition.rng_seed,
+            }
+            for condition in BENCHMARK_CONDITIONS
+        ],
+        "commitments": {
+            "benchmark_script_sha256": "1" * 64,
+            "evaluation_module_sha256": "2" * 64,
+            "trainer_sha256": "3" * 64,
+            "bridge_generation_sha256": "4" * 64,
+            "common_contract_sha256": "5" * 64,
+            "winner_report_sha256": "6" * 64,
+            "checkpoints": [
+                {
+                    "seed": seed,
+                    "checkpoint_fingerprint": str(7 + seed) * 64,
+                    "checkpoint_receipt_sha256": chr(ord("a") + seed) * 64,
+                }
+                for seed in range(3)
+            ],
+        },
+        "conditions": aggregate["conditions"],
+    }
+
+
+def test_cli_is_import_safe_and_accepts_only_the_fixed_no_argument_job(c: Check):
+    cli = _load_cli()
+    c.eq(cli._parser().parse_args([]).__dict__, {},
+         "the fixed benchmark parser has an exact empty namespace")
+    c.raises(lambda: cli._parser().parse_args(["--output", "elsewhere"]),
+             SystemExit, "callers cannot redirect or customize the benchmark")
+    c.eq(
+        cli.DEFAULT_REPORT_PATH,
+        ROOT / "outputs" / "dynamic_landmark" / "benchmarks"
+        / "development" / "focused-fusion-robustness-v1" / "report.json",
+        "the no-argument publication path is exact",
+    )
+
+
+def test_full_report_validator_reconstructs_only_the_exact_public_schema(c: Check):
+    cli = _load_cli()
+    report = _valid_public_report(cli)
+    normalized = cli.validate_public_report(report)
+    c.eq(normalized, report, "the exact public report is accepted")
+    c.true(normalized is not report and normalized["conditions"] is not report["conditions"],
+           "the validator reconstructs fresh allowlisted storage")
+    c.eq(tuple(normalized), tuple(report), "top-level field order is frozen")
+    c.eq(tuple(normalized["metric_policy"]), tuple(report["metric_policy"]),
+         "metric-policy field order is frozen")
+    c.eq(tuple(normalized["commitments"]), tuple(report["commitments"]),
+         "commitment field order is frozen")
+
+
+def test_full_report_validator_rejects_extras_identifiers_paths_and_secrets(c: Check):
+    cli = _load_cli()
+    for forbidden_key in (
+        "extra", "patient_id", "recording_id", "path", "authority_hmac",
+        "private_key",
+    ):
+        report = _valid_public_report(cli)
+        report[forbidden_key] = "secret"
+        c.raises(lambda report=report: cli.validate_public_report(report),
+                 ValueError, f"{forbidden_key} is outside the publication allowlist")
+    nested = _valid_public_report(cli)
+    nested["commitments"]["checkpoints"][0]["checkpoint_path"] = "/private/model.pt"
+    c.raises(lambda: cli.validate_public_report(nested), ValueError,
+             "checkpoint paths cannot enter the public report")
+
+
+def test_full_report_validator_rejects_wrong_literals_hashes_and_accounting(c: Check):
+    cli = _load_cli()
+    mutations = []
+    wrong_arm = _valid_public_report(cli)
+    wrong_arm["selected_arm"] = "landmark_only"
+    mutations.append(wrong_arm)
+    wrong_seeds = _valid_public_report(cli)
+    wrong_seeds["seeds"] = [0, 1]
+    mutations.append(wrong_seeds)
+    wrong_accounting = _valid_public_report(cli)
+    wrong_accounting["accounting"]["heldout_packets"] = 159
+    mutations.append(wrong_accounting)
+    wrong_hash = _valid_public_report(cli)
+    wrong_hash["commitments"]["trainer_sha256"] = "A" * 64
+    mutations.append(wrong_hash)
+    wrong_checkpoint_hash = _valid_public_report(cli)
+    wrong_checkpoint_hash["commitments"]["checkpoints"][1][
+        "checkpoint_receipt_sha256"
+    ] = "short"
+    mutations.append(wrong_checkpoint_hash)
+    for mutation in mutations:
+        c.raises(lambda mutation=mutation: cli.validate_public_report(mutation),
+                 ValueError, "wrong literal, accounting, or hash shape fails closed")
+
+
+def test_full_report_validator_requires_exact_protocol_and_three_checkpoint_rows(c: Check):
+    cli = _load_cli()
+    wrong_protocol = _valid_public_report(cli)
+    wrong_protocol["protocol_registry"] = list(reversed(
+        wrong_protocol["protocol_registry"],
+    ))
+    c.raises(lambda: cli.validate_public_report(wrong_protocol), ValueError,
+             "protocol rows require frozen order and exact values")
+    wrong_checkpoints = _valid_public_report(cli)
+    wrong_checkpoints["commitments"]["checkpoints"] = wrong_checkpoints[
+        "commitments"
+    ]["checkpoints"][:2]
+    c.raises(lambda: cli.validate_public_report(wrong_checkpoints), ValueError,
+             "all and only three seed commitments are required")
+
+
+def test_full_report_validation_delegates_to_closed_aggregate_validator(c: Check):
+    cli = _load_cli()
+    calls = []
+    original = cli.fusion_core.validate_deidentified_payload
+
+    def reject(_payload):
+        calls.append(True)
+        raise ValueError("closed aggregate rejection")
+
+    cli.fusion_core.validate_deidentified_payload = reject
+    try:
+        c.raises(lambda: cli.validate_public_report(_valid_public_report(cli)),
+                 ValueError, "aggregate validation remains fail closed")
+    finally:
+        cli.fusion_core.validate_deidentified_payload = original
+    c.eq(calls, [True], "the existing closed aggregate validator is authoritative")
+
+
+def test_canonical_json_is_deterministic_compact_ascii_and_rejects_nan(c: Check):
+    cli = _load_cli()
+    left = {"z": "caf\u00e9", "a": [1, 2.0]}
+    right = {"a": [1, 2.0], "z": "caf\u00e9"}
+    expected = b'{"a":[1,2.0],"z":"caf\\u00e9"}'
+    c.eq(cli.canonical_json_bytes(left), expected,
+         "canonical JSON is sorted, compact, and ASCII")
+    c.eq(cli.canonical_json_bytes(left), cli.canonical_json_bytes(right),
+         "mapping insertion order cannot change report bytes")
+    c.raises(lambda: cli.canonical_json_bytes({"bad": float("nan")}),
+             ValueError, "NaN is never serializable")
+
+
+def test_private_atomic_report_write_enforces_modes_replace_and_symlink_rejection(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        private_root = root / "benchmarks"
+        report_path = private_root / "development" / "fixed" / "report.json"
+        first = b'{"status":"first"}'
+        second = b'{"status":"second"}'
+        cli._atomic_write_report(report_path, first, private_root=private_root)
+        c.eq(report_path.read_bytes(), first, "the first report is durable")
+        c.eq(stat.S_IMODE(report_path.stat().st_mode), 0o600,
+             "the report is owner-only")
+        for directory in (private_root, report_path.parent.parent, report_path.parent):
+            c.eq(stat.S_IMODE(directory.stat().st_mode), 0o700,
+                 "every benchmark directory is owner-only")
+        cli._atomic_write_report(report_path, second, private_root=private_root)
+        c.eq(report_path.read_bytes(), second,
+             "a repeated run atomically replaces only the fixed report")
+
+        report_path.unlink()
+        target = root / "outside.json"
+        target.write_bytes(b"outside")
+        report_path.symlink_to(target)
+        c.raises(
+            lambda: cli._atomic_write_report(
+                report_path, first, private_root=private_root,
+            ),
+            ValueError,
+            "an existing symlink can never be replaced",
+        )
+        c.eq(target.read_bytes(), b"outside", "symlink target remains untouched")
+
+
+def test_authenticated_chain_is_exact_and_rejects_nonfusion_or_seed_drift(c: Check):
+    cli = _load_cli()
+    calls = []
+    authorization = object()
+    common = {"common_contract_sha256": "5" * 64}
+    smoke = {"report_sha256": "a" * 64}
+    selection = {"report_sha256": "b" * 64, "selected_arm": "fusion"}
+    winner = {
+        "report": {"selected_arm": "fusion", "seeds": [0, 1, 2]},
+        "report_sha256": "6" * 64,
+        "selected_arm": "fusion",
+        "checkpoints": {seed: {} for seed in range(3)},
+    }
+    originals = {
+        name: getattr(cli.pretrain_cli, name)
+        for name in (
+            "_focused_trainer_sha256", "_authorize_focused_bridge",
+            "_focused_common_contract", "_validate_focused_smoke_phase",
+            "_validate_focused_selection_phase", "_validate_focused_winner_phase",
+        )
+    }
+    cli.pretrain_cli._focused_trainer_sha256 = lambda: "3" * 64
+    cli.pretrain_cli._authorize_focused_bridge = lambda root, key, *, producer_sha256: (
+        calls.append(("authorize", root, key, producer_sha256)) or authorization
+    )
+    cli.pretrain_cli._focused_common_contract = lambda auth: (
+        calls.append(("common", auth)) or common
+    )
+    cli.pretrain_cli._validate_focused_smoke_phase = lambda directory, **kwargs: (
+        calls.append(("smoke", directory, kwargs)) or smoke
+    )
+    cli.pretrain_cli._validate_focused_selection_phase = lambda directory, **kwargs: (
+        calls.append(("selection", directory, kwargs)) or selection
+    )
+    cli.pretrain_cli._validate_focused_winner_phase = lambda directory, **kwargs: (
+        calls.append(("winner", directory, kwargs)) or winner
+    )
+    try:
+        result = cli._authenticate_winner_chain()
+        c.eq(result, (authorization, common, winner, "3" * 64),
+             "the existing authenticated chain is returned intact")
+        c.eq([row[0] for row in calls],
+             ["authorize", "common", "smoke", "selection", "winner"],
+             "authorization proceeds only in smoke-selection-winner order")
+        bad_arm = dict(winner, selected_arm="landmark_only")
+        cli.pretrain_cli._validate_focused_winner_phase = lambda *args, **kwargs: bad_arm
+        c.raises(cli._authenticate_winner_chain, ValueError,
+                 "a non-Fusion authenticated winner fails closed")
+        bad_seeds = dict(winner, report={"selected_arm": "fusion", "seeds": [0, 1]})
+        cli.pretrain_cli._validate_focused_winner_phase = lambda *args, **kwargs: bad_seeds
+        c.raises(cli._authenticate_winner_chain, ValueError,
+                 "authenticated report seed drift fails closed")
+    finally:
+        for name, value in originals.items():
+            setattr(cli.pretrain_cli, name, value)
+
+
+def test_mocked_main_validates_and_publishes_the_fixed_report(c: Check):
+    cli = _load_cli()
+    report = _valid_public_report(cli)
+    calls = []
+    originals = (cli.run_benchmark, cli._atomic_write_report, cli.DEFAULT_REPORT_PATH)
+    with tempfile.TemporaryDirectory() as temporary:
+        target = Path(temporary) / "benchmarks" / "development" / "fixed" / "report.json"
+        cli.DEFAULT_REPORT_PATH = target
+        cli.run_benchmark = lambda: report
+        cli._atomic_write_report = lambda path, payload, *, private_root: calls.append(
+            (path, payload, private_root)
+        )
+        output = io.StringIO()
+        try:
+            with redirect_stdout(output):
+                cli.main([])
+        finally:
+            cli.run_benchmark, cli._atomic_write_report, cli.DEFAULT_REPORT_PATH = originals
+    expected_payload = cli.canonical_json_bytes(cli.validate_public_report(report))
+    c.eq(calls, [(target, expected_payload, target.parents[2])],
+         "main validates and writes only the fixed report")
+    line = output.getvalue().strip()
+    c.true(line.startswith("status=complete report_sha256=") and len(line) == 94,
+           "stdout contains only status and the report digest")
+    c.true("/" not in line and "\\" not in line,
+           "stdout never reveals a path")
 
 
 if __name__ == "__main__":
