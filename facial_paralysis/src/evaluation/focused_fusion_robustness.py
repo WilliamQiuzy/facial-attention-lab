@@ -6,7 +6,16 @@ artifacts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, localcontext
+from decimal import (
+    Context,
+    Decimal,
+    DecimalException,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    ROUND_HALF_EVEN,
+    localcontext,
+)
 import math
 from typing import Any, Final, Optional
 
@@ -122,10 +131,28 @@ _RAW_MAE_KEYS: Final[tuple[str, ...]] = (
     "blendshape72", "clinical23", "equal_block_macro", "full95",
 )
 _METRIC_QUANTUM: Final[Decimal] = Decimal("0.00001")
+_MAX_METRIC: Final[Decimal] = Decimal("1000000000")
+_MAX_METRIC_DIGITS: Final[int] = 64
+_MIN_METRIC_EXPONENT: Final[int] = -100
+_MAX_METRIC_EXPONENT: Final[int] = 100
+_METRIC_CONTEXT: Final[Context] = Context(
+    prec=32,
+    rounding=ROUND_HALF_EVEN,
+    Emin=-100,
+    Emax=100,
+    capitals=1,
+    clamp=0,
+    flags=[],
+    traps=[InvalidOperation, DivisionByZero, Overflow],
+)
 
 
 def _exact_dict(value: object, keys: tuple[str, ...], name: str) -> dict[str, Any]:
-    if type(value) is not dict or set(value) != set(keys) or len(value) != len(keys):
+    if type(value) is not dict:
+        raise ValueError(f"{name} must be an exact schema dictionary")
+    if any(type(key) is not str for key in value):
+        raise ValueError(f"{name} keys must have exact type str")
+    if set(value) != set(keys) or len(value) != len(keys):
         raise ValueError(f"{name} must be an exact schema dictionary")
     return value
 
@@ -134,23 +161,37 @@ def canonical_metric(value: object) -> Decimal:
     """Return one finite, nonnegative metric rounded to the protocol quantum."""
     if type(value) not in (int, float, Decimal):
         raise TypeError("metric must have exact numeric scalar type")
-    if type(value) is float and not math.isfinite(value):
-        raise ValueError("metric must be finite")
     try:
-        metric = Decimal(str(value))
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError("metric must be finite") from exc
-    if not metric.is_finite():
-        raise ValueError("metric must be finite")
-    if metric < 0:
-        raise ValueError("metric must be nonnegative")
-    precision = max(50, abs(metric.adjusted()) + 20, len(metric.as_tuple().digits) + 10)
-    try:
-        with localcontext() as context:
-            context.prec = precision
-            return metric.quantize(_METRIC_QUANTUM, rounding=ROUND_HALF_EVEN)
-    except InvalidOperation as exc:
-        raise ValueError("metric cannot be represented at protocol precision") from exc
+        if type(value) is int:
+            if value < 0 or value > 1_000_000_000:
+                raise ValueError("metric must be in the closed interval [0, 1e9]")
+            metric = Decimal(value)
+        elif type(value) is float:
+            if not math.isfinite(value):
+                raise ValueError("metric must be finite")
+            if value < 0 or value > 1_000_000_000:
+                raise ValueError("metric must be in the closed interval [0, 1e9]")
+            metric = Decimal(str(value))
+        else:
+            metric = value
+            if not metric.is_finite():
+                raise ValueError("metric must be finite")
+
+        representation = metric.as_tuple()
+        if (
+            len(representation.digits) > _MAX_METRIC_DIGITS
+            or representation.exponent < _MIN_METRIC_EXPONENT
+            or representation.exponent > _MAX_METRIC_EXPONENT
+        ):
+            raise ValueError("metric representation exceeds protocol limits")
+        if metric < 0 or metric > _MAX_METRIC:
+            raise ValueError("metric must be in the closed interval [0, 1e9]")
+        with localcontext(_METRIC_CONTEXT) as context:
+            return context.quantize(metric, _METRIC_QUANTUM)
+    except (DecimalException, ValueError, OverflowError) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("metric is invalid under the fixed protocol context") from exc
 
 
 def _json_metric(value: object) -> float:
@@ -198,6 +239,18 @@ def validate_metric_bundle(value: object) -> dict[str, dict[str, object]]:
     return _json_metric_bundle(_canonical_metric_bundle(value))
 
 
+def _validate_public_metric_bundle(value: object) -> dict[str, dict[str, object]]:
+    bundle = _exact_dict(value, _BASELINES, "public metric bundle")
+    for baseline in _BASELINES:
+        source = _exact_dict(bundle[baseline], _METRIC_KEYS, "public metric baseline")
+        raw = _exact_dict(source["raw_mae"], _RAW_MAE_KEYS, "public raw_mae")
+        values = [raw[key] for key in _RAW_MAE_KEYS]
+        values.extend(source[key] for key in _METRIC_KEYS[1:])
+        if any(type(metric) is not float for metric in values):
+            raise ValueError("public metric values must have exact type float")
+    return validate_metric_bundle(bundle)
+
+
 def require_clean_replay(observed_rows: object, expected_by_seed: object) -> None:
     """Fail closed unless the three clean replay metrics exactly agree."""
     if type(observed_rows) is not list or len(observed_rows) != 3:
@@ -227,18 +280,20 @@ def require_clean_replay(observed_rows: object, expected_by_seed: object) -> Non
 
 
 def _decimal_mean(values: list[Decimal]) -> Decimal:
-    precision = max(50, max(abs(value.adjusted()) for value in values) + 30)
-    with localcontext() as context:
-        context.prec = precision
-        return sum(values, Decimal(0)) / len(values)
+    try:
+        with localcontext(_METRIC_CONTEXT):
+            return sum(values, Decimal(0)) / len(values)
+    except DecimalException as exc:
+        raise ValueError("metric mean is invalid") from exc
 
 
 def _decimal_sample_sd(values: list[Decimal], mean: Decimal) -> Decimal:
-    precision = max(50, max(abs(value.adjusted()) for value in values) + 30)
-    with localcontext() as context:
-        context.prec = precision
-        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
-        return variance.sqrt()
+    try:
+        with localcontext(_METRIC_CONTEXT):
+            variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+            return variance.sqrt()
+    except DecimalException as exc:
+        raise ValueError("metric sample deviation is invalid") from exc
 
 
 def _json_finite_decimal(value: Decimal) -> float:
@@ -249,10 +304,11 @@ def _json_finite_decimal(value: Decimal) -> float:
 
 
 def _decimal_degradation(mean: Decimal, clean_mean: Decimal) -> Decimal:
-    precision = max(50, abs(mean.adjusted()) + abs(clean_mean.adjusted()) + 40)
-    with localcontext() as context:
-        context.prec = precision
-        return Decimal(100) * (mean / clean_mean - Decimal(1))
+    try:
+        with localcontext(_METRIC_CONTEXT):
+            return Decimal(100) * (mean / clean_mean - Decimal(1))
+    except DecimalException as exc:
+        raise ValueError("condition degradation is invalid") from exc
 
 
 def _summary(values: list[Decimal]) -> dict[str, float]:
@@ -323,8 +379,12 @@ def aggregate_condition_metrics(rows: object) -> dict[str, object]:
             Decimal(0) if name == "clean_fusion"
             else _decimal_degradation(mean, clean_mean)
         )
-        if not degradation.is_finite():
-            raise ValueError("condition degradation must be finite")
+        if (
+            not degradation.is_finite()
+            or degradation < Decimal(-100)
+            or degradation > Decimal("1e16")
+        ):
+            raise ValueError("condition degradation is outside the publication range")
         conditions.append({
             "condition": name,
             "seed_rows": [
@@ -342,43 +402,89 @@ def aggregate_condition_metrics(rows: object) -> dict[str, object]:
 
 
 def validate_deidentified_payload(value: object) -> object:
-    """Return a fresh JSON-safe payload, rejecting identifiers and path material."""
-    forbidden = (
-        "path", "recording_id", "group_id", "sample_id", "source_unit",
-        "private_key", "authority_hmac",
-    )
+    """Reconstruct only the exact deidentified aggregate publication schema."""
+    payload = _exact_dict(value, ("conditions",), "aggregate payload")
+    conditions = payload["conditions"]
+    if type(conditions) is not list or len(conditions) != len(BENCHMARK_CONDITIONS):
+        raise ValueError("aggregate payload requires ten ordered conditions")
 
-    def validate(item: object) -> object:
-        if type(item) is dict:
-            result: dict[str, object] = {}
-            for key, child in item.items():
-                if type(key) is not str or any(word in key.lower() for word in forbidden):
-                    raise ValueError("payload contains a forbidden key")
-                result[key] = validate(child)
-            return result
-        if type(item) is list:
-            return [validate(child) for child in item]
-        if type(item) is str:
-            lower = item.lower()
-            if (
-                "/" in item
-                or "\\" in item
-                or item.startswith("~")
-                or item in (".", "..")
-                or (len(item) == 2 and item[0].isalpha() and item[1] == ":")
-                or lower.startswith(
-                ("rec_", "grp_", "sample_", "source_unit_")
-                )
-            ):
-                raise ValueError("payload contains identifying or path-like string")
-            return item
-        if type(item) in (type(None), bool, int):
-            return item
-        if type(item) is float and math.isfinite(item):
-            return item
-        raise ValueError("payload must be JSON-safe with finite numeric values")
+    normalized_conditions: list[dict[str, object]] = []
+    for index, condition_spec in enumerate(BENCHMARK_CONDITIONS):
+        entry = _exact_dict(
+            conditions[index],
+            ("condition", "seed_rows", "aggregates", "degradation_percent_vs_clean"),
+            "aggregate condition",
+        )
+        if type(entry["condition"]) is not str or entry["condition"] != condition_spec.name:
+            raise ValueError("aggregate conditions must use registered order")
+        seed_rows = entry["seed_rows"]
+        if type(seed_rows) is not list or len(seed_rows) != 3:
+            raise ValueError("aggregate condition requires three ordered seed rows")
+        normalized_rows: list[dict[str, object]] = []
+        for seed in range(3):
+            row = _exact_dict(
+                seed_rows[seed], ("condition", "seed", "metrics"), "aggregate seed row"
+            )
+            if type(row["condition"]) is not str or row["condition"] != condition_spec.name:
+                raise ValueError("aggregate seed condition is invalid")
+            if type(row["seed"]) is not int or row["seed"] != seed:
+                raise ValueError("aggregate seed rows must be ordered 0, 1, 2")
+            normalized_rows.append({
+                "condition": condition_spec.name,
+                "seed": seed,
+                "metrics": _validate_public_metric_bundle(row["metrics"]),
+            })
 
-    return validate(value)
+        aggregates = _validate_aggregate_bundle(entry["aggregates"])
+        degradation = entry["degradation_percent_vs_clean"]
+        if (
+            type(degradation) is not float
+            or not math.isfinite(degradation)
+            or degradation < -100.0
+            or degradation > 1e16
+        ):
+            raise ValueError("aggregate degradation is outside the publication range")
+        normalized_conditions.append({
+            "condition": condition_spec.name,
+            "seed_rows": normalized_rows,
+            "aggregates": aggregates,
+            "degradation_percent_vs_clean": degradation,
+        })
+    return {"conditions": normalized_conditions}
+
+
+def _validate_aggregate_bundle(value: object) -> dict[str, dict[str, object]]:
+    bundle = _exact_dict(value, _BASELINES, "aggregate bundle")
+    normalized: dict[str, dict[str, object]] = {}
+    for baseline in _BASELINES:
+        source = _exact_dict(bundle[baseline], _METRIC_KEYS, "aggregate baseline")
+        raw = _exact_dict(source["raw_mae"], _RAW_MAE_KEYS, "aggregate raw_mae")
+        normalized[baseline] = {
+            "raw_mae": {
+                key: _validate_metric_summary(raw[key]) for key in _RAW_MAE_KEYS
+            },
+            "standardized_mae": _validate_metric_summary(source["standardized_mae"]),
+            "standardized_smooth_l1": _validate_metric_summary(
+                source["standardized_smooth_l1"]
+            ),
+        }
+    return normalized
+
+
+def _validate_metric_summary(value: object) -> dict[str, float]:
+    summary = _exact_dict(value, ("mean", "sample_sd"), "metric summary")
+    result: dict[str, float] = {}
+    for key in ("mean", "sample_sd"):
+        metric = summary[key]
+        if (
+            type(metric) is not float
+            or not math.isfinite(metric)
+            or metric < 0
+            or metric > 1_000_000_000.0
+        ):
+            raise ValueError("aggregate metric summary must contain finite floats")
+        result[key] = metric
+    return result
 
 
 def build_condition_inputs(

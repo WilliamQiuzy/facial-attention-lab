@@ -4,7 +4,7 @@ from __future__ import annotations
 import inspect
 import sys
 from dataclasses import FrozenInstanceError, replace
-from decimal import Decimal
+from decimal import Decimal, Inexact, Rounded, getcontext, setcontext
 from pathlib import Path
 
 import torch
@@ -32,6 +32,23 @@ class _HostileEqual:
     def __eq__(self, _other):
         self.comparisons += 1
         return True
+
+
+class _StrSubclass(str):
+    pass
+
+
+class _HostileKey:
+    def __init__(self, target: str):
+        self.target = target
+        self.comparisons = 0
+
+    def __hash__(self):
+        return hash(self.target)
+
+    def __eq__(self, other):
+        self.comparisons += 1
+        return other == self.target
 
 
 def _condition(name: str) -> BenchmarkCondition:
@@ -659,49 +676,86 @@ def test_aggregate_conditions_rejects_bad_rows_and_keeps_recordings_out(c: Check
            "aggregate reports retain no per-recording data")
 
 
-def test_deidentified_payload_rejects_identifiers_paths_and_private_keys(c: Check):
-    safe = {
-        "schema_version": "1.0",
-        "checkpoint_fingerprint": "abc123",
-        "sha256": "deadbeef",
-        "condition": "clean_fusion",
-        "metrics": _metric_bundle(1.0),
-        "items": [0, 1.0, False, None],
-    }
+def test_deidentified_payload_accepts_only_closed_aggregate_schema(c: Check):
+    safe = aggregate_condition_metrics(_all_condition_rows())
     normalized = validate_deidentified_payload(safe)
-    c.eq(normalized, safe, "safe JSON payloads are accepted")
-    for unsafe in (
-        {"path_hint": "safe"},
-        {"condition": "/private/run"},
-        {"condition": "rec_123"},
-        {"authority_hmac": "secret"},
-        {"group_id": "grp_1"},
-        {"metrics": float("nan")},
+    c.eq(normalized, safe, "the exact aggregate result is accepted")
+    c.true(normalized is not safe and normalized["conditions"] is not safe["conditions"],
+           "validation reconstructs fresh allowlisted storage")
+
+    for forbidden_key in (
+        "patient_id", "subject_id", "recording_id", "private_key", "path", "extra",
     ):
-        c.raises(lambda unsafe=unsafe: validate_deidentified_payload(unsafe),
-                 ValueError, "identifying or unsafe payload data fail closed")
+        unsafe = {"conditions": list(safe["conditions"]), forbidden_key: "secret"}
+        c.raises(lambda unsafe=unsafe: validate_deidentified_payload(unsafe), ValueError,
+                 "every non-allowlisted top-level field fails closed")
+
+    wrong_condition = {"conditions": [dict(item) for item in safe["conditions"]]}
+    wrong_condition["conditions"][0]["condition"] = "wrong"
+    c.raises(lambda: validate_deidentified_payload(wrong_condition), ValueError,
+             "condition identity and order are exact")
+
+    nested_extra = {"conditions": [dict(item) for item in safe["conditions"]]}
+    nested_extra["conditions"][0]["patient_id"] = "patient_1"
+    c.raises(lambda: validate_deidentified_payload(nested_extra), ValueError,
+             "condition entries reject private and extra fields")
+
+    non_public_metric = {"conditions": [dict(item) for item in safe["conditions"]]}
+    first = non_public_metric["conditions"][0]
+    first["seed_rows"] = [dict(row) for row in first["seed_rows"]]
+    first["seed_rows"][0] = dict(first["seed_rows"][0])
+    first["seed_rows"][0]["metrics"] = _metric_bundle(Decimal("1.0"))
+    c.raises(lambda: validate_deidentified_payload(non_public_metric), ValueError,
+             "the publication boundary requires exact JSON float metric values")
+
+    out_of_range_summary = {"conditions": [dict(item) for item in safe["conditions"]]}
+    first = out_of_range_summary["conditions"][0]
+    first["aggregates"] = {
+        baseline: {
+            metric: (dict(value) if type(value) is dict else value)
+            for metric, value in metrics.items()
+        }
+        for baseline, metrics in first["aggregates"].items()
+    }
+    first["aggregates"]["trained"]["standardized_mae"]["mean"] = 1_000_000_000.00001
+    c.raises(lambda: validate_deidentified_payload(out_of_range_summary), ValueError,
+             "aggregate metric summaries enforce the publication metric bound")
+
+    cyclic = {}
+    cyclic["conditions"] = cyclic
+    c.raises(lambda: validate_deidentified_payload(cyclic), ValueError,
+             "cyclic arbitrary structures fail through the schema, not recursion")
+    deep = value = []
+    for _ in range(2000):
+        child = []
+        value.append(child)
+        value = child
+    c.raises(lambda: validate_deidentified_payload({"conditions": deep}), ValueError,
+             "deep arbitrary structures fail without recursive traversal")
 
 
-def test_exact_decimal_replay_does_not_collapse_large_canonical_metrics(c: Check):
+def test_json_boundary_preserves_distinct_near_limit_canonical_metrics(c: Check):
     observed = [
         {
             "condition": "clean_fusion",
             "seed": seed,
-            "metrics": _metric_bundle(Decimal("1000000000000000.00000")),
+            "metrics": validate_metric_bundle(
+                _metric_bundle(Decimal("999999999.99998"))
+            ),
         }
         for seed in range(3)
     ]
     expected = {
-        seed: _metric_bundle(Decimal("1000000000000000.00000"))
+        seed: _metric_bundle(Decimal("999999999.99998"))
         for seed in range(3)
     }
-    expected[1] = _metric_bundle(Decimal("1000000000000000.00001"))
+    expected[1] = _metric_bundle(Decimal("999999999.99999"))
     c.raises(lambda: require_clean_replay(observed, expected), ValueError,
-             "replay compares canonical Decimal metrics before JSON conversion")
+             "JSON composition preserves distinct bounded five-place metrics")
 
 
 def test_aggregation_preserves_tiny_large_decimal_differences(c: Check):
-    values = tuple(Decimal("1000000000000000.0000") + Decimal(seed) / Decimal("100000")
+    values = tuple(Decimal("999999999.99997") + Decimal(seed) / Decimal("100000")
                    for seed in range(3))
     rows = _all_condition_rows(values)
     report = aggregate_condition_metrics(rows)
@@ -712,29 +766,44 @@ def test_aggregation_preserves_tiny_large_decimal_differences(c: Check):
          "Decimal sample deviation is computed before JSON conversion")
 
 
-def test_canonical_metric_supports_large_finite_decimal_values(c: Check):
-    c.eq(canonical_metric(Decimal("1e27")), Decimal("1000000000000000000000000000.00000"),
-         "finite practical Decimal metrics do not depend on the default context")
+def test_canonical_metric_enforces_bound_and_representation_limits(c: Check):
+    for invalid in (
+        Decimal("1000000000.00001"),
+        Decimal("1e27"),
+        Decimal("0e101"),
+        Decimal("0." + "1234567890" * 7),
+    ):
+        c.raises(lambda invalid=invalid: canonical_metric(invalid), ValueError,
+                 "out-of-domain, extreme-exponent, and overlong metrics fail closed")
 
 
-def test_deidentified_payload_rejects_dot_and_drive_path_strings(c: Check):
-    for path_value in ("C:", ".", ".."):
-        c.raises(lambda path_value=path_value: validate_deidentified_payload(
-            {"condition": path_value}
-        ), ValueError, "dot and drive-only path forms are identifying path material")
+def test_canonical_metric_uses_private_context(c: Check):
+    original = getcontext().copy()
+    try:
+        ambient = getcontext()
+        ambient.prec = 2
+        ambient.Emax = 2
+        ambient.Emin = -2
+        ambient.traps[Inexact] = True
+        ambient.traps[Rounded] = True
+        c.eq(canonical_metric(Decimal("1.234565")), Decimal("1.23456"),
+             "ambient precision, exponent bounds, and traps cannot alter results")
+    finally:
+        setcontext(original)
 
 
-def test_degradation_preserves_tiny_large_decimal_difference(c: Check):
-    base = Decimal("1000000000000000000000000000.00000")
-    rows = _all_condition_rows((base, base, base))
-    for row in rows:
-        if row["condition"] == "mask_landmarks":
-            row["metrics"] = _metric_bundle(
-                Decimal("1000000000000000000000000000.00001")
-            )
-    report = aggregate_condition_metrics(rows)
-    c.eq(report["conditions"][1]["degradation_percent_vs_clean"], 1e-30,
-         "degradation division retains differences below the default Decimal context")
+def test_metric_schema_rejects_non_exact_or_hostile_keys_before_comparison(c: Check):
+    subclassed = _metric_bundle(1.0)
+    subclassed[_StrSubclass("trained")] = subclassed.pop("trained")
+    c.raises(lambda: validate_metric_bundle(subclassed), ValueError,
+             "str subclasses are not exact schema keys")
+
+    hostile = _HostileKey("trained")
+    hostile_bundle = _metric_bundle(1.0)
+    hostile_bundle[hostile] = hostile_bundle.pop("trained")
+    c.raises(lambda: validate_metric_bundle(hostile_bundle), ValueError,
+             "hostile equality keys fail before schema comparison")
+    c.eq(hostile.comparisons, 0, "hostile key equality is never invoked")
 
 
 if __name__ == "__main__":
