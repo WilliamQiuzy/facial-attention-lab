@@ -31,17 +31,65 @@ _FROZEN_BENCHMARK_SPECS: Final[tuple[_ConditionSpec, ...]] = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class BenchmarkCondition:
     """One member of the closed focused-Fusion benchmark protocol."""
 
+    __slots__ = (
+        "name",
+        "input_arm",
+        "context_dropout_probability",
+        "landmark_noise_sd",
+        "rng_seed",
+    )
+
     name: str
     input_arm: str
-    context_dropout_probability: Optional[float] = None
-    landmark_noise_sd: Optional[float] = None
-    rng_seed: Optional[int] = None
+    context_dropout_probability: Optional[float]
+    landmark_noise_sd: Optional[float]
+    rng_seed: Optional[int]
+
+    def __init__(
+        self,
+        name: str,
+        input_arm: str,
+        context_dropout_probability: Optional[float] = None,
+        landmark_noise_sd: Optional[float] = None,
+        rng_seed: Optional[int] = None,
+    ) -> None:
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "input_arm", input_arm)
+        object.__setattr__(
+            self, "context_dropout_probability", context_dropout_probability
+        )
+        object.__setattr__(self, "landmark_noise_sd", landmark_noise_sd)
+        object.__setattr__(self, "rng_seed", rng_seed)
+        self.__post_init__()
+
+    def __init_subclass__(cls, **_kwargs: object) -> None:
+        raise TypeError("BenchmarkCondition is closed and cannot be subclassed")
 
     def __post_init__(self) -> None:
+        if type(self.name) is not str:
+            raise TypeError("name must have exact type str")
+        if type(self.input_arm) is not str:
+            raise TypeError("input_arm must have exact type str")
+        if (
+            self.context_dropout_probability is not None
+            and type(self.context_dropout_probability) is not float
+        ):
+            raise TypeError(
+                "context_dropout_probability must have exact type float or be None"
+            )
+        if (
+            self.landmark_noise_sd is not None
+            and type(self.landmark_noise_sd) is not float
+        ):
+            raise TypeError(
+                "landmark_noise_sd must have exact type float or be None"
+            )
+        if self.rng_seed is not None and type(self.rng_seed) is not int:
+            raise TypeError("rng_seed must have exact type int or be None")
         spec = (
             self.name,
             self.input_arm,

@@ -13,11 +13,15 @@ from src.evaluation.focused_fusion_robustness import (  # noqa: E402
     BENCHMARK_CONDITIONS,
     BenchmarkCondition,
 )
-from src.models.dynamic_landmark import (  # noqa: E402
-    ARM_BLENDSHAPE,
-    ARM_FUSION,
-    ARM_LANDMARK,
-)
+
+
+class _HostileEqual:
+    def __init__(self):
+        self.comparisons = 0
+
+    def __eq__(self, _other):
+        self.comparisons += 1
+        return True
 
 
 def test_registry_has_exact_condition_order(c: Check):
@@ -44,16 +48,16 @@ def test_registry_has_exact_modality_arms(c: Check):
     c.eq(
         tuple(condition.input_arm for condition in BENCHMARK_CONDITIONS),
         (
-            ARM_FUSION,
-            ARM_BLENDSHAPE,
-            ARM_LANDMARK,
-            ARM_FUSION,
-            ARM_FUSION,
-            ARM_FUSION,
-            ARM_FUSION,
-            ARM_FUSION,
-            ARM_FUSION,
-            ARM_FUSION,
+            "fusion",
+            "blendshape_only",
+            "landmark_only",
+            "fusion",
+            "fusion",
+            "fusion",
+            "fusion",
+            "fusion",
+            "fusion",
+            "fusion",
         ),
         "modality removal reuses the existing model input arms",
     )
@@ -95,11 +99,80 @@ def test_conditions_are_frozen(c: Check):
              FrozenInstanceError, "registered conditions cannot be mutated")
 
 
+def test_conditions_have_no_mutable_instance_dictionary(c: Check):
+    clean = BENCHMARK_CONDITIONS[0]
+    c.raises(lambda: clean.__dict__, AttributeError,
+             "indirect instance-dictionary mutation is unavailable")
+
+
+def test_condition_type_cannot_be_subclassed(c: Check):
+    def construct_bypass():
+        subclass = type(
+            "BypassBenchmarkCondition",
+            (BenchmarkCondition,),
+            {"__post_init__": lambda _self: None},
+        )
+        return subclass(name="caller_defined", input_arm="fusion")
+
+    c.raises(construct_bypass, TypeError,
+             "subclasses cannot override validation")
+
+
+def test_hostile_equality_is_rejected_before_comparison(c: Check):
+    for field in (
+        "name",
+        "input_arm",
+        "context_dropout_probability",
+        "landmark_noise_sd",
+        "rng_seed",
+    ):
+        hostile = _HostileEqual()
+        kwargs = {"name": "clean_fusion", "input_arm": "fusion"}
+        kwargs[field] = hostile
+        c.raises(lambda kwargs=kwargs: BenchmarkCondition(**kwargs), TypeError,
+                 f"{field} requires an exact scalar type")
+        c.eq(hostile.comparisons, 0,
+             f"{field} is type-checked before equality")
+
+
+def test_wrong_scalar_types_fail_closed(c: Check):
+    invalid_specs = (
+        {"name": b"clean_fusion", "input_arm": "fusion"},
+        {"name": "clean_fusion", "input_arm": b"fusion"},
+        {
+            "name": "context_dropout_10pct",
+            "input_arm": "fusion",
+            "context_dropout_probability": 1,
+            "rng_seed": 41010,
+        },
+        {
+            "name": "landmark_noise_0.10sd",
+            "input_arm": "fusion",
+            "landmark_noise_sd": "0.10",
+            "rng_seed": 52010,
+        },
+        {
+            "name": "landmark_noise_0.10sd",
+            "input_arm": "fusion",
+            "landmark_noise_sd": 0.10,
+            "rng_seed": 52010.0,
+        },
+        {
+            "name": "frame_order_shuffle",
+            "input_arm": "fusion",
+            "rng_seed": True,
+        },
+    )
+    for kwargs in invalid_specs:
+        c.raises(lambda kwargs=kwargs: BenchmarkCondition(**kwargs), TypeError,
+                 "wrong scalar types, including bool-as-int, fail closed")
+
+
 def test_caller_defined_protocols_fail(c: Check):
     clean = BENCHMARK_CONDITIONS[0]
     c.raises(lambda: BenchmarkCondition(
         name="caller_defined",
-        input_arm=ARM_FUSION,
+        input_arm="fusion",
     ), ValueError, "callers cannot add arbitrary condition names")
     c.raises(lambda: replace(clean, context_dropout_probability=0.25),
              ValueError, "callers cannot alter a registered condition spec")
