@@ -187,7 +187,8 @@ def canonical_metric(value: object) -> Decimal:
         if metric < 0 or metric > _MAX_METRIC:
             raise ValueError("metric must be in the closed interval [0, 1e9]")
         with localcontext(_METRIC_CONTEXT) as context:
-            return context.quantize(metric, _METRIC_QUANTUM)
+            result = context.quantize(metric, _METRIC_QUANTUM)
+            return result.copy_abs() if result.is_zero() else result
     except (DecimalException, ValueError, OverflowError) as exc:
         if isinstance(exc, ValueError):
             raise
@@ -257,9 +258,12 @@ def require_clean_replay(observed_rows: object, expected_by_seed: object) -> Non
         raise ValueError("clean replay requires exactly three observed rows")
     if (
         type(expected_by_seed) is not dict
-        or set(expected_by_seed) != {0, 1, 2}
-        or any(type(seed) is not int for seed in expected_by_seed)
+        or len(expected_by_seed) != 3
     ):
+        raise ValueError("clean replay requires exact expected seeds 0, 1, 2")
+    if any(type(seed) is not int for seed in expected_by_seed):
+        raise ValueError("clean replay expected seed keys require exact type int")
+    if any(seed < 0 or seed > 2 for seed in expected_by_seed):
         raise ValueError("clean replay requires exact expected seeds 0, 1, 2")
     seen: set[int] = set()
     for row in observed_rows:
@@ -300,7 +304,7 @@ def _json_finite_decimal(value: Decimal) -> float:
     result = float(value)
     if not math.isfinite(result):
         raise ValueError("aggregate must be representable as a finite JSON number")
-    return result
+    return 0.0 if result == 0.0 else result
 
 
 def _decimal_degradation(mean: Decimal, clean_mean: Decimal) -> Decimal:
@@ -448,7 +452,9 @@ def validate_deidentified_payload(value: object) -> object:
             "condition": condition_spec.name,
             "seed_rows": normalized_rows,
             "aggregates": aggregates,
-            "degradation_percent_vs_clean": degradation,
+            "degradation_percent_vs_clean": (
+                0.0 if degradation == 0.0 else degradation
+            ),
         })
     return {"conditions": normalized_conditions}
 
@@ -483,7 +489,7 @@ def _validate_metric_summary(value: object) -> dict[str, float]:
             or metric > 1_000_000_000.0
         ):
             raise ValueError("aggregate metric summary must contain finite floats")
-        result[key] = metric
+        result[key] = 0.0 if metric == 0.0 else metric
     return result
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 from dataclasses import FrozenInstanceError, replace
 from decimal import Decimal, Inexact, Rounded, getcontext, setcontext
@@ -39,11 +40,13 @@ class _StrSubclass(str):
 
 
 class _HostileKey:
-    def __init__(self, target: str):
+    def __init__(self, target: object):
         self.target = target
         self.comparisons = 0
+        self.hashes = 0
 
     def __hash__(self):
+        self.hashes += 1
         return hash(self.target)
 
     def __eq__(self, other):
@@ -638,6 +641,21 @@ def test_clean_replay_requires_each_exact_seed_and_metric(c: Check):
              "clean replay requires all three seed rows")
 
 
+def test_clean_replay_rejects_hostile_expected_keys_before_hash_or_equality(c: Check):
+    observed = [
+        {"condition": "clean_fusion", "seed": seed, "metrics": _metric_bundle(1.0)}
+        for seed in range(3)
+    ]
+    hostile = _HostileKey(0)
+    expected = {hostile: _metric_bundle(1.0), 1: _metric_bundle(1.0), 2: _metric_bundle(1.0)}
+    hostile.hashes = 0
+    hostile.comparisons = 0
+    c.raises(lambda: require_clean_replay(observed, expected), ValueError,
+             "expected seed keys require exact int type before set operations")
+    c.eq(hostile.hashes, 0, "validation never hashes a hostile expected seed key")
+    c.eq(hostile.comparisons, 0, "validation never compares a hostile expected seed key")
+
+
 def test_aggregate_conditions_enforces_complete_grid_and_computes_stats(c: Check):
     rows = _all_condition_rows()
     report = aggregate_condition_metrics(rows)
@@ -790,6 +808,25 @@ def test_canonical_metric_uses_private_context(c: Check):
              "ambient precision, exponent bounds, and traps cannot alter results")
     finally:
         setcontext(original)
+
+
+def test_every_numeric_zero_is_normalized_to_positive_zero(c: Check):
+    for zero in (0, -0.0, Decimal("-0")):
+        canonical = canonical_metric(zero)
+        c.true(canonical.is_zero() and not canonical.is_signed(),
+               "canonical metrics normalize every signed-zero representation")
+
+    rows = _all_condition_rows()
+    for row in rows:
+        if row["condition"] == "mask_landmarks":
+            row["metrics"] = _metric_bundle(-0.0)
+    report = aggregate_condition_metrics(rows)
+    report["conditions"][0]["aggregates"]["trained"]["standardized_mae"]["sample_sd"] = -0.0
+    report["conditions"][0]["degradation_percent_vs_clean"] = -0.0
+    normalized = validate_deidentified_payload(report)
+    encoded = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    c.true("-0.0" not in encoded,
+           "valid public aggregate JSON never contains negative zero bytes")
 
 
 def test_metric_schema_rejects_non_exact_or_hostile_keys_before_comparison(c: Check):
