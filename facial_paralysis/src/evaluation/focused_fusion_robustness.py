@@ -698,8 +698,11 @@ def evaluate_fusion_conditions(
     """
     trained = _validate_model_map(trained_models, "trained_models")
     fresh = _validate_model_map(fresh_models, "fresh_models")
-    if any(trained[seed] is fresh[other] for seed in range(3) for other in range(3)):
-        raise ValueError("fresh models must be separate objects from trained models")
+    model_roots = tuple(trained[seed] for seed in range(3)) + tuple(
+        fresh[seed] for seed in range(3)
+    )
+    if len({id(model) for model in model_roots}) != 6:
+        raise ValueError("all trained and fresh seed models must be separate objects")
     if type(scaler) is not ssl_core.SourceScaler:
         raise ValueError("scaler must have exact type SourceScaler")
     if type(split) is not ssl_core.SSLGroupSplit:
@@ -710,7 +713,7 @@ def evaluate_fusion_conditions(
         timestamps, source_frame_indices, tuple(features.shape[:-1]),
     )
 
-    models = tuple((*trained.values(), *fresh.values()))
+    models = model_roots
     module_modes = tuple(
         (module, module.training)
         for model in models

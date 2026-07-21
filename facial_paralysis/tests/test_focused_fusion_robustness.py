@@ -898,31 +898,79 @@ def _fusion_inference_fixture():
 
 
 def _expected_clean_metrics(fixture):
-    expected = {}
-    for seed in range(3):
-        trained = fixture["trained_models"][seed](
-            fixture["features"], fixture["valid_mask"], fixture["timestamps"],
-            fixture["source_frame_indices"], reconstruction_mask=fixture["target_mask"],
-            source="mayo", input_arm="fusion",
-        )
-        fresh = fixture["fresh_models"][seed](
-            fixture["features"], fixture["valid_mask"], fixture["timestamps"],
-            fixture["source_frame_indices"], reconstruction_mask=fixture["target_mask"],
-            source="mayo", input_arm="fusion",
-        )
-        report = ssl_core.reconstruction_report(
-            trained, fresh, fixture["features"], fixture["target_mask"],
-            baseline=fixture["scaler"], split=fixture["split"],
-            evaluated_indices=fixture["evaluated_indices"], group_ids=fixture["group_ids"],
-            source=ssl_core.MAYO_SOURCE,
-        )
-        metrics = report["common_target_metrics"]
-        expected[seed] = validate_metric_bundle({
-            "trained": metrics["trained"],
-            "fresh_untrained": metrics["untrained"],
-            "train_mean": metrics["train_mean"],
-        })
-    return expected
+    models = tuple((
+        *fixture["trained_models"].values(), *fixture["fresh_models"].values(),
+    ))
+    module_modes = tuple(
+        (module, module.training) for model in models for module in model.modules()
+    )
+    try:
+        for model in models:
+            model.eval()
+        expected = {}
+        with torch.no_grad():
+            for seed in range(3):
+                trained = fixture["trained_models"][seed](
+                    fixture["features"], fixture["valid_mask"], fixture["timestamps"],
+                    fixture["source_frame_indices"],
+                    reconstruction_mask=fixture["target_mask"],
+                    source="mayo", input_arm="fusion",
+                )
+                fresh = fixture["fresh_models"][seed](
+                    fixture["features"], fixture["valid_mask"], fixture["timestamps"],
+                    fixture["source_frame_indices"],
+                    reconstruction_mask=fixture["target_mask"],
+                    source="mayo", input_arm="fusion",
+                )
+                report = ssl_core.reconstruction_report(
+                    trained, fresh, fixture["features"], fixture["target_mask"],
+                    baseline=fixture["scaler"], split=fixture["split"],
+                    evaluated_indices=fixture["evaluated_indices"],
+                    group_ids=fixture["group_ids"], source=ssl_core.MAYO_SOURCE,
+                )
+                metrics = report["common_target_metrics"]
+                expected[seed] = validate_metric_bundle({
+                    "trained": metrics["trained"],
+                    "fresh_untrained": metrics["untrained"],
+                    "train_mean": metrics["train_mean"],
+                })
+        return expected
+    finally:
+        for module, mode in module_modes:
+            module.training = mode
+
+
+def test_expected_clean_helper_uses_eval_no_grad_and_restores_nested_modes(c: Check):
+    fixture = _fusion_inference_fixture()
+    models = tuple((
+        *fixture["trained_models"].values(), *fixture["fresh_models"].values(),
+    ))
+    modes_before = {}
+    for model_number, model in enumerate(models):
+        for module_number, module in enumerate(model.modules()):
+            module.training = bool((model_number + module_number) % 2)
+            modes_before[id(module)] = module.training
+    observations = []
+    hooks = [model.register_forward_pre_hook(
+        lambda observed_model, _args: observations.append((
+            torch.is_grad_enabled(),
+            tuple(module.training for module in observed_model.modules()),
+        )),
+    ) for model in models]
+    try:
+        _expected_clean_metrics(fixture)
+    finally:
+        for hook in hooks:
+            hook.remove()
+    c.eq(len(observations), 6, "helper evaluates one trained/fresh pair per seed")
+    c.true(all(not grad_enabled and not any(module_modes)
+               for grad_enabled, module_modes in observations),
+           "helper clean forwards use eval mode with gradients disabled")
+    c.eq(
+        {id(module): module.training for model in models for module in model.modules()},
+        modes_before,
+        "helper restores every heterogeneous nested module mode",
+    )
 
 
 def test_real_model_inference_returns_frozen_deidentified_grid(c: Check):
@@ -970,6 +1018,22 @@ def test_clean_replay_failure_stops_before_stress_for_real_models(c: Check):
     fixture = _fusion_inference_fixture()
     expected = deepcopy(_expected_clean_metrics(fixture))
     expected[0]["trained"]["standardized_mae"] += 0.00001
+    models = tuple((
+        *fixture["trained_models"].values(), *fixture["fresh_models"].values(),
+    ))
+    for model_number, model in enumerate(models):
+        for module_number, module in enumerate(model.modules()):
+            module.training = bool((model_number + module_number) % 2)
+    modes_before = {
+        id(module): module.training for model in models for module in model.modules()
+    }
+    states_before = {
+        id(model): {
+            name: value.detach().clone() for name, value in model.state_dict().items()
+        }
+        for model in models
+    }
+    rng_before = torch.random.get_rng_state().clone()
     calls = [0]
     hooks = [model.register_forward_hook(lambda *_args: calls.__setitem__(0, calls[0] + 1))
              for mapping in (fixture["trained_models"], fixture["fresh_models"])
@@ -983,6 +1047,18 @@ def test_clean_replay_failure_stops_before_stress_for_real_models(c: Check):
             hook.remove()
     c.eq(calls[0], 6,
          "only the three clean trained/fresh pairs run before the replay gate")
+    c.eq(
+        {id(module): module.training for model in models for module in model.modules()},
+        modes_before,
+        "clean replay exceptions restore every nested module mode",
+    )
+    c.true(all(
+        torch.equal(value, model.state_dict()[name])
+        for model in models
+        for name, value in states_before[id(model)].items()
+    ), "clean replay exceptions preserve every parameter and buffer")
+    c.true(torch.equal(torch.random.get_rng_state(), rng_before),
+           "clean replay exceptions preserve global RNG state")
 
 
 def test_clean_replay_uses_original_inputs_without_condition_builder(c: Check):
@@ -1082,6 +1158,94 @@ def test_inference_rejects_nonexact_model_maps_and_temporal_types(c: Check):
         **{**fixture, "source_frame_indices": fixture["source_frame_indices"].to(torch.int32)},
         expected_clean_metrics_by_seed=expected,
     ), ValueError, "source frame indices require exact int64 provenance")
+
+
+def _assert_model_mapping_rejected_before_inference(c: Check, fixture, **overrides):
+    calls = [0]
+    unique_models = {
+        id(model): model
+        for mapping in (fixture["trained_models"], fixture["fresh_models"])
+        for model in mapping.values()
+    }
+    hooks = [model.register_forward_hook(
+        lambda *_args: calls.__setitem__(0, calls[0] + 1),
+    ) for model in unique_models.values()]
+    try:
+        c.raises(lambda: evaluate_fusion_conditions(
+            **{**fixture, **overrides}, expected_clean_metrics_by_seed={},
+        ), ValueError, "invalid model mappings fail closed")
+    finally:
+        for hook in hooks:
+            hook.remove()
+    c.eq(calls[0], 0, "invalid model mappings are rejected before any inference")
+
+
+def test_trained_seed_models_require_distinct_root_identities(c: Check):
+    fixture = _fusion_inference_fixture()
+    trained = dict(fixture["trained_models"])
+    trained[1] = trained[0]
+    _assert_model_mapping_rejected_before_inference(
+        c, fixture, trained_models=trained,
+    )
+
+
+def test_fresh_seed_models_require_distinct_root_identities(c: Check):
+    fixture = _fusion_inference_fixture()
+    fresh = dict(fixture["fresh_models"])
+    fresh[2] = fresh[0]
+    _assert_model_mapping_rejected_before_inference(
+        c, fixture, fresh_models=fresh,
+    )
+
+
+def test_trained_and_fresh_maps_cannot_share_root_models(c: Check):
+    fixture = _fusion_inference_fixture()
+    fresh = dict(fixture["fresh_models"])
+    fresh[2] = fixture["trained_models"][1]
+    _assert_model_mapping_rejected_before_inference(
+        c, fixture, fresh_models=fresh,
+    )
+
+
+def test_model_maps_require_exact_real_model_types(c: Check):
+    fixture = _fusion_inference_fixture()
+
+    class ModelSubclass(ssl_core.DynamicLandmarkSSLModel):
+        pass
+
+    with torch.random.fork_rng(devices=[]):
+        subclassed = ModelSubclass()
+    for invalid in (subclassed, torch.nn.Linear(1, 1)):
+        trained = dict(fixture["trained_models"])
+        trained[0] = invalid
+        _assert_model_mapping_rejected_before_inference(
+            c, fixture, trained_models=trained,
+        )
+
+
+def test_model_maps_reject_nonfinite_parameter_and_buffer_state(c: Check):
+    parameter_fixture = _fusion_inference_fixture()
+    parameter = next(parameter_fixture["trained_models"][0].parameters())
+    with torch.no_grad():
+        parameter.reshape(-1)[0] = float("nan")
+    _assert_model_mapping_rejected_before_inference(c, parameter_fixture)
+
+    buffer_fixture = _fusion_inference_fixture()
+    buffer_fixture["fresh_models"][2].register_buffer(
+        "test_nonfinite_buffer", torch.tensor(float("inf")),
+    )
+    _assert_model_mapping_rejected_before_inference(c, buffer_fixture)
+
+
+def test_model_maps_require_cpu_model_state(c: Check):
+    fixture = _fusion_inference_fixture()
+    with torch.random.fork_rng(devices=[]):
+        non_cpu = ssl_core.DynamicLandmarkSSLModel().to(device="meta")
+    trained = dict(fixture["trained_models"])
+    trained[2] = non_cpu
+    _assert_model_mapping_rejected_before_inference(
+        c, fixture, trained_models=trained,
+    )
 
 
 if __name__ == "__main__":
