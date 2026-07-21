@@ -494,16 +494,12 @@ def _validate_metric_summary(value: object) -> dict[str, float]:
     return result
 
 
-def build_condition_inputs(
+def _validate_condition_tensors(
     features: torch.Tensor,
     valid_mask: torch.Tensor,
     target_mask: torch.Tensor,
-    condition: BenchmarkCondition,
-) -> tuple[torch.Tensor, torch.Tensor, str]:
-    """Build deterministic model inputs for one registered condition."""
-    if type(condition) is not BenchmarkCondition:
-        raise ValueError("condition must have exact type BenchmarkCondition")
-    condition.__post_init__()
+) -> None:
+    """Validate the common clean feature and mask contract."""
     if (
         not isinstance(features, torch.Tensor)
         or features.device.type != "cpu"
@@ -537,6 +533,20 @@ def build_condition_inputs(
     if bool((~observed_context.reshape(features.shape[0], -1).any(dim=1)).any()):
         raise ValueError("every sample must contain observed context")
 
+
+def build_condition_inputs(
+    features: torch.Tensor,
+    valid_mask: torch.Tensor,
+    target_mask: torch.Tensor,
+    condition: BenchmarkCondition,
+) -> tuple[torch.Tensor, torch.Tensor, str]:
+    """Build deterministic model inputs for one registered condition."""
+    if type(condition) is not BenchmarkCondition:
+        raise ValueError("condition must have exact type BenchmarkCondition")
+    condition.__post_init__()
+    _validate_condition_tensors(features, valid_mask, target_mask)
+
+    observed_context = valid_mask & ~target_mask
     model_features = features.clone()
     reconstruction_mask = target_mask.clone()
     if condition.context_dropout_probability is not None:
@@ -695,17 +705,17 @@ def evaluate_fusion_conditions(
     if type(split) is not ssl_core.SSLGroupSplit:
         raise ValueError("split must have exact type SSLGroupSplit")
 
-    clean_features, clean_model_mask, clean_arm = build_condition_inputs(
-        features, valid_mask, target_mask, BENCHMARK_CONDITIONS[0],
-    )
+    _validate_condition_tensors(features, valid_mask, target_mask)
     checked_timestamps, checked_source_indices = _validate_temporal_provenance(
         timestamps, source_frame_indices, tuple(features.shape[:-1]),
     )
-    if not torch.equal(clean_model_mask, target_mask) or clean_arm != ARM_FUSION:
-        raise RuntimeError("clean Fusion registry contradicts the benchmark protocol")
 
     models = tuple((*trained.values(), *fresh.values()))
-    modes = tuple(model.training for model in models)
+    module_modes = tuple(
+        (module, module.training)
+        for model in models
+        for module in model.modules()
+    )
     try:
         for model in models:
             model.eval()
@@ -717,7 +727,7 @@ def evaluate_fusion_conditions(
                     "seed": seed,
                     "metrics": _condition_metrics(
                         trained=trained[seed], fresh=fresh[seed],
-                        model_features=clean_features, valid_mask=valid_mask,
+                        model_features=features, valid_mask=valid_mask,
                         timestamps=checked_timestamps,
                         source_frame_indices=checked_source_indices,
                         model_reconstruction_mask=target_mask, target=features,
@@ -748,6 +758,6 @@ def evaluate_fusion_conditions(
                         ),
                     })
     finally:
-        for model, mode in zip(models, modes):
-            model.train(mode)
+        for module, mode in module_modes:
+            module.training = mode
     return rows

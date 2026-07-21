@@ -28,6 +28,7 @@ from src.evaluation.focused_fusion_robustness import (  # noqa: E402
     validate_metric_bundle,
 )
 from src.pretraining import dynamic_landmark_ssl as ssl_core  # noqa: E402
+from src.evaluation import focused_fusion_robustness as fusion_core  # noqa: E402
 
 
 class _HostileEqual:
@@ -982,6 +983,62 @@ def test_clean_replay_failure_stops_before_stress_for_real_models(c: Check):
             hook.remove()
     c.eq(calls[0], 6,
          "only the three clean trained/fresh pairs run before the replay gate")
+
+
+def test_clean_replay_uses_original_inputs_without_condition_builder(c: Check):
+    fixture = _fusion_inference_fixture()
+    expected = deepcopy(_expected_clean_metrics(fixture))
+    expected[0]["trained"]["standardized_mae"] += 0.00001
+    builder_calls = []
+    original_builder = fusion_core.build_condition_inputs
+
+    def capture_builder(*args, **kwargs):
+        builder_calls.append(True)
+        return original_builder(*args, **kwargs)
+
+    forward_inputs = []
+    hooks = [model.register_forward_pre_hook(
+        lambda _model, args, kwargs: forward_inputs.append(
+            (args[0], kwargs["reconstruction_mask"]),
+        ),
+        with_kwargs=True,
+    ) for mapping in (fixture["trained_models"], fixture["fresh_models"])
+        for model in mapping.values()]
+    fusion_core.build_condition_inputs = capture_builder
+    try:
+        c.raises(lambda: evaluate_fusion_conditions(
+            **fixture, expected_clean_metrics_by_seed=expected,
+        ), ValueError, "the deliberately mismatched replay still reaches the gate")
+    finally:
+        fusion_core.build_condition_inputs = original_builder
+        for hook in hooks:
+            hook.remove()
+    c.eq(builder_calls, [], "clean replay invokes no condition builder before failing")
+    c.eq(len(forward_inputs), 6, "only clean model pairs run before the gate")
+    c.true(all(
+        features is fixture["features"] and mask is fixture["target_mask"]
+        for features, mask in forward_inputs
+    ), "clean inference receives the caller's exact tensors")
+
+
+def test_inference_restores_each_nested_module_training_flag(c: Check):
+    fixture = _fusion_inference_fixture()
+    expected = _expected_clean_metrics(fixture)
+    before = {}
+    for model_number, model in enumerate(
+        (*fixture["trained_models"].values(), *fixture["fresh_models"].values())
+    ):
+        for module_number, module in enumerate(model.modules()):
+            module.training = bool((model_number + module_number) % 2)
+            before[id(module)] = module.training
+    evaluate_fusion_conditions(**fixture, expected_clean_metrics_by_seed=expected)
+    after = {
+        id(module): module.training
+        for model in (*fixture["trained_models"].values(), *fixture["fresh_models"].values())
+        for module in model.modules()
+    }
+    c.eq(after, before,
+         "eval inference restores caller-provided heterogeneous nested module modes")
 
 
 def test_stress_conditions_keep_the_clean_target_and_scoring_mask(c: Check):
