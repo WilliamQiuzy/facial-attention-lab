@@ -127,10 +127,12 @@ def build_condition_inputs(
         or features.ndim != 4
         or features.shape[0] < 1
         or tuple(features.shape[1:]) != (4, 32, 95)
-        or not features.is_floating_point()
+        or features.dtype != torch.float32
         or not bool(torch.isfinite(features).all())
     ):
-        raise ValueError("features must be finite CPU floats with shape (N, 4, 32, 95)")
+        raise ValueError(
+            "features must be finite CPU float32 with shape (N, 4, 32, 95)"
+        )
     for name, mask in (("valid_mask", valid_mask), ("target_mask", target_mask)):
         if (
             not isinstance(mask, torch.Tensor)
@@ -144,6 +146,8 @@ def build_condition_inputs(
             )
     if bool((target_mask & ~valid_mask).any()):
         raise ValueError("target_mask must be a subset of valid_mask")
+    if bool((~target_mask.reshape(features.shape[0], -1).any(dim=1)).any()):
+        raise ValueError("every sample must contain at least one target position")
 
     observed_context = valid_mask & ~target_mask
     if bool((~observed_context.reshape(features.shape[0], -1).any(dim=1)).any()):
@@ -180,7 +184,8 @@ def build_condition_inputs(
         landmarks[observed_context] += noise[observed_context]
     elif condition.name == "frame_order_shuffle":
         generator = torch.Generator(device="cpu")
-        generator.manual_seed(63000)
+        assert condition.rng_seed is not None
+        generator.manual_seed(condition.rng_seed)
         for sample in range(features.shape[0]):
             for window in range(features.shape[1]):
                 context_indices = observed_context[sample, window].nonzero().flatten()

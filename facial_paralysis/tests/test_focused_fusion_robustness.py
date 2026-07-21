@@ -432,6 +432,112 @@ def test_condition_inputs_fail_closed_on_invalid_tensor_contracts(c: Check):
                  "invalid tensors and non-condition objects fail closed")
 
 
+def test_condition_inputs_require_exact_float32_features(c: Check):
+    features, valid_mask, target_mask = _synthetic_inputs()
+    rejected_dtypes = [torch.float16, torch.bfloat16, torch.float64]
+    for name in (
+        "float8_e4m3fn",
+        "float8_e5m2",
+        "float8_e4m3fnuz",
+        "float8_e5m2fnuz",
+    ):
+        dtype = getattr(torch, name, None)
+        if dtype is not None:
+            rejected_dtypes.append(dtype)
+
+    for dtype in rejected_dtypes:
+        wrong_dtype = torch.zeros(features.shape, dtype=dtype)
+        c.raises(
+            lambda wrong_dtype=wrong_dtype: build_condition_inputs(
+                wrong_dtype,
+                valid_mask,
+                target_mask,
+                _condition("clean_fusion"),
+            ),
+            ValueError,
+            f"{dtype} is rejected through the controlled validation path",
+        )
+
+
+def test_condition_inputs_reject_an_empty_target_mask(c: Check):
+    features, valid_mask, target_mask = _synthetic_inputs()
+    target_mask.zero_()
+    c.raises(
+        lambda: build_condition_inputs(
+            features,
+            valid_mask,
+            target_mask,
+            _condition("clean_fusion"),
+        ),
+        ValueError,
+        "the fixed benchmark rejects a globally empty target mask",
+    )
+
+
+def test_condition_inputs_require_a_target_for_every_sample(c: Check):
+    features, valid_mask, target_mask = _synthetic_inputs()
+    target_mask[1].zero_()
+    c.true(bool(target_mask[0].any()),
+           "the fixture retains a target in the other sample")
+    c.raises(
+        lambda: build_condition_inputs(
+            features,
+            valid_mask,
+            target_mask,
+            _condition("clean_fusion"),
+        ),
+        ValueError,
+        "every fixed benchmark packet requires a scored target",
+    )
+
+
+def test_condition_outputs_have_independent_caller_storage(c: Check):
+    features, valid_mask, target_mask = _synthetic_inputs()
+    for condition in BENCHMARK_CONDITIONS:
+        model_features, reconstruction_mask, _input_arm = build_condition_inputs(
+            features, valid_mask, target_mask, condition,
+        )
+        c.true(
+            model_features.untyped_storage().data_ptr()
+            != features.untyped_storage().data_ptr(),
+            f"{condition.name} feature output has independent storage",
+        )
+        c.true(
+            reconstruction_mask.untyped_storage().data_ptr()
+            != target_mask.untyped_storage().data_ptr(),
+            f"{condition.name} reconstruction mask has independent storage",
+        )
+
+
+def test_stochastic_conditions_do_not_advance_global_torch_rng(c: Check):
+    features, valid_mask, target_mask = _synthetic_inputs()
+    stochastic_conditions = BENCHMARK_CONDITIONS[3:]
+    original_state = torch.random.get_rng_state()
+    try:
+        for condition in stochastic_conditions:
+            torch.manual_seed(90210)
+            state_before = torch.random.get_rng_state().clone()
+            build_condition_inputs(features, valid_mask, target_mask, condition)
+            state_after = torch.random.get_rng_state()
+            c.true(torch.equal(state_after, state_before),
+                   f"{condition.name} uses only its local CPU generator")
+    finally:
+        torch.random.set_rng_state(original_state)
+
+
+def test_frame_shuffle_uses_the_validated_condition_seed(c: Check):
+    source = inspect.getsource(build_condition_inputs)
+    frame_branch = source.split(
+        'elif condition.name == "frame_order_shuffle":', 1,
+    )[1]
+    c.true("assert condition.rng_seed is not None" in frame_branch,
+           "the registered frame-shuffle seed is asserted")
+    c.true("generator.manual_seed(condition.rng_seed)" in frame_branch,
+           "frame shuffle seeds its local generator from the condition")
+    c.true("generator.manual_seed(63000)" not in frame_branch,
+           "frame shuffle does not duplicate the registered seed as a literal")
+
+
 def test_exact_registered_spec_instances_are_accepted(c: Check):
     features, valid_mask, target_mask = _synthetic_inputs()
     exact_clean_spec = BenchmarkCondition(
