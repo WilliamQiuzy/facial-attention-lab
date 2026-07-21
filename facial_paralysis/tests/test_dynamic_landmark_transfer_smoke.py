@@ -1,9 +1,14 @@
 """Focused, development-only SSL encoder transfer smoke tests."""
 from __future__ import annotations
 
+import copy
+import io
+import stat
 import sys
 from collections import OrderedDict
+from contextlib import redirect_stderr
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import torch
@@ -23,6 +28,19 @@ from src.training.dynamic_landmark_transfer_smoke import (  # noqa: E402
     LANDMARK_RANDOM,
     run_development_inner_oof,
     transfer_focused_fusion_encoder,
+)
+from scripts.run_dynamic_landmark_transfer_smoke import (  # noqa: E402
+    COMMITMENT_FIELDS,
+    DEFAULT_REPORT_PATH,
+    RUN_EPOCHS,
+    RUN_OUTER_FOLD,
+    RUN_SEED,
+    _atomic_write_report,
+    _build_report,
+    _canonical_json_bytes,
+    _extract_authenticated_winner,
+    _parser,
+    _validate_report,
 )
 
 
@@ -217,6 +235,198 @@ def test_four_fold_oof_is_complete_and_outer_rows_remain_untouched(c: Check):
     )
     c.eq(random_result.transferred_keys_by_fold, ((),) * 4,
          "all four random-init models record an empty transfer audit")
+
+
+def _commitments() -> dict[str, str]:
+    return {
+        name: f"{index:x}" * 64
+        for index, name in enumerate(COMMITMENT_FIELDS, start=1)
+    }
+
+
+def _metric_rows() -> dict[str, dict[str, float]]:
+    return {
+        LANDMARK_RANDOM: {
+            "auroc": 0.70, "average_precision": 0.71, "brier": 0.20,
+            "balanced_accuracy": 0.65, "sensitivity": 0.75, "specificity": 0.55,
+        },
+        FUSION_RANDOM: {
+            "auroc": 0.66, "average_precision": 0.69, "brier": 0.21,
+            "balanced_accuracy": 0.70, "sensitivity": 0.80, "specificity": 0.60,
+        },
+        FUSION_SSL_WARMSTART: {
+            "auroc": 0.70, "average_precision": 0.73, "brier": 0.19,
+            "balanced_accuracy": 0.71, "sensitivity": 0.78, "specificity": 0.64,
+        },
+    }
+
+
+def _report() -> dict[str, object]:
+    return _build_report(
+        accounting={
+            "total_records": 49, "total_groups": 48,
+            "development_records": 39, "development_groups": 38,
+            "protected_records": 10, "protected_groups": 10,
+        },
+        commitments=_commitments(),
+        candidate_metrics=_metric_rows(),
+    )
+
+
+def test_runner_parser_is_private_and_has_no_tuning_surface(c: Check):
+    parser = _parser()
+    args = parser.parse_args([
+        "--ssl-pretraining-root", "/private/ssl",
+        "--palsynet-cache-root", "/private/palsynet",
+    ])
+    c.eq(vars(args), {
+        "ssl_pretraining_root": Path("/private/ssl"),
+        "palsynet_cache_root": Path("/private/palsynet"),
+    })
+    c.eq((RUN_SEED, RUN_EPOCHS, RUN_OUTER_FOLD), (0, 12, 0))
+    c.eq(
+        DEFAULT_REPORT_PATH,
+        ROOT / "outputs/dynamic_landmark/benchmarks/development/"
+        "focused-ssl-transfer-smoke-v1/report.json",
+    )
+    for forbidden in ("--seed", "--epochs", "--fold", "--candidate",
+                      "--output", "--outer"):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            c.raises(
+                lambda forbidden=forbidden: parser.parse_args([
+                    "--ssl-pretraining-root", "/private/ssl",
+                    "--palsynet-cache-root", "/private/palsynet",
+                    forbidden, "/do/not/disclose",
+                ]),
+                SystemExit,
+                f"{forbidden} must not be accepted",
+            )
+        c.true("/do/not/disclose" not in stderr.getvalue(),
+               "argparse errors must redact supplied paths")
+
+
+def test_closed_report_schema_order_metrics_and_decision(c: Check):
+    report = _report()
+    c.eq(tuple(report), (
+        "schema_version", "status", "claim_scope", "dataset", "claim_unit",
+        "identity_status", "protocol", "accounting", "commitments",
+        "candidates", "decision",
+    ))
+    c.eq(tuple(report["commitments"]), COMMITMENT_FIELDS)
+    protocol = report["protocol"]
+    c.eq(protocol, {
+        "seed": 0, "epochs": 12, "outer_fold": 0, "inner_folds": 4,
+        "candidates": list(DEVELOPMENT_CANDIDATES), "optimizer": "AdamW",
+        "learning_rate": 1e-3, "weight_decay": 1e-4,
+        "mirror_probability": 0.5, "threshold": 0.5,
+        "group_probability_aggregation": "mean", "outer_predictions": 0,
+    })
+    rows = report["candidates"]
+    c.eq([row["candidate"] for row in rows], list(DEVELOPMENT_CANDIDATES))
+    c.eq([row["initialization"] for row in rows], [
+        "random", "random", "authenticated_fusion_ssl_seed0",
+    ])
+    c.eq(report["decision"], {
+        "best_candidate": LANDMARK_RANDOM,
+        "warmstart_minus_random_fusion_auroc": 0.04,
+        "warmstart_minus_random_fusion_sensitivity": -0.02,
+        "formal_expansion_gate": True,
+        "recommendation": "expand_to_three_seed_development_evaluation_only",
+    })
+    c.eq(_validate_report(report), report)
+    c.true(_validate_report(report) is not report,
+           "validation reconstructs a closed report")
+
+    invalid = copy.deepcopy(report)
+    invalid["candidates"][0]["brier"] = float("nan")
+    c.raises(lambda: _validate_report(invalid), ValueError,
+             "nonfinite report numbers fail closed")
+    invalid = copy.deepcopy(report)
+    invalid["decision"]["recommendation"] = "/private/ssl/seed_0.pt"
+    c.raises(
+        lambda: _validate_report(
+            invalid, forbidden_paths=(Path("/private/ssl"),),
+        ),
+        ValueError,
+        "input paths cannot enter the report",
+    )
+    invalid = copy.deepcopy(report)
+    invalid["status"] = "grp_" + "a" * 64
+    c.raises(lambda: _validate_report(invalid), ValueError,
+             "group identifiers cannot enter the report")
+    for field in COMMITMENT_FIELDS:
+        invalid = copy.deepcopy(report)
+        invalid["commitments"][field] = "A" * 64
+        c.raises(lambda invalid=invalid: _validate_report(invalid), ValueError,
+                 f"{field} must be lowercase SHA-256")
+
+
+def test_private_atomic_report_writer_has_modes_and_no_overwrite(c: Check):
+    report = _report()
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "private" / "nested" / "report.json"
+        _atomic_write_report(path, report)
+        c.eq(path.read_bytes(), _canonical_json_bytes(report))
+        c.eq(stat.S_IMODE(path.stat().st_mode), 0o600)
+        c.eq(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+        c.eq(stat.S_IMODE(path.parent.parent.stat().st_mode), 0o700)
+        c.raises(lambda: _atomic_write_report(path, report), FileExistsError,
+                 "report publication cannot overwrite")
+        c.eq(path.read_bytes(), _canonical_json_bytes(report),
+             "failed overwrite preserves the published report")
+
+
+def _winner_chain() -> dict[str, object]:
+    return {
+        "trainer_sha256": "1" * 64,
+        "bridge_generation_sha256": "2" * 64,
+        "common_contract_sha256": "3" * 64,
+        "winner_report_sha256": "4" * 64,
+        "selected_arm": "fusion",
+        "checkpoints": {
+            seed: {
+                "metadata": {
+                    "phase": "winner", "arm": "fusion", "seed": seed,
+                    "epochs": 30,
+                },
+                "model_state": OrderedDict({
+                    "weight": torch.tensor([float(seed)], dtype=torch.float32),
+                }),
+                "checkpoint_fingerprint": f"{seed + 5:x}" * 64,
+                "checkpoint_receipt_sha256": f"{seed + 8:x}" * 64,
+            }
+            for seed in (0, 1, 2)
+        },
+    }
+
+
+def test_authenticated_winner_extraction_is_exact_and_cloned(c: Check):
+    chain = _winner_chain()
+    state, commitments = _extract_authenticated_winner(
+        chain, current_trainer_sha256="1" * 64,
+    )
+    c.eq(tuple(commitments), COMMITMENT_FIELDS[:6])
+    c.true(torch.equal(state["weight"], torch.tensor([0.0])))
+    c.true(state["weight"].data_ptr()
+           != chain["checkpoints"][0]["model_state"]["weight"].data_ptr())
+
+    wrong_arm = _winner_chain()
+    wrong_arm["selected_arm"] = "landmark_only"
+    c.raises(lambda: _extract_authenticated_winner(
+        wrong_arm, current_trainer_sha256="1" * 64,
+    ), ValueError, "only the authenticated Fusion winner is eligible")
+    wrong_seeds = _winner_chain()
+    wrong_seeds["checkpoints"].pop(2)
+    c.raises(lambda: _extract_authenticated_winner(
+        wrong_seeds, current_trainer_sha256="1" * 64,
+    ), ValueError, "winner seeds must be exactly 0, 1, 2")
+    wrong_field = _winner_chain()
+    wrong_field["checkpoints"][0]["pre_model_state"] = \
+        wrong_field["checkpoints"][0].pop("model_state")
+    c.raises(lambda: _extract_authenticated_winner(
+        wrong_field, current_trainer_sha256="1" * 64,
+    ), ValueError, "pre_model_state is never an eligible transfer source")
 
 
 if __name__ == "__main__":
