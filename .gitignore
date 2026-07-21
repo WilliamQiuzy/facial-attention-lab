@@ -1,0 +1,12 @@
+**/node_modules/
+**/dist/
+**/coverage/
+**/.pnpm-store/
+.DS_Store
+.env*
+!**/.env.example
+*.log
+*.pem
+*.key
+*.p12
+*.pfx

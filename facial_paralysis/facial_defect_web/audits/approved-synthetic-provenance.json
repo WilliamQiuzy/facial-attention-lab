@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "scope": "facial-attention-lab-approved-demo-assets",
+  "disclosure": "All entries are AI-generated synthetic identities used only as unpaired interface demonstrations; none is a patient image or treatment pair.",
+  "sourceLogPolicy": "This is an exact, sanitized allowlist extracted from the local generation log. Prompts, token usage, unrelated generations, and local paths are intentionally excluded.",
+  "assets": [
+    {
+      "id": "SYN-MOHS-SCC-CHEEK",
+      "file": "facial_defect_synthesis/output/synthetic/mohs/mohs_preop_scc-cheek_middle-aged-black-female_a905e7.png",
+      "sha256": "1c43951ed068dc7b88a28e1a0e68d724f1f8b649067b81323ceb30fe2cc5eb30",
+      "generationRecordId": "36c275fb",
+      "generatedAt": "2026-07-10T22:13:38",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-MOHS-NASAL-RECON",
+      "file": "facial_defect_synthesis/output/synthetic/mohs/mohs_healed_nasal-recon-faint_elderly-hispanic-female_29a140.png",
+      "sha256": "0992e19d0a12e43cc685507672d5cc781f834d8325da29d9b0ef0eb121abd70d",
+      "generationRecordId": "fa71f79d",
+      "generatedAt": "2026-07-10T22:08:31",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-HNC-CHEEK-TUMOUR",
+      "file": "facial_defect_synthesis/output/synthetic/hn_cancer/hn_cancer_preop_cheek-tumour_middle-aged-middle-eastern-female_277781.png",
+      "sha256": "8220f72236d545b644964319ac61a4cdc1d3bb08fca86d18e38d8aeb0b57563c",
+      "generationRecordId": "59e58076",
+      "generatedAt": "2026-07-10T21:44:19",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-HNC-CHEEK-FREEFLAP",
+      "file": "facial_defect_synthesis/output/synthetic/hn_cancer/hn_cancer_healed_cheek-freeflap-healed_middle-aged-white-female_529016.png",
+      "sha256": "ad36c7c046c1a83584e0c7e60e78f2749ef08ceb33cd3a5a81f3535a57606dd7",
+      "generationRecordId": "79325537",
+      "generatedAt": "2026-07-10T21:49:13",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-TRAUMA-CHEEK-SCAR",
+      "file": "facial_defect_synthesis/output/synthetic/trauma/trauma_preop_old-cheek-laceration-scar_middle-aged-middle-eastern-male_49cfd8.png",
+      "sha256": "e977d5406f2065ff88cd22e1dfb45e406714c96f00e2b34a77b10a494ad9cd6d",
+      "generationRecordId": "f34387bc",
+      "generatedAt": "2026-07-10T21:53:40",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-TRAUMA-FRACTURE-RECON",
+      "file": "facial_defect_synthesis/output/synthetic/trauma/trauma_healed_fracture-recon-faint_young-adult-south-asian-male_fedb1f.png",
+      "sha256": "f5a71df09aa8fa646dc9152cb4f936281b8cd15ad03bb2cc8181ec1fb61247ba",
+      "generationRecordId": "b794c882",
+      "generatedAt": "2026-07-10T21:56:00",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-RHINOPHYMA-SEVERE",
+      "file": "facial_defect_synthesis/output/synthetic/rhinophyma/rhinophyma_preop_severe-bulbous_elderly-middle-eastern-female_073b01.png",
+      "sha256": "0d355a1f2a3ebe6b84cfc0111248e673e3a6e2714d2eb8862ea4256eca652fef",
+      "generationRecordId": "59c42ed7",
+      "generatedAt": "2026-07-10T22:03:56",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-BURN-GRAFT-RECON",
+      "file": "facial_defect_synthesis/output/synthetic/burns/burns_healed_graft-reconstructed_middle-aged-black-male_ca2269.png",
+      "sha256": "e4e5cbd9914bc73da0f9261acec1d2a523efcde9de652a25bb951245d7feb257",
+      "generationRecordId": "af55c5d2",
+      "generatedAt": "2026-06-22T22:00:57",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-VASCULAR-PWS",
+      "file": "facial_defect_synthesis/output/synthetic/vascular/vascular_preop_port-wine-stain_young-adult-white-female_ad3581.png",
+      "sha256": "59c98bb105d9523b7601e9f1a8d087db99a09e95cd6259bd6f8f008f2a944bd9",
+      "generationRecordId": "4804c761",
+      "generatedAt": "2026-06-22T22:28:23",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    },
+    {
+      "id": "SYN-NEVUS-CHEEK",
+      "file": "facial_defect_synthesis/output/synthetic/nevus/nevus_preop_cheek-patch_young-adult-white-female_3fa4d7.png",
+      "sha256": "14909f75c0ba2ae4ab5e4ac1cf976f261d6d61eff09ae5804d865e2e6229d374",
+      "generationRecordId": "42964aa4",
+      "generatedAt": "2026-06-23T10:22:44",
+      "model": "gpt-image-2",
+      "generationStatus": "ok",
+      "sourceClass": "synthetic_ai_generated",
+      "relationship": "unpaired_demo",
+      "allowedUse": "simulated_ui_demo"
+    }
+  ]
+}
