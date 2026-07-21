@@ -8,6 +8,8 @@ import json
 import stat
 import sys
 import tempfile
+import threading
+from types import SimpleNamespace
 from contextlib import redirect_stdout
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
@@ -1326,6 +1328,27 @@ def _valid_public_report(cli) -> dict:
     }
 
 
+def _replace_exact_key(mapping: dict, name: str, replacement: object) -> object:
+    value = mapping.pop(name)
+    mapping[replacement] = value
+    return replacement
+
+
+def _public_mapping_layers(report: dict) -> tuple[tuple[str, dict, str], ...]:
+    return (
+        ("top", report, "status"),
+        ("metric_policy", report["metric_policy"], "decimal_places"),
+        ("accounting", report["accounting"], "heldout_packets"),
+        ("protocol", report["protocol_registry"][0], "name"),
+        ("commitments", report["commitments"], "trainer_sha256"),
+        (
+            "checkpoint",
+            report["commitments"]["checkpoints"][0],
+            "checkpoint_fingerprint",
+        ),
+    )
+
+
 def test_cli_is_import_safe_and_accepts_only_the_fixed_no_argument_job(c: Check):
     cli = _load_cli()
     c.eq(cli._parser().parse_args([]).__dict__, {},
@@ -1352,6 +1375,80 @@ def test_full_report_validator_reconstructs_only_the_exact_public_schema(c: Chec
          "metric-policy field order is frozen")
     c.eq(tuple(normalized["commitments"]), tuple(report["commitments"]),
          "commitment field order is frozen")
+
+
+def test_cli_owned_mapping_layers_reject_hostile_keys_without_executing_them(c: Check):
+    cli = _load_cli()
+    for label in (
+        "top", "metric_policy", "accounting", "protocol", "commitments",
+        "checkpoint",
+    ):
+        report = _valid_public_report(cli)
+        layer = next(item for item in _public_mapping_layers(report)
+                     if item[0] == label)
+        hostile = _HostileKey(layer[2])
+        _replace_exact_key(layer[1], layer[2], hostile)
+        hostile.hashes = 0
+        hostile.comparisons = 0
+        c.raises(
+            lambda report=report: cli.validate_public_report(report),
+            ValueError,
+            f"{label} rejects a non-string key before hashing or equality",
+        )
+        c.eq(hostile.hashes, 0, f"{label} does not hash caller key code")
+        c.eq(hostile.comparisons, 0,
+             f"{label} does not compare caller key code")
+
+
+def test_cli_owned_mapping_layers_reject_string_subclass_keys(c: Check):
+    cli = _load_cli()
+    for label in (
+        "top", "metric_policy", "accounting", "protocol", "commitments",
+        "checkpoint",
+    ):
+        report = _valid_public_report(cli)
+        layer = next(item for item in _public_mapping_layers(report)
+                     if item[0] == label)
+        _replace_exact_key(layer[1], layer[2], _StrSubclass(layer[2]))
+        c.raises(
+            lambda report=report: cli.validate_public_report(report),
+            ValueError,
+            f"{label} accepts only exact built-in string keys",
+        )
+
+
+def test_public_report_recomputes_every_aggregate_and_degradation(c: Check):
+    cli = _load_cli()
+    mutations = []
+    seed_row = _valid_public_report(cli)
+    seed_row["conditions"][0]["seed_rows"][0]["metrics"]["trained"][
+        "raw_mae"
+    ]["equal_block_macro"] = 1.25
+    mutations.append(("seed row", seed_row))
+    mean = _valid_public_report(cli)
+    mean["conditions"][0]["aggregates"]["trained"]["raw_mae"][
+        "equal_block_macro"
+    ]["mean"] = 3.25
+    mutations.append(("mean", mean))
+    sample_sd = _valid_public_report(cli)
+    sample_sd["conditions"][0]["aggregates"]["trained"]["raw_mae"][
+        "equal_block_macro"
+    ]["sample_sd"] = 2.25
+    mutations.append(("sample standard deviation", sample_sd))
+    clean_degradation = _valid_public_report(cli)
+    clean_degradation["conditions"][0]["degradation_percent_vs_clean"] = 0.01
+    mutations.append(("clean degradation", clean_degradation))
+    nonclean_degradation = _valid_public_report(cli)
+    nonclean_degradation["conditions"][1][
+        "degradation_percent_vs_clean"
+    ] += 0.01
+    mutations.append(("non-clean degradation", nonclean_degradation))
+    for label, report in mutations:
+        c.raises(
+            lambda report=report: cli.validate_public_report(report),
+            ValueError,
+            f"{label} must exactly match recomputation from all 30 seed rows",
+        )
 
 
 def test_full_report_validator_rejects_extras_identifiers_paths_and_secrets(c: Check):
@@ -1475,6 +1572,128 @@ def test_private_atomic_report_write_enforces_modes_replace_and_symlink_rejectio
         c.eq(target.read_bytes(), b"outside", "symlink target remains untouched")
 
 
+def test_private_publisher_rejects_unsafe_anchor_parent_and_lock(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        private_root = root / "benchmarks"
+        report_path = private_root / "development" / "fixed" / "report.json"
+        root.chmod(0o777)
+        c.raises(
+            lambda: cli._atomic_write_report(
+                report_path, b'{"status":"unsafe-parent"}',
+                private_root=private_root,
+            ),
+            ValueError,
+            "a group/world-writable private-root parent is rejected",
+        )
+        root.chmod(0o700)
+        cli._atomic_write_report(
+            report_path, b'{"status":"safe"}', private_root=private_root,
+        )
+        lock = report_path.parent / ".report.lock"
+        c.true(lock.is_file(), "the serialized publisher retains its lock file")
+        c.eq(stat.S_IMODE(lock.stat().st_mode), 0o600,
+             "the publication lock is owner-only")
+        lock.chmod(0o644)
+        c.raises(
+            lambda: cli._atomic_write_report(
+                report_path, b'{"status":"unsafe-lock"}',
+                private_root=private_root,
+            ),
+            ValueError,
+            "an unsafe existing publication lock fails closed",
+        )
+
+
+def test_private_publisher_stays_on_held_directory_after_parent_component_swap(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        private_root = root / "benchmarks"
+        report_path = private_root / "development" / "fixed" / "report.json"
+        parked = private_root / "parked-development"
+        original_token_hex = cli.secrets.token_hex
+
+        def swap_parent(_length):
+            development = private_root / "development"
+            development.rename(parked)
+            development.mkdir(mode=0o700)
+            (development / "fixed").mkdir(mode=0o700)
+            return "f" * 32
+
+        cli.secrets.token_hex = swap_parent
+        try:
+            cli._atomic_write_report(
+                report_path, b'{"status":"anchored"}',
+                private_root=private_root,
+            )
+        finally:
+            cli.secrets.token_hex = original_token_hex
+        c.true(not report_path.exists(),
+               "a swapped-in pathname tree receives no report")
+        c.eq(
+            (parked / "fixed" / "report.json").read_bytes(),
+            b'{"status":"anchored"}',
+            "publication remains anchored to the held directory inode",
+        )
+
+
+def test_private_publisher_serializes_two_writers_with_one_lock(c: Check):
+    cli = _load_cli()
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        private_root = root / "benchmarks"
+        report_path = private_root / "development" / "fixed" / "report.json"
+        first_payload = b'{"writer":"first"}'
+        second_payload = b'{"writer":"second"}'
+        first_inside = threading.Event()
+        release_first = threading.Event()
+        second_inside = threading.Event()
+        failures = []
+        original_write = cli.os.write
+
+        def guarded_write(descriptor, payload):
+            if payload == first_payload and not first_inside.is_set():
+                first_inside.set()
+                if not release_first.wait(5.0):
+                    raise RuntimeError("first writer was not released")
+            elif payload == second_payload:
+                second_inside.set()
+            return original_write(descriptor, payload)
+
+        def publish(payload):
+            try:
+                cli._atomic_write_report(
+                    report_path, payload, private_root=private_root,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        cli.os.write = guarded_write
+        first = threading.Thread(target=publish, args=(first_payload,))
+        second = threading.Thread(target=publish, args=(second_payload,))
+        try:
+            first.start()
+            c.true(first_inside.wait(5.0), "the first writer reaches its temp file")
+            second.start()
+            c.true(not second_inside.wait(0.25),
+                   "the second writer blocks on the held publication lock")
+            release_first.set()
+            first.join(5.0)
+            second.join(5.0)
+        finally:
+            release_first.set()
+            first.join(5.0)
+            second.join(5.0)
+            cli.os.write = original_write
+        c.eq(failures, [], "both serialized writers complete without error")
+        c.true(not first.is_alive() and not second.is_alive(),
+               "both writer threads terminate")
+        c.eq(report_path.read_bytes(), second_payload,
+             "the lock gives the later writer one complete atomic turn")
+
+
 def test_authenticated_chain_is_exact_and_rejects_nonfusion_or_seed_drift(c: Check):
     cli = _load_cli()
     calls = []
@@ -1532,17 +1751,100 @@ def test_authenticated_chain_is_exact_and_rejects_nonfusion_or_seed_drift(c: Che
             setattr(cli.pretrain_cli, name, value)
 
 
+def _synthetic_authenticated_lineage(*, receipt_suffix: str = "a"):
+    authorization = SimpleNamespace(bridge_generation_sha256="4" * 64)
+    common = {"common_contract_sha256": "5" * 64}
+    winner = {
+        "report_sha256": "6" * 64,
+        "checkpoints": {
+            seed: {
+                "checkpoint_fingerprint": str(7 + seed) * 64,
+                "receipt_file_sha256": chr(ord(receipt_suffix) + seed) * 64,
+            }
+            for seed in range(3)
+        },
+    }
+    return authorization, common, winner, "3" * 64
+
+
+def _install_synthetic_benchmark(cli, chains, source_hashes):
+    chain_values = iter(chains)
+    digest_values = iter(source_hashes)
+    originals = {
+        "authenticate": cli._authenticate_winner_chain,
+        "heldout": cli._heldout_inputs,
+        "models": cli._models_and_clean_metrics,
+        "safe_source": cli._safe_source_sha256,
+        "evaluate": cli.fusion_core.evaluate_fusion_conditions,
+        "aggregate": cli.fusion_core.aggregate_condition_metrics,
+        "authority": cli.pretrain_cli._require_focused_authority_unchanged,
+    }
+    cli._authenticate_winner_chain = lambda: next(chain_values)
+    cli._heldout_inputs = lambda _authorization, _common: {}
+    cli._models_and_clean_metrics = lambda _winner: ({}, {}, {})
+    cli._safe_source_sha256 = lambda _path, _label: next(digest_values)
+    cli.fusion_core.evaluate_fusion_conditions = lambda **_kwargs: (
+        _all_condition_rows()
+    )
+    cli.fusion_core.aggregate_condition_metrics = aggregate_condition_metrics
+    cli.pretrain_cli._require_focused_authority_unchanged = lambda authorization: (
+        authorization
+    )
+    return originals
+
+
+def _restore_synthetic_benchmark(cli, originals):
+    cli._authenticate_winner_chain = originals["authenticate"]
+    cli._heldout_inputs = originals["heldout"]
+    cli._models_and_clean_metrics = originals["models"]
+    cli._safe_source_sha256 = originals["safe_source"]
+    cli.fusion_core.evaluate_fusion_conditions = originals["evaluate"]
+    cli.fusion_core.aggregate_condition_metrics = originals["aggregate"]
+    cli.pretrain_cli._require_focused_authority_unchanged = originals["authority"]
+
+
+def test_benchmark_rejects_source_digest_drift_across_evaluation(c: Check):
+    cli = _load_cli()
+    chain = _synthetic_authenticated_lineage()
+    originals = _install_synthetic_benchmark(
+        cli, [chain, chain], ["1" * 64, "2" * 64, "9" * 64, "2" * 64],
+    )
+    try:
+        c.raises(cli.run_benchmark, ValueError,
+                 "source drift during long evaluation fails closed")
+    finally:
+        _restore_synthetic_benchmark(cli, originals)
+
+
+def test_benchmark_rejects_authenticated_lineage_drift_across_evaluation(c: Check):
+    cli = _load_cli()
+    before = _synthetic_authenticated_lineage()
+    after = _synthetic_authenticated_lineage(receipt_suffix="d")
+    originals = _install_synthetic_benchmark(
+        cli, [before, after], ["1" * 64, "2" * 64, "1" * 64, "2" * 64],
+    )
+    try:
+        c.raises(cli.run_benchmark, ValueError,
+                 "checkpoint receipt lineage drift fails closed")
+    finally:
+        _restore_synthetic_benchmark(cli, originals)
+
+
 def test_mocked_main_validates_and_publishes_the_fixed_report(c: Check):
     cli = _load_cli()
     report = _valid_public_report(cli)
     calls = []
+    original_edge = getattr(cli, "_require_publication_edge", None)
     originals = (cli.run_benchmark, cli._atomic_write_report, cli.DEFAULT_REPORT_PATH)
     with tempfile.TemporaryDirectory() as temporary:
         target = Path(temporary) / "benchmarks" / "development" / "fixed" / "report.json"
         cli.DEFAULT_REPORT_PATH = target
         cli.run_benchmark = lambda: report
+        cli._require_publication_edge = lambda observed: calls.append(
+            ("edge", observed)
+        )
         cli._atomic_write_report = lambda path, payload, *, private_root: calls.append(
-            (path, payload, private_root)
+            ("write", path, payload, private_root)
         )
         output = io.StringIO()
         try:
@@ -1550,14 +1852,62 @@ def test_mocked_main_validates_and_publishes_the_fixed_report(c: Check):
                 cli.main([])
         finally:
             cli.run_benchmark, cli._atomic_write_report, cli.DEFAULT_REPORT_PATH = originals
+            if original_edge is None:
+                del cli._require_publication_edge
+            else:
+                cli._require_publication_edge = original_edge
     expected_payload = cli.canonical_json_bytes(cli.validate_public_report(report))
-    c.eq(calls, [(target, expected_payload, target.parents[2])],
-         "main validates and writes only the fixed report")
+    c.eq(calls, [
+        ("edge", report),
+        ("write", target, expected_payload, target.parents[2]),
+    ], "main reauthorizes the publication edge before its only write")
     line = output.getvalue().strip()
     c.true(line.startswith("status=complete report_sha256=") and len(line) == 94,
            "stdout contains only status and the report digest")
     c.true("/" not in line and "\\" not in line,
            "stdout never reveals a path")
+
+
+def test_real_publication_edge_rejects_source_and_lineage_drift_before_write(c: Check):
+    cli = _load_cli()
+    cases = []
+    source_report = _valid_public_report(cli)
+    cases.append((
+        source_report,
+        ["9" * 64, "2" * 64],
+        _synthetic_authenticated_lineage(),
+    ))
+    lineage_report = _valid_public_report(cli)
+    changed_lineage = list(_synthetic_authenticated_lineage())
+    changed_winner = dict(changed_lineage[2])
+    changed_winner["report_sha256"] = "9" * 64
+    changed_lineage[2] = changed_winner
+    cases.append((lineage_report, ["1" * 64, "2" * 64], tuple(changed_lineage)))
+
+    for report, source_hashes, chain in cases:
+        writes = []
+        digests = iter(source_hashes)
+        originals = (
+            cli.run_benchmark,
+            cli._atomic_write_report,
+            cli._safe_source_sha256,
+            cli._authenticate_winner_chain,
+        )
+        cli.run_benchmark = lambda report=report: report
+        cli._atomic_write_report = lambda *args, **kwargs: writes.append(True)
+        cli._safe_source_sha256 = lambda _path, _label: next(digests)
+        cli._authenticate_winner_chain = lambda chain=chain: chain
+        try:
+            c.raises(lambda: cli.main([]), ValueError,
+                     "publication-edge drift fails before serialization")
+        finally:
+            (
+                cli.run_benchmark,
+                cli._atomic_write_report,
+                cli._safe_source_sha256,
+                cli._authenticate_winner_chain,
+            ) = originals
+        c.eq(writes, [], "no report write occurs after publication-edge drift")
 
 
 if __name__ == "__main__":

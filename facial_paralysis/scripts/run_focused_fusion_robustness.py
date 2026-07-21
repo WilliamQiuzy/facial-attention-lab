@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -89,15 +90,42 @@ def canonical_json_bytes(value: object) -> bytes:
     return encoded.encode("ascii")
 
 
+def _require_exact_dict(
+    value: object, fields: tuple[str, ...], label: str,
+) -> dict:
+    if type(value) is not dict or len(value) != len(fields):
+        raise ValueError(f"{label} fields are not exact")
+    for key in value:
+        if type(key) is not str:
+            raise ValueError(f"{label} keys must be exact strings")
+    if any(field not in value for field in fields):
+        raise ValueError(f"{label} fields are not exact")
+    return value
+
+
+def _require_seed_mapping(value: object, label: str) -> dict:
+    if type(value) is not dict or len(value) != len(_SEEDS):
+        raise ValueError(f"{label} seeds are not exact")
+    for key in value:
+        if type(key) is not int:
+            raise ValueError(f"{label} seed keys are not exact integers")
+    if any(seed not in value for seed in _SEEDS):
+        raise ValueError(f"{label} seeds are not exact")
+    return value
+
+
 def _exact(value: object, expected: object) -> bool:
     if type(value) is not type(expected):
         return False
     if type(expected) is dict:
-        assert isinstance(value, dict)
         assert isinstance(expected, dict)
-        return set(value) == set(expected) and all(
-            _exact(value[name], expected[name]) for name in expected
-        )
+        try:
+            mapping = _require_exact_dict(
+                value, tuple(expected), "exact mapping",
+            )
+        except ValueError:
+            return False
+        return all(_exact(mapping[name], expected[name]) for name in expected)
     if type(expected) is list:
         assert isinstance(value, list)
         assert isinstance(expected, list)
@@ -129,9 +157,7 @@ def _require_sha256(value: object, label: str) -> str:
 
 def validate_public_report(value: object) -> dict[str, object]:
     """Return a fresh report reconstructed through the closed public schema."""
-    if type(value) is not dict or set(value) != set(_TOP_FIELDS):
-        raise ValueError("public report fields are not exact")
-    report = value
+    report = _require_exact_dict(value, _TOP_FIELDS, "public report")
     literals = {
         "schema_version": "focused_fusion_robustness_report_v1",
         "status": "complete",
@@ -154,11 +180,9 @@ def validate_public_report(value: object) -> dict[str, object]:
     if not _exact(report["protocol_registry"], expected_protocol):
         raise ValueError("public protocol registry is not exact")
 
-    commitments = report["commitments"]
-    if type(commitments) is not dict or set(commitments) != set(
-        _COMMITMENT_FIELDS
-    ):
-        raise ValueError("public commitments are not exact")
+    commitments = _require_exact_dict(
+        report["commitments"], _COMMITMENT_FIELDS, "public commitments",
+    )
     normalized_commitments: dict[str, object] = {}
     for name in _COMMITMENT_FIELDS[:-1]:
         normalized_commitments[name] = _require_sha256(
@@ -169,8 +193,9 @@ def validate_public_report(value: object) -> dict[str, object]:
         raise ValueError("public checkpoint commitments require three rows")
     normalized_checkpoints: list[dict[str, object]] = []
     for seed, row in zip(_SEEDS, checkpoints):
-        if type(row) is not dict or set(row) != set(_CHECKPOINT_FIELDS):
-            raise ValueError("public checkpoint commitment fields are not exact")
+        row = _require_exact_dict(
+            row, _CHECKPOINT_FIELDS, "public checkpoint commitment",
+        )
         if type(row["seed"]) is not int or row["seed"] != seed:
             raise ValueError("public checkpoint seed order is not exact")
         normalized_checkpoints.append({
@@ -184,9 +209,23 @@ def validate_public_report(value: object) -> dict[str, object]:
         })
     normalized_commitments["checkpoints"] = normalized_checkpoints
 
-    aggregate = fusion_core.validate_deidentified_payload({
+    provided_aggregate = fusion_core.validate_deidentified_payload({
         "conditions": report["conditions"],
     })
+    seed_rows = [
+        row
+        for condition in provided_aggregate["conditions"]
+        for row in condition["seed_rows"]
+    ]
+    if len(seed_rows) != 30:
+        raise ValueError("public report does not contain the exact seed grid")
+    recomputed_aggregate = fusion_core.validate_deidentified_payload(
+        fusion_core.aggregate_condition_metrics(seed_rows)
+    )
+    if canonical_json_bytes(provided_aggregate) != canonical_json_bytes(
+        recomputed_aggregate
+    ):
+        raise ValueError("public aggregates contradict their seed rows")
     return {
         "schema_version": literals["schema_version"],
         "status": literals["status"],
@@ -198,7 +237,7 @@ def validate_public_report(value: object) -> dict[str, object]:
         "accounting": dict(_ACCOUNTING),
         "protocol_registry": expected_protocol,
         "commitments": normalized_commitments,
-        "conditions": aggregate["conditions"],
+        "conditions": recomputed_aggregate["conditions"],
     }
 
 
@@ -227,14 +266,15 @@ def _authenticate_winner_chain() -> tuple[object, dict, dict, str]:
     winner_report = winner.get("report")
     checkpoints = winner.get("checkpoints")
     if (
-        winner.get("selected_arm") != "fusion"
+        type(winner.get("selected_arm")) is not str
+        or winner.get("selected_arm") != "fusion"
         or type(winner_report) is not dict
+        or type(winner_report.get("selected_arm")) is not str
         or winner_report.get("selected_arm") != "fusion"
-        or winner_report.get("seeds") != [0, 1, 2]
-        or type(checkpoints) is not dict
-        or set(checkpoints) != set(_SEEDS)
+        or not _exact(winner_report.get("seeds"), [0, 1, 2])
     ):
         raise ValueError("authenticated winner is not the exact Fusion seed set")
+    _require_seed_mapping(checkpoints, "authenticated winner checkpoints")
     return authorization, common, winner, trainer_sha256
 
 
@@ -295,9 +335,9 @@ def _heldout_inputs(
 def _models_and_clean_metrics(
     winner: Mapping[str, object],
 ) -> tuple[dict[int, object], dict[int, object], dict[int, dict]]:
-    checkpoints = winner.get("checkpoints")
-    if type(checkpoints) is not dict or set(checkpoints) != set(_SEEDS):
-        raise ValueError("authenticated checkpoints are incomplete")
+    checkpoints = _require_seed_mapping(
+        winner.get("checkpoints"), "authenticated checkpoints",
+    )
     trained_models: dict[int, object] = {}
     fresh_models: dict[int, object] = {}
     expected: dict[int, dict] = {}
@@ -341,9 +381,74 @@ def _safe_source_sha256(path: Path, label: str) -> str:
     return _require_sha256(digest, label)
 
 
+def _source_commitments() -> dict[str, str]:
+    return {
+        "benchmark_script_sha256": _safe_source_sha256(
+            Path(__file__).resolve(), "focused benchmark script",
+        ),
+        "evaluation_module_sha256": _safe_source_sha256(
+            Path(fusion_core.__file__).resolve(), "focused evaluation module",
+        ),
+    }
+
+
+def _checkpoint_commitments(winner: Mapping[str, object]) -> list[dict[str, object]]:
+    checkpoints = _require_seed_mapping(
+        winner.get("checkpoints"), "authenticated lineage checkpoints",
+    )
+    rows: list[dict[str, object]] = []
+    for seed in _SEEDS:
+        loaded = checkpoints[seed]
+        if type(loaded) is not dict:
+            raise ValueError("authenticated lineage checkpoint is malformed")
+        for key in loaded:
+            if type(key) is not str:
+                raise ValueError(
+                    "authenticated lineage checkpoint keys are not exact strings"
+                )
+        rows.append({
+            "seed": seed,
+            "checkpoint_fingerprint": _require_sha256(
+                loaded.get("checkpoint_fingerprint"),
+                "checkpoint fingerprint",
+            ),
+            "checkpoint_receipt_sha256": _require_sha256(
+                loaded.get("receipt_file_sha256"),
+                "checkpoint receipt",
+            ),
+        })
+    return rows
+
+
+def _authenticated_lineage_commitments(
+    authorization: object,
+    common: Mapping[str, object],
+    winner: Mapping[str, object],
+    trainer_sha256: object,
+) -> dict[str, object]:
+    return {
+        "trainer_sha256": _require_sha256(trainer_sha256, "focused trainer"),
+        "bridge_generation_sha256": _require_sha256(
+            getattr(authorization, "bridge_generation_sha256", None),
+            "bridge generation",
+        ),
+        "common_contract_sha256": _require_sha256(
+            common.get("common_contract_sha256"), "common contract",
+        ),
+        "winner_report_sha256": _require_sha256(
+            winner.get("report_sha256"), "winner report",
+        ),
+        "checkpoints": _checkpoint_commitments(winner),
+    }
+
+
 def run_benchmark() -> dict[str, object]:
+    source_before = _source_commitments()
     authorization, common, winner, trainer_sha256 = (
         _authenticate_winner_chain()
+    )
+    lineage_before = _authenticated_lineage_commitments(
+        authorization, common, winner, trainer_sha256,
     )
     inputs = _heldout_inputs(authorization, common)
     trained, fresh, expected = _models_and_clean_metrics(winner)
@@ -355,40 +460,21 @@ def run_benchmark() -> dict[str, object]:
     )
     aggregate = fusion_core.aggregate_condition_metrics(rows)
     aggregate = fusion_core.validate_deidentified_payload(aggregate)
-    checkpoints = winner["checkpoints"]
-    assert isinstance(checkpoints, dict)
+    source_after = _source_commitments()
+    if not _exact(source_after, source_before):
+        raise ValueError("benchmark source changed during evaluation")
+    pretrain_cli._require_focused_authority_unchanged(authorization)
+    final_authorization, final_common, final_winner, final_trainer = (
+        _authenticate_winner_chain()
+    )
+    lineage_after = _authenticated_lineage_commitments(
+        final_authorization, final_common, final_winner, final_trainer,
+    )
+    if not _exact(lineage_after, lineage_before):
+        raise ValueError("authenticated benchmark lineage changed during evaluation")
     commitments = {
-        "benchmark_script_sha256": _safe_source_sha256(
-            Path(__file__).resolve(), "focused benchmark script",
-        ),
-        "evaluation_module_sha256": _safe_source_sha256(
-            Path(fusion_core.__file__).resolve(), "focused evaluation module",
-        ),
-        "trainer_sha256": trainer_sha256,
-        "bridge_generation_sha256": _require_sha256(
-            getattr(authorization, "bridge_generation_sha256", None),
-            "bridge generation",
-        ),
-        "common_contract_sha256": _require_sha256(
-            common.get("common_contract_sha256"), "common contract",
-        ),
-        "winner_report_sha256": _require_sha256(
-            winner.get("report_sha256"), "winner report",
-        ),
-        "checkpoints": [
-            {
-                "seed": seed,
-                "checkpoint_fingerprint": _require_sha256(
-                    checkpoints[seed].get("checkpoint_fingerprint"),
-                    "checkpoint fingerprint",
-                ),
-                "checkpoint_receipt_sha256": _require_sha256(
-                    checkpoints[seed].get("receipt_file_sha256"),
-                    "checkpoint receipt",
-                ),
-            }
-            for seed in _SEEDS
-        ],
+        **source_before,
+        **lineage_before,
     }
     report = {
         "schema_version": "focused_fusion_robustness_report_v1",
@@ -408,78 +494,277 @@ def run_benchmark() -> dict[str, object]:
     return validate_public_report(report)
 
 
-def _require_directory(path: Path, label: str, *, private: bool) -> None:
-    try:
-        observed = path.lstat()
-    except FileNotFoundError as exc:
-        raise ValueError(f"{label} does not exist") from exc
-    expected_mode = 0o700 if private else None
+def _require_publication_edge(report: Mapping[str, object]) -> None:
+    commitments = _require_exact_dict(
+        report.get("commitments"), _COMMITMENT_FIELDS,
+        "publication commitments",
+    )
+    observed_sources = _source_commitments()
+    expected_sources = {
+        name: commitments[name]
+        for name in ("benchmark_script_sha256", "evaluation_module_sha256")
+    }
+    if not _exact(observed_sources, expected_sources):
+        raise ValueError("benchmark source changed before publication")
+    authorization, common, winner, trainer_sha256 = (
+        _authenticate_winner_chain()
+    )
+    pretrain_cli._require_focused_authority_unchanged(authorization)
+    observed_lineage = _authenticated_lineage_commitments(
+        authorization, common, winner, trainer_sha256,
+    )
+    expected_lineage = {
+        name: commitments[name]
+        for name in (
+            "trainer_sha256", "bridge_generation_sha256",
+            "common_contract_sha256", "winner_report_sha256", "checkpoints",
+        )
+    }
+    if not _exact(observed_lineage, expected_lineage):
+        raise ValueError("authenticated lineage changed before publication")
+
+
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    )
+
+
+def _regular_open_flags(access: int) -> int:
+    return access | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+
+
+def _require_anchor_directory(descriptor: int) -> None:
+    observed = os.fstat(descriptor)
     if (
         not stat.S_ISDIR(observed.st_mode)
         or observed.st_uid != os.geteuid()
-        or (expected_mode is not None
-            and stat.S_IMODE(observed.st_mode) != expected_mode)
+        or stat.S_IMODE(observed.st_mode) & 0o022
     ):
-        raise ValueError(f"{label} storage is unsafe")
+        raise ValueError("benchmark root parent storage is unsafe")
 
 
-def _prepare_private_directories(private_root: Path, parent: Path) -> None:
-    private_root = private_root.absolute()
-    parent = parent.absolute()
+def _require_private_directory(descriptor: int) -> None:
+    observed = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(observed.st_mode)
+        or observed.st_uid != os.geteuid()
+        or stat.S_IMODE(observed.st_mode) != 0o700
+    ):
+        raise ValueError("private benchmark directory storage is unsafe")
+
+
+def _open_private_directory_at(parent: int, name: str) -> int:
+    created = False
     try:
-        relative = parent.relative_to(private_root)
-    except ValueError as exc:
-        raise ValueError("report is outside its private benchmark root") from exc
-    _require_directory(private_root.parent, "benchmark root parent", private=False)
-    candidates = [private_root]
-    current = private_root
-    for component in relative.parts:
-        current = current / component
-        candidates.append(current)
-    for candidate in candidates:
-        if candidate.exists() or candidate.is_symlink():
-            _require_directory(candidate, "private benchmark directory", private=True)
-            continue
+        descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
+    except FileNotFoundError:
         try:
-            os.mkdir(candidate, 0o700)
+            os.mkdir(name, 0o700, dir_fd=parent)
+            created = True
+            os.fsync(parent)
         except FileExistsError:
             pass
-        else:
-            os.chmod(candidate, 0o700)
-        _require_directory(candidate, "private benchmark directory", private=True)
-
-
-def _validate_existing_report(path: Path) -> None:
+        try:
+            descriptor = os.open(name, _directory_open_flags(), dir_fd=parent)
+        except OSError as exc:
+            raise ValueError("private benchmark directory cannot be held") from exc
+    except OSError as exc:
+        raise ValueError("private benchmark directory cannot be held") from exc
     try:
-        observed = path.lstat()
-    except FileNotFoundError:
-        return
+        if created:
+            os.fchmod(descriptor, 0o700)
+            os.fsync(descriptor)
+        _require_private_directory(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _require_private_regular_stat(observed: os.stat_result, label: str) -> None:
     if (
         not stat.S_ISREG(observed.st_mode)
         or observed.st_uid != os.geteuid()
         or stat.S_IMODE(observed.st_mode) != 0o600
         or observed.st_nlink != 1
     ):
-        raise ValueError("existing public report storage is unsafe")
+        raise ValueError(f"{label} storage is unsafe")
+
+
+def _require_bound_regular_name(
+    directory: int, name: str, descriptor: int, label: str,
+) -> None:
+    held = os.fstat(descriptor)
+    try:
+        named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError as exc:
+        raise ValueError(f"{label} name is unavailable") from exc
+    _require_private_regular_stat(held, label)
+    _require_private_regular_stat(named, label)
+    if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+        raise ValueError(f"{label} name changed")
+
+
+def _open_publication_lock(directory: int) -> int:
+    name = ".report.lock"
+    created = False
+    try:
+        descriptor = os.open(
+            name, _regular_open_flags(os.O_RDWR), dir_fd=directory,
+        )
+    except FileNotFoundError:
+        try:
+            descriptor = os.open(
+                name,
+                _regular_open_flags(os.O_RDWR) | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory,
+            )
+            created = True
+        except FileExistsError:
+            try:
+                descriptor = os.open(
+                    name, _regular_open_flags(os.O_RDWR), dir_fd=directory,
+                )
+            except OSError as exc:
+                raise ValueError("publication lock cannot be held") from exc
+        except OSError as exc:
+            raise ValueError("publication lock cannot be created") from exc
+    except OSError as exc:
+        raise ValueError("publication lock cannot be held") from exc
+    try:
+        if created:
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+            os.fsync(directory)
+        _require_bound_regular_name(
+            directory, name, descriptor, "publication lock",
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _validate_existing_report_at(directory: int) -> None:
+    try:
+        descriptor = os.open(
+            "report.json", _regular_open_flags(os.O_RDONLY), dir_fd=directory,
+        )
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ValueError("existing public report cannot be held") from exc
+    try:
+        _require_bound_regular_name(
+            directory, "report.json", descriptor, "existing public report",
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _regular_identity(observed: os.stat_result) -> tuple[int, ...]:
+    return (
+        observed.st_dev, observed.st_ino, observed.st_mode, observed.st_uid,
+        observed.st_nlink, observed.st_size, observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _read_final_report_at(directory: int, expected: bytes) -> None:
+    try:
+        descriptor = os.open(
+            "report.json", _regular_open_flags(os.O_RDONLY), dir_fd=directory,
+        )
+    except OSError as exc:
+        raise ValueError("published report cannot be held") from exc
+    try:
+        _require_bound_regular_name(
+            directory, "report.json", descriptor, "published report",
+        )
+        before = os.fstat(descriptor)
+        if before.st_size != len(expected) or before.st_size > 16 * 1024 * 1024:
+            raise ValueError("published report size is invalid")
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+            if not chunk:
+                raise ValueError("published report read made no progress")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise ValueError("published report grew during verification")
+        after = os.fstat(descriptor)
+        if _regular_identity(before) != _regular_identity(after):
+            raise ValueError("published report identity changed during verification")
+        if b"".join(chunks) != expected:
+            raise ValueError("published report changed during publication")
+    finally:
+        os.close(descriptor)
 
 
 def _atomic_write_report(
     path: Path, payload: bytes, *, private_root: Path,
 ) -> None:
-    if type(payload) is not bytes or not payload:
+    if (
+        type(payload) is not bytes or not payload
+        or len(payload) > 16 * 1024 * 1024
+    ):
         raise ValueError("public report bytes are invalid")
     path = path.absolute()
     private_root = private_root.absolute()
     if path.name != "report.json":
         raise ValueError("only the fixed report filename may be published")
-    _prepare_private_directories(private_root, path.parent)
-    _validate_existing_report(path)
-    temporary = path.parent / f".report.{secrets.token_hex(16)}.tmp"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(temporary, flags, 0o600)
     try:
+        relative = path.parent.relative_to(private_root)
+    except ValueError as exc:
+        raise ValueError("report is outside its private benchmark root") from exc
+    components = (private_root.name, *relative.parts)
+    if any(
+        type(name) is not str or not name or name in {".", ".."}
+        or "/" in name or "\\" in name
+        for name in components
+    ):
+        raise ValueError("private benchmark components are invalid")
+    try:
+        anchor = os.open(private_root.parent, _directory_open_flags())
+    except OSError as exc:
+        raise ValueError("benchmark root parent cannot be held") from exc
+    directories = [anchor]
+    lock_descriptor: int | None = None
+    temporary_name: str | None = None
+    try:
+        _require_anchor_directory(anchor)
+        for component in components:
+            directories.append(
+                _open_private_directory_at(directories[-1], component)
+            )
+        final_directory = directories[-1]
+        lock_descriptor = _open_publication_lock(final_directory)
+        fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+        _require_bound_regular_name(
+            final_directory, ".report.lock", lock_descriptor,
+            "publication lock",
+        )
+        _validate_existing_report_at(final_directory)
+        temporary_name = f".report.{secrets.token_hex(16)}.tmp"
+        try:
+            descriptor = os.open(
+                temporary_name,
+                _regular_open_flags(os.O_WRONLY) | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=final_directory,
+            )
+        except OSError as exc:
+            raise ValueError("temporary report cannot be created") from exc
         try:
             os.fchmod(descriptor, 0o600)
+            _require_private_regular_stat(
+                os.fstat(descriptor), "temporary report",
+            )
             offset = 0
             while offset < len(payload):
                 written = os.write(descriptor, payload[offset:])
@@ -489,33 +774,35 @@ def _atomic_write_report(
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        _validate_existing_report(path)
-        os.replace(temporary, path)
-        directory = os.open(
-            path.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+        _validate_existing_report_at(final_directory)
+        os.replace(
+            temporary_name,
+            "report.json",
+            src_dir_fd=final_directory,
+            dst_dir_fd=final_directory,
         )
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        temporary_name = None
+        os.fsync(final_directory)
+        _read_final_report_at(final_directory, payload)
     finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-    _validate_existing_report(path)
-    _authorization, observed = ssl_core._private_file_snapshot(
-        path, "focused public report", max_bytes=16 * 1024 * 1024,
-    )
-    if observed != payload:
-        raise ValueError("public report changed during publication")
+        if temporary_name is not None and len(directories) == len(components) + 1:
+            try:
+                os.unlink(temporary_name, dir_fd=directories[-1])
+            except FileNotFoundError:
+                pass
+        if lock_descriptor is not None:
+            try:
+                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_descriptor)
+        for descriptor in reversed(directories):
+            os.close(descriptor)
 
 
 def main(argv: list[str] | None = None) -> None:
     _parser().parse_args(argv)
     report = validate_public_report(run_benchmark())
+    _require_publication_edge(report)
     payload = canonical_json_bytes(report)
     _atomic_write_report(
         DEFAULT_REPORT_PATH, payload, private_root=DEFAULT_REPORT_PATH.parents[2],
