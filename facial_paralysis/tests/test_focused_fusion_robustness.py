@@ -15,7 +15,12 @@ from _testlib import Check, run_all  # noqa: E402
 from src.evaluation.focused_fusion_robustness import (  # noqa: E402
     BENCHMARK_CONDITIONS,
     BenchmarkCondition,
+    aggregate_condition_metrics,
     build_condition_inputs,
+    canonical_metric,
+    require_clean_replay,
+    validate_deidentified_payload,
+    validate_metric_bundle,
 )
 
 
@@ -551,6 +556,129 @@ def test_exact_registered_spec_instances_are_accepted(c: Check):
     c.true(torch.equal(reconstruction_mask, target_mask),
            "an exact registered spec keeps the target mask")
     c.eq(input_arm, "fusion", "an exact registered spec retains its arm")
+
+
+def _metric_bundle(value: float) -> dict:
+    return {
+        baseline: {
+            "raw_mae": {
+                "blendshape72": value,
+                "clinical23": value,
+                "equal_block_macro": value,
+                "full95": value,
+            },
+            "standardized_mae": value,
+            "standardized_smooth_l1": value,
+        }
+        for baseline in ("trained", "fresh_untrained", "train_mean")
+    }
+
+
+def _all_condition_rows(clean_values=(1.0, 3.0, 5.0)) -> list[dict]:
+    rows = []
+    for condition_index, condition in enumerate(BENCHMARK_CONDITIONS):
+        for seed in range(3):
+            value = clean_values[seed] if condition.name == "clean_fusion" else 2.0
+            rows.append({
+                "condition": condition.name,
+                "seed": seed,
+                "metrics": _metric_bundle(value),
+            })
+    return rows
+
+
+def test_metric_bundle_canonicalizes_json_safe_values(c: Check):
+    bundle = _metric_bundle(1.234565)
+    normalized = validate_metric_bundle(bundle)
+    c.eq(canonical_metric(1.234565), canonical_metric(1.23456),
+         "metrics use banker's rounding at five decimal places")
+    c.eq(normalized["trained"]["raw_mae"]["full95"], 1.23456,
+         "bundle values are JSON-safe canonical floats")
+    c.true(normalized is not bundle, "bundle validation returns fresh storage")
+    for invalid in (True, "1.0", float("nan"), float("inf"), -0.001):
+        c.raises(lambda invalid=invalid: canonical_metric(invalid),
+                 (TypeError if type(invalid) in (bool, str) else ValueError),
+                 "invalid metric scalars fail closed")
+    malformed = _metric_bundle(1.0)
+    malformed["trained"]["raw_mae"].pop("full95")
+    c.raises(lambda: validate_metric_bundle(malformed), ValueError,
+             "metric schemas require every exact key")
+
+
+def test_clean_replay_requires_each_exact_seed_and_metric(c: Check):
+    observed = [
+        {"condition": "clean_fusion", "seed": seed, "metrics": _metric_bundle(seed + 1.0)}
+        for seed in range(3)
+    ]
+    expected = {seed: _metric_bundle(seed + 1.0) for seed in range(3)}
+    require_clean_replay(observed, expected)
+    changed = [dict(row) for row in observed]
+    changed[0] = dict(changed[0], metrics=_metric_bundle(9.0))
+    c.raises(lambda: require_clean_replay(changed, expected), ValueError,
+             "clean replay rejects any canonical metric mismatch")
+    c.raises(lambda: require_clean_replay(observed[:2], expected), ValueError,
+             "clean replay requires all three seed rows")
+
+
+def test_aggregate_conditions_enforces_complete_grid_and_computes_stats(c: Check):
+    rows = _all_condition_rows()
+    report = aggregate_condition_metrics(rows)
+    clean = report["conditions"][0]
+    metric = clean["aggregates"]["trained"]["raw_mae"]["equal_block_macro"]
+    c.eq(metric, {"mean": 3.0, "sample_sd": 2.0},
+         "condition aggregates use arithmetic mean and sample standard deviation")
+    c.eq(clean["degradation_percent_vs_clean"], 0.0,
+         "clean condition degradation is exactly zero")
+    c.eq(report["conditions"][1]["degradation_percent_vs_clean"], 100.0 * (2.0 / 3.0 - 1.0),
+         "degradation is computed against the clean trained macro mean")
+    c.eq(len(report["conditions"]), 10, "report contains only registered conditions")
+    c.raises(lambda: aggregate_condition_metrics(rows[:-1]), ValueError,
+             "missing grid cells fail closed")
+    duplicate = rows + [rows[0]]
+    c.raises(lambda: aggregate_condition_metrics(duplicate), ValueError,
+             "duplicate grid cells fail closed")
+    extra = list(rows)
+    extra[-1] = dict(extra[-1], condition="unregistered")
+    c.raises(lambda: aggregate_condition_metrics(extra), ValueError,
+             "extra condition names fail closed")
+
+
+def test_aggregate_conditions_rejects_bad_rows_and_keeps_recordings_out(c: Check):
+    rows = _all_condition_rows()
+    bad_type = list(rows)
+    bad_type[0] = dict(bad_type[0], seed=True)
+    c.raises(lambda: aggregate_condition_metrics(bad_type), ValueError,
+             "seed must have exact integer type")
+    recording = list(rows)
+    recording[0] = dict(recording[0], recording_id="rec_secret")
+    c.raises(lambda: aggregate_condition_metrics(recording), ValueError,
+             "per-recording fields are never accepted")
+    report = aggregate_condition_metrics(rows)
+    c.true("recording_id" not in repr(report),
+           "aggregate reports retain no per-recording data")
+
+
+def test_deidentified_payload_rejects_identifiers_paths_and_private_keys(c: Check):
+    safe = {
+        "schema_version": "1.0",
+        "checkpoint_fingerprint": "abc123",
+        "sha256": "deadbeef",
+        "condition": "clean_fusion",
+        "metrics": _metric_bundle(1.0),
+        "items": [0, 1.0, False, None],
+    }
+    normalized = validate_deidentified_payload(safe)
+    c.eq(normalized, safe, "safe JSON payloads are accepted")
+    for unsafe in (
+        {"path_hint": "safe"},
+        {"condition": "/private/run"},
+        {"condition": "rec_123"},
+        {"authority_hmac": "secret"},
+        {"group_id": "grp_1"},
+        {"metrics": float("nan")},
+    ):
+        c.raises(lambda unsafe=unsafe: validate_deidentified_payload(unsafe),
+                 ValueError, "identifying or unsafe payload data fail closed")
 
 
 if __name__ == "__main__":
