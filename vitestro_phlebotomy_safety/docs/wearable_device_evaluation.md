@@ -11,19 +11,19 @@
 
 Apple Watch remains the ecosystem and user-experience baseline, but it is not the strongest device for algorithm development. It does not expose continuous raw PPG, EDA, or actual blood pressure through public interfaces.
 
-The recommended first bench set is US-first:
+The recommended evaluation path is US-first:
 
 1. **Apple Watch Series 11** — consumer and iOS baseline.
 2. **ActiGraph LEAP** — primary US research wrist device because it exposes raw multiwavelength PPG and motion data through a clinical-research platform.
 3. **Biostrap Kairos** — second US wrist device for raw PPG/IBI access and a configurable research SDK/API path.
-4. **VitalConnect VitalPatch RTM** — US chest-patch reference for continuous ECG, R-R intervals, respiration, temperature, activity, and posture.
+4. **US reference-platform bake-off** — obtain sample payloads and evaluation units for VitalConnect VitalPatch RTM, Vivalink VV330/VV350, and Sibel ANNE One, then select one reference platform based on synchronized data quality, latency, workflow fit, and data rights.
 
 Two non-US devices remain scientifically justified controls:
 
 - **Samsung Galaxy Watch8** is the direct-evidence smartwatch benchmark. A 2026 prospective study used 25 Hz raw PPG from Galaxy Watch6 in 132 patients and reported AUROC 0.91 for a five-minute presyncope window, with specificity 0.64 at sensitivity 0.90. This is promising but was performed during controlled head-up tilt testing, not venipuncture ([European Heart Journal – Digital Health](https://academic.oup.com/ehjdh/article/7/4/ztag053/8586837)).
 - **Empatica EmbracePlus** is the autonomic reference when raw EDA is required.
 
-No reviewed device is ready for patient alerts or autonomous robot actions. The first phase must validate measurement quality, latency, timestamps, and exportability in the actual Vitestro workflow.
+No reviewed device is ready for patient alerts or autonomous robot actions. The first phase must validate measurement quality, latency, timestamps, exportability, and labeling in the actual Vitestro workflow.
 
 ## What the literature changes
 
@@ -35,15 +35,21 @@ The expanded literature review supports a multimodal design and argues against r
 - Wrist-wearable heart-rate accuracy falls during rapid transient changes, so steady-state validation is not enough for an acute presyncope use case ([Schuurmans et al., 2025](https://pubmed.ncbi.nlm.nih.gov/41157371/)).
 - PPG-derived pulse-rate variability is not automatically equivalent to ECG-derived HRV; the source signal must be reported explicitly ([Kantrowitz et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40809286/)).
 - Optical performance must be evaluated by objective skin pigmentation, perfusion, motion, fit, and wrist circumference. A 2024 systematic review found meaningful accuracy concerns across pigmentation groups for SpO2 and wide limits of agreement for wearable pulse rate ([Singh et al., 2024](https://pubmed.ncbi.nlm.nih.gov/39388258/)).
+- A 2026 systematic review of 13 AI studies on adverse blood-donor reactions found no evidence base sufficient for operational adoption. It identified inconsistent outcomes, unclear reference standards, limited external validation, no mature multimodal implementation, and little real-world testing ([ShojaeiBaghini et al., 2026](https://doi.org/10.1186/s12911-026-03584-0)).
+- EDA is plausible but not reliable alone: 33 of 53 patients with tilt-induced syncope showed increased EDA an average of 257 seconds before syncope, while 13 of 53 had no detectable EDA ([Edwards et al., 2004](https://pubmed.ncbi.nlm.nih.gov/15316839/)).
+- Raw continuous BP remains the strongest development reference. A 2025 raw-BP convolutional model reported AUROC 0.972 and mean detection 165 seconds before reflex syncope in a 1,348-patient HUT dataset, but only 57 cases had reflex syncope and evaluation used internal cross-validation ([Choi et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40068530/)).
+- Prodromes are time ordered rather than interchangeable. In 149 HUT patients, headache, warmth, and palpitations could appear more than three minutes before syncope; nausea, weakness, sweating, dizziness, and epigastric discomfort clustered one to three minutes before; blurred vision appeared in the final minute ([Guida et al., 2009](https://academic.oup.com/europace/article/11/9/1221/464641)).
+
+The literature also supports an optional non-wearable auxiliary channel. Pre-donation facial action units classified later donor VVR with F1 0.82 in 227 donors, and facial thermal profiles classified VVR in 193 donors with sensitivity 0.87, specificity 0.84, F1 0.86, and PR-AUC 0.93. These are direct blood-donation studies, but neither provides external Vitestro validation; camera signals should therefore complement, not replace, synchronized wearable physiology ([Rudokaite et al., 2023a](https://pubmed.ncbi.nlm.nih.gov/36836177/); [Rudokaite et al., 2023b](https://pubmed.ncbi.nlm.nih.gov/37316637/)).
 
 ## Device selection policy
 
-The evaluation pool contains 15 current devices:
+The evaluation pool contains 18 current devices:
 
-- **11 US or US-operationally-headquartered products:** Apple Watch, ActiGraph LEAP, Biostrap Kairos, VitalPatch RTM, Pixel Watch, Fitbit Sense 2, Garmin Venu 4, WHOOP MG, BioButton Rechargeable, Masimo W1 Medical, and iRhythm Zio AT.
+- **14 US or US-operationally-headquartered products:** Apple Watch, ActiGraph LEAP, Biostrap Kairos, VitalPatch RTM, Pixel Watch, Fitbit Sense 2, Garmin Venu 4, WHOOP MG, BioButton Rechargeable, Masimo W1 Medical, iRhythm Zio AT, Vivalink VV330/VV350, Sibel ANNE One, and Medidata BioStamp nPoint.
 - **4 non-US technical controls:** Samsung Galaxy Watch8, Empatica EmbracePlus, Corsano CardioWatch 287-2, and Huawei Watch D2.
 
-The non-US controls were retained only when they provide unusually relevant evidence or capabilities not available in the US-first consumer set.
+The non-US controls were retained only when they provide unusually relevant evidence or capabilities not available in the US-first consumer set. The three newly added US systems are skin-mounted research or clinical references rather than consumer watches; they are included because they expose synchronized raw signals that wrist devices generally do not.
 
 ## Physiological capability matrix
 
@@ -66,6 +72,9 @@ The non-US controls were retained only when they provide unusually relevant evid
 | **Empatica EmbracePlus — autonomic control** | ✓ | ✓ | ✓ | ✗ | ✗ | ✗ | △ | ✓ | ✓ | △ | ✓ |
 | Corsano CardioWatch 287-2 | ✓ | ✓ | ✓ | △ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Huawei Watch D2 | ✓ | △ | ✗ | △ | ✓ | △ | ✓ | ✓ | ✗ | △ | ✓ |
+| **Vivalink VV330/VV350 — US reference finalist** | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ | ✗ | ✓ | ✓ |
+| **Sibel ANNE One — US multimodal finalist** | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Medidata BioStamp nPoint | ✓ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✓ | ✓ |
 
 ### Blood-pressure interpretation
 
@@ -96,6 +105,9 @@ The non-US controls were retained only when they provide unusually relevant evid
 | Empatica EmbracePlus | △ | ✓ | ✓ | ✓ | Continuous recording; cloud latency and entitlements require contract confirmation |
 | Corsano CardioWatch 287-2 | ✓ | ✓ | ✓ | ✓ | Endpoint-specific US regulatory scope and fast-BP validation remain open |
 | Huawei Watch D2 | ✗ | ✗ | △ | △ | Region-limited cloud/Health Kit route; BP is intermittent |
+| Vivalink VV330/VV350 | ✓ | ✓ | ✓ | ✓ | Strong SDK and direct data-control story; exact model, channel set, and local/cloud latency must be contract-locked |
+| Sibel ANNE One | ✓ | ✓ | △ | ✓ | Synchronized raw ECG/finger PPG are attractive; SDK terms, finger placement, adhesives, and workflow interference require testing |
+| Medidata BioStamp nPoint | △ | ✓ | △ | ✓ | Research-grade raw biopotential and motion data; platform synchronization and daily charging limit acute alert use |
 
 ## Device-level recommendation
 
@@ -103,16 +115,14 @@ The non-US controls were retained only when they provide unusually relevant evid
 |---|---|---|---|
 | 1 | ActiGraph LEAP | Primary US wrist research platform | Bench now |
 | 2 | Biostrap Kairos | Independent US raw-PPG/IBI wrist platform | Bench now |
-| 3 | VitalConnect VitalPatch RTM | ECG/R-R/respiration/posture reference channel | Bench now |
-| 4 | Apple Watch Series 11 | Consumer/iOS usability and processed-HR baseline | Bench now |
-| 5 | Samsung Galaxy Watch8 | Replicate the most directly relevant smartwatch VVS paper | Buy one control unit; do not make it the US-first deployment default |
-| 6 | Empatica EmbracePlus | Raw EDA/BVP/temperature autonomic control | Add if EDA is retained in the protocol |
-| 7 | Corsano CardioWatch 287-2 | Cuffless-BP and all-in-one diligence candidate | No procurement decision before US regulatory and fast-change evidence review |
-| 8 | Masimo W1 Medical | Medical wrist SpO2/pulse comparator | Vendor/API diligence |
-| 9 | Garmin Venu 4 | Long-wear processed stream | Enterprise-contract diligence |
-| 10 | BioButton Rechargeable | Ward-monitoring comparator | Not an acute primary because HR/RR are rest-gated |
-| 11 | iRhythm Zio AT | Ambulatory ECG comparator | Useful for rhythm adjudication, not multimodal presyncope prediction |
-| 12–15 | Pixel Watch, Fitbit Sense 2, WHOOP MG, Huawei D2 | Ecosystem, longitudinal, or intermittent-BP controls | Do not use as the first acute signal source |
+| 3 | Apple Watch Series 11 | Consumer/iOS usability and processed-HR baseline | Bench now |
+| 4–6 | VitalPatch RTM, Vivalink VV330/VV350, Sibel ANNE One | US clinical-reference finalists | Obtain sample payloads, contracts, and evaluation units; select one after the interface and workflow bake-off |
+| 7 | Samsung Galaxy Watch8 | Replicate the most directly relevant smartwatch VVS paper | Buy one control unit; do not make it the US-first deployment default |
+| 8 | Empatica EmbracePlus | Raw EDA/BVP/temperature autonomic control | Add if EDA is retained in the protocol |
+| 9 | Medidata BioStamp nPoint | Flexible raw biopotential/motion research comparator | Vendor and latency diligence |
+| 10 | Corsano CardioWatch 287-2 | Cuffless-BP and all-in-one diligence candidate | No procurement decision before US regulatory and fast-change evidence review |
+| 11–14 | Masimo W1, Garmin Venu 4, BioButton, iRhythm Zio AT | Medical, long-wear, ward, and rhythm comparators | Vendor diligence or comparator role only |
+| 15–18 | Pixel Watch, Fitbit Sense 2, WHOOP MG, Huawei D2 | Ecosystem, longitudinal, or intermittent-BP controls | Do not use as the first acute signal source |
 
 ## Evidence table
 
@@ -132,6 +142,13 @@ The non-US controls were retained only when they provide unusually relevant evid
 | Does BioButton support acute sensing? | [Weenk et al., 2024](https://pubmed.ncbi.nlm.nih.gov/39200889/) | Large hospital deployment supports trend monitoring | HR/RR are rest measurements; manufacturer conflicts disclosed |
 | Is EmbracePlus optically validated? | [Gerboni et al., 2023](https://pubmed.ncbi.nlm.nih.gov/38111608/) | SpO2 validation met the reported FDA error limit under controlled no-motion conditions | Small sample, high perfusion, manufacturer-authored |
 | Is Masimo W1 ECG validated? | [Clinical evaluation, 2026](https://pubmed.ncbi.nlm.nih.gov/42038677/) | Strong spot-check AF/normal-rhythm performance | Rhythm classification is not presyncope prediction |
+| Are donor AI models deployment-ready? | [ShojaeiBaghini et al., 2026](https://doi.org/10.1186/s12911-026-03584-0) | Thirteen-study review identified promising models and direct facial/thermal work | No mature operational multimodal approach; heterogeneous outcomes and little external validation |
+| Can EDA provide early warning? | [Edwards et al., 2004](https://pubmed.ncbi.nlm.nih.gov/15316839/) | EDA rose before syncope in 62% of syncopal HUT patients | No detectable EDA in 25%; anxiety, pain, and thermal sweating confound interpretation |
+| Can raw BP support early detection? | [Choi et al., 2025](https://pubmed.ncbi.nlm.nih.gov/40068530/) | AUROC 0.972 and mean 165-second warning using raw BP | HUT dataset, severe class imbalance, and internal validation |
+| What is the clinical warning sequence? | [Guida et al., 2009](https://academic.oup.com/europace/article/11/9/1221/464641) | Prodromes separated into >3-minute, 1–3-minute, and final-minute groups | Nitroglycerin-potentiated HUT rather than venipuncture |
+| Can pre-donation facial video contribute? | [Rudokaite et al., 2023](https://pubmed.ncbi.nlm.nih.gov/36836177/) | Facial-action model achieved F1 0.82 in 227 blood donors | No external validation; sensitive to camera, pose, lighting, and population |
+| Can facial thermal imaging contribute? | [Rudokaite et al., 2023](https://pubmed.ncbi.nlm.nih.gov/37316637/) | Sensitivity 0.87, specificity 0.84, and PR-AUC 0.93 in 193 donors | Specialized camera and only 39 participants in the test set |
+| Does Sibel provide synchronized raw channels? | [ANNE One methods, 2024](https://www.nature.com/articles/s41746-024-01287-2) | 512 Hz ECG, 128 Hz finger PPG, 1 Hz skin temperature, and synchronized acceleration | Not a presyncope study; finger/adhesive workflow and commercial access remain open |
 
 ## Phase-1 evaluation protocol
 
@@ -147,14 +164,24 @@ For each exact model, firmware, phone, country, and account tier:
 
 ### Gate B — synchronized signal-quality pilot
 
+- Begin recording at least three minutes before needle insertion and continue through at least ten minutes of recovery.
 - Wear wrist devices on the arm opposite venipuncture.
 - Use synchronized three-lead ECG, continuous beat-to-beat BP, and reference SpO2 when SpO2 is evaluated.
 - Log Vitestro events: preparation, tourniquet, needle insertion, collection, needle removal, compression, and recovery.
-- Capture symptoms separately: anxiety, pain, nausea, dizziness, visual change, sweating, and presyncope.
+- Capture symptoms separately: anxiety, pain, nausea, dizziness, visual change, sweating, and presyncope. Use the brief Blood Donation Reactions Inventory as a structured symptom instrument, not as the physiological ground truth.
 - Test motion, fit, wrist circumference, wrist side, ambient temperature, perfusion, and objectively measured skin pigmentation.
 - Report coverage, longest missing run, clock drift, latency distribution, signal-quality flags, absolute error, and Bland–Altman agreement—not correlation alone.
 
-### Gate C — prospective clinical feasibility
+Initial engineering targets for the bench study are `≥99%` sample completeness for primary streams, no unexplained primary-stream gap longer than two seconds, median absolute clock error `≤100 ms`, P95 clock error `≤250 ms`, and P95 end-to-end live latency `≤2 seconds`. These are provisional system-design targets, not clinical-performance claims; they must be reviewed and frozen before data collection.
+
+### Gate C — standardized event labels
+
+- Apply ISBT/IHN categories for VVR without loss of consciousness, VVR with loss of consciousness, duration/complication, injury, and event location.
+- Preserve separate co-labels for pain, anxiety, general discomfort, nausea, hyperventilation, and device or venipuncture complications.
+- Record the label source and timestamp: participant report, operator observation, robot event, BP/ECG reference, intervention, or post-procedure adjudication.
+- Use an adjudication form that is independent of the experimental wearable outputs.
+
+### Gate D — prospective clinical feasibility
 
 - Pre-register endpoint definitions, warning horizon, primary metrics, subgroup analyses, and model-freeze rules.
 - Keep presyncope/syncope, discomfort, anxiety, and pain as separate labels.
@@ -173,9 +200,17 @@ For each exact model, firmware, phone, country, and account tier:
 | G4 Human factors | Alerts do not delay standard care or create unsafe robot behavior | No patient-facing or robot integration |
 | G5 Regulatory/QMS | Intended use, software lifecycle, cybersecurity, and supplier change control are approved | Research prototype only |
 
+## Modality decision
+
+The primary deployable candidate is a fusion of raw wrist PPG, cardiac timing, motion/robot phase, and signal-quality features. EDA, temperature, respiration, baseline risk, and symptom input are secondary channels. Continuous beat-to-beat BP is required during development but is not assumed to exist in the final wrist deployment.
+
+Facial RGB or thermal imaging may be evaluated as an optional auxiliary channel because it has direct blood-donation evidence and may already fit the Vitestro robot environment. It must have separate consent, retention, privacy, lighting, occlusion, demographic-robustness, and camera-failure gates. The machine-readable modality assessment is in [`../data/modality_evidence_matrix.csv`](../data/modality_evidence_matrix.csv).
+
 ## Final recommendation
 
-Procure the four-device US bench set first: **Apple Watch Series 11, ActiGraph LEAP, Biostrap Kairos, and VitalConnect VitalPatch RTM**. Add **one Samsung Galaxy Watch8** to reproduce the strongest direct smartwatch-VVS evidence and add **Empatica EmbracePlus** only if raw EDA remains a planned feature.
+Procure the three-device US wrist set first: **Apple Watch Series 11, ActiGraph LEAP, and Biostrap Kairos**. In parallel, run a US reference-platform bake-off across **VitalConnect VitalPatch RTM, Vivalink VV330/VV350, and Sibel ANNE One** using real sample payloads, contract terms, latency tests, and workflow simulation; select one rather than buying all three as production candidates.
+
+Add **one Samsung Galaxy Watch8** to reproduce the strongest direct smartwatch-VVS evidence and add **Empatica EmbracePlus** only if raw EDA remains a planned feature. Retain **Medidata BioStamp nPoint** as a research-platform comparator if its platform latency and raw-data terms are favorable.
 
 Do not select a “continuous BP watch” as the truth source. Use synchronized continuous reference blood pressure during validation, and treat Corsano as a diligence candidate until its exact US regulatory scope and fast-change performance are independently confirmed.
 

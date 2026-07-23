@@ -16,6 +16,11 @@ The evaluation separates three questions:
 No reviewed device currently satisfies all three questions without a controlled
 Vitestro pilot.
 
+The current pool contains 18 devices, including 14 products from US or
+US-headquartered companies. The evaluation remains wearable-first, while facial
+RGB and thermal imaging are retained as optional auxiliary modalities because
+direct blood-donation studies have reported anticipatory signal.
+
 ## Deliverables
 
 - [`docs/wearable_device_evaluation.md`](docs/wearable_device_evaluation.md) —
@@ -24,6 +29,8 @@ Vitestro pilot.
 - [`data/device_feature_matrix.csv`](data/device_feature_matrix.csv) —
   machine-readable feature matrix using `1` (supported), `0.5` (conditional),
   and `0` (not confirmed).
+- [`data/modality_evidence_matrix.csv`](data/modality_evidence_matrix.csv) —
+  evidence-ranked sensing modalities, intended roles, and failure modes.
 - [`sources/evidence_registry.csv`](sources/evidence_registry.csv) —
   claim-level source registry with official product/developer sources, regulatory
   material, and peer-reviewed papers.
