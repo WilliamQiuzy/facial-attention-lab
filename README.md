@@ -25,4 +25,12 @@ pnpm build
 
 The application source is in `facial_paralysis/facial_defect_web/`. Its ten approved synthetic assets remain in `facial_defect_synthesis/output/synthetic/` so the byte-verification and static imports use the same repository-relative paths as the research workspace. Sanitized generation evidence is recorded in `facial_paralysis/facial_defect_web/audits/approved-synthetic-provenance.json`.
 
+## Vitestro phlebotomy safety
+
+The public-source wearable-device evaluation for the Mayo–Vitestro automated
+phlebotomy collaboration is in
+[`vitestro_phlebotomy_safety/`](vitestro_phlebotomy_safety/). It contains only
+product research, literature review, procurement planning, and a measurement
+validation protocol. It contains no participant or patient data.
+
 No open-source license grant is included yet.
