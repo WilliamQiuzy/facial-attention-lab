@@ -1,4 +1,4 @@
-# Vitestro Phlebotomy Safety — Wearable Device Evaluation
+# Vitestro Phlebotomy Safety — Real-Time Detector Evaluation
 
 This project supports the Mayo–Vitestro collaboration on detecting presyncope,
 syncope, and clinically meaningful discomfort during automated venipuncture.
@@ -6,46 +6,46 @@ syncope, and clinically meaningful discomfort during automated venipuncture.
 ## Current decision
 
 Phase 1 is a measurement-system evaluation, not a production alerting system.
-The evaluation separates three questions:
+The current executive screen asks three questions:
 
-1. Does the wearable contain the relevant sensor?
-2. Can a study application receive timestamped data with sufficiently low latency?
-3. Is that signal valid in the intended venipuncture setting across motion, low
+1. Can a study application receive timestamped measurements during venipuncture?
+2. Is the detector itself sufficiently accurate, continuous, and synchronized?
+3. Is the signal valid in the intended workflow across motion, low
    perfusion, skin pigmentation, fit, and operating-system states?
 
-No reviewed device currently satisfies all three questions without a controlled
-Vitestro pilot.
+Historical CSV export, sleep summaries, and values visible only inside a vendor
+application are not procurement criteria. No reviewed device satisfies all three
+questions without a controlled Vitestro pilot.
 
-The current pool contains 18 devices, including 14 products from US or
-US-headquartered companies. The evaluation remains wearable-first, while facial
-RGB and thermal imaging are retained as optional auxiliary modalities because
-direct blood-donation studies have reported anticipatory signal.
+The main report retains ten systems with confirmed live paths. It now covers
+watches, ECG chest straps and patches, finger pulse oximetry, fingertip/palmar
+EDA for sweating, and continuous finger-cuff blood pressure. The broader
+18-device matrices remain as background screening artifacts.
 
 ## Deliverables
 
 - [`docs/wearable_device_evaluation.md`](docs/wearable_device_evaluation.md) —
-  English executive report, literature synthesis, device findings, recommendation,
-  and evaluation protocol.
+  concise English real-time detector table, shortlist, and quality gates.
 - [`data/device_feature_matrix.csv`](data/device_feature_matrix.csv) —
-  machine-readable feature matrix using `1` (supported), `0.5` (conditional),
-  and `0` (not confirmed).
+  broader legacy product screen using `1` (supported), `0.5` (conditional), and
+  `0` (not confirmed); it is not the current procurement shortlist.
 - [`data/modality_evidence_matrix.csv`](data/modality_evidence_matrix.csv) —
   evidence-ranked sensing modalities, intended roles, and failure modes.
 - [`sources/evidence_registry.csv`](sources/evidence_registry.csv) —
-  claim-level source registry with official product/developer sources, regulatory
-  material, and peer-reviewed papers.
+  background source registry from the broader screen. Current shortlist sources
+  are linked directly in the executive report.
 - `outputs/019f8cc8-9802-7b01-8b3a-7fe5ef10eaa5/` — Excel scorecard.
 
 ## Interpretation boundary
 
-- `✓` means the capability is available in a relevant mode; it does not mean the
-  device is medically accurate for acute presyncope detection.
-- `△` means spot, sleep-only, intermittent, derived, region-limited, or gated by
-  a vendor or partner program.
-- `✗` means no supported capability was confirmed in public documentation as of
-  2026-07-23.
-- Hypertension notifications and daily cuff-calibrated estimates are not treated
-  as continuous blood-pressure measurements.
+- A device remains in the executive table only when a live sensor-to-host path
+  is publicly documented.
+- Real-time availability does not establish medical accuracy for acute
+  presyncope detection.
+- On-demand ECG/SpO2, hypertension notifications, and daily cuff-calibrated
+  estimates are not treated as continuous signals.
+- Continuous BP systems are development references until they pass the Vitestro
+  workflow and fast-change tests.
 
 ## Data and privacy
 
