@@ -1,5 +1,9 @@
 # Overnight loop findings (2026-07-04) — the honest state of Mayo
 
+> **Historical status:** This document predates the current 110D Landmark
+> development champion. Use `CURRENT_MODEL.md` for present-tense model claims;
+> all 0.668 “champion” references below describe the earlier web-QWK study.
+
 A rigorous autonomous pass over the mouth-transfer question and the reliability of
 everything we've built. The headline is sobering but important: **at n=13 and with no
 labels, nothing about Mayo is statistically validated** — neither the learned model's
@@ -50,7 +54,7 @@ So the concrete asks are: ~35–50 patients to establish transfer, and ~40–60 
 usable severity-accuracy number. n=13 is far below both — the inconclusiveness is a sample-size
 problem, definitively not a modeling one.
 
-## Champion (0.668) error analysis + calibration (scripts/champion_analysis.py, calibrate.py)
+## Historical web champion (0.668) error analysis + calibration (scripts/champion_analysis.py, calibrate.py)
 - **Mouth is reliable:** acc 0.76, Normal/Strong recall ~0.80, well-calibrated (ECE 0.09).
   Rare Slight class (n=41) is the weak spot (recall 0.39).
 - **Eyes is the hard region:** acc 0.61, and BADLY calibrated (ECE 0.29 — under-confident;

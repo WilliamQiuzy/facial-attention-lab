@@ -1,5 +1,9 @@
 # Landmark Research and Implementation Decision — 2026-07-13
 
+> **Historical decision record:** The static Landmark/Fusion ablation below is
+> superseded for current-model reporting by the 110D Landmark trajectory result
+> in `CURRENT_MODEL.md`.
+
 ## Decision
 
 Landmarks should be added to the current blendshape stream, but the evidence

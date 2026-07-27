@@ -1,5 +1,10 @@
 # Why a strong web-trained facial-palsy model does not transfer to clinical iPhone video: an appearance confound, a geometric-asymmetry signal, and a sample-size wall
 
+> **Historical draft:** This manuscript analyzes the earlier web-QWK model and
+> must not be used for current-model reporting. The current 110D Landmark
+> development result and its non-clinical limits are recorded in
+> `CURRENT_MODEL.md`.
+
 *Draft — Menapace lab, Mayo Clinic × Harvard. All numbers reproducible from `facial_paralysis/`.*
 
 ## Abstract
@@ -105,7 +110,7 @@ utility** — our best web model transfers to nothing on the real target. (ii) *
 signal is geometric left-right asymmetry, not holistic appearance**; appearance encoders,
 however powerful, encode domain factors (camera, lighting, identity) that dominate their
 variance and fail out of distribution. Relative within-face geometric measures cancel these
-and are the deployable, interpretable, domain-invariant signal — and they are what clinical
+and are the more portable, interpretable research signal — and they are what clinical
 scales actually score. (iii) **In the small-n clinical regime, uncertainty quantification is
 not optional**; a point estimate at n=13 is indistinguishable from noise, and reporting it as
 a finding would mislead.
@@ -116,8 +121,8 @@ physical-symmetry quantities, not validated clinical grades. 60 fps EAR resolves
 transient but the cohort is small; MediaPipe blendshapes are pose-robust but not pose-immune.
 
 ## 7. Conclusion & the data that would settle it
-The pipeline (per-action segmentation, label-free dynamic scorecard, geometry-only deployment
-model, AU-dynamics pretraining) is built and waiting. The remaining lever is data, quantified:
+The historical pipeline (per-action segmentation, label-free dynamic scorecard,
+geometry-only candidate, AU-dynamics pretraining) is built and waiting. The remaining lever is data, quantified:
 (1) in-domain healthy controls → a trustworthy detector; (2) ~40–60 HB labels → a supervised,
 validated severity model with a usable accuracy CI; (3) ~35–50 patients → power to establish
 transfer; (4) AU corpora (DISFA/BP4D) → temporal-stream pretraining. Until then the honest

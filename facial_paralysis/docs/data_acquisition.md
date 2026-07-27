@@ -1,11 +1,15 @@
 # Data acquisition plan — getting more data before HB labels
 
+> **Model-status note (2026-07-27):** Metrics below describe historical
+> baselines. Use `CURRENT_MODEL.md` for the sole current development champion;
+> no HB, Mayo, outer, or clinical-validation claim is authorized.
+
 _2026-06-17. What more data to collect to improve the model, and exactly how to get
 it. Ordered by value-per-effort. Status reflects what is autonomously doable vs
 human/gated._
 
 ## The honest framing
-We have **no HB accuracy** (no HB labels). Defensible numbers: palsy detection
+We have **no HB accuracy** (no HB labels). Historical method-check numbers: palsy detection
 **AUC 0.86** (PalsyNet, subject-CV); region severity QWK ~**0.86 mouth / 0.43 eyes**
 on public web stills (method checks, not clinical). Run #14 showed the learned `s`
 is appearance/domain-driven on Mayo and the **geometric/asymmetry stream carries the

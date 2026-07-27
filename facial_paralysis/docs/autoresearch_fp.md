@@ -1,5 +1,9 @@
 # autoresearch-FP — autonomous model/data search (Run #17)
 
+> **Historical experiment:** The winners in this Run #17 log are no longer the
+> current project model. Use `CURRENT_MODEL.md` for the 110D Landmark
+> development champion and its evaluation boundary.
+
 _2026-06-18. Adapted karpathy/autoresearch's loop to our task and ran it on the
 RunPod A100. Harness: `scripts/fp_research.py` (config-driven trainer, cached
 bundles), batches in `scripts/fp_batch{1,2,3}.json`, log `outputs/autoresearch_fp/fp_results.tsv`._

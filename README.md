@@ -10,13 +10,20 @@ Two related research projects on automated facial analysis for clinical use.
 ---
 
 ## 1. `facial_paralysis/` — Facial-Palsy Severity Grading
-Predicts clinical facial-palsy severity (House-Brackmann I–VI, ordinal) from video/image
-of a patient performing facial actions.
+Researches facial-palsy classification and eventual House-Brackmann I–VI
+grading from facial video and images.
 
-- **Model:** two-stream (frozen MARLIN appearance encoder ⊕ trainable MediaPipe-geometry
-  GRU) → shared latent severity `s` → multi-task ordered-threshold heads (HB / binary /
-  3-level / region eyes+mouth). Handles heterogeneous label scales without fabricating labels.
-- **Key docs** (`docs/`): `model_design.md` (architecture, source of truth),
+- **Current development champion:** a fixed, standardized L2 logistic regression
+  over a 110-dimensional trajectory summary derived from 23 MediaPipe clinical
+  landmark channels. On the PalsyNet grouped inner-OOF development screen it
+  achieved AUROC **0.938**, balanced accuracy **0.905**, sensitivity **0.810**,
+  and specificity **1.000**.
+- **Canonical status:** `docs/CURRENT_MODEL.md` and
+  `docs/results/current_development_model.json`. Earlier MARLIN, web-QWK,
+  Blendshape/Fusion, and SSL results are preserved as historical baselines,
+  not current champions.
+- **Key docs** (`docs/`): `CURRENT_MODEL.md` (current result and claim boundary),
+  `model_design.md` (architecture history),
   `training_runs.md` (Runs #1–#17), `mayo_data.md`, `data_acquisition.md`,
   `literature_datasets.md`, `leakage_policy.md`, `autoresearch_fp.md`,
   `模型与训练_中文说明.md` (中文说明).
@@ -25,8 +32,10 @@ of a patient performing facial actions.
 - **Code:** `src/` (models, datasets, preprocessing, training, evaluation), `scripts/`,
   `tests/`. Warm-start checkpoints in `outputs/checkpoints/` (trainable head only;
   frozen MARLIN loaded separately).
-- **Status:** pipeline complete + leak-safe; palsy detection AUC ≈ 0.86, region severity
-  on public data measured. The clinical HB head awaits real HB labels + in-domain data.
+- **Status:** strongest current evidence is a PalsyNet affected-vs-unaffected
+  development result, not HB grading and not Mayo-65 accuracy. Identity/action
+  review and the untouched outer test are still required; the clinical HB head
+  awaits real HB labels and in-domain controls.
 
 ## 2. `facial_defect_synthesis/` — Synthetic Clinical Face Photos
 Large-scale generation of **synthetic** clinical photos of faces with facial defects

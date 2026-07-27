@@ -4,6 +4,11 @@ Log of real (non-synthetic) training runs of the facial-paralysis pipeline.
 Architecture/design: see `docs/model_design.md`. Synthetic wiring validation is
 in `tests/test_pipeline_e2e.py`; this file records runs on real datasets.
 
+> **Historical run log:** Run-level winners below are not the current project
+> champion. For current reporting use `docs/CURRENT_MODEL.md`: the 110D
+> Landmark development model has AUROC 0.938 and balanced accuracy 0.905 on the
+> PalsyNet grouped inner-OOF screen, with the protected outer fold still sealed.
+
 ---
 
 ## Run #1 — PalsyNet binary (public-data warm-start, Stage 1)
@@ -575,7 +580,7 @@ the take ranking, and the non-collapse verdict are all preserved. So:
 so the pod trains from cached bundles with no raw data). Same unified data as
 Run #6 (2856 recs: PalsyNet binary + FNP/YFP eyes/mouth 3-level; train 1869 / val 987).
 Trains the SAME model on GPU with two temporal-pooling settings, to carry Run #9's
-finding into the full deployable model.
+finding into the full historical candidate model.
 
 ### Results (held-out val)
 

@@ -1,14 +1,27 @@
-# Facial-Paralysis Severity Model — Design
+# Facial-Paralysis Model — Design and Architecture History
 
-_Last updated: 2026-06-10 (v2 — MARLIN video encoder + MediaPipe dual-stream
-front-end). Supersedes the single-task HB head in
-`src/models/baselines_hb/HB_ADAPTERS.md` and the rationale block in
-`src/models/hb_head.py`._
+_Current status updated: 2026-07-27._
 
-This document is the source of truth for **what the model is and is not
-responsible for**. Read it before changing anything under `src/models/`.
+`CURRENT_MODEL.md` is the source of truth for the current champion and its
+claim boundary. This document preserves the broader neural architecture and
+HB research design.
 
 ---
+
+## 0. Current model status
+
+The current development champion is not the MARLIN/GRU architecture described
+below. It is the 110D Landmark trajectory representation followed by a fixed
+standardized L2 logistic regression:
+
+- PalsyNet affected-vs-unaffected grouped inner-OOF AUROC: **0.938**;
+- balanced accuracy: **0.905**;
+- sensitivity: **0.810**;
+- specificity: **1.000**.
+
+The MARLIN, geometry-only web, Fusion, and SSL models below are historical
+research baselines. No model is currently authorized for HB claims, Mayo
+clinical accuracy claims, or deployment.
 
 ## 1. Problem statement
 

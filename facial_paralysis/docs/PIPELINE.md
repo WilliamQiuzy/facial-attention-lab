@@ -4,15 +4,27 @@ Everything runs locally on the cached bundles with the anaconda python3
 (`KMP_DUPLICATE_LIB_OK=TRUE python3 ...`), except the 60fps EAR extraction (needs
 mediapipe → a RunPod GPU box). Start here to reproduce any result in the docs.
 
-## Web model (autoresearch)
+## Current development model
+- `docs/CURRENT_MODEL.md` — canonical human-readable result and claim boundary.
+- `docs/results/current_development_model.json` — canonical machine-readable
+  aggregate record.
+- `scripts/run_action_clinical_geometry_v1.py` — fixed 110D Landmark /
+  58D Clinical Dynamics development screen. It requires the private PalsyNet
+  cache and never opens the protected outer fold.
+- Current development champion: 110D Landmark, AUROC 0.938 and balanced
+  accuracy 0.905. This is binary PalsyNet development evidence, not HB or Mayo.
+
+## Historical web model (autoresearch)
 - `autoresearch_fp/prepare_fp.py` — FIXED harness: data + leak-safe split + 3-seed QWK metric.
 - `autoresearch_fp/runner.py <cfg.json>` — the model engine; run a config, print metric.
-- `autoresearch_fp/best_config.json` — current champion (0.668). `deploy_config.json` —
-  geometry-only Mayo deployment model (0.577 web; drops MARLIN).
+- `autoresearch_fp/best_config.json` — historical web champion (0.668).
+  `deploy_config.json` — historical geometry-only candidate (0.577 web;
+  drops MARLIN), not deployment-authorized.
 - `autoresearch_fp/search.py <batch.json> <out.tsv>` — within-split QWK search (WITH MARLIN).
 - `autoresearch_fp/xsearch.py` — cross-dataset generalization-objective search.
 - `autoresearch_fp/results.tsv` — ranked logbook. `FINDINGS.md` — full write-up.
-- Reproduce champion: `python3 autoresearch_fp/runner.py autoresearch_fp/best_config.json`
+- Reproduce the historical web benchmark:
+  `python3 autoresearch_fp/runner.py autoresearch_fp/best_config.json`
 
 ## Mayo per-action label-free analysis (needs FACES protocol semantics)
 - `scripts/mayo_eface.py` — per-action asymmetry + synkinesis + forced recruitment → `outputs/mayo_eface/eface_scores.json`.
@@ -33,5 +45,5 @@ mediapipe → a RunPod GPU box). Start here to reproduce any result in the docs.
 - `outputs/mayo_active_learning.json` — which takes to HB-label first.
 
 ## Read order for a new collaborator
-`docs/SUMMARY.md` → `docs/loop_findings.md` → `docs/generalization.md` →
+`docs/CURRENT_MODEL.md` → `docs/SUMMARY.md` → `docs/loop_findings.md` → `docs/generalization.md` →
 `docs/mayo_faces_analysis.md` → `docs/data_collection_plan.md` → `autoresearch_fp/FINDINGS.md`.

@@ -1,5 +1,9 @@
 # Generalization: what transfers and what doesn't (2026-07-01, no HB labels)
 
+> **Historical study:** “champion” below means the earlier web-QWK model only.
+> It is not the current project model. Use `CURRENT_MODEL.md` for the current
+> 110D Landmark development result and its non-clinical claim boundary.
+
 Using the Mayo per-action clips as a real OUT-OF-DOMAIN test set, plus cross-dataset
 tests on the web data. Scripts: `scripts/mayo_generalization.py`, `scripts/cross_dataset.py`.
 
@@ -30,19 +34,20 @@ NOT transfer to Mayo — its 0.649 web QWK says nothing about Mayo. **But droppi
 appearance entirely (geometry-only) flips the eyes head to +0.48**: it now tracks the
 clinical asymmetry on Mayo. So the modality gap is specifically the **appearance
 stream** (MARLIN, domain-confounded per Run #14); the geometric/asymmetry stream DOES
-transfer. Actionable: the **Mayo/deployment model should be geometry-only**, while the
-champion (with MARLIN) is best for the web benchmark. Caveats: n=13, p=0.10 marginal,
+transfer. Historical design implication: a future Mayo model should prioritize
+geometry over appearance; this did not authorize a deployment model. The old
+MARLIN champion remained best only for its web benchmark. Caveats: n=13, p=0.10 marginal,
 and partial circularity (geometry features overlap the asymmetry target) — directional,
 needs HB labels to confirm. Mouth doesn't transfer even geometry-only (open problem).
 
 ## Conclusion
-- The champion is a real improvement: higher web QWK **and** better cross-dataset
+- The historical web champion was a real improvement: higher web QWK **and** better cross-dataset
   generalization. It is the best starting point for fine-tuning.
 - But **Mayo performance requires in-domain data.** Web gains don't cross the modality
-  gap. This is why, with no HB labels, the deployable Mayo estimator is the
+  gap. With no HB labels, the only Mayo output retained for research is the
   **label-free dynamic clinical measure** (asymmetry / EAR closure / synkinesis /
-  forced recruitment — `docs/mayo_faces_analysis.md`), which is domain-invariant by
-  construction, not the web-trained learned severity.
+  forced recruitment — `docs/mayo_faces_analysis.md`), not a deployable estimator
+  or the web-trained learned severity.
 
 ## No-label interventions tried (2026-07-02)
 

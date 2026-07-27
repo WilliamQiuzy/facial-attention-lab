@@ -1,5 +1,9 @@
 # When frozen foundation-model features hurt: appearance confounding and the case for relative-geometric representations in clinical face analysis
 
+> **Historical draft:** This manuscript analyzes the earlier representation
+> transfer study, not the current project champion. Use `CURRENT_MODEL.md` for
+> the 110D Landmark development result and its non-clinical claim boundary.
+
 *Methods-paper draft (ML / domain-adaptation venue). Distinct from the clinical draft
 (`PAPER_DRAFT.md`); this one is about the representation-transfer finding and generalizes
 beyond facial palsy. All results reproducible in `facial_paralysis/`.*
@@ -19,7 +23,7 @@ fails to transfer. Three standard feature-space domain-adaptation remedies — C
 noise augmentation, and a DANN adversarial objective — **all fail** to close the gap (the
 adversarial representation's domain-AUC stays at 0.997), because the confound is maximal and
 the clinical target is tiny (n=13). We give a power analysis showing the non-transfer is
-unresolvable below ~35–50 patients, and argue that the robust, deployable representation is
+unresolvable below ~35–50 patients, and argue that the more portable research representation is
 the **relative geometric asymmetry** (domain-AUC 0.79, vs 1.00 for appearance and 0.97 for
 absolute geometry), which is also what clinical scales actually measure. The lesson
 generalizes: benchmark accuracy with a powerful frozen backbone is not evidence of clinical

@@ -1,3 +1,12 @@
+# Historical autoresearch findings
+
+> **Status notice (2026-07-27):** This file is an immutable-style log of the
+> earlier web-QWK search. Its uses of “champion”, “winner”, and “deployable”
+> are historical within that experiment. The only current development
+> champion is the 110D Landmark trajectory model documented in
+> `../docs/CURRENT_MODEL.md` (PalsyNet inner-OOF AUROC 0.938; balanced accuracy
+> 0.905). It is not HB-, Mayo-, outer-, or clinically validated.
+
 # autoresearch-FP — findings (Run: jul1 branch)
 
 Autonomous model search on our own facial-palsy data, adapted from
@@ -124,9 +133,10 @@ Two levers did it:
    0.31 → 0.45. Sweet spot at 768; 1024+ overfits; geo-encoder depth (`geo_layers:2`) ties,
    no gain. +0.07.
 
-Winner = `deploy_config.json` (`deploy_landmark_v2`). This is the DEPLOYABLE model: no
-appearance stream, so nothing to domain-confound — it is the transferable, clinically-aligned
-predictor. Full grid in `geo_landmark_search.tsv`.
+Historical web winner = `deploy_config.json` (`deploy_landmark_v2`). It removes
+the appearance stream and was a useful transferable-geometry candidate, but it
+is not deployment-authorized and is no longer the current champion. Full grid
+in `geo_landmark_search.tsv`.
 
 ## Update (jul10): raw-landmark clinical features — grounded hypothesis, honest null on web
 
@@ -150,8 +160,10 @@ ceiling (~0.45) did NOT break.** The fissure-height hypothesis was reasonable bu
 SEVERITY LABELS are themselves too noisy to grade past ~0.45 from any geometry.
 
 **Takeaway.** Eyes-on-web-stills is a DATA/LABEL ceiling, not a feature ceiling — same lesson as
-the rest of the project. Keep the simpler blendshape-only winner (`deploy_config.json`, 0.668) as
-the deployable web model. BUT the clinical extractor is a real, interpretable, transferable asset:
+the rest of the project. The simpler blendshape-only winner
+(`deploy_config.json`, 0.668) remains a historical web reference, not a
+deployment model. The clinical extractor is a real, interpretable,
+transferable asset:
 it is exactly what eFACE measures, and it should pay off on the Mayo FACES data — where the
 eye-closure ACTION makes fissure DYNAMICS informative and labels are clinician-grade — not on
 static web stills. That is the right place to use it next.

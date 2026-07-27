@@ -91,5 +91,8 @@ facial_paralysis/outputs/.palsynet_identity_audit.backup-*/
 facial_paralysis/outputs/dynamic_landmark/pretraining/
 facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json
 facial_paralysis/outputs/dynamic_landmark/.mayo_exposure_manifest.json.*-*
+# Development reports remain owner-private. Publish only reviewed aggregate
+# summaries under facial_paralysis/docs/results/.
+facial_paralysis/outputs/dynamic_landmark/benchmarks/development/action-clinical-geometry-v1/
 facial_paralysis/data_acquisition/youtube/clips/
 facial_paralysis/data_acquisition/youtube/faces/
