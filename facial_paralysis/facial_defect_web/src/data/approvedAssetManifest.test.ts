@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from 'vitest'
-import type { AttentionResult } from '../model/types'
+import type { InferenceBinding } from '../workbench/types'
 import {
   approvedAssets,
   validateApprovedAssets,
@@ -73,8 +73,8 @@ describe('approved synthetic asset boundary', () => {
     expect(tuples(approvedAssets)).toEqual(EXPECTED_ASSET_TUPLES)
   })
 
-  it('uses the canonical ID union anywhere an attention result binds an asset', () => {
-    expectTypeOf<AttentionResult['assetId']>().toEqualTypeOf<WorkbenchAssetId>()
+  it('uses the canonical ID union anywhere an inference result binds an asset', () => {
+    expectTypeOf<InferenceBinding['assetId']>().toEqualTypeOf<WorkbenchAssetId>()
   })
 
   it('allows ten unique hash-pinned standalone synthetic demo cases', () => {

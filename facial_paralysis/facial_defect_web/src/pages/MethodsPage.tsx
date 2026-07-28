@@ -1,13 +1,12 @@
-import { AlertTriangle, Eye, Fingerprint, LockKeyhole, Scale, ShieldCheck } from 'lucide-react'
-
-const measures = [
-  { title: 'Fixation duration', text: 'Total time that qualified fixations remain inside the reviewed scar region.' },
-  { title: 'Fixation count', text: 'Number of qualified fixations that enter the reviewed scar region.' },
-  { title: 'Time to first fixation', text: 'Elapsed time from image onset until the first qualified fixation enters the region.' },
-  { title: 'Scar-region gaze share', text: 'Proportion of valid gaze time assigned to the reviewed region of interest.' },
-]
+import { AlertTriangle, Ban, Eye, Fingerprint, LockKeyhole, Scale, ShieldCheck } from 'lucide-react'
+import { listWorkbenchAssets } from '../workbench/catalog'
+import { useWorkspace } from '../workbench/WorkspaceProvider'
 
 export function MethodsPage() {
+  const { gatewayMode } = useWorkspace()
+  const catalogCount = listWorkbenchAssets().length
+  const connected = gatewayMode === 'connected'
+
   return (
     <article className="methods-page">
       <header className="methods-hero">
@@ -33,17 +32,54 @@ export function MethodsPage() {
           <section id="measurement" aria-labelledby="measurement-title">
             <div className="methods-section-heading">
               <Eye aria-hidden="true" />
-              <div><p className="eyebrow">Proposal-aligned measurement</p><h2 id="measurement-title">Four eye-tracking measures</h2></div>
+              <div><p className="eyebrow">Intended spatial contract</p><h2 id="measurement-title">What this workbench can represent</h2></div>
             </div>
             <p>
-              The proposed research would standardize facial images, map qualified gaze to a
-              reviewed scar region, and compute observer-level measures before aggregation.
-              The current website contains simulated values only.
+              No trained facial-defect attention model exists in this repository yet. The
+              default output is a deterministic synthetic field used to rehearse the
+              clinician interface; it is not observed gaze or a patient result.
             </p>
-            <div className="definition-list">
-              {measures.map((measure, index) => (
-                <article key={measure.title}><span>0{index + 1}</span><div><h3>{measure.title}</h3><p>{measure.text}</p></div></article>
-              ))}
+            <p>
+              A future compatible service is expected to return population-level predicted
+              observer-attention spatial density with an explicit spatial field. That intended
+              density contract is separate from the current mock AOI calculation.
+            </p>
+            <p>
+              Current mock values are fixed-template simulated point-weight shares. Each
+              simulated point&apos;s intensity is assigned by its center. Radius is ignored, so
+              this is not a raster or density-kernel integral.
+            </p>
+            <div className="provenance-rule" role="note" aria-label="Clinical AOI meaning">
+              <Eye aria-hidden="true" />
+              <div>
+                <strong>Mock AOIs are interface-rehearsal summaries</strong>
+                <p>
+                  Mock AOIs are automatic post-inference summaries and do not modify the
+                  simulation. The subsite and hemiface rows are separate complete partitions;
+                  the central facial triangle is an overlapping, non-additive reference.
+                </p>
+                <p>
+                  In a frontal image, patient left appears on the viewer&apos;s right. A future
+                  surgical-site mask would be a separate, versioned contextual annotation; it
+                  would not stand in for attention, severity, or the immutable image bound.
+                </p>
+              </div>
+            </div>
+            <div className="provenance-rule" role="note" aria-label="Current model boundary">
+              <Ban aria-hidden="true" />
+              <div>
+                <strong>Functional-assessment evidence remains a separate system</strong>
+                <p>
+                  The available functional-assessment research outputs are non-spatial severity
+                  or regional summaries. They are not a pixel attention map and are not
+                  connected to this workbench.
+                </p>
+                <p>
+                  A non-spatial score or ordinal payload without valid spatial points fails
+                  closed. The browser never converts severity scores, task logits, temporal
+                  weights, or attribution analyses into a heatmap.
+                </p>
+              </div>
             </div>
           </section>
 
@@ -53,13 +89,71 @@ export function MethodsPage() {
               <div><p className="eyebrow">Evidence identity</p><h2 id="provenance-title">Provenance travels with the result</h2></div>
             </div>
             <p>
-              A visible source field distinguishes <code>mock_simulation</code>, <code>observed_gaze</code>,
-              and <code>model_prediction</code>. Asset hashes, region version, analysis version,
-              pairing state, QC, and creation time belong in the same result envelope.
+              The current result envelope accepts <code>mock_simulation</code> from the local
+              deterministic implementation. It reserves <code>model_prediction</code> only for
+              a future, separately defined spatial-attention API with an explicit heatmap.
+              <code>observed_gaze</code> remains a future study data class outside the current
+              inference gateway.
             </p>
-            <div className="provenance-rule">
+            <p>
+              Connected version 1 is a synthetic spatial contract rehearsal. It requires
+              <code>registration_geometry_unavailable_v1</code> and does not claim that
+              landmarks were supplied. It does not carry landmarks or polygons, source
+              dimensions, orientation or mirror metadata, or registration quality control.
+            </p>
+            <p>
+              Connected AOI reporting remains unavailable and fails closed until the contract
+              is extended.
+            </p>
+            <p>
+              No observer-attention checkpoint or output is implemented. The current
+              <code>HeatmapPoint[]</code> display-points representation and a future
+              patient-media reference are provisional. Model and backend owners must jointly
+              freeze the media reference, coordinate frame, spatial representation,
+              normalization, display scale, and production request/response schema before
+              integration.
+            </p>
+            <p>
+              A connected result states whether observed gaze is included in that result
+              payload separately from training-data provenance. This rehearsal includes no
+              observed-gaze payload and reports training-data provenance as not disclosed.
+            </p>
+            <div
+              className="provenance-rule"
+              role="status"
+              aria-label="Methods runtime boundary"
+            >
               <ShieldCheck aria-hidden="true" />
-              <div><strong>Current artifact</strong><p>Two hash-pinned, AI-generated faces · unpaired_demo · simulated_ui_only · no human gaze · no model</p></div>
+              <div>
+                <strong>
+                  {connected
+                    ? 'Synthetic spatial contract rehearsal enabled'
+                    : 'Local mock gateway active'}
+                </strong>
+                <p>
+                  {connected
+                    ? 'Explicit opt-in. The single WorkbenchGateway port requests model_prediction output only when a run executes and never falls back to the mock engine.'
+                    : 'Default mode performs no inference network request. The single WorkbenchGateway port resolves deterministic mock_simulation output in memory.'}
+                </p>
+                {connected ? (
+                  <p>
+                    The current functional-assessment research system remains separate and is
+                    not connected; enabling this seam does not make it a spatial-attention
+                    model.
+                  </p>
+                ) : null}
+                {connected ? <p>Accepted capability: <code>research_unvalidated</code>.</p> : null}
+              </div>
+            </div>
+            <div className="provenance-rule">
+              <Fingerprint aria-hidden="true" />
+              <div>
+                <strong>Current canonical catalog</strong>
+                <p>
+                  {catalogCount} hash-pinned, standalone AI-generated synthetic cases ·
+                  unpaired_demo · no patient data · no human gaze
+                </p>
+              </div>
             </div>
           </section>
 
@@ -69,10 +163,11 @@ export function MethodsPage() {
               <div><p className="eyebrow">Interpretation boundary</p><h2 id="limits-title">Attention is not emotion, judgment, stigma, or outcome.</h2></div>
             </div>
             <p>
-              Gaze can describe when and where visual attention landed under a defined study
-              protocol. It cannot, by itself, reveal why a person looked, whether the person
-              approved or disapproved, how the image affected quality of life, or whether a
-              reconstructive procedure succeeded.
+              Observed gaze can describe when and where visual attention landed under a defined
+              study protocol. A predicted density field is not observed gaze. Neither can, by
+              itself, reveal why a person looked, whether the person approved or disapproved,
+              how the image affected quality of life, or whether a reconstructive procedure
+              succeeded.
             </p>
             <aside className="methods-warning">
               <AlertTriangle aria-hidden="true" />
@@ -86,8 +181,9 @@ export function MethodsPage() {
               <div><p className="eyebrow">Privacy & governance</p><h2 id="privacy-title">No sensitive-data shortcut</h2></div>
             </div>
             <p>
-              In the default build, no photos, identifiers, or analysis payloads are persisted
-              in browser storage, and no network request is made. Upload remains unavailable.
+              In default mock mode, no photos, identifiers, or analysis payloads are persisted
+              in browser storage and no inference network request is made. Connected mode is
+              an explicit configuration opt-in; it does not enable upload, storage, or fallback.
             </p>
             <p>
               A future human study still creates participant data even when the stimulus image

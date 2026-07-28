@@ -45,7 +45,9 @@ describe('ScrollToTop', () => {
     const heading = screen.getByRole('heading', { name: /attention pattern demo/i })
     expect(heading).toHaveAttribute('tabindex', '-1')
     expect(heading).toHaveFocus()
-    expect(document.title).toBe('Attention pattern demo | Facial Attention Lab')
+    expect(document.title).toBe(
+      'Attention pattern demo | Facial Reconstruction Imaging',
+    )
   })
 
   it('waits for an asynchronously loaded route heading before announcing it', async () => {
@@ -75,6 +77,8 @@ describe('ScrollToTop', () => {
     const heading = await screen.findByRole('heading', { name: /loaded analysis/i })
 
     await waitFor(() => expect(heading).toHaveFocus())
-    expect(document.title).toBe('Loaded analysis | Facial Attention Lab')
+    expect(document.title).toBe(
+      'Loaded analysis | Facial Reconstruction Imaging',
+    )
   })
 })

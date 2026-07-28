@@ -5,8 +5,12 @@ import type {
 import { getWorkbenchAsset } from './catalog'
 import { createCanonicalInferenceBindingSnapshot } from './mockEngine'
 import {
+  CONNECTED_ATTENTION_REQUEST_PROFILE_VERSION,
+  MAX_SPATIAL_DISPLAY_POINTS,
   WorkbenchError,
+  type ConnectedAttentionRequestV1,
   type ConnectedInferenceOutput,
+  type ConnectedModelIdentity,
   type InferenceBinding,
   type WorkbenchFailureReason,
 } from './types'
@@ -90,6 +94,30 @@ function inferenceEndpoint(apiUrl: string): string {
   return endpoint.href
 }
 
+export function createConnectedAttentionRequestV1(
+  binding: InferenceBinding,
+): ConnectedAttentionRequestV1 {
+  const canonical = createCanonicalInferenceBindingSnapshot(binding)
+  return Object.freeze({
+    requestProfileVersion: CONNECTED_ATTENTION_REQUEST_PROFILE_VERSION,
+    clientRunId: canonical.clientRunId,
+    attemptToken: canonical.attemptToken,
+    caseId: canonical.caseId,
+    assetId: canonical.assetId,
+    sourceSha256: canonical.assetSha256,
+    sourceBinding: Object.freeze({
+      id: canonical.roiId,
+      version: canonical.roiVersion,
+      geometry: Object.freeze({
+        x: canonical.roiGeometry.x,
+        y: canonical.roiGeometry.y,
+        width: canonical.roiGeometry.width,
+        height: canonical.roiGeometry.height,
+      }),
+    }),
+  })
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
@@ -114,50 +142,67 @@ function isBoundedFinite(value: unknown): value is number {
   )
 }
 
-function bindingsMatch(actual: unknown, expected: InferenceBinding): boolean {
+function requestIdentitiesMatch(
+  actual: unknown,
+  expected: ConnectedAttentionRequestV1,
+): boolean {
   if (!isRecord(actual)) return false
-
-  const roiGeometry = actual.roiGeometry
-  const config = actual.config
+  const sourceBinding = actual.sourceBinding
+  if (!isRecord(sourceBinding)) return false
+  const geometry = sourceBinding.geometry
   return (
     hasExactKeys(actual, [
+      'requestProfileVersion',
       'clientRunId',
       'attemptToken',
       'caseId',
       'assetId',
-      'assetSha256',
-      'roiId',
-      'roiVersion',
-      'roiGeometry',
-      'roiStatus',
-      'modelVersion',
-      'modelMode',
-      'config',
-      'configurationHash',
-      'inputFingerprint',
+      'sourceSha256',
+      'sourceBinding',
     ]) &&
+    actual.requestProfileVersion === expected.requestProfileVersion &&
     actual.clientRunId === expected.clientRunId &&
     actual.attemptToken === expected.attemptToken &&
     actual.caseId === expected.caseId &&
     actual.assetId === expected.assetId &&
-    actual.assetSha256 === expected.assetSha256 &&
-    actual.roiId === expected.roiId &&
-    actual.roiVersion === expected.roiVersion &&
-    isRecord(roiGeometry) &&
-    hasExactKeys(roiGeometry, ['x', 'y', 'width', 'height']) &&
-    roiGeometry.x === expected.roiGeometry.x &&
-    roiGeometry.y === expected.roiGeometry.y &&
-    roiGeometry.width === expected.roiGeometry.width &&
-    roiGeometry.height === expected.roiGeometry.height &&
-    actual.roiStatus === expected.roiStatus &&
-    actual.modelVersion === expected.modelVersion &&
-    actual.modelMode === expected.modelMode &&
-    isRecord(config) &&
-    hasExactKeys(config, ['threshold', 'smoothing']) &&
-    config.threshold === expected.config.threshold &&
-    config.smoothing === expected.config.smoothing &&
-    actual.configurationHash === expected.configurationHash &&
-    actual.inputFingerprint === expected.inputFingerprint
+    actual.sourceSha256 === expected.sourceSha256 &&
+    hasExactKeys(sourceBinding, ['id', 'version', 'geometry']) &&
+    sourceBinding.id === expected.sourceBinding.id &&
+    sourceBinding.version === expected.sourceBinding.version &&
+    isRecord(geometry) &&
+    hasExactKeys(geometry, ['x', 'y', 'width', 'height']) &&
+    geometry.x === expected.sourceBinding.geometry.x &&
+    geometry.y === expected.sourceBinding.geometry.y &&
+    geometry.width === expected.sourceBinding.geometry.width &&
+    geometry.height === expected.sourceBinding.geometry.height
+  )
+}
+
+function isValidConnectedModelIdentity(
+  value: unknown,
+): value is ConnectedModelIdentity {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      'modelId',
+      'modelVersion',
+      'artifactSha256',
+      'preprocessingVersion',
+      'calibrationVersion',
+      'displayScaleId',
+    ]) &&
+    typeof value.modelId === 'string' &&
+    value.modelId.trim().length > 0 &&
+    typeof value.modelVersion === 'string' &&
+    value.modelVersion.trim().length > 0 &&
+    typeof value.artifactSha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.artifactSha256) &&
+    typeof value.preprocessingVersion === 'string' &&
+    value.preprocessingVersion.trim().length > 0 &&
+    typeof value.calibrationVersion === 'string' &&
+    value.calibrationVersion.trim().length > 0 &&
+    typeof value.displayScaleId === 'string' &&
+    value.displayScaleId.trim().length > 0
   )
 }
 
@@ -176,6 +221,7 @@ function isValidHeatmap(value: unknown): boolean {
   return (
     Array.isArray(value) &&
     value.length > 0 &&
+    value.length <= MAX_SPATIAL_DISPLAY_POINTS &&
     value.every(
       (point) =>
         isRecord(point) &&
@@ -188,39 +234,57 @@ function isValidHeatmap(value: unknown): boolean {
   )
 }
 
-function isValidMetrics(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    hasExactKeys(value, [
-      'roiCoverage',
-      'peakIntensity',
-      'meanIntensity',
-      'focusScore',
-    ]) &&
-    isBoundedFinite(value.roiCoverage) &&
-    isBoundedFinite(value.peakIntensity) &&
-    isBoundedFinite(value.meanIntensity) &&
-    isBoundedFinite(value.focusScore)
-  )
-}
-
 function isValidQualityGates(value: unknown): boolean {
   return (
     isRecord(value) &&
     hasExactKeys(value, [
       'bindingIntegrity',
-      'roiApproval',
+      'sourceBindingIntegrity',
       'finiteValues',
       'normalizedBounds',
       'researchDisplayEligible',
       'clinicalUseEligible',
     ]) &&
     value.bindingIntegrity === 'passed' &&
-    value.roiApproval === 'passed' &&
+    value.sourceBindingIntegrity === 'passed' &&
     value.finiteValues === 'passed' &&
     value.normalizedBounds === 'passed' &&
     value.researchDisplayEligible === true &&
     value.clinicalUseEligible === false
+  )
+}
+
+function isValidConnectedAttentionSemantics(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'schemaVersion',
+      'fieldMeaning',
+      'target',
+      'interpretation',
+      'normalization',
+      'clinicalAoi',
+    ]) ||
+    value.schemaVersion !== 'predicted-observer-attention/1' ||
+    value.fieldMeaning !== 'relative_spatial_density' ||
+    value.target !== 'predicted_observer_attention' ||
+    value.interpretation !== 'population_level' ||
+    value.normalization !== 'shared_display_scale_required' ||
+    !isRecord(value.clinicalAoi) ||
+    !hasExactKeys(value.clinicalAoi, [
+      'registration',
+      'role',
+      'modifiesPrediction',
+    ])
+  ) {
+    return false
+  }
+
+  return (
+    value.clinicalAoi.registration ===
+      'registration_geometry_unavailable_v1' &&
+    value.clinicalAoi.role === 'post_inference_summary' &&
+    value.clinicalAoi.modifiesPrediction === false
   )
 }
 
@@ -234,7 +298,8 @@ function isValidConnectedProvenance(value: unknown): boolean {
       'deterministic',
       'networkAccessed',
       'storageAccessed',
-      'humanGazeData',
+      'observedGazePayloadIncluded',
+      'trainingDataProvenance',
     ]) &&
     value.engine === 'connected_model_gateway' &&
     typeof value.engineVersion === 'string' &&
@@ -243,7 +308,8 @@ function isValidConnectedProvenance(value: unknown): boolean {
     typeof value.deterministic === 'boolean' &&
     value.networkAccessed === true &&
     typeof value.storageAccessed === 'boolean' &&
-    value.humanGazeData === false
+    value.observedGazePayloadIncluded === false &&
+    value.trainingDataProvenance === 'not_disclosed'
   )
 }
 
@@ -355,8 +421,10 @@ function validateResponse(
   if (body.watermark !== CONNECTED_WATERMARK) {
     fail('CAPABILITY_MISMATCH', 'The connected gateway returned the wrong safety watermark.')
   }
+  const expectedRequestIdentity =
+    createConnectedAttentionRequestV1(expectedBinding)
   if (
-    !bindingsMatch(body.binding, expectedBinding) ||
+    !requestIdentitiesMatch(body.requestIdentity, expectedRequestIdentity) ||
     !hasCanonicalAssetBinding(expectedBinding)
   ) {
     fail(
@@ -369,17 +437,19 @@ function validateResponse(
       'origin',
       'capabilityStatus',
       'watermark',
-      'binding',
+      'requestIdentity',
+      'modelIdentity',
       'resultDigest',
+      'attentionSemantics',
       'heatmap',
-      'metrics',
       'qualityGates',
       'provenance',
     ]) ||
     typeof body.resultDigest !== 'string' ||
     body.resultDigest.trim().length === 0 ||
+    !isValidConnectedModelIdentity(body.modelIdentity) ||
+    !isValidConnectedAttentionSemantics(body.attentionSemantics) ||
     !isValidHeatmap(body.heatmap) ||
-    !isValidMetrics(body.metrics) ||
     !isValidQualityGates(body.qualityGates) ||
     !isValidConnectedProvenance(body.provenance)
   ) {
@@ -389,7 +459,14 @@ function validateResponse(
     )
   }
 
-  return deepCloneAndFreeze(body) as ConnectedInferenceOutput
+  const {
+    requestIdentity: _requestIdentity,
+    ...validatedWireOutput
+  } = body
+  return deepCloneAndFreeze({
+    ...validatedWireOutput,
+    binding: expectedBinding,
+  }) as ConnectedInferenceOutput
 }
 
 export class HttpWorkbenchGateway implements WorkbenchGateway {
@@ -417,7 +494,8 @@ export class HttpWorkbenchGateway implements WorkbenchGateway {
   ): Promise<ConnectedInferenceOutput> {
     if (options.signal?.aborted) throw interruptedRequest(false)
 
-    const payload = createCanonicalInferenceBindingSnapshot(binding)
+    const canonicalBinding = createCanonicalInferenceBindingSnapshot(binding)
+    const payload = createConnectedAttentionRequestV1(canonicalBinding)
     const requestSignal = createRequestSignal(options.signal, this.timeoutMs)
 
     try {
@@ -469,7 +547,7 @@ export class HttpWorkbenchGateway implements WorkbenchGateway {
         )
       }
 
-      return validateResponse(body, payload)
+      return validateResponse(body, canonicalBinding)
     } finally {
       requestSignal.cleanup()
     }

@@ -1,105 +1,180 @@
-import { ArrowLeft, Eye, MessageCircleQuestion, Printer, ShieldCheck } from 'lucide-react'
-import { Link } from 'react-router-dom'
-import { AttentionMap } from '../components/AttentionMap'
-import { demoAnalysis } from '../data/demoCase'
+import {
+  ArrowLeft,
+  Download,
+} from 'lucide-react'
+import { Link, useLocation } from 'react-router-dom'
+import { AttentionResultView } from '../components/AttentionResultView'
+import { FailClosedState } from '../components/FailClosedState'
+import {
+  createPatientExportManifest,
+  downloadPatientExport,
+} from '../workbench/reviewExport'
+import { evaluatePatientReportEligibility } from '../workbench/reviewPolicy'
+import { useWorkspace } from '../workbench/WorkspaceProvider'
+
+const PROTOTYPE_LIKE_REVIEW_IDS = new Set([
+  ...Object.getOwnPropertyNames(Object.prototype).map((property) =>
+    property.toLowerCase(),
+  ),
+  'prototype',
+])
+
+function UnavailablePatientPreview({
+  reason,
+  description,
+}: {
+  readonly reason: string
+  readonly description: string
+}) {
+  return (
+    <FailClosedState
+      eyebrow="Patient handoff gate"
+      title="Patient preview unavailable"
+      requestedId={reason}
+      description={description}
+      backTo="/research/reviews"
+      backLabel="Back to research reviews"
+    />
+  )
+}
 
 export function PatientReportPage() {
+  const { search } = useLocation()
+  const { state } = useWorkspace()
+  const queryParameters = new URLSearchParams(search)
+  const reviewParameters = queryParameters.getAll('review')
+  const reviewId = reviewParameters.length === 1 ? reviewParameters[0] : ''
+
+  if ([...queryParameters.keys()].some((key) => key !== 'review')) {
+    return (
+      <UnavailablePatientPreview
+        reason="Unexpected query parameters were supplied"
+        description="Patient explanation eligibility is blocked because this route accepts only one exact review parameter."
+      />
+    )
+  }
+
+  if (
+    reviewParameters.length === 0 ||
+    (reviewParameters.length === 1 && !reviewId.trim())
+  ) {
+    return (
+      <UnavailablePatientPreview
+        reason="No exact review ID was supplied"
+        description="Patient explanation eligibility is blocked until one exact in-session research review is supplied. No fixture was substituted."
+      />
+    )
+  }
+  if (reviewParameters.length !== 1) {
+    return (
+      <UnavailablePatientPreview
+        reason="Duplicate review parameters were supplied"
+        description="Patient explanation eligibility is blocked because the route does not identify one authoritative review."
+      />
+    )
+  }
+  if (reviewId !== reviewId.trim()) {
+    return (
+      <UnavailablePatientPreview
+        reason="The review ID must match exactly"
+        description="Patient explanation eligibility is blocked because leading or trailing whitespace changes the requested review identity."
+      />
+    )
+  }
+  if (PROTOTYPE_LIKE_REVIEW_IDS.has(reviewId.toLowerCase())) {
+    return (
+      <UnavailablePatientPreview
+        reason={reviewId}
+        description="Patient explanation eligibility is blocked because the supplied review identifier is reserved and cannot identify an authoritative review."
+      />
+    )
+  }
+
+  const eligibility = evaluatePatientReportEligibility(state, reviewId)
+  if (!eligibility.eligible) {
+    const details = eligibility.blockers.map((entry) => entry.message).join(' ')
+    return (
+      <UnavailablePatientPreview
+        reason={reviewId}
+        description={`Patient explanation eligibility is blocked. ${details}`}
+      />
+    )
+  }
+
+  const downloadManifest = () => {
+    const result = createPatientExportManifest(state, reviewId)
+    if (result.eligible) downloadPatientExport(result.manifest)
+  }
+
   return (
-    <article className="patient-page">
-      <div className="patient-toolbar page-shell">
-        <Link to="/analysis?case=demo-001">
-          <ArrowLeft aria-hidden="true" /> Return to clinician demo
+    <article className="workspace-page task6-page task6-patient-page">
+      <div className="task6-patient-toolbar page-shell">
+        <Link to={`/research/reviews/${encodeURIComponent(reviewId)}`}>
+          <ArrowLeft aria-hidden="true" /> Return to research review
         </Link>
-        <button type="button" onClick={() => window.print()} aria-label="Print patient explanation">
-          <Printer aria-hidden="true" /> Print explanation
-        </button>
       </div>
 
-      <header className="patient-hero">
-        <div className="patient-hero__inner page-shell">
-          <div>
-            <p className="eyebrow">Conversation guide · Synthetic demonstration</p>
-            <h1>A guide to visual attention maps</h1>
-            <p className="patient-hero__lede">
-              An attention map is one way researchers can summarize where people looked at
-              an image. It is not a score of a face, a feeling, or a recommendation.
-            </p>
-          </div>
-          <div className="patient-safety-card">
-            <ShieldCheck aria-hidden="true" />
-            <div>
-              <strong>This is not a result about you or any patient.</strong>
-              <p>
-                The pictures show different AI-generated people. The colored layers and
-                numbers are simulated—not recorded from human eyes.
-              </p>
-            </div>
-          </div>
-        </div>
+      <header className="page-shell patient-explanation-header">
+        <p className="workspace-kicker">Patient explanation · synthetic demo</p>
+        <h1>Simulated attention explanation</h1>
+        <p>
+          This is a research-interface demonstration. It is not an individual
+          prediction, a clinical measurement, or evidence about a patient.
+        </p>
       </header>
 
-      <section className="page-shell patient-section" aria-labelledby="map-explanation-title">
-        <div className="patient-intro">
-          <div>
-            <p className="eyebrow">What the colors mean</p>
-            <h2 id="map-explanation-title">Color shows more or less visual attention.</h2>
-          </div>
+      <section
+        className="page-shell task6-patient-preview"
+        aria-label="Approved simulated patient explanation"
+      >
+        <div className="patient-result-heading">
+          <h2>Result</h2>
           <p>
-            Warmer areas represent more simulated attention in this interface example. The
-            exact colors do not tell us why someone looked there.
+            Begin with the AOI summary. Open the density field or overlay only
+            when useful.
           </p>
         </div>
 
-        <div className="patient-map-grid">
-          <AttentionMap result={demoAnalysis.imageA} showHeatmap opacity={58} showRegion={false} watermark={demoAnalysis.watermark} />
-          <AttentionMap result={demoAnalysis.imageB} showHeatmap opacity={58} showRegion={false} watermark={demoAnalysis.watermark} />
+        <div className="patient-result">
+          <AttentionResultView
+            asset={eligibility.asset}
+            output={eligibility.output}
+            roi={eligibility.roi}
+            layout="patient-compact"
+          />
         </div>
-        <p className="patient-caption">
-          These images are unpaired. Comparing them demonstrates the website layout; it does
-          not show a change in one person.
-        </p>
-      </section>
 
-      <section className="patient-meaning-band">
-        <div className="page-shell patient-meaning-grid">
+        <details className="patient-result-disclosure">
+          <summary>How to discuss this result</summary>
           <div>
-            <Eye aria-hidden="true" />
-            <p className="eyebrow">Attention can describe</p>
-            <h2>Where and when someone looked.</h2>
-            <ul>
-              <li>How much gaze time entered a defined region</li>
-              <li>How soon the region received a first fixation</li>
-              <li>How many and how long fixations lasted</li>
-            </ul>
+            <p>
+              The display compares relative simulated signal across the displayed
+              image field.
+            </p>
+            <p>
+              It cannot explain what a person thought or felt, diagnose anything, assess
+              healing, or establish whether a procedure succeeded.
+            </p>
           </div>
-          <div>
-            <MessageCircleQuestion aria-hidden="true" />
-            <p className="eyebrow">Attention cannot explain</p>
-            <h2>What that person thought.</h2>
-            <ul>
-              <li>Looking does not tell us what someone thinks or feels.</li>
-              <li>It does not measure attractiveness, stigma, or social judgment.</li>
-              <li>It does not show whether a procedure worked.</li>
-            </ul>
-          </div>
-        </div>
-      </section>
+        </details>
 
-      <section className="page-shell patient-questions" aria-labelledby="questions-title">
-        <p className="eyebrow">Bring the focus back to your goals</p>
-        <h2 id="questions-title">Questions you may want to ask your care team</h2>
-        <ol>
-          <li><span>01</span><p>What changes are realistic for my own anatomy and procedure?</p></li>
-          <li><span>02</span><p>How will we evaluate healing, function, and what matters to me?</p></li>
-          <li><span>03</span><p>Which parts of this research are measured, and which remain uncertain?</p></li>
-        </ol>
-        <div className="patient-final-note">
-          <strong>Remember</strong>
-          <p>
-            Your experience cannot be reduced to a heatmap. This research interface is meant
-            to support questions—not replace your voice or your clinical team.
-          </p>
-        </div>
+        <details className="patient-result-disclosure">
+          <summary>Technical options</summary>
+          <div>
+            <p>
+              Export the restricted research manifest for an authorized technical
+              review. It contains no patient identifiers.
+            </p>
+            <button
+              className="workspace-button workspace-button--secondary"
+              type="button"
+              aria-label="Download safe JSON manifest"
+              onClick={downloadManifest}
+            >
+              <Download aria-hidden="true" /> Download safe JSON manifest
+            </button>
+          </div>
+        </details>
       </section>
     </article>
   )
