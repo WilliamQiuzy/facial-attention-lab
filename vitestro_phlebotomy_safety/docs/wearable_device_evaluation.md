@@ -12,27 +12,27 @@ Post-study CSV export, sleep scores, and app-only summaries are not scored.
 
 `✓` continuous live value or directly derivable from a live raw waveform · `△` on-demand, optional, processed-only, or vendor/partner-gated · `✕` no suitable live path confirmed
 
-Price basis, checked 2026-07-28: new US list price for the minimum publicly
-purchasable hardware. Tax, shipping, host phone/tablet/computer, SDK/API/cloud
-licenses, consumables, and service contracts are excluded unless stated.
-`Quote required` means no reliable public complete-system price is available.
+Price labels, checked 2026-07-28: `List` = public new price; `Procurement` =
+observed public purchase; `Planning` = non-binding estimate or historical
+component subtotal. Tax, shipping, hosts, consumables, licenses, and service are
+excluded unless named. Procurement and planning figures are not vendor quotes.
 
 | Metric | ECG | Raw PPG | HR | IBI / RR | Resp. | EDA | SpO2 | Temp. | Motion | Beat-to-beat BP |
 |---|---|---|---|---|---|---|---|---|---|---|
 | Meaning | Cardiac electrical waveform | Optical pulse waveform | Heart rate | Interbeat / R-R interval | Respiratory rate | Electrodermal activity / sweating | Oxygen saturation | Skin/body temperature | Accelerometer/gyroscope | Systolic/mean/diastolic pressure for every beat |
 
-| Detector and placement | US price / complete-system quote | ECG | Raw PPG | HR | IBI / RR | Resp. | EDA | SpO2 | Temp. | Motion | Beat-to-beat BP | Live host path |
+| Detector and placement | Public price / planning range | ECG | Raw PPG | HR | IBI / RR | Resp. | EDA | SpO2 | Temp. | Motion | Beat-to-beat BP | Live host path |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|---|
-| [Samsung Galaxy Watch8](https://developer.samsung.com/health/sensor/guide/data-specifications.html) — wrist | [From $349.99](https://www.samsung.com/us/watches/galaxy-watch8/); phone and SDK approval excluded | △ | ✓ | ✓ | ✓ | ✕ | ✓ | △ | ✓ | ✓ | ✕ | △ Partner SDK |
-| [Polar H10](https://www.polar.com/en/science/research-tools) — chest strap | [$104.95 list](https://www.polar.com/us-en/sensors/h10); collector excluded | ✓ | ✕ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✓ Open BLE |
-| [VitalConnect VitalPatch RTM / 4](https://vitalconnect.com/docs/ifu034/IFU-034_RevA_VitalPatch4_InstructionsforUse.pdf) — chest patch | [Partner quote required](https://vitalconnect.com/temporary-home-page/): patches + relay + API/platform | ✓ | ✕ | ✓ | ✓ | ✓ | ✕ | ✕ | ✓ | ✓ | ✕ | △ Relay / API |
-| [Vivalink VV330](https://www.vivalink.com/vivalink-sdk) — chest patch | [Vendor quote required](https://www.vivalink.com/dev-app): sensor + adhesives + SDK/API license | ✓ | ✕ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | △ Vendor SDK |
-| [Sibel ANNE Chest + ANNE Limb](https://accessgudid.nlm.nih.gov/devices/00860004541745) — chest + finger/limb | [Vendor quote required](https://sibelhealth.com/request-demo/): both sensors + chargers + software/SDK | ✓ | ✓ | ✓ | ✓ | ✓ | ✕ | ✓ | ✓ | ✓ | ✕ | △ Vendor SDK |
-| [Nonin WristOx2 3150 BLE](https://www.nonin.com/products/wristox2-model-3150-with-ble/) — wrist + finger probe | [$1,049.99 single; $1,689.99 starter kit](https://www.tri-anim.com/ths/diagnostics-monitoring/pulse-oximeters/wristox2-model-3150-oem-with-bluetooth-low-energy/p/group004755) | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✓ BLE |
-| [BIOPAC BioNomadix BN-PPGED](https://www.biopac.com/product/bionomadix-ppg-and-eda-amplifier/) — wrist + finger/palm | [Vendor quote required](https://www.biopac.com/product/bionomadix-ppg-and-eda-amplifier/): BN-PPGED + MP200/160 + AcqKnowledge | ✕ | ✓ | △ | △ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ Receiver |
-| [Caretaker VitalStream](https://www.smartmeddevices.com/vitalstream/) — finger sensor | [Vendor quote required](https://caretakermedical.net/vitalstream/): monitor + finger sensors + API/cloud | ✕ | ✕ | ✓ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | △ Vendor API |
-| [Finapres NOVA](https://www.finapres.com/products/hardware/finapres-nova/finapres-nova-basic) — finger cuffs | [Vendor quote required](https://www.finapres.com/request-for-quote): NOVA Basic; software modules extra | △ | ✕ | ✓ | ✓ | ✕ | ✕ | △ | ✕ | ✕ | ✓ | ✓ Analog outputs |
-| [Apple Watch Series 11](https://developer.apple.com/documentation/HealthKit/running-workout-sessions) — wrist | [From $399](https://www.apple.com/shop/buy-watch/apple-watch); iPhone excluded | △ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✓ Public APIs |
+| [Samsung Galaxy Watch8](https://developer.samsung.com/health/sensor/guide/data-specifications.html) — wrist | List: [from $349.99](https://www.samsung.com/us/watches/galaxy-watch8/); phone and SDK approval excluded | △ | ✓ | ✓ | ✓ | ✕ | ✓ | △ | ✓ | ✓ | ✕ | △ Partner SDK |
+| [Polar H10](https://www.polar.com/en/science/research-tools) — chest strap | List: [$104.95](https://www.polar.com/us-en/sensors/h10); collector excluded | ✓ | ✕ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✓ Open BLE |
+| [VitalConnect VitalPatch RTM / 4](https://vitalconnect.com/docs/ifu034/IFU-034_RevA_VitalPatch4_InstructionsforUse.pdf) — chest patch | 2021 benchmark: [$150–$250/patch + $100–$200/month](https://www.dhs.gov/sites/default/files/2022-02/2425-01_SAVER_PhysMonitoring_MSR_12Jan2022-508.pdf) | ✓ | ✕ | ✓ | ✓ | ✓ | ✕ | ✕ | ✓ | ✓ | ✕ | △ Relay / API |
+| [Vivalink VV330](https://www.vivalink.com/vivalink-sdk) — chest patch | Planning: ≈$10,500/36 months = [$500 sensor](https://vtechworks.lib.vt.edu/server/api/core/bitstreams/8582911f-10f2-4485-888b-8a7825510ed6/content) + [$10,000 platform](https://aws.amazon.com/marketplace/pp/prodview-dbrmhy62ylw4g); adhesives excluded | ✓ | ✕ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | △ Vendor SDK |
+| [Sibel ANNE Chest + ANNE Limb](https://accessgudid.nlm.nih.gov/devices/00860004541745) — chest + finger/limb | Planning, low confidence: [$15,000–$30,000/system](https://www.medindexer.com/knowledge/fetal-monitors-price-estimate); [4-year Sibel–Dräger deployment is >$20M for >1,000 beds](https://www.prnewswire.com/news-releases/sibel-health-selected-to-provide-continuous-wireless-monitoring-to-the-capital-region-of-denmark-302329222.html) | ✓ | ✓ | ✓ | ✓ | ✓ | ✕ | ✓ | ✓ | ✓ | ✕ | △ Vendor SDK |
+| [Nonin WristOx2 3150 BLE](https://www.nonin.com/products/wristox2-model-3150-with-ble/) — wrist + finger probe | List: [$1,049.99 single; $1,689.99 starter kit](https://www.tri-anim.com/ths/diagnostics-monitoring/pulse-oximeters/wristox2-model-3150-oem-with-bluetooth-low-energy/p/group004755) | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✓ BLE |
+| [BIOPAC BioNomadix BN-PPGED](https://www.biopac.com/product/bionomadix-ppg-and-eda-amplifier/) — wrist + finger/palm | 2016–20 component subtotal: ≈$7,381–$10,681 = MP160 [$5,545](https://techfee.fau.edu/approvedproposals/Download.cfm?sid=1358&pid=869)–[$8,845](https://spar.tamu.edu/Transparency/GetFile?id=7988&dir=PoDocs) + BN-PPGED/pulse [$1,592 + $244](https://www.zauba.com/import-LAB%2BEQUIPMENT%2BPARTS/hs-code-90318000-hs-code.html) | ✕ | ✓ | △ | △ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ Receiver |
+| [Caretaker VitalStream](https://www.smartmeddevices.com/vitalstream/) — finger sensor | FY25 procurement: [$6,468 MRI system; $7,143 with five-cuff pack](https://www.uth.edu/buy/documents/transparency-reports-/NonOpenMarketPOs-FY25.xlsx); API/cloud excluded | ✕ | ✕ | ✓ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | △ Vendor API |
+| [Finapres NOVA](https://www.finapres.com/products/hardware/finapres-nova/finapres-nova-basic) — finger cuffs | FY20 procurement: [$40,865 base; $58,555 with three cuffs, three apps, and freight](https://www.uth.edu/buy/documents/transparency-reports-/FY20_NON_OPENMARKET_OVER15K_FOR%20POSTING84.xlsx) | △ | ✕ | ✓ | ✓ | ✕ | ✕ | △ | ✕ | ✕ | ✓ | ✓ Analog outputs |
+| [Apple Watch Series 11](https://developer.apple.com/documentation/HealthKit/running-workout-sessions) — wrist | List: [from $399](https://www.apple.com/shop/buy-watch/apple-watch); iPhone excluded | △ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✓ Public APIs |
 
 ## Quality and evidence
 
