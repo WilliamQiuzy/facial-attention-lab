@@ -1,8 +1,11 @@
-import { listWorkbenchAssets } from './catalog'
+import { getWorkbenchAsset, listWorkbenchAssets } from './catalog'
 import {
   createCanonicalInferenceBindingSnapshot,
   validateNormalizedRoi,
 } from './mockEngine'
+import { validateInferenceOutputEnvelope } from './inferenceEnvelope'
+import { selectExactResultTarget } from './reviewPolicy'
+import { isVerifiedFullImageSourceBinding } from './sourceBinding'
 import {
   WorkbenchError,
   type ApprovedRoiAnnotation,
@@ -12,6 +15,8 @@ import {
   type InferenceOutput,
   type InferenceRun,
   type NormalizedRoi,
+  type ResearchReviewNote,
+  type ResultReview,
   type RoiAnnotation,
   type RoiStatus,
   type RunAttemptStatus,
@@ -26,31 +31,23 @@ export type { WorkspaceAction, WorkspaceState } from './types'
 const DEMO_AUTHOR = 'demo_author' as const
 const DEMO_REVIEWER = 'demo_reviewer' as const
 
-function demoGeometry(index: number): NormalizedRoi {
-  return {
-    x: Number((0.12 + index * 0.01).toFixed(2)),
-    y: Number((0.16 + (index % 3) * 0.02).toFixed(2)),
-    width: 0.38,
-    height: 0.34,
-  }
+function demoGeometry(): NormalizedRoi {
+  return Object.freeze({ x: 0, y: 0, width: 1, height: 1 })
 }
 
 function demoRoi(index: number): RoiAnnotation {
   const asset = listWorkbenchAssets()[index]
-  const status: RoiStatus = index === 0 ? 'draft' : index === 1 ? 'in_review' : 'approved'
-  const base = {
+  const roi: ApprovedRoiAnnotation = {
     id: `roi-demo-${String(index + 1).padStart(2, '0')}`,
     caseId: asset.id,
     assetId: asset.id,
     version: index + 1,
-    geometry: demoGeometry(index),
-    status,
+    geometry: demoGeometry(),
+    status: 'approved',
     authorId: DEMO_AUTHOR,
-  } as const
-
-  return status === 'approved'
-    ? { ...base, status, reviewerId: DEMO_REVIEWER }
-    : base
+    reviewerId: DEMO_REVIEWER,
+  }
+  return Object.freeze(roi)
 }
 
 export function createInitialWorkspaceState(): WorkspaceState {
@@ -64,9 +61,8 @@ export function createInitialWorkspaceState(): WorkspaceState {
     runsById: {},
     runOrder: [],
     attemptsById: {},
-    batchesById: {},
-    batchOrder: [],
-    reviewsByDigest: {},
+    reviewsById: {},
+    reviewOrder: [],
   }
 }
 
@@ -114,6 +110,8 @@ export function getDisplayableResult(
 
   const result = attempt?.result
   return attempt?.status === 'succeeded' &&
+    attempt.binding !== undefined &&
+    bindingMatchesCurrentRoi(state, attempt.binding) &&
     result?.freshness === 'current' &&
     result.output.qualityGates?.researchDisplayEligible === true &&
     result.output.qualityGates?.clinicalUseEligible === false
@@ -151,9 +149,11 @@ function bindingMatchesCurrentRoi(
   state: WorkspaceState,
   binding: InferenceBinding,
 ): boolean {
+  const asset = getWorkbenchAsset(binding.caseId)
   const roi = getCaseRoi(state, binding.caseId)
   return (
-    roi?.status === 'approved' &&
+    isVerifiedFullImageSourceBinding(asset, roi) &&
+    roi !== undefined &&
     roi.id === binding.roiId &&
     roi.version === binding.roiVersion &&
     roi.assetId === binding.assetId &&
@@ -259,6 +259,50 @@ function withChangedRoi(
     roisByCase: { ...state.roisByCase, [caseId]: roi },
     attemptsById: staleResultsForCase(state.attemptsById, caseId),
   }
+}
+
+function restoreFullImageSourceBinding(
+  state: WorkspaceState,
+  action: Extract<
+    WorkspaceAction,
+    { readonly type: 'sourceBinding/restoreFullImage' }
+  >,
+): WorkspaceState {
+  const asset = getWorkbenchAsset(action.caseId)
+  if (!asset) {
+    return failureState(
+      state,
+      'UNKNOWN_CASE',
+      `Unknown workbench case: ${action.caseId}.`,
+      'caseId',
+    )
+  }
+
+  const current = getCaseRoi(state, asset.id)
+  if (isVerifiedFullImageSourceBinding(asset, current)) return state
+
+  const version =
+    current &&
+    Number.isInteger(current.version) &&
+    current.version > 0
+      ? current.version + 1
+      : 1
+  const id =
+    current && typeof current.id === 'string' && current.id.trim().length > 0
+      ? current.id
+      : `source-binding-${asset.id}`
+  const restored: ApprovedRoiAnnotation = Object.freeze({
+    id,
+    caseId: asset.id,
+    assetId: asset.id,
+    version,
+    geometry: demoGeometry(),
+    status: 'approved',
+    authorId: DEMO_AUTHOR,
+    reviewerId: DEMO_REVIEWER,
+  })
+
+  return withChangedRoi(state, asset.id, restored)
 }
 
 function requireAuthor(
@@ -458,13 +502,20 @@ function createRun(
     return { ...state, lastFailure: rebuilt.failure }
   }
   if (
-    rebuilt.binding.clientRunId !== action.runId ||
-    !bindingMatchesCurrentRoi(state, rebuilt.binding)
+    rebuilt.binding.clientRunId !== action.runId
   ) {
     return failureState(
       state,
       'ROI_BINDING_MISMATCH',
-      'The run binding must match its action ID and current approved ROI.',
+      'The run binding must match its action ID.',
+      'binding',
+    )
+  }
+  if (!bindingMatchesCurrentRoi(state, rebuilt.binding)) {
+    return failureState(
+      state,
+      'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+      'The run requires the current verified full-image source binding.',
       'binding',
     )
   }
@@ -584,29 +635,64 @@ function transitionRun(
       return attempt.status === 'validating'
         ? replaceAttemptStatus(state, run, attempt, 'queued')
         : state
-    case 'run/start':
-      return attempt.status === 'queued'
-        ? replaceAttemptStatus(state, run, attempt, 'running')
-        : state
+    case 'run/start': {
+      if (attempt.status !== 'queued') return state
+      if (
+        !attempt.binding ||
+        !bindingMatchesCurrentRoi(state, attempt.binding)
+      ) {
+        return replaceAttemptStatus(state, run, attempt, 'blocked', {
+          failure: {
+            reason: 'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+            message:
+              'Launch blocked: restore the verified full-image source binding before inference.',
+            field: 'sourceBinding',
+          },
+          result: undefined,
+        })
+      }
+      return replaceAttemptStatus(state, run, attempt, 'running')
+    }
     case 'run/succeed': {
-      const rebuiltOutputBinding = canonicalBinding(action.output.binding)
       const attemptBinding = attempt.binding
       if (
         attempt.status !== 'running' ||
-        !attemptBinding ||
-        'failure' in rebuiltOutputBinding
+        !attemptBinding
       ) {
         return state
+      }
+      const envelope = validateInferenceOutputEnvelope(
+        action.output,
+        attemptBinding,
+      )
+      if (!envelope.valid) {
+        return replaceAttemptStatus(state, run, attempt, 'failed', {
+          failure: envelope.failure,
+          result: undefined,
+        })
+      }
+      const rebuiltOutputBinding = canonicalBinding(envelope.output.binding)
+      if ('failure' in rebuiltOutputBinding) {
+        return replaceAttemptStatus(state, run, attempt, 'failed', {
+          failure: rebuiltOutputBinding.failure,
+          result: undefined,
+        })
       }
       const attemptBindingKey = canonicalBindingKey(attemptBinding)
       if (
         attemptBindingKey === undefined ||
         attemptBindingKey !== JSON.stringify(rebuiltOutputBinding.binding)
       ) {
-        return state
+        return replaceAttemptStatus(state, run, attempt, 'failed', {
+          failure: {
+            reason: 'IMMUTABLE_BINDING_MISMATCH',
+            message: 'The resolved output does not match the active inference binding.',
+          },
+          result: undefined,
+        })
       }
       const storedOutput = deepCloneAndFreeze({
-        ...action.output,
+        ...envelope.output,
         binding: rebuiltOutputBinding.binding,
       } as InferenceOutput)
       const freshness =
@@ -691,13 +777,20 @@ function retryRun(
   if ('failure' in rebuilt) return { ...state, lastFailure: rebuilt.failure }
   if (
     rebuilt.binding.clientRunId !== action.runId ||
-    rebuilt.binding.inputFingerprint !== parent.binding.inputFingerprint ||
-    !bindingMatchesCurrentRoi(state, rebuilt.binding)
+    rebuilt.binding.inputFingerprint !== parent.binding.inputFingerprint
   ) {
     return failureState(
       state,
       'IMMUTABLE_BINDING_MISMATCH',
       'A retry must preserve the parent scientific input and bind new operational IDs.',
+      'binding',
+    )
+  }
+  if (!bindingMatchesCurrentRoi(state, rebuilt.binding)) {
+    return failureState(
+      state,
+      'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+      'Retry requires the current verified full-image source binding.',
       'binding',
     )
   }
@@ -755,6 +848,236 @@ function revokeResult(
   }
 }
 
+function hasOwn(record: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function normalizeReviewNote(
+  note: ResearchReviewNote,
+):
+  | { readonly note: ResearchReviewNote }
+  | { readonly field: keyof ResearchReviewNote } {
+  const rationale = typeof note?.rationale === 'string' ? note.rationale.trim() : ''
+  if (rationale.length === 0) return { field: 'rationale' }
+  const limitations =
+    typeof note?.limitations === 'string' ? note.limitations.trim() : ''
+  if (limitations.length === 0) return { field: 'limitations' }
+  return { note: { rationale, limitations } }
+}
+
+function reviewNoteFailure(
+  state: WorkspaceState,
+  field: keyof ResearchReviewNote,
+): WorkspaceState {
+  return failureState(
+    state,
+    'INVALID_REVIEW_NOTE',
+    `Review ${field} must contain non-whitespace text.`,
+    field,
+  )
+}
+
+type ReviewTarget = {
+  readonly run: InferenceRun
+  readonly attempt: InferenceAttempt & {
+    readonly binding: InferenceBinding
+    readonly result: NonNullable<InferenceAttempt['result']>
+  }
+}
+
+function exactReviewTarget(
+  state: WorkspaceState,
+  target: {
+    readonly runId: string
+    readonly attemptId: string
+    readonly resultDigest: string
+    readonly inputFingerprint: string
+  },
+  requireCurrent: boolean,
+): { readonly target: ReviewTarget } | { readonly state: WorkspaceState } {
+  const selected = selectExactResultTarget(state, target)
+  if (!selected.ok) {
+    const bindingIntegrityFailure = selected.blockers.some((entry) =>
+      [
+        'RESULT_BINDING_MISMATCH',
+        'OUTPUT_ENVELOPE_INVALID',
+        'DETERMINISTIC_OUTPUT_MISMATCH',
+        'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+        'ASSET_BINDING_FAILED',
+      ].includes(entry.code),
+    )
+    return {
+      state: failureState(
+        state,
+        bindingIntegrityFailure
+          ? 'IMMUTABLE_BINDING_MISMATCH'
+          : 'UNKNOWN_REVIEW_TARGET',
+        selected.blockers.map((entry) => entry.message).join(' '),
+      ),
+    }
+  }
+
+  if (requireCurrent && selected.target.attempt.result.freshness !== 'current') {
+    return {
+      state: failureState(
+        state,
+        'UNKNOWN_REVIEW_TARGET',
+        'A stale or revoked result cannot enter or advance research review.',
+      ),
+    }
+  }
+
+  return {
+    target: {
+      run: selected.target.run,
+      attempt: selected.target.attempt,
+    },
+  }
+}
+
+function createResultReview(
+  state: WorkspaceState,
+  action: Extract<WorkspaceAction, { readonly type: 'review/create' }>,
+): WorkspaceState {
+  const authorizationFailure = requireAuthor(state, action.actorId)
+  if (authorizationFailure) return authorizationFailure
+  const normalized = normalizeReviewNote(action.note)
+  if ('field' in normalized) return reviewNoteFailure(state, normalized.field)
+
+  if (
+    action.reviewId.trim().length === 0 ||
+    hasOwn(state.reviewsById, action.reviewId) ||
+    operationalIdExists(state, action.reviewId)
+  ) {
+    return failureState(
+      state,
+      'INVALID_OPERATIONAL_ID',
+      'Review IDs must be non-empty and unique within the session.',
+      'reviewId',
+    )
+  }
+
+  const selected = exactReviewTarget(state, action, true)
+  if ('state' in selected) return selected.state
+  const targetAlreadyReviewed = Object.values(state.reviewsById).some(
+    (review) =>
+      review.runId === action.runId &&
+      review.attemptId === action.attemptId &&
+      review.resultDigest === action.resultDigest &&
+      review.inputFingerprint === action.inputFingerprint,
+  )
+  if (targetAlreadyReviewed) {
+    return failureState(
+      state,
+      'INVALID_OPERATIONAL_ID',
+      'This exact run and attempt target already has a review in the current session.',
+      'attemptId',
+    )
+  }
+
+  const review: ResultReview = {
+    id: action.reviewId,
+    runId: action.runId,
+    attemptId: action.attemptId,
+    resultDigest: action.resultDigest,
+    inputFingerprint: action.inputFingerprint,
+    authorId: DEMO_AUTHOR,
+    reviewerId: DEMO_REVIEWER,
+    status: 'awaiting_review',
+    decision: 'awaiting_review',
+    events: [
+      {
+        sequence: 1,
+        decision: 'awaiting_review',
+        actorId: DEMO_AUTHOR,
+        note: normalized.note,
+      },
+    ],
+  }
+
+  return {
+    ...clearFailure(state),
+    reviewsById: { ...state.reviewsById, [review.id]: review },
+    reviewOrder: [...state.reviewOrder, review.id],
+  }
+}
+
+function transitionResultReview(
+  state: WorkspaceState,
+  action: Extract<WorkspaceAction, { readonly type: `review/${string}` }>,
+): WorkspaceState {
+  if (!hasOwn(state.reviewsById, action.reviewId)) {
+    return failureState(
+      state,
+      'UNKNOWN_REVIEW',
+      'The exact review is unavailable in this session.',
+      'reviewId',
+    )
+  }
+  const review = state.reviewsById[action.reviewId]
+  if (!review) {
+    return failureState(state, 'UNKNOWN_REVIEW', 'The exact review is unavailable.')
+  }
+  const normalized = normalizeReviewNote(action.note)
+  if ('field' in normalized) return reviewNoteFailure(state, normalized.field)
+
+  const reviewerAction =
+    action.type === 'review/approve' ||
+    action.type === 'review/requestChanges' ||
+    action.type === 'review/revoke'
+  const authorizationFailure = reviewerAction
+    ? requireReviewer(state, action.actorId)
+    : requireAuthor(state, action.actorId)
+  if (authorizationFailure) return authorizationFailure
+
+  const expectedStatus =
+    action.type === 'review/resubmit'
+      ? 'changes_requested'
+      : action.type === 'review/revoke'
+        ? 'approved_for_research'
+        : 'awaiting_review'
+  if (review.status !== expectedStatus) {
+    return failureState(
+      state,
+      'ILLEGAL_TRANSITION',
+      `Review action ${action.type} is not legal from ${review.status}.`,
+    )
+  }
+
+  if (action.type !== 'review/revoke') {
+    const selected = exactReviewTarget(state, review, true)
+    if ('state' in selected) return selected.state
+  }
+
+  const status =
+    action.type === 'review/approve'
+      ? 'approved_for_research'
+      : action.type === 'review/requestChanges'
+        ? 'changes_requested'
+        : action.type === 'review/resubmit'
+          ? 'awaiting_review'
+          : 'revoked'
+  const nextReview: ResultReview = {
+    ...review,
+    status,
+    decision: status,
+    events: [
+      ...review.events,
+      {
+        sequence: review.events.length + 1,
+        decision: status,
+        actorId: reviewerAction ? DEMO_REVIEWER : DEMO_AUTHOR,
+        note: normalized.note,
+      },
+    ],
+  }
+
+  return {
+    ...clearFailure(state),
+    reviewsById: { ...state.reviewsById, [review.id]: nextReview },
+  }
+}
+
 export function workspaceReducer(
   state: WorkspaceState,
   action: WorkspaceAction,
@@ -762,6 +1085,8 @@ export function workspaceReducer(
   switch (action.type) {
     case 'session/reset':
       return createInitialWorkspaceState()
+    case 'sourceBinding/restoreFullImage':
+      return restoreFullImageSourceBinding(state, action)
     case 'roi/updateGeometry':
       return updateRoiGeometry(state, action)
     case 'roi/submitReview':
@@ -784,6 +1109,13 @@ export function workspaceReducer(
       return retryRun(state, action)
     case 'result/revoke':
       return revokeResult(state, action)
+    case 'review/create':
+      return createResultReview(state, action)
+    case 'review/approve':
+    case 'review/requestChanges':
+    case 'review/resubmit':
+    case 'review/revoke':
+      return transitionResultReview(state, action)
     default:
       return state
   }

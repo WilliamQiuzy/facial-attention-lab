@@ -1,14 +1,15 @@
 import { getWorkbenchAsset } from './catalog'
+import { isVerifiedFullImageSourceBinding } from './sourceBinding'
 import {
   WorkbenchError,
   type CreateInferenceBindingInput,
   type InferenceBinding,
   type InferenceConfiguration,
-  type InferenceMetrics,
   type MockInferenceOutput,
   type MockModelVersion,
   type NormalizedRoi,
   type ScientificInferenceInput,
+  type SpatialAttentionSemantics,
   type WorkbenchFailureReason,
 } from './types'
 
@@ -21,7 +22,7 @@ const MOCK_ENGINE_VERSION = '1' as const
 
 const MOCK_QUALITY_GATES = Object.freeze({
   bindingIntegrity: 'passed',
-  roiApproval: 'passed',
+  sourceBindingIntegrity: 'passed',
   finiteValues: 'passed',
   normalizedBounds: 'passed',
   researchDisplayEligible: true,
@@ -38,6 +39,19 @@ const MOCK_PROVENANCE = Object.freeze({
   storageAccessed: false,
   humanGazeData: false,
 } as const)
+
+const MOCK_ATTENTION_SEMANTICS = Object.freeze({
+  schemaVersion: 'predicted-observer-attention/1',
+  fieldMeaning: 'relative_spatial_density',
+  target: 'predicted_observer_attention',
+  interpretation: 'population_level',
+  normalization: 'shared_display_scale_required',
+  clinicalAoi: Object.freeze({
+    registration: 'synthetic_template_v1',
+    role: 'post_inference_summary',
+    modifiesPrediction: false,
+  }),
+} as const satisfies SpatialAttentionSemantics<'synthetic_template_v1'>)
 
 function fail(
   reason: WorkbenchFailureReason,
@@ -202,6 +216,13 @@ export function createInferenceBinding(
       'roi',
     )
   }
+  if (!isVerifiedFullImageSourceBinding(canonicalAsset, input.roi)) {
+    fail(
+      'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+      'Inference requires a verified full-image source binding; partial rectangles are not inference inputs.',
+      'roi.geometry',
+    )
+  }
   if (!MODEL_VERSIONS.has(input.modelVersion)) {
     fail('UNKNOWN_MODEL', `Unknown mock model: ${input.modelVersion}.`, 'modelVersion')
   }
@@ -328,11 +349,34 @@ function boundedWithinRoi(value: number, start: number, size: number): number {
   return Math.min(start + size, Math.max(start, bounded(value)))
 }
 
+const SYNTHETIC_FACE_CENTERS = Object.freeze([
+  { x: 0.34, y: 0.22 },
+  { x: 0.66, y: 0.22 },
+  { x: 0.38, y: 0.28 },
+  { x: 0.62, y: 0.28 },
+  { x: 0.34, y: 0.36 },
+  { x: 0.66, y: 0.36 },
+  { x: 0.36, y: 0.43 },
+  { x: 0.64, y: 0.43 },
+  { x: 0.35, y: 0.53 },
+  { x: 0.65, y: 0.53 },
+  { x: 0.42, y: 0.59 },
+  { x: 0.58, y: 0.59 },
+  { x: 0.4, y: 0.7 },
+  { x: 0.6, y: 0.7 },
+  { x: 0.44, y: 0.78 },
+  { x: 0.56, y: 0.78 },
+] as const)
+
 function createHeatmap(binding: InferenceBinding) {
   const random = createPrng(seedFromText(binding.inputFingerprint))
-  const points = Array.from({ length: 16 }, () => {
-    const x = binding.roiGeometry.x + random() * binding.roiGeometry.width
-    const y = binding.roiGeometry.y + random() * binding.roiGeometry.height
+  const points = SYNTHETIC_FACE_CENTERS.map((center) => {
+    const relativeX = center.x + (random() - 0.5) * 0.06
+    const relativeY = center.y + (random() - 0.5) * 0.05
+    const x =
+      binding.roiGeometry.x + relativeX * binding.roiGeometry.width
+    const y =
+      binding.roiGeometry.y + relativeY * binding.roiGeometry.height
     const rawIntensity = random()
     const intensity =
       rawIntensity < binding.config.threshold
@@ -349,44 +393,15 @@ function createHeatmap(binding: InferenceBinding) {
   return Object.freeze(points)
 }
 
-function createMetrics(
-  heatmap: ReturnType<typeof createHeatmap>,
-  binding: InferenceBinding,
-): InferenceMetrics {
-  const intensities = heatmap.map((point) => point.intensity)
-  const meanIntensity =
-    intensities.reduce((total, intensity) => total + intensity, 0) / intensities.length
-  const peakIntensity = Math.max(...intensities)
-  const roiArea = binding.roiGeometry.width * binding.roiGeometry.height
-  const spread =
-    heatmap.reduce(
-      (total, point) =>
-        total +
-        Math.abs(point.x - (binding.roiGeometry.x + binding.roiGeometry.width / 2)) +
-        Math.abs(point.y - (binding.roiGeometry.y + binding.roiGeometry.height / 2)),
-      0,
-    ) /
-    heatmap.length /
-    2
-
-  return Object.freeze({
-    roiCoverage: bounded(roiArea * (0.7 + meanIntensity * 0.3)),
-    peakIntensity: bounded(peakIntensity),
-    meanIntensity: bounded(meanIntensity),
-    focusScore: bounded(1 - spread),
-  })
-}
-
 function createResultDigest(
   binding: InferenceBinding,
   heatmap: ReturnType<typeof createHeatmap>,
-  metrics: InferenceMetrics,
 ): string {
   const canonicalResultPayload = {
     engineVersion: MOCK_ENGINE_VERSION,
     bindingScientificFingerprint: binding.inputFingerprint,
     heatmap,
-    metrics,
+    attentionSemantics: MOCK_ATTENTION_SEMANTICS,
     qualityGates: MOCK_QUALITY_GATES,
     provenance: MOCK_PROVENANCE,
   }
@@ -397,16 +412,15 @@ function createResultDigest(
 export function runMockEngine(binding: InferenceBinding): MockInferenceOutput {
   const canonicalBinding = createCanonicalInferenceBindingSnapshot(binding)
   const heatmap = createHeatmap(canonicalBinding)
-  const metrics = createMetrics(heatmap, canonicalBinding)
 
   return Object.freeze({
     origin: 'mock_simulation',
     capabilityStatus: 'simulated_ui_only',
     watermark: 'SIMULATED — NOT HUMAN GAZE',
     binding: canonicalBinding,
-    resultDigest: createResultDigest(canonicalBinding, heatmap, metrics),
+    resultDigest: createResultDigest(canonicalBinding, heatmap),
+    attentionSemantics: MOCK_ATTENTION_SEMANTICS,
     heatmap,
-    metrics,
     qualityGates: MOCK_QUALITY_GATES,
     provenance: MOCK_PROVENANCE,
   })

@@ -10,9 +10,11 @@ import {
 import {
   WorkbenchError,
   type BatchJobStatus,
+  type ConnectedInferenceOutput,
   type CreateInferenceBindingInput,
   type InferenceBinding,
   type InferenceOutput,
+  type MockInferenceOutput,
   type MockModelVersion,
   type NormalizedRoi,
   type ResultFreshness,
@@ -24,7 +26,14 @@ import {
 const primaryAsset = getWorkbenchAsset('SYN-MOHS-SCC-CHEEK')!
 const alternateAsset = getWorkbenchAsset('SYN-MOHS-NASAL-RECON')!
 
-const approvedGeometry: NormalizedRoi = {
+const fullImageGeometry: NormalizedRoi = {
+  x: 0,
+  y: 0,
+  width: 1,
+  height: 1,
+}
+
+const validPartialGeometry: NormalizedRoi = {
   x: 0.18,
   y: 0.24,
   width: 0.41,
@@ -45,7 +54,7 @@ function makeInput(
       caseId: primaryAsset.id,
       assetId: primaryAsset.id,
       version: 3,
-      geometry: approvedGeometry,
+      geometry: fullImageGeometry,
       status: 'approved',
       authorId: 'demo_author',
       reviewerId: 'demo_reviewer',
@@ -68,6 +77,17 @@ function captureFailure(input: CreateInferenceBindingInput): WorkbenchError {
 }
 
 describe('deterministic mock inference engine', () => {
+  it('rejects an approved partial rectangle as a source binding', () => {
+    const error = captureFailure(
+      makeInput({
+        roi: { ...makeInput().roi, geometry: validPartialGeometry },
+      }),
+    )
+
+    expect(error.reason).toBe('FULL_IMAGE_SOURCE_BINDING_REQUIRED')
+    expect(error.message).toMatch(/full-image source binding/i)
+  })
+
   it('keeps workflow state contracts exact', () => {
     expectTypeOf<RunAttemptStatus>().toEqualTypeOf<
       | 'draft'
@@ -107,6 +127,12 @@ describe('deterministic mock inference engine', () => {
       | 'changes_requested'
       | 'superseded'
     >()
+    expectTypeOf<
+      MockInferenceOutput['attentionSemantics']['clinicalAoi']['registration']
+    >().toEqualTypeOf<'synthetic_template_v1'>()
+    expectTypeOf<
+      ConnectedInferenceOutput['attentionSemantics']['clinicalAoi']['registration']
+    >().toEqualTypeOf<'registration_geometry_unavailable_v1'>()
   })
 
   it('keeps scientific fingerprints and results identical across operational retries', () => {
@@ -136,7 +162,6 @@ describe('deterministic mock inference engine', () => {
 
     expect(first.resultDigest).toBe(retry.resultDigest)
     expect(first.heatmap).toEqual(retry.heatmap)
-    expect(first.metrics).toEqual(retry.metrics)
   })
 
   it('reconstructs a deeply frozen binding snapshot before execution', () => {
@@ -162,9 +187,11 @@ describe('deterministic mock inference engine', () => {
     expect(Object.isFrozen(result.binding.roiGeometry)).toBe(true)
     expect(Object.isFrozen(result.heatmap)).toBe(true)
     expect(Object.isFrozen(result.heatmap[0])).toBe(true)
-    expect(Object.isFrozen(result.metrics)).toBe(true)
     expect(Object.isFrozen(result.qualityGates)).toBe(true)
     expect(Object.isFrozen(result.provenance)).toBe(true)
+    expect(result.attentionSemantics).toBeDefined()
+    expect(Object.isFrozen(result.attentionSemantics)).toBe(true)
+    expect(Object.isFrozen(result.attentionSemantics?.clinicalAoi)).toBe(true)
   })
 
   it('matches the exact engine-v1 golden vector for the canonical input', () => {
@@ -176,36 +203,29 @@ describe('deterministic mock inference engine', () => {
       inputFingerprint: result.binding.inputFingerprint,
       resultDigest: result.resultDigest,
       heatmap: result.heatmap,
-      metrics: result.metrics,
     }).toEqual({
       engineVersion: '1',
       configurationHash: 'cfg_560a98e7c95091ec',
-      inputFingerprint: 'input_31dacbcb4bf0af1e',
-      resultDigest: 'result_c02d34ec4178a9e6',
+      inputFingerprint: 'input_e1091986e713d7f1',
+      resultDigest: 'result_406edfbd6714d9c3',
       heatmap: [
-        { x: 0.568864, y: 0.540952, intensity: 0.797848, radius: 0.199183 },
-        { x: 0.357449, y: 0.595387, intensity: 0.254804, radius: 0.122143 },
-        { x: 0.348713, y: 0.550194, intensity: 0.714423, radius: 0.199951 },
-        { x: 0.492627, y: 0.348792, intensity: 0.26855, radius: 0.044487 },
-        { x: 0.403277, y: 0.404227, intensity: 0.849792, radius: 0.079589 },
-        { x: 0.285073, y: 0.283259, intensity: 0.974416, radius: 0.096441 },
-        { x: 0.516874, y: 0.419981, intensity: 0.018861, radius: 0.099955 },
-        { x: 0.251337, y: 0.591079, intensity: 0.089975, radius: 0.117029 },
-        { x: 0.197058, y: 0.485218, intensity: 0.018493, radius: 0.114175 },
-        { x: 0.443899, y: 0.457815, intensity: 0.858915, radius: 0.054206 },
-        { x: 0.577864, y: 0.489751, intensity: 0.23627, radius: 0.087002 },
-        { x: 0.474379, y: 0.579651, intensity: 0.167714, radius: 0.034113 },
-        { x: 0.201255, y: 0.30874, intensity: 0.076872, radius: 0.052386 },
-        { x: 0.307677, y: 0.497174, intensity: 0.636596, radius: 0.045938 },
-        { x: 0.236918, y: 0.26947, intensity: 0.873897, radius: 0.104208 },
-        { x: 0.237404, y: 0.59883, intensity: 0.660868, radius: 0.150112 },
+        { x: 0.347147, y: 0.22672, intensity: 0.587918, radius: 0.150106 },
+        { x: 0.6829, y: 0.21517, intensity: 0.631632, radius: 0.109231 },
+        { x: 0.3582, y: 0.258895, intensity: 0.123662, radius: 0.102727 },
+        { x: 0.639281, y: 0.292528, intensity: 0.672541, radius: 0.068695 },
+        { x: 0.322669, y: 0.379045, intensity: 0.008687, radius: 0.144545 },
+        { x: 0.659595, y: 0.37515, intensity: 0.616381, radius: 0.144152 },
+        { x: 0.364898, y: 0.446753, intensity: 0.294998, radius: 0.138897 },
+        { x: 0.616203, y: 0.413255, intensity: 0.736642, radius: 0.204754 },
+        { x: 0.331808, y: 0.542056, intensity: 0.741663, radius: 0.112948 },
+        { x: 0.64037, y: 0.547147, intensity: 0.066566, radius: 0.166378 },
+        { x: 0.393255, y: 0.612281, intensity: 0.29272, radius: 0.068245 },
+        { x: 0.551444, y: 0.582181, intensity: 0.852715, radius: 0.136274 },
+        { x: 0.37544, y: 0.716651, intensity: 0.097371, radius: 0.06257 },
+        { x: 0.609844, y: 0.710545, intensity: 0.847758, radius: 0.167345 },
+        { x: 0.438857, y: 0.773936, intensity: 0.269143, radius: 0.064075 },
+        { x: 0.584918, y: 0.80246, intensity: 0.021256, radius: 0.161606 },
       ],
-      metrics: {
-        roiCoverage: 0.124072,
-        peakIntensity: 0.974416,
-        meanIntensity: 0.468643,
-        focusScore: 0.890735,
-      },
     })
   })
 
@@ -225,16 +245,9 @@ describe('deterministic mock inference engine', () => {
         }),
     ],
     ['ROI version', () => makeInput({ roi: { ...makeInput().roi, version: 4 } })],
-    [
-      'ROI geometry',
-      () =>
-        makeInput({
-          roi: {
-            ...makeInput().roi,
-            geometry: { ...approvedGeometry, x: approvedGeometry.x + 0.01 },
-          },
-        }),
-    ],
+    ['source binding ID', () => makeInput({
+      roi: { ...makeInput().roi, id: 'source-binding-alternate' },
+    })],
     ['model version', () => makeInput({ modelVersion: 'mock-salience-v0.4' })],
     [
       'configuration',
@@ -248,10 +261,7 @@ describe('deterministic mock inference engine', () => {
       baseline.binding.inputFingerprint,
     )
     expect(changed.resultDigest).not.toBe(baseline.resultDigest)
-    expect({ heatmap: changed.heatmap, metrics: changed.metrics }).not.toEqual({
-      heatmap: baseline.heatmap,
-      metrics: baseline.metrics,
-    })
+    expect(changed.heatmap).not.toEqual(baseline.heatmap)
   })
 
   it('returns bounded finite values with explicit mock-only safety labels', () => {
@@ -263,6 +273,18 @@ describe('deterministic mock inference engine', () => {
     expect(result.watermark).toBe('SIMULATED — NOT HUMAN GAZE')
     expect(result.binding).not.toBe(binding)
     expect(result.binding).toEqual(binding)
+    expect(result.attentionSemantics).toEqual({
+      schemaVersion: 'predicted-observer-attention/1',
+      fieldMeaning: 'relative_spatial_density',
+      target: 'predicted_observer_attention',
+      interpretation: 'population_level',
+      normalization: 'shared_display_scale_required',
+      clinicalAoi: {
+        registration: 'synthetic_template_v1',
+        role: 'post_inference_summary',
+        modifiesPrediction: false,
+      },
+    })
     expect(result.heatmap.length).toBeGreaterThan(0)
     for (const point of result.heatmap) {
       for (const value of [point.x, point.y, point.intensity, point.radius]) {
@@ -271,14 +293,9 @@ describe('deterministic mock inference engine', () => {
         expect(value).toBeLessThanOrEqual(1)
       }
     }
-    for (const value of Object.values(result.metrics)) {
-      expect(Number.isFinite(value)).toBe(true)
-      expect(value).toBeGreaterThanOrEqual(0)
-      expect(value).toBeLessThanOrEqual(1)
-    }
     expect(result.qualityGates).toEqual({
       bindingIntegrity: 'passed',
-      roiApproval: 'passed',
+      sourceBindingIntegrity: 'passed',
       finiteValues: 'passed',
       normalizedBounds: 'passed',
       researchDisplayEligible: true,
@@ -296,32 +313,45 @@ describe('deterministic mock inference engine', () => {
     })
   })
 
-  it('keeps every heatmap coordinate inside a valid sub-micro ROI', () => {
+  it('places deterministic samples around synthetic facial feature centers', () => {
+    const result = runMockEngine(createInferenceBinding(makeInput()))
+    const relativePoints = result.heatmap.map((point) => ({
+      x: (point.x - fullImageGeometry.x) / fullImageGeometry.width,
+      y: (point.y - fullImageGeometry.y) / fullImageGeometry.height,
+    }))
+    const featureBands = [
+      ['brow', relativePoints.slice(0, 4), [0.16, 0.34]],
+      ['bilateral orbital', relativePoints.slice(4, 8), [0.32, 0.48]],
+      ['midface', relativePoints.slice(8, 12), [0.48, 0.66]],
+      ['perioral', relativePoints.slice(12, 16), [0.66, 0.84]],
+    ] as const
+
+    for (const [label, points, [minY, maxY]] of featureBands) {
+      expect(points, label).toHaveLength(4)
+      expect(points.some((point) => point.x < 0.5), label).toBe(true)
+      expect(points.some((point) => point.x > 0.5), label).toBe(true)
+      for (const point of points) {
+        expect(point.x, label).toBeGreaterThanOrEqual(0.27)
+        expect(point.x, label).toBeLessThanOrEqual(0.73)
+        expect(point.y, label).toBeGreaterThanOrEqual(minY)
+        expect(point.y, label).toBeLessThanOrEqual(maxY)
+      }
+    }
+  })
+
+  it('accepts sub-micro geometry as normalized but rejects it as an execution source binding', () => {
     const geometry: NormalizedRoi = {
       x: 4e-7,
       y: 4e-7,
       width: 1e-7,
       height: 1e-7,
     }
-    const result = runMockEngine(
-      createInferenceBinding(
-        makeInput({ roi: { ...makeInput().roi, geometry } }),
-      ),
+    const error = captureFailure(
+      makeInput({ roi: { ...makeInput().roi, geometry } }),
     )
-    const maxX = geometry.x + geometry.width
-    const maxY = geometry.y + geometry.height
 
     expect(validateNormalizedRoi(geometry)).toBe(true)
-    for (const point of result.heatmap) {
-      expect(point.x).toBeGreaterThanOrEqual(geometry.x)
-      expect(point.x).toBeLessThanOrEqual(maxX)
-      expect(point.y).toBeGreaterThanOrEqual(geometry.y)
-      expect(point.y).toBeLessThanOrEqual(maxY)
-      expect(point.x).toBeGreaterThanOrEqual(0)
-      expect(point.x).toBeLessThanOrEqual(1)
-      expect(point.y).toBeGreaterThanOrEqual(0)
-      expect(point.y).toBeLessThanOrEqual(1)
-    }
+    expect(error.reason).toBe('FULL_IMAGE_SOURCE_BINDING_REQUIRED')
   })
 
   it.each([
@@ -355,7 +385,7 @@ describe('deterministic mock inference engine', () => {
       makeInput({
         roi: {
           ...makeInput().roi,
-          geometry: { ...approvedGeometry, width: 0 },
+          geometry: { ...fullImageGeometry, width: 0 },
         },
       }),
       'INVALID_ROI_GEOMETRY',
@@ -379,13 +409,14 @@ describe('deterministic mock inference engine', () => {
   })
 
   it.each([
-    [approvedGeometry, true],
-    [{ ...approvedGeometry, x: -0.01 }, false],
-    [{ ...approvedGeometry, y: Number.POSITIVE_INFINITY }, false],
-    [{ ...approvedGeometry, width: 0 }, false],
-    [{ ...approvedGeometry, height: 0 }, false],
-    [{ ...approvedGeometry, x: 0.8, width: 0.3 }, false],
-    [{ ...approvedGeometry, y: 0.8, height: 0.3 }, false],
+    [fullImageGeometry, true],
+    [validPartialGeometry, true],
+    [{ ...validPartialGeometry, x: -0.01 }, false],
+    [{ ...validPartialGeometry, y: Number.POSITIVE_INFINITY }, false],
+    [{ ...validPartialGeometry, width: 0 }, false],
+    [{ ...validPartialGeometry, height: 0 }, false],
+    [{ ...validPartialGeometry, x: 0.8, width: 0.3 }, false],
+    [{ ...validPartialGeometry, y: 0.8, height: 0.3 }, false],
   ])('validates normalized ROI geometry %#', (geometry, expected) => {
     expect(validateNormalizedRoi(geometry)).toBe(expected)
   })

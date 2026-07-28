@@ -3,30 +3,20 @@ import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
 
 const navigation = [
-  { to: '/', label: 'Overview', end: true },
-  { to: '/cases', label: 'Synthetic cases' },
-  { to: '/analysis', label: 'Attention demo' },
-  { to: '/patient-report', label: 'Patient explanation' },
-  { to: '/model', label: 'Model & data' },
-  { to: '/methods', label: 'Methods' },
-]
+  { to: '/patients', label: 'Patients' },
+  { to: '/reviews', label: 'Reviews' },
+  { to: '/about', label: 'Help' },
+] as const
 
 export function AppHeader() {
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
-    <header className="site-header">
+    <header className="site-header workspace-header">
       <div className="site-header__inner">
-        <NavLink className="brand" to="/" onClick={() => setMenuOpen(false)}>
-          <span className="brand__mark" aria-hidden="true">
-            FA
-          </span>
-          <span>
-            <span className="brand__name">Facial Attention Lab</span>
-            <span className="brand__context">
-              Independent research prototype · Mayo-inspired visual system
-            </span>
-          </span>
+        <NavLink className="brand" to="/patients" onClick={() => setMenuOpen(false)}>
+          <span className="brand__mark" aria-hidden="true">FR</span>
+          <span className="brand__name">Facial Reconstruction Imaging</span>
         </NavLink>
 
         <button
@@ -47,12 +37,7 @@ export function AppHeader() {
           aria-label="Primary navigation"
         >
           {navigation.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              onClick={() => setMenuOpen(false)}
-            >
+            <NavLink key={item.to} to={item.to} onClick={() => setMenuOpen(false)}>
               {item.label}
             </NavLink>
           ))}

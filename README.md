@@ -1,8 +1,18 @@
 # Facial Attention Lab
 
-Public, history-free source snapshot of a research-only React workbench for exploring simulated facial-attention workflows on AI-generated synthetic faces.
+Public source snapshot of a clinician-facing, research-only React prototype for
+rehearsing synthetic/test patient records, standardized photo visits, local
+simulated attention results, and simple clinician review. The legacy research
+workbench remains available for synthetic case, batch, model-comparison, and
+structured-review exercises.
 
-This repository contains no Mayo patient recordings, patient-derived features, clinical labels, model weights, or real-image synthesis outputs. The ten bundled images are separate AI-generated identities, hash-locked in the application allowlist, and may only be presented as unpaired interface demonstrations. The interface is not a diagnostic tool, clinical decision aid, human-gaze result, or validated model.
+This repository contains no Mayo patient recordings, patient-derived features,
+clinical labels, model weights, or real-image synthesis outputs. Patient records
+and selected test-image bytes remain in browser memory for the current session
+only. The ten bundled images are separate AI-generated identities, hash-locked
+in the application allowlist, and may only be presented as unpaired interface
+demonstrations. The interface is not a diagnostic tool, clinical decision aid,
+human-gaze result, or validated model.
 
 ## Run locally
 

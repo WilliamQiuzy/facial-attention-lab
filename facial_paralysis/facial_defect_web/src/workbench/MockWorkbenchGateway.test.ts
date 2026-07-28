@@ -22,7 +22,7 @@ function createBinding(
       caseId: asset.id,
       assetId: asset.id,
       version: 3,
-      geometry: { x: 0.18, y: 0.24, width: 0.41, height: 0.36 },
+      geometry: { x: 0, y: 0, width: 1, height: 1 },
       status: 'approved',
       authorId: 'demo_author',
       reviewerId: 'demo_reviewer',
@@ -66,7 +66,6 @@ describe('MockWorkbenchGateway', () => {
     expect(gateway.mode).toBe('mock')
     expect(retry.resultDigest).toBe(first.resultDigest)
     expect(retry.heatmap).toEqual(first.heatmap)
-    expect(retry.metrics).toEqual(first.metrics)
   })
 
   it('rejects an already-aborted request before scheduling work', async () => {

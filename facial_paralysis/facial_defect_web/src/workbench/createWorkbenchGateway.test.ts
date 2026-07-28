@@ -62,7 +62,7 @@ function createBinding(): InferenceBinding {
       caseId: asset.id,
       assetId: asset.id,
       version: 1,
-      geometry: { x: 0.18, y: 0.24, width: 0.41, height: 0.36 },
+      geometry: { x: 0, y: 0, width: 1, height: 1 },
       status: 'approved',
       authorId: 'demo_author',
       reviewerId: 'demo_reviewer',

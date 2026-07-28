@@ -92,6 +92,32 @@ export type InferenceBinding = {
   readonly inputFingerprint: string
 }
 
+export const CONNECTED_ATTENTION_REQUEST_PROFILE_VERSION =
+  'synthetic-spatial-contract-rehearsal/1' as const
+
+export type ConnectedAttentionRequestV1 = {
+  readonly requestProfileVersion: typeof CONNECTED_ATTENTION_REQUEST_PROFILE_VERSION
+  readonly clientRunId: string
+  readonly attemptToken: string
+  readonly caseId: WorkbenchAssetId
+  readonly assetId: WorkbenchAssetId
+  readonly sourceSha256: string
+  readonly sourceBinding: Readonly<{
+    readonly id: string
+    readonly version: number
+    readonly geometry: Readonly<NormalizedRoi>
+  }>
+}
+
+export type ConnectedModelIdentity = Readonly<{
+  readonly modelId: string
+  readonly modelVersion: string
+  readonly artifactSha256: string
+  readonly preprocessingVersion: string
+  readonly calibrationVersion: string
+  readonly displayScaleId: string
+}>
+
 export type HeatmapPoint = {
   readonly x: number
   readonly y: number
@@ -99,16 +125,30 @@ export type HeatmapPoint = {
   readonly radius: number
 }
 
-export type InferenceMetrics = {
-  readonly roiCoverage: number
-  readonly peakIntensity: number
-  readonly meanIntensity: number
-  readonly focusScore: number
-}
+export const MAX_SPATIAL_DISPLAY_POINTS = 4_096
+
+export type ClinicalAoiRegistration =
+  | 'synthetic_template_v1'
+  | 'registration_geometry_unavailable_v1'
+
+export type SpatialAttentionSemantics<
+  TRegistration extends ClinicalAoiRegistration = ClinicalAoiRegistration,
+> = Readonly<{
+  readonly schemaVersion: 'predicted-observer-attention/1'
+  readonly fieldMeaning: 'relative_spatial_density'
+  readonly target: 'predicted_observer_attention'
+  readonly interpretation: 'population_level'
+  readonly normalization: 'shared_display_scale_required'
+  readonly clinicalAoi: Readonly<{
+    readonly registration: TRegistration
+    readonly role: 'post_inference_summary'
+    readonly modifiesPrediction: false
+  }>
+}>
 
 export type InferenceQualityGates = {
   readonly bindingIntegrity: 'passed'
-  readonly roiApproval: 'passed'
+  readonly sourceBindingIntegrity: 'passed'
   readonly finiteValues: 'passed'
   readonly normalizedBounds: 'passed'
   readonly researchDisplayEligible: boolean
@@ -133,29 +173,40 @@ export type ConnectedInferenceProvenance = {
   readonly deterministic: boolean
   readonly networkAccessed: boolean
   readonly storageAccessed: boolean
-  readonly humanGazeData: false
+  readonly observedGazePayloadIncluded: false
+  readonly trainingDataProvenance: 'not_disclosed'
 }
 
-export type InferenceOutputCore<TProvenance> = {
+export type InferenceOutputCore<
+  TProvenance,
+  TRegistration extends ClinicalAoiRegistration,
+> = {
   readonly binding: InferenceBinding
   readonly resultDigest: string
+  readonly attentionSemantics: SpatialAttentionSemantics<TRegistration>
   readonly heatmap: readonly HeatmapPoint[]
-  readonly metrics: InferenceMetrics
   readonly qualityGates: InferenceQualityGates
   readonly provenance: TProvenance
 }
 
-export type MockInferenceOutput = InferenceOutputCore<MockInferenceProvenance> & {
+export type MockInferenceOutput = InferenceOutputCore<
+  MockInferenceProvenance,
+  'synthetic_template_v1'
+> & {
   readonly origin: 'mock_simulation'
   readonly capabilityStatus: 'simulated_ui_only'
   readonly watermark: 'SIMULATED — NOT HUMAN GAZE'
 }
 
 export type ConnectedInferenceOutput =
-  InferenceOutputCore<ConnectedInferenceProvenance> & {
+  InferenceOutputCore<
+    ConnectedInferenceProvenance,
+    'registration_geometry_unavailable_v1'
+  > & {
     readonly origin: 'model_prediction'
     readonly capabilityStatus: 'research_unvalidated'
     readonly watermark: 'MODEL PREDICTION — RESEARCH UNVALIDATED — NOT HUMAN GAZE — CLINICAL USE BLOCKED'
+    readonly modelIdentity: ConnectedModelIdentity
   }
 
 export type InferenceOutput = MockInferenceOutput | ConnectedInferenceOutput
@@ -167,6 +218,7 @@ export type WorkbenchFailureReason =
   | 'ASSET_HASH_MISMATCH'
   | 'ROI_BINDING_MISMATCH'
   | 'ROI_NOT_APPROVED'
+  | 'FULL_IMAGE_SOURCE_BINDING_REQUIRED'
   | 'INVALID_ROI_GEOMETRY'
   | 'INVALID_ROI_VERSION'
   | 'INVALID_ROI_ACTORS'
@@ -189,6 +241,9 @@ export type WorkbenchFailureReason =
   | 'CONNECTED_GATEWAY_NOT_IMPLEMENTED'
   | 'SELF_REVIEW_FORBIDDEN'
   | 'ACTOR_NOT_AUTHORIZED'
+  | 'INVALID_REVIEW_NOTE'
+  | 'UNKNOWN_REVIEW'
+  | 'UNKNOWN_REVIEW_TARGET'
   | 'ILLEGAL_TRANSITION'
 
 export type WorkbenchFailure = {
@@ -265,11 +320,29 @@ export type ReviewStatus =
   | 'changes_requested'
   | 'revoked'
 
-export type ResultReview = {
-  readonly resultDigest: string
-  readonly reviewerId: 'demo_reviewer'
+export type ResearchReviewNote = {
+  readonly rationale: string
+  readonly limitations: string
+}
+
+export type ResultReviewEvent = {
+  readonly sequence: number
   readonly decision: ReviewStatus
-  readonly note?: string
+  readonly actorId: WorkbenchActorId
+  readonly note: ResearchReviewNote
+}
+
+export type ResultReview = {
+  readonly id: string
+  readonly runId: string
+  readonly attemptId: string
+  readonly resultDigest: string
+  readonly inputFingerprint: string
+  readonly authorId: 'demo_author'
+  readonly reviewerId: 'demo_reviewer'
+  readonly status: ReviewStatus
+  readonly decision: ReviewStatus
+  readonly events: readonly ResultReviewEvent[]
 }
 
 export type ResultFreshness = 'current' | 'stale' | 'revoked'
@@ -284,9 +357,8 @@ export type WorkspaceState = {
   readonly runsById: Readonly<Record<string, InferenceRun>>
   readonly runOrder: readonly string[]
   readonly attemptsById: Readonly<Record<string, InferenceAttempt>>
-  readonly batchesById: Readonly<Record<string, InferenceBatch>>
-  readonly batchOrder: readonly string[]
-  readonly reviewsByDigest: Readonly<Record<string, ResultReview>>
+  readonly reviewsById: Readonly<Record<string, ResultReview>>
+  readonly reviewOrder: readonly string[]
   readonly activeRunId?: string
   readonly lastFailure?: WorkbenchFailure
 }
@@ -300,6 +372,10 @@ export type AsyncRunActionBinding = {
 
 export type WorkspaceAction =
   | { readonly type: 'session/reset' }
+  | {
+      readonly type: 'sourceBinding/restoreFullImage'
+      readonly caseId: string
+    }
   | {
       readonly type: 'roi/updateGeometry'
       readonly caseId: string
@@ -340,4 +416,24 @@ export type WorkspaceAction =
       readonly type: 'result/revoke'
       readonly runId: string
       readonly attemptId: string
+    }
+  | {
+      readonly type: 'review/create'
+      readonly reviewId: string
+      readonly runId: string
+      readonly attemptId: string
+      readonly resultDigest: string
+      readonly inputFingerprint: string
+      readonly actorId: string
+      readonly note: ResearchReviewNote
+    }
+  | {
+      readonly type:
+        | 'review/approve'
+        | 'review/requestChanges'
+        | 'review/resubmit'
+        | 'review/revoke'
+      readonly reviewId: string
+      readonly actorId: string
+      readonly note: ResearchReviewNote
     }

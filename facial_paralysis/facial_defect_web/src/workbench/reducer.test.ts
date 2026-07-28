@@ -14,6 +14,7 @@ import type {
   InferenceBinding,
   InferenceOutput,
   NormalizedRoi,
+  RoiAnnotation,
   WorkspaceAction,
   WorkspaceState,
 } from './types'
@@ -52,6 +53,32 @@ function makeBinding(
 
 function reduce(state: WorkspaceState, ...actions: readonly WorkspaceAction[]) {
   return actions.reduce(workspaceReducer, state)
+}
+
+function withResearchRoiStatus(
+  state: WorkspaceState,
+  catalogIndex: number,
+  status: 'draft' | 'in_review' | 'changes_requested',
+  geometry?: NormalizedRoi,
+): WorkspaceState {
+  const asset = listWorkbenchAssets()[catalogIndex]
+  const roi = getCaseRoi(state, asset.id)!
+  const { reviewerId: _reviewerId, ...withoutReviewer } = roi
+  const researchRoi: RoiAnnotation = {
+    ...withoutReviewer,
+    status,
+    ...(geometry ? { geometry } : {}),
+    ...(status === 'changes_requested'
+      ? { reviewerId: 'demo_reviewer' as const }
+      : {}),
+  }
+  return {
+    ...state,
+    roisByCase: {
+      ...state.roisByCase,
+      [asset.id]: researchRoi,
+    },
+  }
 }
 
 function asyncActionBinding(binding: InferenceBinding, attemptId = 'attempt-001') {
@@ -117,14 +144,13 @@ function makeMutableOutput(binding: InferenceBinding) {
       roiGeometry: { ...output.binding.roiGeometry },
     },
     heatmap: output.heatmap.map((point) => ({ ...point })),
-    metrics: { ...output.metrics },
     qualityGates: { ...output.qualityGates },
     provenance: { ...output.provenance },
   } satisfies InferenceOutput
 }
 
 describe('workspace reducer initial state', () => {
-  it('seeds deterministic independent ROI workflow state without storage or network access', () => {
+  it('seeds every synthetic case with an immutable approved full-image binding', () => {
     const storageSpy = vi.spyOn(Storage.prototype, 'getItem')
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
 
@@ -134,21 +160,20 @@ describe('workspace reducer initial state', () => {
     const rois = catalog.map((entry) => getCaseRoi(first, entry.id))
 
     expect(catalog).toHaveLength(10)
-    expect(rois.map((roi) => roi?.status)).toEqual([
-      'draft',
-      'in_review',
-      'approved',
-      'approved',
-      'approved',
-      'approved',
-      'approved',
-      'approved',
-      'approved',
-      'approved',
-    ])
-    expect(rois.every((roi) => roi && validateNormalizedRoi(roi.geometry))).toBe(true)
-    expect(rois.slice(2).every((roi) => roi?.authorId === 'demo_author')).toBe(true)
-    expect(rois.slice(2).every((roi) => roi?.reviewerId === 'demo_reviewer')).toBe(true)
+    for (const [index, roi] of rois.entries()) {
+      expect(roi).toMatchObject({
+        caseId: catalog[index].id,
+        assetId: catalog[index].id,
+        status: 'approved',
+        authorId: 'demo_author',
+        reviewerId: 'demo_reviewer',
+        geometry: { x: 0, y: 0, width: 1, height: 1 },
+      })
+      expect(roi && validateNormalizedRoi(roi.geometry)).toBe(true)
+      expect(roi?.authorId).not.toBe(roi?.reviewerId)
+      expect(Object.isFrozen(roi)).toBe(true)
+      expect(Object.isFrozen(roi?.geometry)).toBe(true)
+    }
     expect(first).toEqual(second)
     expect(first).not.toBe(second)
     expect(first.roisByCase).not.toBe(second.roisByCase)
@@ -162,9 +187,8 @@ describe('workspace reducer initial state', () => {
       runsById: {},
       runOrder: [],
       attemptsById: {},
-      batchesById: {},
-      batchOrder: [],
-      reviewsByDigest: {},
+      reviewsById: {},
+      reviewOrder: [],
     })
     expect(first.activeRunId).toBeUndefined()
     expect(first.lastFailure).toBeUndefined()
@@ -177,8 +201,138 @@ describe('workspace reducer initial state', () => {
 })
 
 describe('workspace reducer ROI lifecycle', () => {
-  it('supports every legal author-reviewer transition and geometry edit', () => {
+  it.each([
+    'draft',
+    'in_review',
+    'changes_requested',
+    'approved',
+    'superseded',
+  ] as const)(
+    'restores a partial %s annotation to the canonical approved full-image source binding',
+    (status) => {
+      const initial = createInitialWorkspaceState()
+      const asset = listWorkbenchAssets()[0]
+      const current = getCaseRoi(initial, asset.id)!
+      const partial: RoiAnnotation = {
+        ...current,
+        status,
+        geometry: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+        ...(status === 'draft' || status === 'in_review'
+          ? { reviewerId: undefined }
+          : { reviewerId: 'demo_reviewer' }),
+      }
+      const state: WorkspaceState = {
+        ...initial,
+        roisByCase: { ...initial.roisByCase, [asset.id]: partial },
+      }
+
+      const restored = workspaceReducer(
+        state,
+        {
+          type: 'sourceBinding/restoreFullImage',
+          caseId: asset.id,
+        } as WorkspaceAction,
+      )
+
+      expect(getCaseRoi(restored, asset.id)).toEqual({
+        id: current.id,
+        caseId: asset.id,
+        assetId: asset.id,
+        version: current.version + 1,
+        geometry: { x: 0, y: 0, width: 1, height: 1 },
+        status: 'approved',
+        authorId: 'demo_author',
+        reviewerId: 'demo_reviewer',
+      })
+    },
+  )
+
+  it('restores a missing annotation at version one and is an exact no-op when already verified', () => {
     const initial = createInitialWorkspaceState()
+    const asset = listWorkbenchAssets()[0]
+    const missing: WorkspaceState = {
+      ...initial,
+      roisByCase: Object.fromEntries(
+        Object.entries(initial.roisByCase).filter(([caseId]) => caseId !== asset.id),
+      ),
+    }
+
+    const restored = workspaceReducer(
+      missing,
+      {
+        type: 'sourceBinding/restoreFullImage',
+        caseId: asset.id,
+      } as WorkspaceAction,
+    )
+    const sourceBinding = getCaseRoi(restored, asset.id)
+    expect(sourceBinding).toMatchObject({
+      caseId: asset.id,
+      assetId: asset.id,
+      version: 1,
+      geometry: { x: 0, y: 0, width: 1, height: 1 },
+      status: 'approved',
+      authorId: 'demo_author',
+      reviewerId: 'demo_reviewer',
+    })
+    expect(sourceBinding?.id.trim().length).toBeGreaterThan(0)
+    expect(
+      workspaceReducer(restored, {
+        type: 'sourceBinding/restoreFullImage',
+        caseId: asset.id,
+      } as WorkspaceAction),
+    ).toBe(restored)
+    expect(
+      workspaceReducer(initial, {
+        type: 'sourceBinding/restoreFullImage',
+        caseId: asset.id,
+      } as WorkspaceAction),
+    ).toBe(initial)
+  })
+
+  it('stales incompatible current results while preserving their complete history', () => {
+    const successful = createSuccessfulRun(createInitialWorkspaceState())
+    const current = getCaseRoi(successful.state, successful.binding.caseId)!
+    const partialState: WorkspaceState = {
+      ...successful.state,
+      roisByCase: {
+        ...successful.state.roisByCase,
+        [successful.binding.caseId]: {
+          ...current,
+          geometry: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+        },
+      },
+    }
+    const previousAttempt = getAttempt(
+      partialState,
+      successful.asyncBinding.attemptId,
+    )!
+
+    const restored = workspaceReducer(
+      partialState,
+      {
+        type: 'sourceBinding/restoreFullImage',
+        caseId: successful.binding.caseId,
+      } as WorkspaceAction,
+    )
+    const restoredAttempt = getAttempt(
+      restored,
+      successful.asyncBinding.attemptId,
+    )!
+
+    expect(restoredAttempt).toMatchObject({
+      id: previousAttempt.id,
+      binding: previousAttempt.binding,
+      result: {
+        output: previousAttempt.result?.output,
+        freshness: 'stale',
+      },
+    })
+    expect(restored.runOrder).toEqual(partialState.runOrder)
+    expect(restored.reviewOrder).toEqual(partialState.reviewOrder)
+  })
+
+  it('supports every legal author-reviewer transition and geometry edit', () => {
+    const initial = withResearchRoiStatus(createInitialWorkspaceState(), 0, 'draft')
     const caseId = listWorkbenchAssets()[0].id
     const original = getCaseRoi(initial, caseId)!
     const geometry: NormalizedRoi = { x: 0.2, y: 0.18, width: 0.42, height: 0.37 }
@@ -239,7 +393,7 @@ describe('workspace reducer ROI lifecycle', () => {
   })
 
   it('rejects invalid geometry without changing ROI workflow state', () => {
-    const initial = createInitialWorkspaceState()
+    const initial = withResearchRoiStatus(createInitialWorkspaceState(), 0, 'draft')
     const caseId = listWorkbenchAssets()[0].id
     const roiBefore = getCaseRoi(initial, caseId)
 
@@ -255,7 +409,7 @@ describe('workspace reducer ROI lifecycle', () => {
   })
 
   it('enforces author-reviewer separation and records stable workflow failures', () => {
-    const initial = createInitialWorkspaceState()
+    const initial = withResearchRoiStatus(createInitialWorkspaceState(), 1, 'in_review')
     const caseId = listWorkbenchAssets()[1].id
     const roiBefore = getCaseRoi(initial, caseId)
 
@@ -286,6 +440,36 @@ describe('workspace reducer ROI lifecycle', () => {
 })
 
 describe('workspace reducer run lifecycle', () => {
+  it('rejects a direct run action when the current case has only a partial source rectangle', () => {
+    const initial = createInitialWorkspaceState()
+    const binding = makeBinding(initial)
+    const current = initial.roisByCase[binding.caseId]!
+    const partialState: WorkspaceState = {
+      ...initial,
+      roisByCase: {
+        ...initial.roisByCase,
+        [binding.caseId]: {
+          ...current,
+          geometry: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+        },
+      },
+    }
+
+    const rejected = workspaceReducer(partialState, {
+      type: 'run/create',
+      runId: binding.clientRunId,
+      attemptId: 'attempt-partial',
+      binding,
+    })
+
+    expect(rejected.runsById).toBe(partialState.runsById)
+    expect(rejected.attemptsById).toBe(partialState.attemptsById)
+    expect(rejected.runOrder).toBe(partialState.runOrder)
+    expect(rejected.lastFailure).toMatchObject({
+      reason: 'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+    })
+  })
+
   it('moves through the legal happy path and exposes only the current success', () => {
     const initial = createInitialWorkspaceState()
     const binding = makeBinding(initial)
@@ -352,31 +536,119 @@ describe('workspace reducer run lifecycle', () => {
     expect(getDisplayableResult(succeeded, binding.clientRunId)).toBe(storedOutput)
   })
 
-  it('hides current successes unless research display is eligible and clinical use stays blocked', () => {
+  it('blocks a queued launch when its current full-image source binding is no longer verified', () => {
+    const initial = createInitialWorkspaceState()
+    const binding = makeBinding(initial)
+    const asyncBinding = asyncActionBinding(binding)
+    const queued = reduce(
+      initial,
+      {
+        type: 'run/create',
+        runId: binding.clientRunId,
+        attemptId: asyncBinding.attemptId,
+        binding,
+      },
+      { type: 'run/validate', ...asyncBinding },
+      { type: 'run/queue', ...asyncBinding },
+    )
+    const current = getCaseRoi(queued, binding.caseId)!
+    const invalidated: WorkspaceState = {
+      ...queued,
+      roisByCase: {
+        ...queued.roisByCase,
+        [binding.caseId]: { ...current, status: 'superseded' },
+      },
+    }
+
+    const blocked = workspaceReducer(invalidated, {
+      type: 'run/start',
+      ...asyncBinding,
+    })
+
+    expect(getAttempt(blocked, asyncBinding.attemptId)).toMatchObject({
+      status: 'blocked',
+      failure: { reason: 'FULL_IMAGE_SOURCE_BINDING_REQUIRED' },
+    })
+  })
+
+  it('hides an injected current result when the authoritative source binding is invalid', () => {
+    const running = createRunningRun(createInitialWorkspaceState())
+    const output = runMockEngine(running.binding)
+    const activeAttempt = getAttempt(
+      running.state,
+      running.asyncBinding.attemptId,
+    )!
+    const injectedCurrentState: WorkspaceState = {
+      ...running.state,
+      runsById: {
+        ...running.state.runsById,
+        [running.binding.clientRunId]: {
+          ...running.state.runsById[running.binding.clientRunId]!,
+          status: 'succeeded',
+        },
+      },
+      attemptsById: {
+        ...running.state.attemptsById,
+        [activeAttempt.id]: {
+          ...activeAttempt,
+          status: 'succeeded',
+          result: { output, freshness: 'current' },
+        },
+      },
+    }
+    const current = getCaseRoi(
+      injectedCurrentState,
+      running.binding.caseId,
+    )!
+    const injectedLegacyState: WorkspaceState = {
+      ...injectedCurrentState,
+      roisByCase: {
+        ...injectedCurrentState.roisByCase,
+        [running.binding.caseId]: {
+          ...current,
+          geometry: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+        },
+      },
+    }
+
+    expect(
+      getAttempt(injectedLegacyState, running.asyncBinding.attemptId)?.result
+        ?.freshness,
+    ).toBe('current')
+    expect(getDisplayableResult(injectedLegacyState)).toBeUndefined()
+    expect(
+      getDisplayableResult(
+        injectedLegacyState,
+        running.asyncBinding.attemptId,
+      ),
+    ).toBeUndefined()
+    expect(
+      getDisplayableResult(injectedLegacyState, running.binding.clientRunId),
+    ).toBeUndefined()
+  })
+
+  it('fails research-ineligible envelopes and keeps clinical-use mutations hidden', () => {
     const running = createRunningRun(createInitialWorkspaceState())
     const output = makeMutableOutput(running.binding)
     output.qualityGates.researchDisplayEligible = false
     expect(output.qualityGates.clinicalUseEligible).toBe(false)
 
-    const succeeded = workspaceReducer(running.state, {
+    const rejected = workspaceReducer(running.state, {
       type: 'run/succeed',
       ...running.asyncBinding,
       output,
     })
-    expect(getAttempt(succeeded, running.asyncBinding.attemptId)).toMatchObject({
-      status: 'succeeded',
-      result: {
-        freshness: 'current',
-        output: {
-          qualityGates: {
-            researchDisplayEligible: false,
-            clinicalUseEligible: false,
-          },
-        },
-      },
+    expect(getAttempt(rejected, running.asyncBinding.attemptId)).toMatchObject({
+      status: 'failed',
+      failure: { reason: 'MALFORMED_RESPONSE' },
     })
-    expect(getDisplayableResult(succeeded)).toBeUndefined()
+    expect(getDisplayableResult(rejected)).toBeUndefined()
 
+    const succeeded = workspaceReducer(running.state, {
+      type: 'run/succeed',
+      ...running.asyncBinding,
+      output: runMockEngine(running.binding),
+    })
     const attempt = getAttempt(succeeded, running.asyncBinding.attemptId)!
     const clinicallyEligibleState: WorkspaceState = {
       ...succeeded,
@@ -399,6 +671,29 @@ describe('workspace reducer run lifecycle', () => {
       },
     }
     expect(getDisplayableResult(clinicallyEligibleState)).toBeUndefined()
+  })
+
+  it('rejects malformed resolved quality gates without completing the running attempt', () => {
+    const running = createRunningRun(createInitialWorkspaceState())
+    const output = makeMutableOutput(running.binding)
+    const malformedOutput = {
+      ...output,
+      qualityGates: {
+        ...output.qualityGates,
+        bindingIntegrity: 'failed',
+      },
+    } as unknown as InferenceOutput
+
+    const next = workspaceReducer(running.state, {
+      type: 'run/succeed',
+      ...running.asyncBinding,
+      output: malformedOutput,
+    })
+
+    expect(getAttempt(next, running.asyncBinding.attemptId)).toMatchObject({
+      status: 'failed',
+      failure: { reason: 'MALFORMED_RESPONSE' },
+    })
   })
 
   it('enforces one global run-attempt ID namespace and unique initial tokens', () => {
@@ -500,13 +795,15 @@ describe('workspace reducer run lifecycle', () => {
       threshold: 0.67,
     })
     const mismatchedOutput = runMockEngine(otherBinding)
-    expect(
-      workspaceReducer(running, {
-        type: 'run/succeed',
-        ...asyncBinding,
-        output: mismatchedOutput,
-      }),
-    ).toBe(running)
+    const rejectedMismatch = workspaceReducer(running, {
+      type: 'run/succeed',
+      ...asyncBinding,
+      output: mismatchedOutput,
+    })
+    expect(getAttempt(rejectedMismatch, asyncBinding.attemptId)).toMatchObject({
+      status: 'failed',
+      failure: { reason: 'IMMUTABLE_BINDING_MISMATCH' },
+    })
 
     const inconsistentStatus: WorkspaceState = {
       ...running,
@@ -625,16 +922,12 @@ describe('workspace reducer run lifecycle', () => {
     )
     expect(getDisplayableResult(superseded, successful.asyncBinding.attemptId)).toBeUndefined()
 
-    const editableState: WorkspaceState = {
-      ...successful.state,
-      roisByCase: {
-        ...successful.state.roisByCase,
-        [successful.binding.caseId]: {
-          ...getCaseRoi(successful.state, successful.binding.caseId)!,
-          status: 'changes_requested',
-        },
-      },
-    }
+    const editableState = withResearchRoiStatus(
+      successful.state,
+      2,
+      'changes_requested',
+      { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+    )
     const roi = getCaseRoi(editableState, successful.binding.caseId)!
     const edited = workspaceReducer(editableState, {
       type: 'roi/updateGeometry',
@@ -714,6 +1007,55 @@ describe('workspace reducer run lifecycle', () => {
     expect(getAttempt(retrySucceeded, parent.asyncBinding.attemptId)).toBe(parentSnapshot)
     expect(getDisplayableResult(retrySucceeded)).toEqual(runMockEngine(retryBinding))
     expect(getDisplayableResult(retrySucceeded, parent.asyncBinding.attemptId)).toBeUndefined()
+  })
+
+  it('rejects a direct retry after the current source binding becomes partial', () => {
+    const initial = createInitialWorkspaceState()
+    const binding = makeBinding(initial)
+    const parent = createRunningRun(initial, binding)
+    const failed = workspaceReducer(parent.state, {
+      type: 'run/fail',
+      ...parent.asyncBinding,
+      failure: { reason: 'REQUEST_TIMEOUT', message: 'Synthetic timeout fixture.' },
+    })
+    const current = failed.roisByCase[binding.caseId]!
+    const partialState: WorkspaceState = {
+      ...failed,
+      roisByCase: {
+        ...failed.roisByCase,
+        [binding.caseId]: {
+          ...current,
+          geometry: { x: 0.05, y: 0.05, width: 0.9, height: 0.9 },
+        },
+      },
+    }
+    const retryBinding = createInferenceBinding({
+      clientRunId: binding.clientRunId,
+      attemptToken: 'token-partial-retry',
+      caseId: binding.caseId,
+      assetId: binding.assetId,
+      assetSha256: binding.assetSha256,
+      roi: current,
+      modelVersion: binding.modelVersion,
+      modelMode: binding.modelMode,
+      config: binding.config,
+    })
+
+    const rejected = workspaceReducer(partialState, {
+      type: 'run/retry',
+      runId: binding.clientRunId,
+      attemptId: 'attempt-partial-retry',
+      parentAttemptId: parent.asyncBinding.attemptId,
+      binding: retryBinding,
+    })
+
+    expect(getRun(rejected, binding.clientRunId)?.attemptIds).toEqual([
+      parent.asyncBinding.attemptId,
+    ])
+    expect(getAttempt(rejected, 'attempt-partial-retry')).toBeUndefined()
+    expect(rejected.lastFailure?.reason).toBe(
+      'FULL_IMAGE_SOURCE_BINDING_REQUIRED',
+    )
   })
 
   it('rejects retry ID collisions and conflicting replays while preserving exact replay identity', () => {
@@ -872,7 +1214,6 @@ describe('workspace reducer run lifecycle', () => {
     expect(Object.isFrozen(storedOutput?.binding.roiGeometry)).toBe(true)
     expect(Object.isFrozen(storedOutput?.heatmap)).toBe(true)
     expect(Object.isFrozen(storedOutput?.heatmap[0])).toBe(true)
-    expect(Object.isFrozen(storedOutput?.metrics)).toBe(true)
     expect(Object.isFrozen(storedOutput?.qualityGates)).toBe(true)
     expect(Object.isFrozen(storedOutput?.provenance)).toBe(true)
 
@@ -880,14 +1221,12 @@ describe('workspace reducer run lifecycle', () => {
     output.binding.config.threshold = 0.99
     output.binding.roiGeometry.x = 0.91
     output.heatmap[0].x = 0.93
-    output.metrics.focusScore = 0
     output.qualityGates.researchDisplayEligible = false
     expect(storedOutput).not.toEqual(output)
     expect(storedOutput?.resultDigest).not.toBe(output.resultDigest)
     expect(storedOutput?.binding.config.threshold).toBe(canonical.config.threshold)
     expect(storedOutput?.binding.roiGeometry.x).toBe(canonical.roiGeometry.x)
     expect(storedOutput?.heatmap[0].x).not.toBe(output.heatmap[0].x)
-    expect(storedOutput?.metrics.focusScore).not.toBe(output.metrics.focusScore)
     expect(storedOutput?.qualityGates.researchDisplayEligible).toBe(true)
     expect(getDisplayableResult(succeeded)).toBe(storedOutput)
     expect(getAttempt(frozenRunning, 'attempt-001')?.status).toBe('running')
