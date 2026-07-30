@@ -1,14 +1,30 @@
 # Vitestro Automated Phlebotomy: Real-Time Detector Evaluation
 
-**Updated:** 2026-07-28
+**Updated:** 2026-07-29
 
 **Scope:** live presyncope/discomfort sensing during venipuncture
 
-**Selection rule:** documented live sensor-to-host path; target hardware price ≤$400 per device
+**Selection rule:** target hardware price ≤$400 per device and continuous programmatic data delivery to a Vitestro-controlled phone or computer process during measurement
 
 `✓` continuous live value or derivable live waveform · `△` on-demand, spot-check, optional, or partner/vendor-gated · `✕` no suitable live path confirmed
 
 Prices were checked on 2026-07-28. Tax, shipping, host phone/computer, consumables, and non-public license fees are excluded unless shown.
+
+## Live Data Collection gate
+
+| Device | Verdict | Live data delivered to our process | Route | Constraint |
+|---|---|---|---|---|
+| [Samsung Galaxy Watch8](https://developer.samsung.com/health/sensor/guide/introduction.html) | ✓ Retain | Raw PPG, EDA, HR/IBI, skin temperature, motion | Watch event listener; vendor sample supports phone transfer | Developer mode is sufficient for bench testing; partner approval is required for app distribution |
+| [Polar H10](https://www.polar.com/en/science/research-tools) | ✓ Retain | Raw ECG, RR, HR, motion | Open BLE / Polar SDK | Chest placement |
+| [Polar Verity Sense](https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/products/PolarVeritySense.md) | ✓ Retain | Raw PPG, pulse intervals, HR, motion | Open Polar BLE SDK | Upper-arm placement |
+| [BITalino (r)evolution Board Kit](https://www.pluxbiosignals.com/products/bitalino-revolution-board-kit-ble-bt) | ✓ Retain | ECG, EDA, motion | Bluetooth/BLE API or OpenSignals | Board and electrode leads require fixture design |
+| [Mindfield eSense Skin Response](https://help.mindfield.de/en/skin-response-manual) | ✓ Retain | EDA at 5 Hz | Sensor → phone app → OSC/LSL → our process | OSC/LSL add-on and phone/adapter required |
+| [Fitbit Charge 6](https://support.google.com/googlehealth/answer/14236705?hl=en) | ✓ Retain: HR only | Processed HR | Standard Bluetooth Heart Rate Profile | User must start sharing; no raw PPG, EDA, or motion stream |
+| [Apple Watch SE 3](https://developer.apple.com/documentation/HealthKit/building-a-multidevice-workout-app) | ✓ Retain: processed data | Workout HR and motion | HealthKit/Core Motion watch app; mirrored to iPhone app | No public continuous raw PPG or EDA |
+| [Garmin vívosmart 5](https://developer.garmin.com/health-sdk/overview/) | △ Hold | Vivosmart-family SDK lists HR, IBI, respiration, SpO2, and motion | Enterprise Garmin Health SDK | Exact vívosmart 5 fields are not confirmed; commercial license or device MOQ |
+| [Nonin 3230](https://www.nonin.com/products/3230/) | ✕ Remove | SpO2 and pulse spot-check | Proprietary OEM BLE | Not continuous monitoring |
+
+Only `✓ Retain` devices continue into the matrix below. `△ Hold` is not procurement-qualified until the named access condition is closed.
 
 ## Metric key
 
@@ -25,12 +41,10 @@ Prices were checked on 2026-07-28. Tax, shipping, host phone/computer, consumabl
 | [Polar Verity Sense](https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/products/PolarVeritySense.md) — upper arm | Finland | [$104.95](https://www.polar.com/us-en/products/accessories/polar-verity-sense/) | ✕ | ✓ | ✓ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✓ Open SDK |
 | [BITalino (r)evolution Board Kit](https://www.pluxbiosignals.com/products/bitalino-revolution-board-kit-ble-bt) — adhesive electrodes / body | Portugal | $180 US storefront | ✓ | ✕ | ✓ | ✓ | ✕ | ✓ | ✕ | ✕ | ✓ | ✕ | ✓ Bluetooth + APIs |
 | [Mindfield eSense Skin Response](https://mindfield-shop.com/en/product/esense-skin-response/) — two fingers | Germany | €149–159 + [OSC/LSL add-on](https://help.mindfield.de/en/skin-response-manual) (~$11.99 example) | ✕ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✓ OSC / LSL |
-| [Garmin vívosmart 5](https://www.garmin.com/en-US/p/782585/pn/010-02645-04/) — wrist | United States | [$149.99](https://www.garmin.com/en-US/newsroom/press-release/featured/simple-and-streamlined-garmin-vivosmart-5-fitness-tracker-is-the-effortless-way-to-take-charge-of-your-everyday-health-wellness-and-activity/); commercial SDK fee or device MOQ not public | ✕ | ✕ | △ | △ | △ | ✕ | △ | ✕ | △ | ✕ | △ Partner SDK; confirm model |
-| [Fitbit Charge 6](https://store.google.com/us/product/fitbit_charge_6?hl=en-US) — wrist | United States | $159.95 | △ | ✕ | ✓ | ✕ | ✕ | △ | ✕ | ✕ | ✕ | ✕ | △ BLE HR only |
+| [Fitbit Charge 6](https://store.google.com/us/product/fitbit_charge_6?hl=en-US) — wrist | United States | $159.95 | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✕ | ✓ BLE HR Profile |
 | [Apple Watch SE 3](https://www.apple.com/us/shop/buy-watch/apple-watch-se) — wrist | United States | from $249; iPhone excluded | ✕ | ✕ | ✓ | ✕ | ✕ | ✕ | ✕ | ✕ | ✓ | ✕ | ✓ Public APIs |
-| [Nonin 3230](https://www.nonin.com/products/3230/) — finger clip | United States | retail [$159](https://discountcardiology.com/products/nonin-3230-bluetooth-pulse-oximeter)–[$275](https://www.turnermedical.com/NONIN_CONNECT_BLUETOOTH_IPHONE_OXIMETER_p/nonin_connect.htm) | ✕ | ✕ | △ | ✕ | ✕ | ✕ | △ | ✕ | ✕ | ✕ | △ OEM BLE; spot-check only |
 
-## Budget-device evidence
+## Retained-device evidence
 
 | Device | Quality evidence | Decision |
 |---|---|---|
@@ -39,10 +53,8 @@ Prices were checked on 2026-07-28. Tax, shipping, host phone/computer, consumabl
 | Polar Verity Sense | Open SDK streams PPG at 28–176 Hz, pulse intervals, and motion; a 2026 comparison found Verity and Apple Watch SE had the best HR agreement among four PPG wearables. [SDK](https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/products/PolarVeritySense.md) · [study](https://pubmed.ncbi.nlm.nih.gov/42438855/) | Raw-PPG candidate |
 | BITalino | A peer-reviewed comparison found its EDA and ECG closely matched BIOPAC MP35 recordings. [study](https://doaj.org/article/53e98d1c65ed4f10a5de8e6b435c57ef) | Low-cost lab reference |
 | Mindfield eSense | 5 Hz, 18-bit EDA with live OSC/LSL; peer-reviewed use in 63 participants established portable-study feasibility, not equivalence to BIOPAC. [specification](https://help.mindfield.de/en/skin-response-manual) · [study](https://pubmed.ncbi.nlm.nih.gov/28221710/) | Wearable EDA candidate |
-| Garmin vívosmart 5 | A 2026 free-living Holter comparison reported systematic HR underestimation; exact real-time fields still require Garmin confirmation. [study](https://pubmed.ncbi.nlm.nih.gov/42099266/) · [SDK](https://developer.garmin.com/health-sdk/overview/) | Evaluate only if SDK approved |
 | Fitbit Charge 6 | Standard Bluetooth Heart Rate Profile is documented; no Charge 6 device-specific peer-reviewed validation was identified in this search. [interface](https://support.google.com/googlehealth/answer/14236705?hl=en) | HR-only fallback |
 | Apple Watch SE | A 2026 study found strong HR agreement with Polar H10 and better agreement than Galaxy Watch6 in that exercise cohort. [study](https://pubmed.ncbi.nlm.nih.gov/42438855/) | Consumer baseline |
-| Nonin 3230 | FDA review reported ±2% SpO2 accuracy in non-motion hypoxia testing, but the indication is spot-checking rather than continuous monitoring. [FDA K131021](https://www.accessdata.fda.gov/cdrh_docs/pdf13/K131021.pdf) | Optional spot-check only |
 
 ## Higher-cost references: borrow, do not buy for phase 1
 
@@ -67,14 +79,13 @@ Prices were checked on 2026-07-28. Tax, shipping, host phone/computer, consumabl
 
 | Tier | Devices | Cost before tax/shipping/host | Action |
 |---|---|---:|---|
-| Core | Samsung Watch8 + Polar H10 + Mindfield eSense | $454.94 + €149–159 + OSC/LSL add-on | Buy and bench |
-| Add raw PPG | Polar Verity Sense | +$104.95 | Buy |
-| Add low-cost EDA/ECG reference | BITalino Board Kit | +$180 | Buy |
+| Open-interface core | Polar H10 + Polar Verity Sense + BITalino + Mindfield eSense | $389.90 + €149–159 + OSC/LSL add-on | Buy and bench |
+| Add wrist EDA/PPG | Samsung Watch8 | +$349.99 | Bench in developer mode; submit partner request before distribution |
 | Expanded total | All five devices above | $739.89 + €149–159 + OSC/LSL add-on | Preferred phase-1 stack |
+| Consumer live baseline | Apple Watch SE 3 or Fitbit Charge 6 | +$249 or +$159.95 | Choose one; Fitbit is HR-only |
 | Hemodynamic reference | Finapres NOVA; Caretaker if unavailable | Borrowed | One validation session |
-| Optional SpO2 | Nonin 3230 | +$159–275 | Spot-check only; not a primary detector |
 
-U.S.-vendor devices dominate the consumer and SpO2 alternatives. The open, sub-$400 raw-PPG and EDA options that met the live-access gate are currently Polar, BITalino, and Mindfield.
+Garmin vívosmart 5 and Nonin 3230 are excluded from phase-1 procurement unless their Live Data Collection status changes.
 
 ## Phase-1 pass gates
 
