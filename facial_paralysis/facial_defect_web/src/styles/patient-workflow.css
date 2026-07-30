@@ -1097,15 +1097,27 @@
   width: var(--patient-point-size);
   aspect-ratio: 1;
   border-radius: 50%;
-  background: rgb(0 91 150 / 66%);
-  filter: blur(7px);
-  opacity: calc(0.04 + (0.76 * var(--patient-point-intensity)));
+  background: radial-gradient(
+    circle,
+    rgb(var(--attention-color-rgb) / 96%) 0 16%,
+    rgb(var(--attention-color-rgb) / 76%) 38%,
+    rgb(var(--attention-color-rgb) / 34%) 60%,
+    transparent 78%
+  );
+  filter: blur(5px) saturate(1.16);
+  opacity: calc(0.32 + (0.68 * var(--patient-point-intensity)));
   transform: translate(-50%, -50%);
 }
 
 .patient-attention-images__density-layer .patient-attention-point {
-  background: rgb(41 196 218 / 72%);
-  filter: blur(9px);
+  background: radial-gradient(
+    circle,
+    rgb(var(--attention-color-rgb) / 98%) 0 16%,
+    rgb(var(--attention-color-rgb) / 80%) 38%,
+    rgb(var(--attention-color-rgb) / 38%) 62%,
+    transparent 80%
+  );
+  filter: blur(6px) saturate(1.2);
 }
 
 .patient-attention-images__density-plane .patient-face-contour {
@@ -1148,6 +1160,11 @@
   font-size: 0.94rem;
   font-weight: 700;
   text-align: center;
+}
+
+.patient-attention-images > .attention-signal-legend {
+  max-width: 680px;
+  margin-top: -14px;
 }
 
 .patient-attention-images__density {

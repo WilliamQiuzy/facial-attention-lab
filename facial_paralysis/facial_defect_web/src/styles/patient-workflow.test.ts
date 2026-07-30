@@ -20,7 +20,7 @@ describe('patient workflow visual safeguards', () => {
     expect(previewAction).toMatch(/background:\s*#fff/)
   })
 
-  it('uses a smooth solid-blue attention field and lets density follow the source ratio', () => {
+  it('uses the shared thermal attention color and lets density follow the source ratio', () => {
     const attentionPoint = rule('.patient-attention-point')
     const densityPoint = rule(
       '.patient-attention-images__density-layer .patient-attention-point',
@@ -29,11 +29,11 @@ describe('patient workflow visual safeguards', () => {
       '.patient-attention-images__density-plane',
     )
 
-    expect(attentionPoint).toMatch(/background:\s*rgb\(/)
-    expect(attentionPoint).not.toMatch(/gradient/i)
+    expect(attentionPoint).toMatch(/--attention-color-rgb/)
+    expect(attentionPoint).toMatch(/radial-gradient/i)
     expect(attentionPoint).toMatch(/filter:\s*blur\(/)
     expect(rule('.patient-attention-point::after')).toBe('')
-    expect(densityPoint).toMatch(/background:\s*rgb\(/)
+    expect(densityPoint).toMatch(/--attention-color-rgb/)
     expect(densityPoint).toMatch(/filter:\s*blur\(/)
     expect(densityPlane).not.toContain('aspect-ratio')
   })

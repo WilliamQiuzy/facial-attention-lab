@@ -381,6 +381,38 @@ describe('AttentionResultView clinical AOI story', () => {
     )
   })
 
+  it('maps connected model intensities to the shared high-contrast thermal scale', () => {
+    const { container } = renderResultView('clinician-stack', (output) => {
+      const connected = asConnected(output)
+      return {
+        ...connected,
+        heatmap: connected.heatmap.map((point, index) => ({
+          ...point,
+          intensity: index === 0 ? 1 : point.intensity,
+        })),
+      }
+    })
+
+    const densityPeak = container.querySelector(
+      '.attention-signal-field__point',
+    ) as HTMLElement | null
+    const overlayPeak = container.querySelector(
+      '.heatmap-point',
+    ) as HTMLElement | null
+
+    expect(densityPeak?.style.getPropertyValue('--attention-color-rgb')).toBe(
+      '207 16 32',
+    )
+    expect(overlayPeak?.style.getPropertyValue('--attention-color-rgb')).toBe(
+      '207 16 32',
+    )
+    expect(
+      screen.getAllByRole('group', {
+        name: 'Relative density color scale: blue low, cyan, yellow, orange, red peak',
+      }),
+    ).toHaveLength(2)
+  })
+
   it('does not invent a dominant AOI for an all-zero field', () => {
     renderResultView('clinician-stack', (output) => ({
       ...output,

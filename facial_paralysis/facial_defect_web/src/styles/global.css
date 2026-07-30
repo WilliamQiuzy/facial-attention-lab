@@ -640,14 +640,13 @@ svg {
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    rgb(220 0 38 / 98%) 0 12%,
-    rgb(255 111 0 / 94%) 25%,
-    rgb(255 220 0 / 84%) 45%,
-    rgb(35 197 82 / 55%) 65%,
-    rgb(0 87 184 / 0%) 76%
+    rgb(var(--attention-color-rgb) / 98%) 0 14%,
+    rgb(var(--attention-color-rgb) / 82%) 34%,
+    rgb(var(--attention-color-rgb) / 38%) 58%,
+    transparent 78%
   );
-  opacity: var(--point-intensity);
-  filter: blur(7px);
+  opacity: calc(0.36 + (0.64 * var(--point-intensity)));
+  filter: blur(5px) saturate(1.18);
 }
 
 .heatmap-watermark {

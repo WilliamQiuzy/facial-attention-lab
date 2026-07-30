@@ -1,6 +1,8 @@
 import { useId, type CSSProperties } from 'react'
 import type { WorkbenchCatalogEntry } from '../workbench/catalog'
 import type { InferenceOutput } from '../workbench/types'
+import { AttentionColorLegend } from './AttentionColorLegend'
+import { attentionColorRgb } from './attentionColorScale'
 
 type AttentionSignalFieldProps = {
   asset: WorkbenchCatalogEntry
@@ -70,6 +72,7 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
                   '--signal-y': `${point.y * 100}%`,
                   '--signal-size': `${point.radius * 200}%`,
                   '--signal-strength': point.intensity,
+                  '--attention-color-rgb': attentionColorRgb(point.intensity),
                 } as CSSProperties
               }
             />
@@ -78,11 +81,7 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
             {connected ? 'MODEL PREDICTION' : 'SIMULATED'}
           </span>
         </div>
-        <figcaption className="attention-signal-legend">
-          <span>Less relative density</span>
-          <span aria-hidden="true" className="attention-signal-legend__scale" />
-          <span>More relative density</span>
-        </figcaption>
+        <AttentionColorLegend element="figcaption" />
         <p
           className="attention-signal-field__reference-note"
           id={referenceNoteId}

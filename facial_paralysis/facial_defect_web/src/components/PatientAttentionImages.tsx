@@ -3,7 +3,9 @@ import type {
   PatientAttentionPoint,
   PatientFaceRegistration,
 } from '../patientWorkflow/types'
+import { AttentionColorLegend } from './AttentionColorLegend'
 import { PatientFaceContour } from './PatientFaceContour'
+import { attentionColorRgb } from './attentionColorScale'
 
 type PatientAttentionImagesProps = {
   readonly previewUrl: string
@@ -32,6 +34,7 @@ function AttentionPointLayer({
               '--patient-point-y': `${point.y * 100}%`,
               '--patient-point-size': `${point.radius * 200}%`,
               '--patient-point-intensity': point.intensity,
+              '--attention-color-rgb': attentionColorRgb(point.intensity),
             } as CSSProperties
           }
         />
@@ -96,6 +99,8 @@ export function PatientAttentionImages({
         Patient right is viewer left; patient left is viewer right.
         Orientation confirmed for this frontal, non-mirrored photograph.
       </p>
+
+      <AttentionColorLegend />
 
       <figure className="patient-attention-images__figure patient-attention-images__density">
         <h3>
