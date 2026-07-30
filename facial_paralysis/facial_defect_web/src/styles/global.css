@@ -11,7 +11,7 @@ html {
 
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 0;
   min-height: 100vh;
   background: var(--research-surface);
   -webkit-font-smoothing: antialiased;
@@ -135,6 +135,10 @@ svg {
   font-size: 1rem;
   font-weight: 750;
   line-height: 1.15;
+}
+
+.brand__name--compact {
+  display: none;
 }
 
 .primary-nav {
@@ -1048,6 +1052,7 @@ svg {
   }
 
   .site-header__inner {
+    gap: 8px;
     min-height: 60px;
   }
 
@@ -1083,6 +1088,10 @@ svg {
   .brand__mark {
     width: 34px;
     height: 34px;
+  }
+
+  .brand {
+    gap: 8px;
   }
 
   .brand__name {
@@ -1184,6 +1193,17 @@ svg {
 
   .handoff-cta {
     padding-block: 84px;
+  }
+}
+
+@media (max-width: 359px) {
+  .brand__name--full {
+    display: none;
+  }
+
+  .brand__name--compact {
+    display: block;
+    white-space: nowrap;
   }
 }
 

@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@mediapipe/tasks-vision@1.0.0'

@@ -1,6 +1,7 @@
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import type { WorkbenchGateway } from './workbench/WorkbenchGateway'
 import { listWorkbenchAssets } from './workbench/catalog'
@@ -46,14 +47,22 @@ describe('workspace application shell', () => {
     ])
   })
 
-  it('keeps every advanced route available from Help under Research tools', () => {
+  it('keeps every advanced route available inside a closed Research tools disclosure', async () => {
+    const user = userEvent.setup()
     renderApp('/about')
 
     expect(
       screen.getByRole('heading', { name: 'Help & research information', level: 1 }),
     ).toBeVisible()
 
+    const disclosure = screen
+      .getByText('Advanced research tools')
+      .closest('details')
+    expect(disclosure).not.toBeNull()
+    expect(disclosure).not.toHaveAttribute('open')
+
     const researchTools = screen.getByRole('navigation', { name: 'Research tools' })
+    expect(researchTools).not.toBeVisible()
     expect(within(researchTools).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Synthetic cases',
       'Research reviews',
@@ -72,6 +81,11 @@ describe('workspace application shell', () => {
       '/methods',
       '/integration',
     ])
+
+    await user.click(screen.getByText('Advanced research tools'))
+
+    expect(disclosure).toHaveAttribute('open')
+    expect(researchTools).toBeVisible()
   })
 
   it('keeps the compact prototype boundary visible', () => {
@@ -94,6 +108,72 @@ describe('workspace application shell', () => {
       'href',
       '#main-content',
     )
+  })
+
+  it('keeps the default mock loading state visible long enough to be understood', async () => {
+    vi.useFakeTimers()
+    const view = renderApp(`/analysis?case=${approvedCaseId}`)
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
+      expect(screen.getByLabelText('Active attempt status')).toHaveTextContent(
+        'queued',
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(500)
+        await Promise.resolve()
+      })
+
+      expect(screen.getByLabelText('Active attempt status')).toHaveTextContent(
+        'queued',
+      )
+      expect(screen.getByText('Starting analysis…')).toBeVisible()
+
+      await act(async () => {
+        vi.advanceTimersByTime(250)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(screen.getByLabelText('Active attempt status')).not.toHaveTextContent(
+        'queued',
+      )
+    } finally {
+      view.unmount()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not add a mock queue delay to a connected gateway', async () => {
+    const runInference = vi.fn(
+      () => new Promise<never>(() => undefined),
+    )
+    const gateway = {
+      mode: 'connected',
+      runInference,
+    } satisfies WorkbenchGateway
+    const view = render(
+      <MemoryRouter initialEntries={[`/analysis?case=${approvedCaseId}`]}>
+        <App gateway={gateway} />
+      </MemoryRouter>,
+    )
+
+    try {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Run research prediction' }),
+      )
+      await act(async () => {
+        await Promise.resolve()
+      })
+
+      expect(runInference).toHaveBeenCalledOnce()
+      expect(screen.getByLabelText('Active attempt status')).toHaveTextContent(
+        'running',
+      )
+    } finally {
+      view.unmount()
+    }
   })
 
   it('does not weaken the prototype boundary when research tools use a connected gateway', () => {
@@ -174,7 +254,7 @@ describe('workspace application shell', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('resolves the legacy model route to Integration and fails closed elsewhere', () => {
+  it('resolves the legacy model route to Integration and offers simple recovery elsewhere', () => {
     const legacy = renderApp('/model')
     expect(
       screen.getByRole('heading', { name: 'Model & data readiness', level: 1 }),
@@ -183,7 +263,19 @@ describe('workspace application shell', () => {
     legacy.unmount()
     renderApp('/not-a-workspace-route')
     expect(
-      screen.getByRole('heading', { name: 'This route is not available', level: 1 }),
+      screen.getByRole('heading', { name: 'Page not found', level: 1 }),
     ).toBeVisible()
+    const notFoundPage = screen.getByRole('main')
+    expect(within(notFoundPage).getByRole('link', { name: 'Return to Patients' })).toHaveAttribute(
+      'href',
+      '/patients',
+    )
+    expect(within(notFoundPage).getByRole('link', { name: 'Help' })).toHaveAttribute(
+      'href',
+      '/about',
+    )
+    expect(
+      screen.queryByText(/synthetic, provenance-first research operations/i),
+    ).not.toBeInTheDocument()
   })
 })

@@ -1,11 +1,18 @@
 import type {
   PatientAttentionPoint,
+  PatientFaceRegistration,
   PatientRunBinding,
   PatientSimulationOutput,
 } from './types'
 
 const POINT_COUNT = 24
 const UINT32_RANGE = 0x1_0000_0000
+const CANONICAL_FACE_BOUNDS = Object.freeze({
+  minimumX: 0.21,
+  maximumX: 0.79,
+  minimumY: 0.07,
+  maximumY: 0.93,
+})
 const FACE_TEMPLATE_ANCHORS = Object.freeze([
   Object.freeze({ x: 0.37, y: 0.28 }),
   Object.freeze({ x: 0.5, y: 0.25 }),
@@ -64,8 +71,64 @@ function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value))
 }
 
+function detectedFaceBounds(
+  registration: PatientFaceRegistration,
+) {
+  const oval = registration.paths.find(
+    (path) => path.feature === 'face_oval',
+  )
+  if (!oval || oval.points.length === 0) return undefined
+
+  return {
+    minimumX: Math.min(...oval.points.map((point) => point.x)),
+    maximumX: Math.max(...oval.points.map((point) => point.x)),
+    minimumY: Math.min(...oval.points.map((point) => point.y)),
+    maximumY: Math.max(...oval.points.map((point) => point.y)),
+  }
+}
+
+function registerPoint(
+  point: Readonly<{ x: number; y: number; radius: number }>,
+  registration?: PatientFaceRegistration,
+) {
+  if (!registration) return point
+  const bounds = detectedFaceBounds(registration)
+  if (!bounds) return point
+
+  const canonicalWidth =
+    CANONICAL_FACE_BOUNDS.maximumX -
+    CANONICAL_FACE_BOUNDS.minimumX
+  const canonicalHeight =
+    CANONICAL_FACE_BOUNDS.maximumY -
+    CANONICAL_FACE_BOUNDS.minimumY
+  const detectedWidth = bounds.maximumX - bounds.minimumX
+  const detectedHeight = bounds.maximumY - bounds.minimumY
+  const relativeX = clamp(
+    (point.x - CANONICAL_FACE_BOUNDS.minimumX) / canonicalWidth,
+    0,
+    1,
+  )
+  const relativeY = clamp(
+    (point.y - CANONICAL_FACE_BOUNDS.minimumY) /
+      canonicalHeight,
+    0,
+    1,
+  )
+  const radiusScale =
+    (detectedWidth / canonicalWidth +
+      detectedHeight / canonicalHeight) /
+    2
+
+  return {
+    x: bounds.minimumX + relativeX * detectedWidth,
+    y: bounds.minimumY + relativeY * detectedHeight,
+    radius: clamp(point.radius * radiusScale, 0.015, 0.15),
+  }
+}
+
 export function createDemoPatientResult(
   binding: PatientRunBinding,
+  faceRegistration?: PatientFaceRegistration,
 ): PatientSimulationOutput {
   const nextUnit = createDeterministicUnitGenerator(
     seedFromCaptureSha256(binding.captureSha256),
@@ -92,16 +155,24 @@ export function createDemoPatientResult(
         : y > 0.64 && y <= 0.76
           ? [0.16, 0.38]
           : [0.08, 0.3]
-    points.push(
-      Object.freeze({
+    const registered = registerPoint(
+      {
         x,
         y,
-        intensity:
-          minimumIntensity +
-          nextUnit() * (maximumIntensity - minimumIntensity),
         radius:
           (illustrativeCheek ? 0.05 : 0.035) +
           nextUnit() * (illustrativeCheek ? 0.025 : 0.03),
+      },
+      faceRegistration,
+    )
+    points.push(
+      Object.freeze({
+        x: registered.x,
+        y: registered.y,
+        intensity:
+          minimumIntensity +
+          nextUnit() * (maximumIntensity - minimumIntensity),
+        radius: registered.radius,
       }),
     )
   }

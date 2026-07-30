@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { useId, type CSSProperties } from 'react'
 import type { WorkbenchCatalogEntry } from '../workbench/catalog'
 import type { InferenceOutput } from '../workbench/types'
 
@@ -8,6 +8,7 @@ type AttentionSignalFieldProps = {
 }
 
 export function AttentionSignalField({ asset, output }: AttentionSignalFieldProps) {
+  const referenceNoteId = useId()
   const connected = output.origin === 'model_prediction'
 
   return (
@@ -51,6 +52,7 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
         <div
           className="attention-signal-field"
           role="region"
+          aria-describedby={referenceNoteId}
           aria-label={
             connected
               ? 'Predicted observer-attention density field'
@@ -81,6 +83,13 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
           <span aria-hidden="true" className="attention-signal-legend__scale" />
           <span>More relative density</span>
         </figcaption>
+        <p
+          className="attention-signal-field__reference-note"
+          id={referenceNoteId}
+        >
+          Face outline unavailable: registered contour or landmarks
+          were not supplied with this result.
+        </p>
       </figure>
     </section>
   )

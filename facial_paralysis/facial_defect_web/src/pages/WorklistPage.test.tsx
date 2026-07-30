@@ -43,11 +43,18 @@ function caseTitle(label: string) {
   return label.replace(/^Standalone synthetic case — /, '')
 }
 
-async function openFilters(user: ReturnType<typeof userEvent.setup>) {
+async function openFilters(
+  user: ReturnType<typeof userEvent.setup>,
+  currentCategory = 'All',
+) {
   const disclosure = document.querySelector<HTMLDetailsElement>('details.case-filters')
   expect(disclosure).not.toBeNull()
   expect(disclosure).not.toHaveAttribute('open')
-  await user.click(screen.getByText('Filters', { selector: 'summary' }))
+  await user.click(
+    screen.getByText(`Category: ${currentCategory}`, {
+      selector: 'summary',
+    }),
+  )
   expect(disclosure).toHaveAttribute('open')
 }
 
@@ -142,6 +149,7 @@ describe('synthetic case worklist', () => {
       screen.getByRole('combobox', { name: 'Category' }),
       'trauma',
     )
+    expect(screen.getByText('Category: Trauma', { selector: 'summary' })).toBeVisible()
     expect(visibleCaseCards()).toHaveLength(2)
     expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
       '/cases?category=trauma',
@@ -180,7 +188,7 @@ describe('synthetic case worklist', () => {
       )
     })
 
-    await openFilters(user)
+    await openFilters(user, 'Head & neck')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Category' }), 'all')
     expect(screen.getByRole('status', { name: 'Current location' })).toHaveTextContent(
       '/cases?q=SYN-HNC',
@@ -231,6 +239,18 @@ describe('synthetic case worklist', () => {
     expect(css).toMatch(/\.case-card__preview img\s*\{[^}]*object-fit:\s*contain/s)
     expect(css).not.toMatch(/\.case-card__preview\s*\{[^}]*min-height:\s*(?:100%|\d+px)/s)
     expect(css).not.toMatch(/\.case-card__preview img\s*\{[^}]*(?:object-fit:\s*cover|min-height:\s*\d+px)/s)
+    expect(css).not.toMatch(
+      /\.case-card\s*\{[^}]*min-height:\s*248px/s,
+    )
+    expect(css).toMatch(
+      /\.worklist-page \.workspace-page__header h1\s*\{[^}]*font-family:\s*var\(--research-font-sans\)/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width:\s*599px\)[\s\S]*\.case-card\s*\{[^}]*grid-template-columns:\s*108px minmax\(0,\s*1fr\)/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width:\s*599px\)[\s\S]*\.case-card__preview\s*\{[^}]*width:\s*108px[^}]*height:\s*108px/s,
+    )
   })
 
   it('opens only canonical source-binding IDs and fails closed for every unknown case', () => {

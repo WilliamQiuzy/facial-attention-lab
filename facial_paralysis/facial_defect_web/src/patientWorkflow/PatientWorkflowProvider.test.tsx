@@ -34,12 +34,63 @@ import type {
   AuthorizationSnapshot,
   CaptureAsset,
   CaptureQualityChecks,
+  PatientFaceRegistration,
   PatientRunBinding,
   PatientSimulationOutput,
   PatientWorkflowFailureCode,
   PatientWorkflowState,
 } from './types'
 import { createSessionMediaHandle } from './validation'
+
+const mediaPipeMocks = vi.hoisted(() => ({
+  createFromOptions: vi.fn(),
+  detect: vi.fn(),
+  close: vi.fn(),
+}))
+
+const onDeviceModuleMocks = vi.hoisted(() => ({
+  evaluationCount: 0,
+}))
+
+vi.mock('./onDeviceFaceRegistration', async (importOriginal) => {
+  onDeviceModuleMocks.evaluationCount += 1
+  return importOriginal()
+})
+
+vi.mock('@mediapipe/tasks-vision', () => ({
+  FaceLandmarker: {
+    createFromOptions: mediaPipeMocks.createFromOptions,
+    FACE_LANDMARKS_FACE_OVAL: [
+      { start: 0, end: 1 },
+      { start: 1, end: 2 },
+      { start: 2, end: 3 },
+      { start: 3, end: 0 },
+    ],
+    FACE_LANDMARKS_LEFT_EYE: [
+      { start: 4, end: 5 },
+      { start: 5, end: 6 },
+      { start: 6, end: 4 },
+    ],
+    FACE_LANDMARKS_RIGHT_EYE: [
+      { start: 7, end: 8 },
+      { start: 8, end: 9 },
+      { start: 9, end: 7 },
+    ],
+    FACE_LANDMARKS_LEFT_EYEBROW: [
+      { start: 10, end: 11 },
+      { start: 11, end: 12 },
+    ],
+    FACE_LANDMARKS_RIGHT_EYEBROW: [
+      { start: 13, end: 14 },
+      { start: 14, end: 15 },
+    ],
+    FACE_LANDMARKS_LIPS: [
+      { start: 16, end: 17 },
+      { start: 17, end: 18 },
+      { start: 18, end: 16 },
+    ],
+  },
+}))
 
 const COMPLETE_QUALITY: CaptureQualityChecks = {
   faceVisibleAndCentered: true,
@@ -155,6 +206,62 @@ function validOutput(
   }
 }
 
+function validFaceRegistration(
+  overrides: Partial<PatientFaceRegistration> = {},
+): PatientFaceRegistration {
+  const closedTriangle = [
+    { x: 0.3, y: 0.3 },
+    { x: 0.5, y: 0.7 },
+    { x: 0.7, y: 0.3 },
+  ] as const
+
+  return {
+    schemaVersion: 'patient-face-registration/1',
+    source: 'on_device_face_landmarks',
+    coordinateSpace: 'decoded_image_normalized_v1',
+    captureSha256: DEFAULT_SHA,
+    sourceWidth: 1_024,
+    sourceHeight: 900,
+    captureProtocol: 'frontal_relaxed_non_mirrored_v1',
+    detectorId: 'mediapipe_face_landmarker',
+    detectorVersion: 'tasks-vision-1.0.0-model-float16-1',
+    faceCount: 1,
+    paths: [
+      {
+        feature: 'face_oval',
+        closed: true,
+        points: closedTriangle,
+      },
+      {
+        feature: 'left_eye',
+        closed: true,
+        points: closedTriangle,
+      },
+      {
+        feature: 'right_eye',
+        closed: true,
+        points: closedTriangle,
+      },
+      {
+        feature: 'left_eyebrow',
+        closed: false,
+        points: closedTriangle,
+      },
+      {
+        feature: 'right_eyebrow',
+        closed: false,
+        points: closedTriangle,
+      },
+      {
+        feature: 'lips',
+        closed: true,
+        points: closedTriangle,
+      },
+    ],
+    ...overrides,
+  }
+}
+
 let latest: PatientWorkflowContextValue
 
 function Probe() {
@@ -171,7 +278,17 @@ type RenderProviderOptions = Omit<
 
 function renderProvider(options: RenderProviderOptions = {}) {
   return render(
-    <PatientWorkflowProvider {...options}>
+    <PatientWorkflowProvider
+      faceRegistrationRunner={async (input) =>
+        validFaceRegistration({
+          captureSha256: input.captureSha256,
+          sourceWidth: input.sourceWidth,
+          sourceHeight: input.sourceHeight,
+          captureProtocol: input.captureProtocol,
+        })
+      }
+      {...options}
+    >
       <Probe />
       {options.children}
     </PatientWorkflowProvider>,
@@ -300,6 +417,16 @@ afterEach(() => {
 })
 
 describe('PatientWorkflowProvider patient and visit ownership', () => {
+  it('keeps the default on-device detector unloaded while the workflow is idle', () => {
+    render(
+      <PatientWorkflowProvider>
+        <Probe />
+      </PatientWorkflowProvider>,
+    )
+
+    expect(onDeviceModuleMocks.evaluationCount).toBe(0)
+  })
+
   it('exposes only the simulation-only, memory-only prototype boundary', () => {
     renderProvider()
 
@@ -773,6 +900,272 @@ describe('quality authorization and background simulation', () => {
       runId,
       binding: request,
       output: validOutput(request),
+    })
+  })
+
+  it('stores photo-derived face geometry only after exact capture-bound preprocessing', async () => {
+    const faceRegistrationRunner = vi.fn(
+      async (input: {
+        readonly media: Blob
+        readonly captureSha256: string
+        readonly sourceWidth: number
+        readonly sourceHeight: number
+        readonly captureProtocol: 'frontal_relaxed_non_mirrored_v1'
+      }) =>
+        validFaceRegistration({
+          captureSha256: input.captureSha256,
+          sourceWidth: input.sourceWidth,
+          sourceHeight: input.sourceHeight,
+          captureProtocol: input.captureProtocol,
+        }),
+    )
+    const simulationRunner = vi.fn(validOutput)
+    renderProvider({
+      runtime: createRuntime(),
+      prepareCapture: createCapturePreparer(),
+      simulationRunner,
+      faceRegistrationRunner,
+    })
+    const { visitId } = await createReadyVisit()
+
+    act(() => {
+      latest.actions.submitAnalysis(visitId)
+    })
+    await advance(0)
+
+    expect(faceRegistrationRunner).toHaveBeenCalledOnce()
+    const registrationInput =
+      faceRegistrationRunner.mock.calls[0]?.[0]
+    expect(registrationInput).toMatchObject({
+      captureSha256: DEFAULT_SHA,
+      sourceWidth: 1_024,
+      sourceHeight: 900,
+      captureProtocol: 'frontal_relaxed_non_mirrored_v1',
+    })
+    expect(registrationInput?.media).toBeInstanceOf(Blob)
+    expect(simulationRunner).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        captureSha256: DEFAULT_SHA,
+        sourceWidth: 1_024,
+        sourceHeight: 900,
+      }),
+    )
+    expect(
+      selectCurrentResult(latest.state, visitId)?.faceRegistration,
+    ).toEqual(validFaceRegistration())
+  })
+
+  it.each([
+    [
+      'capture hash',
+      { captureSha256: 'f'.repeat(64) },
+    ],
+    ['source width', { sourceWidth: 900 }],
+    ['source height', { sourceHeight: 1_024 }],
+    [
+      'capture protocol',
+      {
+        captureProtocol:
+          'mirrored' as unknown as 'frontal_relaxed_non_mirrored_v1',
+      },
+    ],
+  ])(
+    'fails closed when detected face geometry has a mismatched %s',
+    async (_label, overrides) => {
+      const simulationRunner = vi.fn(validOutput)
+      renderProvider({
+        runtime: createRuntime(),
+        prepareCapture: createCapturePreparer(),
+        simulationRunner,
+        faceRegistrationRunner: async () =>
+          validFaceRegistration(overrides),
+      })
+      const { visitId } = await createReadyVisit()
+      let runId = ''
+
+      act(() => {
+        runId = latest.actions.submitAnalysis(visitId)
+      })
+      await advance(0)
+
+      expect(simulationRunner).not.toHaveBeenCalled()
+      expect(latest.state.runsById[runId]).toMatchObject({
+        status: 'failed',
+        failure: {
+          code: 'ANALYSIS_FAILED',
+          field: 'faceRegistration.binding',
+        },
+      })
+      expect(latest.state.resultOrder).toEqual([])
+    },
+  )
+
+  it('fails closed without a generic fallback when photo face detection is unavailable', async () => {
+    const simulationRunner = vi.fn(validOutput)
+    renderProvider({
+      runtime: createRuntime(),
+      prepareCapture: createCapturePreparer(),
+      simulationRunner,
+      faceRegistrationRunner: async () => {
+        throw new Error('NO_FACE')
+      },
+    })
+    const { visitId } = await createReadyVisit()
+    let runId = ''
+
+    act(() => {
+      runId = latest.actions.submitAnalysis(visitId)
+    })
+    await advance(0)
+
+    expect(simulationRunner).not.toHaveBeenCalled()
+    expect(latest.state.runsById[runId]).toMatchObject({
+      status: 'failed',
+      failure: {
+        code: 'ANALYSIS_FAILED',
+        field: 'faceRegistration',
+      },
+    })
+    expect(latest.state.resultOrder).toEqual([])
+  })
+
+  it('rejects a degenerate detected face contour before simulation', async () => {
+    const simulationRunner = vi.fn(validOutput)
+    const registration = validFaceRegistration()
+    renderProvider({
+      runtime: createRuntime(),
+      prepareCapture: createCapturePreparer(),
+      simulationRunner,
+      faceRegistrationRunner: async () => ({
+        ...registration,
+        paths: registration.paths.map((path) =>
+          path.feature === 'face_oval'
+            ? {
+                ...path,
+                points: [
+                  { x: 0.5, y: 0.5 },
+                  { x: 0.5, y: 0.5 },
+                  { x: 0.5, y: 0.5 },
+                ],
+              }
+            : path,
+        ),
+      }),
+    })
+    const { visitId } = await createReadyVisit()
+    let runId = ''
+
+    act(() => {
+      runId = latest.actions.submitAnalysis(visitId)
+    })
+    await advance(0)
+
+    expect(simulationRunner).not.toHaveBeenCalled()
+    expect(latest.state.runsById[runId]).toMatchObject({
+      status: 'failed',
+      failure: {
+        code: 'ANALYSIS_FAILED',
+        field: 'faceRegistration.binding',
+      },
+    })
+    expect(latest.state.resultOrder).toEqual([])
+  })
+
+  it('loads the default on-device detector only for analysis and registers the current uploaded face without sending patient media to fetch', async () => {
+    const landmarks = Array.from({ length: 19 }, (_, index) => ({
+      x: 0.2 + (index % 5) * 0.12,
+      y: 0.15 + Math.floor(index / 5) * 0.16,
+      z: 0,
+    }))
+    landmarks[0] = { x: 0.5, y: 0.1, z: 0 }
+    landmarks[1] = { x: 0.8, y: 0.5, z: 0 }
+    landmarks[2] = { x: 0.5, y: 0.9, z: 0 }
+    landmarks[3] = { x: 0.2, y: 0.5, z: 0 }
+    mediaPipeMocks.detect.mockReturnValue({
+      faceLandmarks: [landmarks],
+    })
+    mediaPipeMocks.createFromOptions.mockResolvedValue({
+      detect: mediaPipeMocks.detect,
+      close: mediaPipeMocks.close,
+    })
+    const bitmap = {
+      width: 1_024,
+      height: 900,
+      close: vi.fn(),
+    }
+    const createBitmap = vi.fn(async () => bitmap)
+    const fetchRequest = vi.fn()
+    vi.stubGlobal('createImageBitmap', createBitmap)
+    vi.stubGlobal('fetch', fetchRequest)
+    renderProvider({
+      runtime: createRuntime(),
+      prepareCapture: createCapturePreparer(),
+      simulationRunner: validOutput,
+      faceRegistrationRunner: undefined,
+    })
+    const { visitId } = await createReadyVisit()
+    let runId = ''
+
+    expect(onDeviceModuleMocks.evaluationCount).toBe(0)
+
+    act(() => {
+      runId = latest.actions.submitAnalysis(visitId)
+    })
+    await advance(0)
+
+    expect(onDeviceModuleMocks.evaluationCount).toBe(1)
+    await act(async () => {
+      await vi.dynamicImportSettled()
+    })
+    expect(latest.state.runsById[runId]?.status).toBe('succeeded')
+    expect(createBitmap).toHaveBeenCalledOnce()
+    expect(mediaPipeMocks.createFromOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wasmLoaderPath: expect.stringContaining(
+          'vision_wasm_internal.js',
+        ),
+        wasmBinaryPath: expect.stringContaining(
+          'vision_wasm_internal.wasm',
+        ),
+      }),
+      expect.objectContaining({
+        baseOptions: expect.objectContaining({
+          modelAssetPath: expect.stringContaining(
+            'face_landmarker.task',
+          ),
+        }),
+      }),
+    )
+    const [wasmFiles, detectorOptions] =
+      mediaPipeMocks.createFromOptions.mock.calls[0] as [
+        {
+          wasmLoaderPath: string
+          wasmBinaryPath: string
+        },
+        {
+          baseOptions: {
+            modelAssetPath: string
+          }
+        },
+      ]
+    for (const sameOriginAssetUrl of [
+      wasmFiles.wasmLoaderPath,
+      wasmFiles.wasmBinaryPath,
+      detectorOptions.baseOptions.modelAssetPath,
+    ]) {
+      expect(sameOriginAssetUrl).not.toMatch(/^https?:\/\//i)
+    }
+    expect(mediaPipeMocks.detect).toHaveBeenCalledWith(bitmap)
+    expect(bitmap.close).toHaveBeenCalledOnce()
+    expect(fetchRequest).not.toHaveBeenCalled()
+    expect(
+      selectCurrentResult(latest.state, visitId)?.faceRegistration,
+    ).toMatchObject({
+      source: 'on_device_face_landmarks',
+      captureSha256: DEFAULT_SHA,
+      sourceWidth: 1_024,
+      sourceHeight: 900,
     })
   })
 

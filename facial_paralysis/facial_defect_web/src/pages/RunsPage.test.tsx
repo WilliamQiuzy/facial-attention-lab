@@ -560,7 +560,12 @@ describe('session runs', () => {
       const { state } = createRunStateAt(status)
       renderRoute(`/runs/run-${status}`, state)
 
+      const selectedRun = screen.getByRole('region', {
+        name: 'Selected run',
+      })
+      expect(selectedRun).toHaveAttribute('aria-busy', 'true')
       await user.click(screen.getByRole('button', { name: 'Cancel request' }))
+      expect(selectedRun).toHaveAttribute('aria-busy', 'false')
       expect(screen.getByLabelText('Run status cancelled')).toBeVisible()
       expect(screen.queryByRole('button', { name: 'Cancel request' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Retry exact input' })).toBeVisible()
@@ -609,6 +614,11 @@ describe('session runs', () => {
       renderRoute('/runs/run-seeded-001', state)
 
       expect(screen.getByText('Result: Integrity unavailable')).toBeVisible()
+      expect(
+        within(
+          screen.getByLabelText('Run status succeeded'),
+        ).getByText('succeeded'),
+      ).not.toHaveClass('status-badge--success')
       expect(screen.queryByRole('link', { name: 'Review result' })).not.toBeInTheDocument()
       expect(
         screen.queryByRole('region', { name: 'Simulated attention result' }),
