@@ -37,7 +37,7 @@ The application source is in `facial_paralysis/facial_defect_web/`. Its ten appr
 
 ## Vitestro phlebotomy safety
 
-The public-source wearable-device evaluation for the Mayo–Vitestro automated
+The public-source real-time detector evaluation for the Mayo–Vitestro automated
 phlebotomy collaboration is in
 [`vitestro_phlebotomy_safety/`](vitestro_phlebotomy_safety/). It contains only
 product research, literature review, procurement planning, and a measurement
