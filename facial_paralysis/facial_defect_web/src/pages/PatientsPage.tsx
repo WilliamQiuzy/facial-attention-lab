@@ -95,13 +95,14 @@ export function PatientsPage() {
           <span>Search patients</span>
           <input
             type="search"
+            name="patientSearch"
             autoComplete="off"
             maxLength={128}
             value={query}
             onChange={(event) =>
               updateQuery(event.currentTarget.value)
             }
-            placeholder="Name or record ID"
+            placeholder="Name or record ID…"
           />
         </label>
 
@@ -178,7 +179,14 @@ export function PatientsPage() {
               >
                 Clear search
               </button>
-            ) : null}
+            ) : (
+              <Link
+                className="patient-secondary-action"
+                to="/patients/new"
+              >
+                New patient
+              </Link>
+            )}
           </section>
         )}
       </div>

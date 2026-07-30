@@ -64,6 +64,13 @@
   line-height: 1.2;
   text-decoration: none;
   cursor: pointer;
+  touch-action: manipulation;
+}
+
+.patient-primary-action:not(:disabled):active,
+.patient-secondary-action:not(:disabled):active,
+.patient-link-action:not(:disabled):active {
+  transform: translateY(1px);
 }
 
 .patient-primary-action {
@@ -110,7 +117,7 @@
 .patient-search input,
 .patient-field input,
 .patient-field select,
-.patient-review-form textarea {
+.patient-result-review__note textarea {
   width: 100%;
   min-height: 48px;
   padding: 10px 12px;
@@ -123,7 +130,7 @@
 .patient-search input:focus,
 .patient-field input:focus,
 .patient-field select:focus,
-.patient-review-form textarea:focus {
+.patient-result-review__note textarea:focus {
   border-color: #0057b8;
 }
 
@@ -257,6 +264,21 @@
   gap: 22px;
 }
 
+.patient-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.patient-form-actions .patient-primary-action {
+  min-width: 190px;
+}
+
+.patient-form-actions .patient-secondary-action {
+  min-width: 120px;
+}
+
 .patient-field {
   display: grid;
   gap: 7px;
@@ -287,6 +309,16 @@
 
 .patient-form-alert p {
   margin: 5px 0 0;
+}
+
+.patient-form-boundary {
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 4px solid #0057b8;
+  color: #294b68;
+  background: #eef6fc;
+  font-weight: 700;
+  line-height: 1.5;
 }
 
 .patient-form-section {
@@ -381,6 +413,74 @@
   margin: 3px 0 0;
   overflow-wrap: anywhere;
   font-weight: 700;
+}
+
+.patient-identity__details--primary {
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: 10px;
+}
+
+.patient-identity--compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 14px;
+}
+
+.patient-identity--compact .patient-identity__title {
+  grid-column: 1 / -1;
+}
+
+.patient-identity--compact .patient-identity__details--primary {
+  grid-column: 1;
+}
+
+.patient-identity__more {
+  max-width: 460px;
+  margin-top: 8px;
+  border-top: 1px solid #cfd8df;
+}
+
+.patient-identity--compact .patient-identity__more {
+  grid-column: 2;
+}
+
+.patient-identity--compact .patient-identity__more[open] {
+  grid-column: 1 / -1;
+}
+
+.patient-identity__more summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  color: #174d78;
+  font-size: 0.9rem;
+  font-weight: 750;
+  list-style: none;
+  cursor: pointer;
+}
+
+.patient-identity__more summary::-webkit-details-marker {
+  display: none;
+}
+
+.patient-identity__more summary::after {
+  width: 7px;
+  height: 7px;
+  margin-left: 12px;
+  border-right: 2px solid currentcolor;
+  border-bottom: 2px solid currentcolor;
+  content: '';
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.patient-identity__more[open] summary::after {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.patient-identity__details--secondary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  padding: 4px 0 10px;
 }
 
 .patient-detail-page .patient-page-header {
@@ -483,6 +583,26 @@
   font-size: 1.35rem;
 }
 
+.patient-workflow-page h2[tabindex='-1'] {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.patient-workflow-page h2[tabindex='-1'],
+.patient-job-progress[tabindex='-1'] {
+  scroll-margin-top: 96px;
+}
+
+.patient-workflow-page h2[tabindex='-1']:focus-visible {
+  outline: 0;
+  box-shadow: 0 3px 0 #0057b8;
+}
+
+.patient-job-progress[tabindex='-1']:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(0 87 184 / 18%);
+}
+
 .capture-panel__header p,
 .patient-retry-step > p,
 .patient-result-review__header p,
@@ -490,6 +610,48 @@
 .patient-visit-unavailable p {
   margin: 7px 0 0;
   color: #536570;
+}
+
+.capture-panel__busy {
+  display: flex;
+  max-width: 760px;
+  min-height: 64px;
+  align-items: center;
+  gap: 13px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid #a9c6dc;
+  border-left: 4px solid #0057b8;
+  border-radius: 6px;
+  color: #0b2f4f;
+  background: #eef6fc;
+}
+
+.capture-panel__busy > span {
+  display: grid;
+  gap: 2px;
+}
+
+.capture-panel__busy strong {
+  font-weight: 800;
+}
+
+.capture-panel__busy small {
+  color: #435764;
+  font-size: 0.9rem;
+}
+
+.patient-loading-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  animation: patient-loading-spin 900ms linear infinite;
+}
+
+@keyframes patient-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .capture-panel__preview {
@@ -603,12 +765,17 @@
 
 .patient-capture-quality-step {
   display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
   gap: 30px;
+  align-items: start;
 }
 
 .capture-quality {
-  padding-top: 28px;
-  border-top: 1px solid #cfd8df;
+  padding: 22px;
+  border: 1px solid #c8d2da;
+  border-top: 3px solid #0057b8;
+  border-radius: 6px;
+  background: #fff;
 }
 
 .capture-quality fieldset {
@@ -667,25 +834,117 @@
 }
 
 .patient-job-progress__phases {
-  margin: 20px 0 0;
+  margin: 0;
   padding: 0;
   border-top: 1px solid #cfd8df;
   list-style: none;
 }
 
-.patient-job-progress__phase {
+.patient-job-progress {
+  padding: 22px;
+  border: 1px solid #b8c9d6;
+  border-top: 4px solid #0057b8;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.patient-job-progress__header {
   display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.patient-job-progress__header > div {
+  min-width: 0;
+}
+
+.patient-job-progress__header h2 {
+  margin: 0;
+}
+
+.patient-job-progress__header p {
+  margin: 3px 0 0;
+  color: #435764;
+  font-weight: 700;
+}
+
+.patient-job-progress__activity {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  place-items: center;
+  border-radius: 50%;
+  color: #0057b8;
+  background: #e5f2fc;
+}
+
+.patient-job-progress__bar {
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin: 20px 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  color: #0057b8;
+  background: #dce8f1;
+  accent-color: #0057b8;
+}
+
+.patient-job-progress__bar::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #dce8f1;
+}
+
+.patient-job-progress__bar::-webkit-progress-value {
+  border-radius: 999px;
+  background: #0057b8;
+}
+
+.patient-job-progress__bar::-moz-progress-bar {
+  border-radius: 999px;
+  background: #0057b8;
+}
+
+.patient-job-progress__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 280px);
+  gap: 24px;
+  align-items: start;
+}
+
+.patient-job-progress__phase {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   min-height: 56px;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
+  gap: 12px;
   padding: 9px 4px;
   border-bottom: 1px solid #cfd8df;
 }
 
-.patient-job-progress__phase > span {
+.patient-job-progress__phase-label {
   color: #243746;
   font-weight: 750;
+}
+
+.patient-job-progress__marker {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid #a7b6c1;
+  border-radius: 50%;
+  color: #5d6d77;
+  background: #fff;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.patient-job-progress__marker svg {
+  width: 16px;
+  height: 16px;
 }
 
 .patient-job-progress__phase small {
@@ -698,20 +957,62 @@
   color: #14633d;
 }
 
+.patient-job-progress__phase--complete
+  .patient-job-progress__marker {
+  border-color: #21714b;
+  color: #fff;
+  background: #21714b;
+}
+
 .patient-job-progress__phase--current {
   border-left: 3px solid #0057b8;
   padding-left: 12px;
   background: #eef6fc;
 }
 
+.patient-job-progress__phase--current
+  .patient-job-progress__marker {
+  border-color: #0057b8;
+  color: #fff;
+  background: #0057b8;
+}
+
 .patient-job-progress__phase--current small {
   color: #0057b8;
 }
 
+.patient-job-progress__preview {
+  margin: 0;
+}
+
+.patient-job-progress__preview img {
+  width: 100%;
+  height: auto;
+  max-height: 300px;
+  border: 1px solid #b8c5ce;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #e9eef2;
+}
+
+.patient-job-progress__preview figcaption {
+  margin-top: 7px;
+  color: #536570;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.patient-job-progress__guidance {
+  margin: 18px 0 0;
+  color: #324957;
+  font-weight: 700;
+}
+
 .patient-job-progress__announcement {
-  margin: 14px 0 0;
+  margin: 4px 0 0;
   color: #174d78;
-  font-weight: 750;
+  font-size: 0.9rem;
+  font-weight: 700;
 }
 
 .patient-processing-step > .patient-link-action {
@@ -786,6 +1087,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  z-index: 1;
 }
 
 .patient-attention-point {
@@ -795,15 +1097,58 @@
   width: var(--patient-point-size);
   aspect-ratio: 1;
   border-radius: 50%;
-  background: rgb(0 91 150 / 66%);
-  filter: blur(7px);
-  opacity: calc(0.04 + (0.76 * var(--patient-point-intensity)));
+  background: radial-gradient(
+    circle,
+    rgb(var(--attention-color-rgb) / 96%) 0 16%,
+    rgb(var(--attention-color-rgb) / 76%) 38%,
+    rgb(var(--attention-color-rgb) / 34%) 60%,
+    transparent 78%
+  );
+  filter: blur(5px) saturate(1.16);
+  opacity: calc(0.32 + (0.68 * var(--patient-point-intensity)));
   transform: translate(-50%, -50%);
 }
 
 .patient-attention-images__density-layer .patient-attention-point {
-  background: rgb(41 196 218 / 72%);
-  filter: blur(9px);
+  background: radial-gradient(
+    circle,
+    rgb(var(--attention-color-rgb) / 98%) 0 16%,
+    rgb(var(--attention-color-rgb) / 80%) 38%,
+    rgb(var(--attention-color-rgb) / 38%) 62%,
+    transparent 80%
+  );
+  filter: blur(6px) saturate(1.2);
+}
+
+.patient-attention-images__density-plane .patient-face-contour {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  pointer-events: none;
+  shape-rendering: geometricPrecision;
+  z-index: 2;
+}
+
+.patient-face-contour__path {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+  stroke: rgb(224 246 250 / 86%);
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 1px #03131f);
+}
+
+.patient-face-contour__path--face-oval {
+  stroke-width: 1.7;
+}
+
+.patient-face-contour__path--left-eyebrow,
+.patient-face-contour__path--right-eyebrow {
+  opacity: 0.78;
 }
 
 .patient-attention-images__orientation {
@@ -815,6 +1160,11 @@
   font-size: 0.94rem;
   font-weight: 700;
   text-align: center;
+}
+
+.patient-attention-images > .attention-signal-legend {
+  max-width: 680px;
+  margin-top: -14px;
 }
 
 .patient-attention-images__density {
@@ -839,6 +1189,7 @@
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  z-index: 3;
 }
 
 .patient-attention-images__density figcaption {
@@ -897,6 +1248,54 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 28px;
   margin-top: 20px;
+}
+
+.patient-aoi-summary__method {
+  margin-top: 18px;
+  border-top: 1px solid #cfd8df;
+}
+
+.patient-aoi-summary__method summary {
+  position: relative;
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  color: #174d78;
+  font-weight: 750;
+  list-style: none;
+  cursor: pointer;
+}
+
+.patient-aoi-summary__method summary::-webkit-details-marker {
+  display: none;
+}
+
+.patient-aoi-summary__method summary::after {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border-right: 2px solid currentcolor;
+  border-bottom: 2px solid currentcolor;
+  content: '';
+  transform: translateY(-2px) rotate(45deg);
+}
+
+.patient-aoi-summary__method[open] summary::after {
+  transform: translateY(2px) rotate(225deg);
+}
+
+.patient-aoi-summary__method > div {
+  max-width: 760px;
+  padding: 0 0 16px;
+  color: #536570;
+}
+
+.patient-aoi-summary__method p {
+  margin: 0;
+}
+
+.patient-aoi-summary__method p + p {
+  margin-top: 8px;
 }
 
 .patient-result-review__technical {
@@ -973,6 +1372,12 @@
   cursor: pointer;
 }
 
+.patient-result-review__form fieldset label:has(input:checked) {
+  border-color: #0057b8;
+  background: #eef6fc;
+  box-shadow: inset 3px 0 #0057b8;
+}
+
 .patient-result-review__form input[type='radio'] {
   width: 21px;
   height: 21px;
@@ -990,6 +1395,10 @@
   width: 100%;
   min-height: 112px;
   padding: 11px 12px;
+  border: 1px solid #7f909c;
+  border-radius: 6px;
+  color: #14212b;
+  background: #fff;
   resize: vertical;
 }
 
@@ -997,12 +1406,29 @@
   justify-self: start;
 }
 
-.patient-visit-complete .patient-primary-action {
+.patient-visit-complete__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-top: 20px;
 }
 
 .clinical-review-queue .patient-page-header {
   display: block;
+}
+
+.clinical-review-queue__empty {
+  max-width: 620px;
+  padding-block: 24px 28px;
+}
+
+.clinical-review-queue__empty h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.clinical-review-queue__empty .patient-primary-action {
+  margin-top: 18px;
 }
 
 .clinical-review-queue__list {
@@ -1091,6 +1517,10 @@
     white-space: normal;
   }
 
+  .patient-capture-quality-step {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .patient-attention-images__primary {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1164,6 +1594,16 @@
     padding: 17px;
   }
 
+  .patient-form-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .patient-form-actions .patient-primary-action,
+  .patient-form-actions .patient-secondary-action {
+    width: 100%;
+  }
+
   .capture-panel__actions {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -1172,6 +1612,31 @@
   .capture-panel__file-action,
   .capture-panel__synthetic-action {
     width: 100%;
+  }
+
+  .capture-panel__preview img {
+    max-height: 320px;
+  }
+
+  .patient-job-progress {
+    padding: 18px;
+  }
+
+  .patient-job-progress__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .patient-job-progress__preview {
+    grid-row: 1;
+  }
+
+  .patient-job-progress__phase {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .patient-job-progress__phase small {
+    grid-column: 2;
+    margin-top: -8px;
   }
 
   .patient-attention-images__orientation {
@@ -1207,6 +1672,16 @@
     width: 100%;
   }
 
+  .patient-visit-complete__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .patient-visit-complete__actions .patient-primary-action,
+  .patient-visit-complete__actions .patient-secondary-action {
+    width: 100%;
+  }
+
   .clinical-review-queue__item {
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;
@@ -1217,5 +1692,11 @@
     width: 100%;
     grid-row: auto;
     grid-column: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .patient-loading-icon {
+    animation: none;
   }
 }

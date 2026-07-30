@@ -28,6 +28,8 @@ export function WorklistPage() {
   const [category, setCategory] = useState(urlCategory)
   const normalizedQuery = query.trim().toLowerCase()
   const filtersActive = category !== 'all'
+  const categoryLabel =
+    category === 'all' ? 'All' : humanCategory(category)
 
   useEffect(() => {
     setQuery(urlQuery)
@@ -106,7 +108,7 @@ export function WorklistPage() {
             </span>
           </label>
           <details className="case-filters">
-            <summary>Filters</summary>
+            <summary>Category: {categoryLabel}</summary>
             <div className="case-filters__controls">
               <label>
                 <span>Category</span>

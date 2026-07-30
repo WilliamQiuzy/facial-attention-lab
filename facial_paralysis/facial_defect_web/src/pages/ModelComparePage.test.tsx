@@ -107,6 +107,9 @@ describe('model compare page', () => {
     expect(screen.queryByText('mock-salience-v0.4')).not.toBeInTheDocument()
     expect(screen.queryByTestId('model-case-row')).not.toBeInTheDocument()
     expect(screen.queryByTestId('model-comparison-panel')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/0 cases require source binding restoration/i),
+    ).not.toBeInTheDocument()
   })
 
   it('navigates from the explicit case choice to one strict case query', async () => {
@@ -153,6 +156,12 @@ describe('model compare page', () => {
     expect(panels).toHaveLength(2)
     expect(within(panels[0]).getByRole('heading', { name: 'Version A' })).toBeVisible()
     expect(within(panels[1]).getByRole('heading', { name: 'Version B' })).toBeVisible()
+    expect(
+      within(panels[0]).getByText('mock-salience-v0.3'),
+    ).toBeVisible()
+    expect(
+      within(panels[1]).getByText('mock-salience-v0.4'),
+    ).toBeVisible()
     expect(within(panels[0]).getByRole('img')).toHaveAttribute('src', approvedCase.url)
     expect(within(panels[1]).getByRole('img')).toHaveAttribute('src', approvedCase.url)
     expect(within(panels[0]).getByText(new RegExp(approvedCase.id))).toBeVisible()

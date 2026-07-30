@@ -53,6 +53,17 @@ export function NewPatientVisitPage() {
   const timepointRef = useRef<HTMLSelectElement>(null)
   const visitDateRef = useRef<HTMLInputElement>(null)
 
+  const clearFieldError = (
+    field: 'timepoint' | 'visitDate',
+  ) => {
+    setErrors((current) => {
+      if (!current[field]) return current
+      const next = { ...current }
+      delete next[field]
+      return next
+    })
+  }
+
   if (!patient) {
     return (
       <section className="patient-workflow-page patient-page-content page-shell">
@@ -127,7 +138,7 @@ export function NewPatientVisitPage() {
           Back to patient record
         </Link>
         <h1>Add photo visit</h1>
-        <PatientIdentityHeader patient={patient} />
+        <PatientIdentityHeader patient={patient} compact />
       </header>
 
       <div className="patient-page-content page-shell">
@@ -153,9 +164,10 @@ export function NewPatientVisitPage() {
               aria-describedby={
                 errors.timepoint ? 'new-visit-timepoint-error' : undefined
               }
-              onChange={(event) =>
+              onChange={(event) => {
                 setTimepoint(event.currentTarget.value)
-              }
+                clearFieldError('timepoint')
+              }}
             >
               <option value="">Select a timepoint</option>
               <option value="preoperative">Preoperative</option>
@@ -174,15 +186,17 @@ export function NewPatientVisitPage() {
               ref={visitDateRef}
               name="visitDate"
               type="date"
+              autoComplete="off"
               max={todayIso()}
               value={visitDate}
               aria-invalid={Boolean(errors.visitDate)}
               aria-describedby={
                 errors.visitDate ? 'new-visit-date-error' : undefined
               }
-              onChange={(event) =>
+              onChange={(event) => {
                 setVisitDate(event.currentTarget.value)
-              }
+                clearFieldError('visitDate')
+              }}
             />
             <FieldError
               id="new-visit-date-error"
@@ -195,12 +209,20 @@ export function NewPatientVisitPage() {
             synthetic or test photograph.
           </p>
 
-          <button
-            className="patient-primary-action"
-            type="submit"
-          >
-            Continue to photo
-          </button>
+          <div className="patient-form-actions">
+            <button
+              className="patient-primary-action"
+              type="submit"
+            >
+              Continue to photo
+            </button>
+            <Link
+              className="patient-secondary-action"
+              to={`/patients/${patient.id}`}
+            >
+              Cancel
+            </Link>
+          </div>
         </form>
       </div>
     </div>

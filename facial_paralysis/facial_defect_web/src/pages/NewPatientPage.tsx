@@ -92,6 +92,15 @@ export function NewPatientPage() {
     syntheticTestAttestation: attestationRef,
   }
 
+  const clearFieldError = (field: PatientField) => {
+    setErrors((current) => {
+      if (!current[field]) return current
+      const next = { ...current }
+      delete next[field]
+      return next
+    })
+  }
+
   const focusFirstError = (nextErrors: NewPatientErrors) => {
     const fieldOrder: readonly PatientField[] = [
       'displayName',
@@ -196,6 +205,11 @@ export function NewPatientPage() {
             </div>
           ) : null}
 
+          <p className="patient-form-boundary">
+            Only synthetic or test information may be entered. Do not
+            enter real patient information.
+          </p>
+
           <label className="patient-field">
             <span>Display name</span>
             <input
@@ -208,9 +222,10 @@ export function NewPatientPage() {
               aria-describedby={
                 errors.displayName ? 'displayName-error' : undefined
               }
-              onChange={(event) =>
+              onChange={(event) => {
                 setDisplayName(event.currentTarget.value)
-              }
+                clearFieldError('displayName')
+              }}
             />
             <FieldError
               id="displayName-error"
@@ -230,9 +245,10 @@ export function NewPatientPage() {
               aria-describedby={
                 errors.recordNumber ? 'recordNumber-error' : undefined
               }
-              onChange={(event) =>
+              onChange={(event) => {
                 setRecordNumber(event.currentTarget.value)
-              }
+                clearFieldError('recordNumber')
+              }}
             />
             <FieldError
               id="recordNumber-error"
@@ -246,15 +262,17 @@ export function NewPatientPage() {
               ref={dateOfBirthRef}
               name="dateOfBirth"
               type="date"
+              autoComplete="off"
               max={todayIso()}
               value={dateOfBirth}
               aria-invalid={Boolean(errors.dateOfBirth)}
               aria-describedby={
                 errors.dateOfBirth ? 'dateOfBirth-error' : undefined
               }
-              onChange={(event) =>
+              onChange={(event) => {
                 setDateOfBirth(event.currentTarget.value)
-              }
+                clearFieldError('dateOfBirth')
+              }}
             />
             <FieldError
               id="dateOfBirth-error"
@@ -272,9 +290,10 @@ export function NewPatientPage() {
               aria-describedby={
                 errors.carePathway ? 'carePathway-error' : undefined
               }
-              onChange={(event) =>
+              onChange={(event) => {
                 setCarePathway(event.currentTarget.value)
-              }
+                clearFieldError('carePathway')
+              }}
             >
               <option value="">Select a pathway</option>
               {CARE_PATHWAYS.map((option) => (
@@ -304,9 +323,10 @@ export function NewPatientPage() {
                 aria-describedby={
                   errors.timepoint ? 'timepoint-error' : undefined
                 }
-                onChange={(event) =>
+                onChange={(event) => {
                   setTimepoint(event.currentTarget.value)
-                }
+                  clearFieldError('timepoint')
+                }}
               >
                 <option value="">Select a timepoint</option>
                 <option value="preoperative">Preoperative</option>
@@ -325,15 +345,17 @@ export function NewPatientPage() {
                 ref={visitDateRef}
                 name="visitDate"
                 type="date"
+                autoComplete="off"
                 max={todayIso()}
                 value={visitDate}
                 aria-invalid={Boolean(errors.visitDate)}
                 aria-describedby={
                   errors.visitDate ? 'visitDate-error' : undefined
                 }
-                onChange={(event) =>
+                onChange={(event) => {
                   setVisitDate(event.currentTarget.value)
-                }
+                  clearFieldError('visitDate')
+                }}
               />
               <FieldError
                 id="visitDate-error"
@@ -349,10 +371,6 @@ export function NewPatientPage() {
             <h2 id="prototype-attestation-title">
               Synthetic/test information only
             </h2>
-            <p>
-              Only synthetic or test information may be entered. Do not
-              enter real patient information.
-            </p>
             <label>
               <input
                 ref={attestationRef}
@@ -367,11 +385,12 @@ export function NewPatientPage() {
                     ? 'syntheticTestAttestation-error'
                     : undefined
                 }
-                onChange={(event) =>
+                onChange={(event) => {
                   setSyntheticTestAttestation(
                     event.currentTarget.checked,
                   )
-                }
+                  clearFieldError('syntheticTestAttestation')
+                }}
               />
               <span>
                 I confirm this record contains synthetic/test
@@ -384,12 +403,17 @@ export function NewPatientPage() {
             />
           </section>
 
-          <button
-            className="patient-primary-action"
-            type="submit"
-          >
-            Save and add photo
-          </button>
+          <div className="patient-form-actions">
+            <button
+              className="patient-primary-action"
+              type="submit"
+            >
+              Save and add photo
+            </button>
+            <Link className="patient-secondary-action" to="/patients">
+              Cancel
+            </Link>
+          </div>
         </form>
       </div>
     </div>

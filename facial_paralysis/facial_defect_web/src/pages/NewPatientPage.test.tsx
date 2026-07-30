@@ -84,6 +84,32 @@ async function fillValidPatientForm(
 }
 
 describe('NewPatientPage', () => {
+  it('warns before the first field, keeps date autofill off, and offers a clear way back', () => {
+    renderPage()
+
+    const dataBoundary = screen.getByText(
+      'Only synthetic or test information may be entered. Do not enter real patient information.',
+    )
+    const firstField = screen.getByRole('textbox', { name: 'Display name' })
+    expect(dataBoundary).toBeVisible()
+    expect(
+      dataBoundary.compareDocumentPosition(firstField) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(screen.getByLabelText('Date of birth')).toHaveAttribute(
+      'autocomplete',
+      'off',
+    )
+    expect(screen.getByLabelText('First visit date')).toHaveAttribute(
+      'autocomplete',
+      'off',
+    )
+    expect(screen.getByRole('link', { name: 'Cancel' })).toHaveAttribute(
+      'href',
+      '/patients',
+    )
+  })
+
   it('creates one test record with its initial visit and opens the photo workflow', async () => {
     const user = userEvent.setup()
     const view = renderPage()
@@ -160,6 +186,38 @@ describe('NewPatientPage', () => {
     expect(recordNumber).toHaveFocus()
     expect(screen.getByLabelText('Workflow counts')).toHaveTextContent(
       '1 patients, 0 visits',
+    )
+  })
+
+  it('clears only the corrected field error without waiting for another submit', async () => {
+    const user = userEvent.setup()
+    renderPage()
+
+    const displayName = screen.getByRole('textbox', {
+      name: 'Display name',
+    })
+    const recordNumber = screen.getByRole('textbox', {
+      name: 'Record or study ID',
+    })
+    await user.click(
+      screen.getByRole('button', { name: 'Save and add photo' }),
+    )
+
+    expect(displayName).toHaveAttribute('aria-invalid', 'true')
+    expect(recordNumber).toHaveAttribute('aria-invalid', 'true')
+
+    await user.type(displayName, 'Synthetic Test Record')
+
+    expect(
+      screen.queryByText('Display name is required.'),
+    ).not.toBeInTheDocument()
+    expect(displayName).toHaveAttribute('aria-invalid', 'false')
+    expect(
+      screen.getByText('Record number is required.'),
+    ).toBeVisible()
+    expect(recordNumber).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Check the highlighted fields.',
     )
   })
 })

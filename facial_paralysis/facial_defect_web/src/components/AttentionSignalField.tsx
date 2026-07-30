@@ -1,6 +1,8 @@
-import type { CSSProperties } from 'react'
+import { useId, type CSSProperties } from 'react'
 import type { WorkbenchCatalogEntry } from '../workbench/catalog'
 import type { InferenceOutput } from '../workbench/types'
+import { AttentionColorLegend } from './AttentionColorLegend'
+import { attentionColorRgb } from './attentionColorScale'
 
 type AttentionSignalFieldProps = {
   asset: WorkbenchCatalogEntry
@@ -8,6 +10,7 @@ type AttentionSignalFieldProps = {
 }
 
 export function AttentionSignalField({ asset, output }: AttentionSignalFieldProps) {
+  const referenceNoteId = useId()
   const connected = output.origin === 'model_prediction'
 
   return (
@@ -51,6 +54,7 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
         <div
           className="attention-signal-field"
           role="region"
+          aria-describedby={referenceNoteId}
           aria-label={
             connected
               ? 'Predicted observer-attention density field'
@@ -68,6 +72,7 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
                   '--signal-y': `${point.y * 100}%`,
                   '--signal-size': `${point.radius * 200}%`,
                   '--signal-strength': point.intensity,
+                  '--attention-color-rgb': attentionColorRgb(point.intensity),
                 } as CSSProperties
               }
             />
@@ -76,11 +81,14 @@ export function AttentionSignalField({ asset, output }: AttentionSignalFieldProp
             {connected ? 'MODEL PREDICTION' : 'SIMULATED'}
           </span>
         </div>
-        <figcaption className="attention-signal-legend">
-          <span>Less relative density</span>
-          <span aria-hidden="true" className="attention-signal-legend__scale" />
-          <span>More relative density</span>
-        </figcaption>
+        <AttentionColorLegend element="figcaption" />
+        <p
+          className="attention-signal-field__reference-note"
+          id={referenceNoteId}
+        >
+          Face outline unavailable: registered contour or landmarks
+          were not supplied with this result.
+        </p>
       </figure>
     </section>
   )

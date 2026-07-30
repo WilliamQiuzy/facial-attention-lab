@@ -115,6 +115,9 @@ describe('batch jobs page', () => {
       /\.task5-progress-matrix__labels\s*{([^}]*)}/,
     )?.[1]
     expect(labelRule).toMatch(/font-size:\s*\.875rem/)
+    expect(task5Css).toMatch(
+      /\.task5-progress__heading h2\s*{[^}]*scroll-margin-top:\s*84px/,
+    )
   })
 
   it('uses clinician-facing copy and keeps settings in a native disclosure', async () => {
@@ -155,6 +158,13 @@ describe('batch jobs page', () => {
       'name',
       'smoothing',
     )
+    for (const checkbox of within(
+      screen.getByRole('complementary', {
+        name: 'Batch configuration',
+      }),
+    ).getAllByRole('checkbox')) {
+      expect(checkbox).toHaveAttribute('name', 'caseIds')
+    }
 
     await user.click(screen.getByRole('button', { name: 'Select ready cases' }))
     expect(screen.getByLabelText('Selected cases')).toHaveTextContent('8')
@@ -166,6 +176,10 @@ describe('batch jobs page', () => {
     const exclusions = within(preview).getByRole('region', {
       name: 'Cases excluded from this run',
     })
+    expect(within(exclusions).getByRole('checkbox')).toHaveAttribute(
+      'name',
+      'confirmExclusions',
+    )
     for (const blockedCase of blockedCases) {
       expect(within(exclusions).getByText(blockedCase.id)).toBeVisible()
       expect(within(exclusions).getByText(blockedCase.label)).toBeVisible()
@@ -213,8 +227,8 @@ describe('batch jobs page', () => {
       )
       expect(row).toBeDefined()
       expect(
-        within(row!).getByRole('link', { name: 'Restore source binding' }),
-      ).toHaveAttribute('href', `/cases/${blockedCase.id}/roi`)
+        within(row!).queryByRole('link', { name: 'Restore source binding' }),
+      ).not.toBeInTheDocument()
     }
 
     const technicalDetails = within(preview).getByText('Technical details').closest('details')
@@ -297,10 +311,40 @@ describe('batch jobs page', () => {
     await user.click(screen.getByRole('button', { name: 'Start 8 simulations' }))
 
     await waitFor(() => expect(deferred.runInference).toHaveBeenCalledTimes(8))
+    const compactConfiguration = screen.getByRole('complementary', {
+      name: 'Batch submission summary',
+    })
+    expect(
+      within(compactConfiguration).getByRole('heading', {
+        name: '8 simulations started',
+        level: 2,
+      }),
+    ).toBeVisible()
+    expect(
+      within(compactConfiguration).getByText(
+        '2 cases need source binding and were not submitted.',
+      ),
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('region', { name: 'Selected case review' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Start 8 simulations' }),
+    ).not.toBeInTheDocument()
     expect(deferred.requests.map((request) => request.binding.caseId)).not.toEqual(
       expect.arrayContaining(blockedCases.map((asset) => asset.id)),
     )
     const progress = screen.getByRole('region', { name: 'Batch progress' })
+    expect(
+      within(progress).getByRole('heading', {
+        name: 'Batch progress',
+        level: 2,
+      }),
+    ).toHaveFocus()
+    expect(progress).toHaveAttribute('aria-busy', 'true')
+    expect(
+      within(progress).getByText('Analyzing 8 cases…'),
+    ).toBeVisible()
     expect(within(progress).getAllByTestId('job-progress-row')).toHaveLength(10)
     expect(within(progress).getAllByText('running')).toHaveLength(8)
     expect(within(progress).getAllByText('blocked')).toHaveLength(2)
@@ -309,8 +353,13 @@ describe('batch jobs page', () => {
       within(progress).queryByRole('heading', { name: /^batch-job-/i }),
     ).not.toBeInTheDocument()
     expect(
-      within(progress).getByRole('status', { name: 'Batch status summary' }),
+      within(progress).getByLabelText('Batch status summary'),
     ).toHaveTextContent(/8 running · 2 blocked/i)
+    const batchAnnouncement = screen.getByRole('status', {
+      name: 'Batch progress announcement',
+    })
+    expect(progress).not.toContainElement(batchAnnouncement)
+    expect(batchAnnouncement).toHaveTextContent(/8 running · 2 blocked/i)
 
     const technicalDetails = within(progress).getByText('Technical details').closest('details')
     expect(technicalDetails).not.toBeNull()
@@ -324,10 +373,12 @@ describe('batch jobs page', () => {
 
     await user.click(screen.getByRole('button', { name: 'Cancel batch' }))
     expect(deferred.requests.every((request) => request.signal?.aborted)).toBe(true)
+    expect(progress).toHaveAttribute('aria-busy', 'false')
     expect(within(progress).getAllByText('cancelled')).toHaveLength(8)
     expect(
-      within(progress).getByRole('status', { name: 'Batch status summary' }),
+      within(progress).getByLabelText('Batch status summary'),
     ).toHaveTextContent(/8 cancelled · 2 blocked/i)
+    expect(batchAnnouncement).toHaveTextContent(/8 cancelled · 2 blocked/i)
 
     await user.click(screen.getByRole('button', { name: 'Retry 8 eligible attempts' }))
     await waitFor(() => expect(deferred.runInference).toHaveBeenCalledTimes(16))
@@ -400,5 +451,21 @@ describe('batch jobs page', () => {
       await Promise.resolve()
     })
     await waitFor(() => expect(screen.getByText('succeeded')).toBeVisible())
+    expect(
+      screen.getByRole('heading', {
+        name: '1 simulation completed',
+        level: 2,
+      }),
+    ).toBeVisible()
+    expect(screen.getByText('The result is ready.')).toBeVisible()
+    expect(
+      screen.getByRole('link', { name: 'View result' }),
+    ).toHaveAttribute('href', `/runs/${firstBinding.clientRunId}`)
+    expect(
+      screen.queryByRole('button', { name: 'Cancel batch' }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: /Retry .* eligible/ }),
+    ).not.toBeInTheDocument()
   })
 })

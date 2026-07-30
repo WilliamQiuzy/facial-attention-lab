@@ -36,21 +36,25 @@ export function OverviewPage() {
           </ol>
         </section>
 
-        <section aria-labelledby="research-tools-title">
-          <h2 id="research-tools-title">Research tools</h2>
-          <p>
-            These technical pages remain available without adding them to the clinician
-            navigation.
-          </p>
-          <nav className="help-page__links" aria-label="Research tools">
-            <Link to="/cases">Synthetic cases</Link>
-            <Link to="/research/reviews">Research reviews</Link>
-            <Link to="/runs">Runs</Link>
-            <Link to="/jobs">Jobs</Link>
-            <Link to="/models">Models</Link>
-            <Link to="/methods">Methods</Link>
-            <Link to="/integration">Integration</Link>
-          </nav>
+        <section className="help-page__advanced">
+          <details>
+            <summary>Advanced research tools</summary>
+            <div className="help-page__advanced-content">
+              <p>
+                Technical pages for research setup, verification, and troubleshooting.
+                These are not part of the clinician workflow.
+              </p>
+              <nav className="help-page__links" aria-label="Research tools">
+                <Link to="/cases">Synthetic cases</Link>
+                <Link to="/research/reviews">Research reviews</Link>
+                <Link to="/runs">Runs</Link>
+                <Link to="/jobs">Jobs</Link>
+                <Link to="/models">Models</Link>
+                <Link to="/methods">Methods</Link>
+                <Link to="/integration">Integration</Link>
+              </nav>
+            </div>
+          </details>
         </section>
 
         <p className="help-page__boundary">

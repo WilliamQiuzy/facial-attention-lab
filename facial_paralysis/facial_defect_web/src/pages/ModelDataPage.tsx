@@ -96,8 +96,10 @@ export function ModelDataPage() {
             <h2>The research model and this spatial demo are not interchangeable.</h2>
           </div>
           <p>
-            The available functional-assessment research outputs are non-spatial severity or
-            regional summaries. They are not connected to this web workbench.
+            The checked-in facial_paralysis scoring path returns palsy probability plus eyes
+            and mouth ordinal outputs. Separate analysis code produces label-free landmark
+            asymmetry, eye-closure dynamics, and a Mayo FACES label-free research measurement
+            summary. It is not connected to this web workbench.
           </p>
         </div>
         <div className="provenance-rule">
@@ -110,13 +112,24 @@ export function ModelDataPage() {
             </strong>
             <p>
               {connected
-                ? 'The research HTTP seam is enabled, but the current functional-assessment research system is still not connected. No trained facial-defect attention model is configured.'
+                ? 'The research HTTP seam is enabled, but the current facial_paralysis model is still not connected. No trained facial-defect attention model is configured.'
                 : 'The browser currently runs a deterministic synthetic spatial mock only. No trained facial-defect attention model exists in this repository yet.'}
             </p>
             <p>
-              This functional-assessment research system does not emit a spatial heatmap, and
-              a non-spatial severity or ordinal response cannot be converted into one. A
-              connected response without valid spatial points fails closed.
+              No checked-in checkpoint includes an HB task; the architecture can support one,
+              but Mayo HB calibration has not started. The FACES-action-derived regional
+              research measurement summary is not a validated eFACE, Sunnybrook, or HB
+              composite or grade.
+            </p>
+            <p>
+              This functional-assessment system does not emit a spatial heatmap, and a severity
+              or ordinal response cannot be converted into one. A connected response without
+              valid spatial points fails closed.
+            </p>
+            <p>
+              The v2 attention checkpoint uses temporal frame pooling, not spatial facial
+              attention. The v4 checkpoint includes a coarse3 head, but the current
+              prediction script does not export it.
             </p>
             <p>
               A future extended contract may add post-inference AOI summaries without changing
