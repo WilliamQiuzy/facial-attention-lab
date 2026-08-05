@@ -29,6 +29,32 @@ The classifier remains a standardized L2 logistic regression with fixed
 hyperparameter search. The robustness change comes from fixed symmetry
 handling, not a deeper neural network or parameter search.
 
+## Preregistered successor experiment
+
+**110D-Generalization v1** is the next experiment; it does not replace the
+current champion or add a new result. It compares only these frozen candidates:
+
+- `landmark_mi_110d` (110D);
+- `landmark_mi_110d_action_proxy_168d` (110D + 58D Action proxy);
+- `landmark_mi_110d_action_phase_proxy_204d` (168D + 36D Phase proxy).
+
+All three retain the same mirror handling, train-fold-only standardization,
+group-balanced fixed L2 logistic regression (`C=0.01`, `liblinear`, threshold
+`0.5`, `max_iter=2000`, random state `0`), split logic, and evaluation budget,
+with no tuning. Promotion is hierarchical: 168D must strictly improve AUROC
+over 110D without reducing balanced accuracy or increasing Brier score; 204D
+must meet those gates against both simpler candidates, and any exact tie
+retains the simpler model.
+
+PalsyNet has no standardized action or frame-level phase labels, so the added
+blocks are explicitly geometry-based Action and Phase **proxies**, not true
+action/phase supervision. YFP is a separate static regional-severity ordinal
+transfer task, while MEEI is the intended standardized-action/HB external
+cohort but does not itself provide frame-level Phase truth. PalsyNet comparison
+cannot start until the label-blinded identity review and group-disjoint split
+registry are complete. The protected outer partition remains sealed and may be
+used once only after one candidate and all provenance digests are locked.
+
 ## What 110D Landmark means
 
 MediaPipe remains the upstream detector. Its 478 face landmarks are reduced to
