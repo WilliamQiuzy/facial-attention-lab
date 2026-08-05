@@ -1,9 +1,9 @@
 {
-  "schema_version": "facial_paralysis_current_development_model_v1",
+  "schema_version": "facial_paralysis_current_development_model_v2",
   "status": "current_development_champion_not_outer_validated",
   "recorded_on": "2026-08-05",
   "model": {
-    "name": "mirror_invariant_landmark_trajectory_110d_l2_logistic",
+    "name": "landmark_mi_110d",
     "feature_dimension": 110,
     "input_contract": "clinical23_v2",
     "feature_construction": {
@@ -13,26 +13,36 @@
     "classifier": {
       "type": "standardized_l2_logistic_regression",
       "c": 0.01,
+      "penalty": "l2",
       "solver": "liblinear",
+      "max_iter": 2000,
+      "random_state": 0,
       "threshold": 0.5,
       "group_balanced_sample_weights": true,
       "hyperparameter_search": false
     },
     "mirror_invariance": {
       "training": "original_plus_horizontal_mirror",
-      "inference": "mean_original_and_horizontal_mirror_probability",
-      "maximum_observed_probability_error": 0.0
+      "inference": "mean_original_and_horizontal_mirror_probability"
     }
   },
   "task": {
     "dataset": "PalsyNet",
     "target": "binary_affected_vs_unaffected_not_hb_grade",
-    "claim_unit": "video_held_out",
-    "identity_status": "unreviewed"
+    "claim_unit": "person_held_out",
+    "identity_status": "reviewed",
+    "action_supervision": "geometry_proxy_only",
+    "phase_supervision": "recording_position_proxy_only"
   },
-  "evaluation": {
-    "full_recordings": 49,
-    "full_groups": 48,
+  "identity_and_split": {
+    "recordings_reviewed": 49,
+    "pair_decisions_reviewed": 1176,
+    "same_pair_decisions": 1,
+    "uncertainties": 0,
+    "reviewed_groups": 48,
+    "cross_label_groups": 0,
+    "eligible_recordings": 49,
+    "eligible_groups": 48,
     "development_recordings": 39,
     "development_groups": 38,
     "development_affected_groups": 21,
@@ -40,87 +50,145 @@
     "inner_folds": 4,
     "protected_outer_fold_number": 0,
     "protected_recordings": 10,
-    "protected_groups": 10,
-    "cache_records_schema_and_quality_validated": 49,
-    "protected_candidate_feature_extractions": 0,
-    "protected_model_fits": 0,
-    "protected_predictions": 0
+    "protected_groups": 10
+  },
+  "protocol": {
+    "bootstrap_repeats": 5000,
+    "bootstrap_seed": 20260805,
+    "bootstrap_unit": "reviewed_group",
+    "paired_class_stratified": true,
+    "candidate_lock": "hierarchical_unrounded_110d_to_168d_to_204d",
+    "candidate_specific_tuning": false
   },
   "candidates": {
-    "nuisance_only": {
-      "feature_dimension": 9,
-      "auroc": 0.7675070028011204,
-      "balanced_accuracy": 0.7156862745098038,
-      "sensitivity": 0.6666666666666666,
-      "specificity": 0.7647058823529411
-    },
-    "clinical_dynamics_58d": {
-      "feature_dimension": 58,
-      "auroc": 0.9215686274509803,
-      "balanced_accuracy": 0.8571428571428572,
-      "sensitivity": 0.7142857142857143,
-      "specificity": 1.0
-    },
-    "clinical_dynamics_plus_nuisance": {
-      "feature_dimension": 67,
-      "auroc": 0.9131652661064426,
-      "balanced_accuracy": 0.8809523809523809,
-      "sensitivity": 0.7619047619047619,
-      "specificity": 1.0
-    },
-    "landmark_110d": {
+    "landmark_mi_110d": {
       "feature_dimension": 110,
-      "auroc": 0.938375350140056,
-      "balanced_accuracy": 0.9047619047619048,
-      "sensitivity": 0.8095238095238095,
+      "auroc": 0.980392156862745,
+      "auroc_ci95": [
+        0.9327731092436975,
+        1.0
+      ],
+      "average_precision": 0.9871504157218447,
+      "balanced_accuracy": 0.9523809523809523,
+      "sensitivity": 0.9047619047619048,
       "specificity": 1.0,
-      "brier": 0.13520128735483106
+      "brier": 0.11736712693119593
     },
-    "mirror_invariant_landmark_110d": {
-      "feature_dimension": 110,
-      "auroc": 0.9439775910364145,
-      "balanced_accuracy": 0.9047619047619048,
-      "sensitivity": 0.8095238095238095,
+    "landmark_mi_110d_action_proxy_168d": {
+      "feature_dimension": 168,
+      "auroc": 0.9747899159663865,
+      "auroc_ci95": [
+        0.9215686274509804,
+        1.0
+      ],
+      "average_precision": 0.983206809293766,
+      "balanced_accuracy": 0.9285714285714286,
+      "sensitivity": 0.8571428571428571,
       "specificity": 1.0,
-      "brier": 0.13284986045296437
+      "brier": 0.10306895179592385
+    },
+    "landmark_mi_110d_action_phase_proxy_204d": {
+      "feature_dimension": 204,
+      "auroc": 0.969187675070028,
+      "auroc_ci95": [
+        0.9103641456582632,
+        1.0
+      ],
+      "average_precision": 0.9801587301587305,
+      "balanced_accuracy": 0.9285714285714286,
+      "sensitivity": 0.8571428571428571,
+      "specificity": 1.0,
+      "brier": 0.10359183539709031
     }
   },
-  "primary_comparison": {
-    "baseline": "landmark_110d",
-    "candidate": "mirror_invariant_landmark_110d",
-    "delta_auroc": 0.0056022408963585235,
-    "paired_bootstrap_repeats": 5000,
-    "ci95": [
-      0.0,
-      0.022408963585434316
-    ],
-    "probability_delta_gt_zero": 0.686
+  "primary_deltas": {
+    "action_proxy_168d_minus_110d_auroc": {
+      "point": -0.0056022408963584125,
+      "ci95": [
+        -0.02801120448179284,
+        0.011204481792717047
+      ]
+    },
+    "action_phase_proxy_204d_minus_110d_auroc": {
+      "point": -0.011204481792716936,
+      "ci95": [
+        -0.04201680672268915,
+        0.0056022408963585235
+      ]
+    },
+    "action_phase_proxy_204d_minus_action_proxy_168d_auroc": {
+      "point": -0.0056022408963585235,
+      "ci95": [
+        -0.028011204481792618,
+        0.008403361344537785
+      ]
+    }
   },
   "decision": {
-    "development_champion": "mirror_invariant_landmark_110d",
-    "development_champion_basis": "fixed_mirror_robustness_and_noninferiority_gates_passed",
-    "preregistered_primary_candidate": "clinical_dynamics_plus_nuisance",
-    "preregistered_direction_gate_passed": false,
-    "mirror_robustness_successor_gate_passed": true,
+    "locked_candidate": "landmark_mi_110d",
+    "action_proxy_advances": false,
+    "phase_proxy_advances_against_both_simpler_candidates": false,
+    "promotion_passed": false,
     "outer_evaluation_authorized": false,
     "hb_claim_authorized": false,
     "clinical_validation": false,
-    "deployment_authorized": false
+    "deployment_authorized": false,
+    "next_gate": "freeze_candidate_then_explicit_one_shot_outer_authorization"
   },
-  "supersedes_for_current_reporting": [
-    "web_static_autoresearch_champion",
-    "geometry_only_web_candidate",
-    "static_landmark_fusion_ablation",
-    "focused_mayo_fusion_reconstruction",
-    "ssl_transfer_smoke"
-  ],
+  "execution_audit": {
+    "gate_attempts": 1,
+    "gate_passes": 1,
+    "development_cache_records_loaded": 39,
+    "development_feature_extractions": 351,
+    "development_scaler_fits": 12,
+    "development_model_fits": 12,
+    "development_predictions": 117,
+    "protected_cache_records_loaded": 0,
+    "protected_feature_extractions": 0,
+    "protected_scaler_fits": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0,
+    "implementation_components_bound": 9,
+    "report_contains_identifiers_paths_or_row_probabilities": false,
+    "immutable_report_invocations": {
+      "created": 1,
+      "identical_repeat_rejected_no_overwrite": 1
+    }
+  },
+  "auxiliary_and_external": {
+    "yfp": {
+      "task": "static_eye_and_mouth_regional_ordinal_audit",
+      "accepted_anchors": 10838,
+      "training_eligible": false,
+      "extractions": 0,
+      "fits": 0,
+      "predictions": 0
+    },
+    "meei": {
+      "local_acquisition_complete": true,
+      "videos": 60,
+      "candidate_selection_eligible": false,
+      "external_scoring_authorized": false
+    },
+    "aflfp": {
+      "access_granted": false,
+      "eligible_faculty_or_employee_signature_required": true
+    }
+  },
   "provenance": {
-    "source_branch": "codex/mirror-invariant-110d",
-    "base_protocol_commit": "632bf993a8d38a7426fc52b23923e1d8d14dd857",
-    "implementation_commit": "7c64c26005895083766dac7760ce498b253741e8",
-    "experiment": "mirror-invariant-110d-v1",
-    "runner_sha256": "ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12",
-    "protocol_test_sha256": "e2c0855b5afce630160e83db9bdbec08299f707686226a7e3beb2d40bdbee10c",
-    "aggregate_source_report_sha256": "f84fbd1605dea3515cde524946b1d3e4c1003aac77ece2bcef8b3e413f75cb29"
+    "source_branch": "codex/110d-generalization-v1",
+    "runner_implementation_commit": "14a47f9",
+    "reviewed_identity_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "person_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
+    "implementation_aggregate_sha256": "4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208",
+    "aggregate_source_report_sha256": "e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43"
+  },
+  "claim_boundary": {
+    "not_directly_comparable_to_legacy_video_held_out_score": true,
+    "mayo_65_performance": false,
+    "house_brackmann_accuracy": false,
+    "cross_institutional_validation": false,
+    "clinical_use": false
   }
 }

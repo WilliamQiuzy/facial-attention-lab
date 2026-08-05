@@ -1,126 +1,116 @@
 # Current development model
 
-This file is the canonical source for current-model reporting. If an older
-document calls a MARLIN, web-QWK, Blendshape, Fusion, or SSL model the
-"champion", treat that wording as historical.
+This is the canonical source for present-tense model reporting. Older MARLIN,
+web-QWK, Blendshape, Fusion, SSL, standard 110D, and video-held-out results are
+historical baselines rather than the current validation claim.
 
 ## Canonical result
 
-The current development-set champion is the **mirror-invariant
-110-dimensional Landmark trajectory model**.
+The current development champion remains the **mirror-invariant 110D Landmark
+trajectory representation** with a fixed standardized L2 logistic classifier.
+It has now been selected under an identity-reviewed, patient/group-disjoint
+PalsyNet development protocol.
 
-| Development candidate | AUROC | Balanced accuracy | Sensitivity | Specificity |
-|---|---:|---:|---:|---:|
-| Nuisance-only | 0.768 | 0.716 | 0.667 | 0.765 |
-| 58D Clinical Dynamics | 0.922 | 0.857 | 0.714 | 1.000 |
-| Clinical Dynamics + Nuisance | 0.913 | 0.881 | 0.762 | 1.000 |
-| 110D Landmark | 0.938 | **0.905** | **0.810** | **1.000** |
-| **Mirror-invariant 110D Landmark** | **0.944** | **0.905** | **0.810** | **1.000** |
+| Frozen development candidate | AUROC | Balanced accuracy | Sensitivity | Specificity | Brier |
+|---|---:|---:|---:|---:|---:|
+| **110D Landmark** | **0.980** | **0.952** | **0.905** | **1.000** | 0.117 |
+| 110D + 58D Action proxy | 0.975 | 0.929 | 0.857 | 1.000 | **0.103** |
+| 110D + Action proxy + 36D Phase proxy | 0.969 | 0.929 | 0.857 | 1.000 | 0.104 |
 
-The successor uses the same fixed 110D representation and classifier, but
-trains on each trajectory and its horizontal mirror and averages the two
-probabilities at inference. Its maximum observed mirror probability error was
-`0.0`. It passed the fixed robustness/non-inferiority gates, so it replaces the
-standard 110D model for development reporting; this does not authorize outer
-evaluation.
+The 168D and 204D candidates improved Brier calibration error but reduced both
+AUROC and balanced accuracy. They therefore fail the preregistered promotion
+rule, and the simpler 110D candidate stays locked. The 110D AUROC 95% paired
+group-bootstrap interval was `[0.933, 1.000]`; the 168D-minus-110D AUROC delta
+was `-0.0056` with interval `[-0.0280, 0.0112]`, and the 204D-minus-110D delta
+was `-0.0112` with interval `[-0.0420, 0.0056]`.
 
-The classifier remains a standardized L2 logistic regression with fixed
-`C=0.01`, `liblinear`, threshold `0.5`, group-balanced sample weights, and no
-hyperparameter search. The robustness change comes from fixed symmetry
-handling, not a deeper neural network or parameter search.
+These values must not be presented as an improvement over the older AUROC
+`0.944`: the earlier number came from a different, identity-unreviewed
+video-held-out partition. The new result is stronger evidence because its
+evaluation unit is a reviewed person group, not because the numerical score is
+directly comparable.
 
-## Preregistered successor experiment
+## Model and representation
 
-**110D-Generalization v1** is the next experiment; it does not replace the
-current champion or add a new result. It compares only these frozen candidates:
+MediaPipe remains the upstream detector. Its face landmarks are reduced to the
+frozen 23-channel `clinical23_v2` eye, brow, and mouth geometry contract. The
+110D vector contains:
 
-- `landmark_mi_110d` (110D);
-- `landmark_mi_110d_action_proxy_168d` (110D + 58D Action proxy);
-- `landmark_mi_110d_action_phase_proxy_204d` (168D + 36D Phase proxy).
+- 23 channels × median, IQR, range, and maximum absolute velocity = 92 values;
+- six bilateral pairs × correlation, direction-invariant amplitude ratio, and
+  best lag = 18 values.
 
-All three retain the same mirror handling, train-fold-only standardization,
-group-balanced fixed L2 logistic regression (`C=0.01`, `liblinear`, threshold
-`0.5`, `max_iter=2000`, random state `0`), split logic, and evaluation budget,
-with no tuning. Promotion is hierarchical: 168D must strictly improve AUROC
-over 110D without reducing balanced accuracy or increasing Brier score; 204D
-must meet those gates against both simpler candidates, and any exact tie
-retains the simpler model.
+Every candidate used the same original-plus-horizontal-mirror training,
+mean original/mirror inference, train-fold-only `StandardScaler`, group-balanced
+weights, and L2 logistic regression with `C=0.01`, `liblinear`,
+`max_iter=2000`, random state `0`, and threshold `0.5`. There was no tuning,
+feature selection, candidate-specific calibration, or neural architecture
+change.
 
-PalsyNet has no standardized action or frame-level phase labels, so the added
-blocks are explicitly geometry-based Action and Phase **proxies**, not true
-action/phase supervision. YFP is a separate static regional-severity ordinal
-transfer task, while MEEI is the intended standardized-action/HB external
-cohort but does not itself provide frame-level Phase truth. PalsyNet comparison
-cannot start until the label-blinded identity review and group-disjoint split
-registry are complete. The protected outer partition remains sealed and may be
-used once only after one candidate and all provenance digests are locked.
-
-## What 110D Landmark means
-
-MediaPipe remains the upstream detector. Its 478 face landmarks are reduced to
-the frozen 23-channel `clinical23_v2` eye, brow, and mouth geometry contract.
-Each recording is then summarized as:
-
-- 23 channels × four statistics (median, IQR, range, maximum absolute velocity)
-  = 92 features;
-- six bilateral pairs × three dynamics (correlation, invariant amplitude ratio,
-  and best lag) = 18 features.
-
-Together these form the 110-dimensional recording-level Landmark vector.
+The additional 58D and 36D blocks are geometry-based **Action and recording-
+position Phase proxies**. PalsyNet has no standardized action or frame-level
+phase annotations, so this experiment does not establish a true action- or
+phase-specific disease mechanism.
 
 ## Evaluation boundary
 
-- Dataset: PalsyNet.
-- Target: binary affected versus unaffected, **not** House-Brackmann grade.
-- Full registry: 49 recordings / 48 groups.
+- Cohort: PalsyNet binary affected versus unaffected; this is not HB grading.
+- Identity audit: all 49 recording overviews and all 1,176 unordered recording
+  pairs were reviewed label-blind; one pair was the same person, yielding 48
+  reviewed groups, with no unresolved or cross-label group.
+- Frozen split: 49 eligible recordings / 48 groups total.
 - Development evaluation: 39 recordings / 38 groups, comprising 21 affected
-  and 17 unaffected groups.
-- Protocol: outer fold 0 was reserved first; four-fold grouped inner
-  out-of-fold evaluation used only the remaining development groups.
-- Protected partition: 10 recordings / 10 groups; zero protected candidate-110D
-  feature construction, model fits, or predictions. The shared loader still
-  performs schema and quality validation over all registered cache records
-  before the split is applied.
-- Claim unit: video-held-out; identity status remains unreviewed.
+  and 17 unaffected groups, with four-fold group-disjoint OOF predictions.
+- Protected partition: 10 recordings / 10 groups in outer fold 0.
+- Protected access counters: zero cache loads, feature extractions, scaler fits,
+  model fits, and predictions.
+- Bootstrap: 5,000 paired, class-stratified reviewed-group resamples at seed
+  `20260805`.
+- Claim unit: `person_held_out`; identity status: `reviewed`.
 
-These numbers are not Mayo-65 performance, HB accuracy, patient-held-out
-clinical validation, or deployment evidence.
+The report is a closed aggregate: it contains no recording/group IDs, labels,
+per-record probabilities, filenames, NPZ names, or local paths. Nine execution-
+affecting source components are individually hashed and aggregated before the
+result can be serialized.
 
-## Promotion state
+## Decision and remaining gates
 
-The mirror-invariant 110D Landmark model is the current **development
-champion**. It
-supersedes older models for present-tense status reporting, while the older
-experiments remain preserved as historical baselines.
+`landmark_mi_110d` is locked as the 110D-Generalization v1 development
+candidate. This does **not** authorize the protected outer test. The next
+permitted step is to freeze an authorization artifact bound to the candidate,
+identity manifest, person split, source collection, protocol, and implementation
+digests, and then run outer fold 0 exactly once.
 
-Against the standard 110D baseline, the fixed mirror successor improved AUROC
-by `0.0056`; the descriptive paired-bootstrap 95% interval was
-`[0.0000, 0.0224]`. The result establishes exact mirror robustness and no
-observed loss on the fixed development metrics, but does **not** establish a
-statistically reliable superiority claim. Therefore:
+No result here is Mayo-65 accuracy, HB accuracy, cross-institutional validation,
+clinical validation, or deployment evidence. MEEI is locally acquired and
+quarantined but cannot be scored until the protected PalsyNet result and final
+PalsyNet artifact are sealed. AFLFP access is not established and requires an
+eligible non-student institutional recipient to complete its EULA process.
 
-- protected outer evaluation is not authorized;
-- HB claims are not authorized;
-- clinical use or deployment is not authorized.
-
-The next valid step is to finish identity/action-coverage review, freeze a
-successor protocol, and evaluate the untouched outer partition exactly once.
+YFP has a separate static regional-severity audit manifest with 10,838 accepted
+anchors, but it remains `training_eligible=false`: no MediaPipe extraction,
+ordinal fitting, or prediction is authorized without the license artifact,
+independently reviewed subject map, and eligibility authorization.
 
 ## Provenance
 
-- Source branch: `codex/mirror-invariant-110d`
-- Base protocol commit: `632bf993a8d38a7426fc52b23923e1d8d14dd857`
-- Implementation commit: `7c64c26005895083766dac7760ce498b253741e8`
-- Experiment: `mirror-invariant-110d-v1`
-- Runner SHA-256:
-  `ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12`
-- Protocol-test SHA-256:
-  `e2c0855b5afce630160e83db9bdbec08299f707686226a7e3beb2d40bdbee10c`
-- Aggregate source report SHA-256:
-  `f84fbd1605dea3515cde524946b1d3e4c1003aac77ece2bcef8b3e413f75cb29`
-- Machine-readable tracked summary:
+- Source branch: `codex/110d-generalization-v1`
+- Runner implementation commit: `14a47f9`
+- Reviewed identity manifest SHA-256:
+  `fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f`
+- Review ledger SHA-256:
+  `865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd`
+- Person split registry SHA-256:
+  `738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0`
+- Implementation aggregate SHA-256:
+  `4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208`
+- Owner-private aggregate report SHA-256:
+  `e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43`
+- Machine-readable public summary:
   `docs/results/current_development_model.json`
 
-The owner-private source report remains ignored by Git. The tracked summary is
-closed-schema, deidentified aggregate evidence and contains no per-record
-predictions, IDs, or local paths.
+The first invocation created the immutable report. Because its asynchronous
+completion was not surfaced immediately, the identical frozen command was
+inadvertently invoked once more; it reached the no-overwrite gate and failed
+without changing the report. No protocol, candidate, threshold, or protected
+data access changed between invocations.
