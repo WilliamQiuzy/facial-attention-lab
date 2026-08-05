@@ -10,10 +10,22 @@
       "access_status": "not_established",
       "application": {
         "draft_status": "prepared_not_sent",
-        "eligible_signer": "full_time_faculty_or_organization_employee",
+        "eligible_signer": "non_student_eligible_full_time_faculty_or_organization_employee",
         "eula_sha256": "15b4cf3beb1d9ea4da519b267d31deeb9aa9c22db8beca1ee33e4fdced8fcca3",
         "institutional_email_required": true,
         "software_may_send_or_sign": false
+      },
+      "eula_restrictions": {
+        "distributing_any_database_part": "prohibited",
+        "further_copying_of_any_database_part": "prohibited",
+        "publication_or_presentation_images": {
+          "allowed_subject_count": 22,
+          "scope": "eula_listed_subjects_only"
+        },
+        "publishable_material": "academic_analysis_and_results_only",
+        "publishing_any_database_part": "prohibited",
+        "recipient_must_be": "eligible_full_time_faculty_or_organization_employee",
+        "recipient_must_not_be_student": true
       },
       "official_sources": {
         "dataset_page": "https://researchportal.port.ac.uk/en/datasets/aflfp-database/",

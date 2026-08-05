@@ -17,10 +17,18 @@ copied to the official secondary contact, with the End User License Agreement
 attached. The reviewed EULA SHA-256 is
 `15b4cf3beb1d9ea4da519b267d31deeb9aa9c22db8beca1ee33e4fdced8fcca3`.
 
-The EULA requires an eligible full-time faculty researcher or organization
-employee and the recipient's signature. Software must not determine eligibility,
+The EULA requires the recipient not to be a student and to be eligible as either
+a full-time faculty researcher or an organization employee. It also
+requires the recipient's signature. Software must not determine eligibility,
 sign or accept the EULA, populate a person's attestation, or send the message.
 Those actions remain with the eligible researcher using an institutional email.
+
+The EULA prohibits the recipient from making any further copy of, publishing,
+or distributing any part of the database. Only academic analyses and results
+may be published. Images included in a publication or presentation are limited
+to images of the 22 subjects specifically listed in the EULA; that limited image
+permission does not permit copying, publishing, or distributing any other part
+of the database.
 
 ## Evidence boundary
 

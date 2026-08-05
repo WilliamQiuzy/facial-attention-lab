@@ -41,8 +41,11 @@ The ignored acquisition contains 547 files totaling 1,316,600,371 bytes:
 - Paper PDF SHA-256:
   `57e483f2c44b74d75f4fa033f1e5721dc804b6f404cb15863ee90b0c1a23d243`
 
-No media, face data, source filenames, local paths, credentials, or access
-tokens are tracked by this documentation packet.
+No media, face data, raw source filenames, local paths, private identities,
+credentials, or access tokens are tracked by this documentation packet. The
+nine normalized, filename-derived public participant keys below are
+intentionally recorded only for metadata reconciliation; they are not raw
+filenames or private identities.
 
 ## Metadata reconciliation
 
