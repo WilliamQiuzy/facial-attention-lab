@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -22,8 +22,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.datasets.palsynet_identity_review import (  # noqa: E402
+    CANONICAL_IDENTITY_AUDIT_ROOT,
+    LABEL_COUNTS,
     PAIR_COUNT,
     RECORDING_COUNT,
+    _project_path_without_symlinks,
+    _read_private_json,
     canonical_json_bytes,
 )
 
@@ -33,15 +37,12 @@ OUTER_FOLDS = 5
 INNER_FOLDS = 4
 PROTECTED_OUTER_FOLD = 0
 CANONICAL_OUTPUT = (
-    PROJECT_ROOT / "outputs" / "palsynet_identity_audit"
-    / "person_split_registry.json"
+    CANONICAL_IDENTITY_AUDIT_ROOT / "person_split_registry.json"
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RECORDING_ID = re.compile(r"^rec_[0-9a-f]{64}$")
 _GROUP_ID = re.compile(r"^grp_[0-9a-f]{64}$")
-_MAX_JSON_BYTES = 4 * 1024 * 1024
-
 _REVIEWED_FIELDS = {
     "schema_version", "dataset", "claim_unit", "identity_review", "counts",
     "fingerprints", "recordings",
@@ -180,6 +181,8 @@ def _validated_inputs(
     groups: dict[str, list[str]] = {}
     labels: dict[str, str] = {}
     all_group_members: dict[str, list[str]] = {}
+    source_digests: set[str] = set()
+    observed_source_labels = {"affected": 0, "unaffected": 0}
     for row_value in _sequence(
         reviewed["recordings"], RECORDING_COUNT, "reviewed recordings"
     ):
@@ -193,7 +196,9 @@ def _validated_inputs(
             or _GROUP_ID.fullmatch(group_id) is None
         ):
             raise ValueError("reviewed recording/group identifiers are invalid")
-        _sha(row["source_sha256"], "recording source digest")
+        source_digest = _sha(row["source_sha256"], "recording source digest")
+        if source_digest in source_digests:
+            raise ValueError("reviewed source digests must be unique")
         if (
             row["source_label"] not in {"affected", "unaffected"}
             or row["label"] not in {"affected", "unaffected"}
@@ -207,11 +212,26 @@ def _validated_inputs(
             raise ValueError("reviewed recording eligibility fields drifted")
         evidence = row["adjudication_evidence_sha256"]
         if row["adjudication_outcome"] == "none":
-            if evidence is not None or row["source_label"] != row["label"]:
+            if (
+                evidence is not None
+                or row["source_label"] != row["label"]
+                or row["training_eligible"] is not True
+            ):
                 raise ValueError("unadjudicated rows cannot change labels")
+        elif row["adjudication_outcome"] == "exclude_whole_group":
+            if (
+                row["training_eligible"] is not False
+                or row["source_label"] != row["label"]
+            ):
+                raise ValueError("whole-group exclusion semantics drifted")
+            _sha(evidence, "adjudication evidence digest")
         else:
+            if row["training_eligible"] is not True:
+                raise ValueError("corrected groups must remain wholly eligible")
             _sha(evidence, "adjudication evidence digest")
         records[recording_id] = row
+        source_digests.add(source_digest)
+        observed_source_labels[str(row["source_label"])] += 1
         all_group_members.setdefault(group_id, []).append(recording_id)
         if row["training_eligible"] is True:
             groups.setdefault(group_id, []).append(recording_id)
@@ -219,12 +239,52 @@ def _validated_inputs(
             if previous != row["label"]:
                 raise ValueError("an eligible reviewed group crosses binary labels")
 
-    # A reviewed identity group is either wholly eligible or wholly excluded.
+    if observed_source_labels != LABEL_COUNTS:
+        raise ValueError("reviewed source labels differ from the frozen source counts")
+    recomputed_source_fingerprint = hashlib.sha256()
+    for row in sorted(
+        records.values(),
+        key=lambda item: (item["source_label"], item["source_sha256"]),
+    ):
+        recomputed_source_fingerprint.update(
+            f"{row['source_label']}:{row['source_sha256']}\n".encode("ascii")
+        )
+    if recomputed_source_fingerprint.hexdigest() != source_collection_sha:
+        raise ValueError("source collection digest differs from reviewed source rows")
+
+    # A reviewed identity group is either wholly eligible or wholly excluded,
+    # and one finalizer decision applies identically to every group member.
     for group_id, members in all_group_members.items():
         states = {bool(records[recording_id]["training_eligible"])
                   for recording_id in members}
         if len(states) != 1:
             raise ValueError("reviewed identity groups cannot be partially eligible")
+        outcomes = {str(records[recording_id]["adjudication_outcome"])
+                    for recording_id in members}
+        evidence_digests = {
+            records[recording_id]["adjudication_evidence_sha256"]
+            for recording_id in members
+        }
+        final_labels = {str(records[recording_id]["label"])
+                        for recording_id in members}
+        source_labels = {str(records[recording_id]["source_label"])
+                         for recording_id in members}
+        if len(outcomes) != 1 or len(evidence_digests) != 1:
+            raise ValueError("adjudication outcome/evidence must be group-wide")
+        outcome = next(iter(outcomes))
+        if outcome == "none":
+            if len(source_labels) != 1 or final_labels != source_labels:
+                raise ValueError("cross-label groups require closed adjudication")
+        elif outcome == "exclude_whole_group":
+            if len(source_labels) < 2 or final_labels != source_labels:
+                raise ValueError("whole-group exclusion must preserve cross-label sources")
+        else:
+            if (
+                len(source_labels) < 2
+                or len(final_labels) != 1
+                or final_labels == source_labels
+            ):
+                raise ValueError("source-label correction semantics drifted")
 
     counts = _exact(reviewed["counts"], _COUNT_FIELDS, "reviewed counts")
     expected_counts = {
@@ -430,11 +490,20 @@ def validate_person_split_registry(
 
 def write_person_split_registry(path: str | Path, registry: object) -> None:
     """Write canonical owner-only bytes once without overwrite."""
-    output = Path(path)
+    output = _project_path_without_symlinks(path)
     if output.exists() or output.is_symlink():
         raise FileExistsError("refusing to overwrite person split registry")
-    if not output.parent.is_dir() or output.parent.is_symlink():
-        raise ValueError("split registry parent must be an existing real directory")
+    try:
+        parent_info = os.lstat(output.parent)
+    except OSError as exc:
+        raise ValueError("split registry parent must already exist") from exc
+    if (
+        stat.S_ISLNK(parent_info.st_mode)
+        or not stat.S_ISDIR(parent_info.st_mode)
+        or stat.S_IMODE(parent_info.st_mode) != 0o700
+        or parent_info.st_uid != os.getuid()
+    ):
+        raise ValueError("split registry parent must be owner-only and real")
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".person_split_registry.", suffix=".tmp", dir=output.parent
     )
@@ -450,6 +519,11 @@ def write_person_split_registry(path: str | Path, registry: object) -> None:
         except FileExistsError:
             raise FileExistsError("refusing to overwrite person split registry") from None
         os.chmod(output, 0o600, follow_symlinks=False)
+        directory_fd = os.open(output.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         try:
             temporary.unlink()
@@ -458,18 +532,11 @@ def write_person_split_registry(path: str | Path, registry: object) -> None:
 
 
 def _read_json(path: Path, name: str) -> tuple[dict[str, object], str]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"{name} must be a real file")
-    payload_bytes = path.read_bytes()
-    if not payload_bytes or len(payload_bytes) > _MAX_JSON_BYTES:
-        raise ValueError(f"{name} size is invalid")
-    try:
-        payload = json.loads(payload_bytes)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"{name} is not valid JSON") from exc
-    if not isinstance(payload, dict) or canonical_json_bytes(payload) != payload_bytes:
+    guarded = _project_path_without_symlinks(path)
+    payload, digest = _read_private_json(guarded, name)
+    if _payload_sha(payload) != digest:
         raise ValueError(f"{name} must use canonical JSON bytes")
-    return payload, hashlib.sha256(payload_bytes).hexdigest()
+    return payload, digest
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -482,18 +549,31 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _parser().parse_args()
-    output = args.output.resolve(strict=False)
-    if output != CANONICAL_OUTPUT.resolve(strict=False):
-        raise ValueError("CLI output must be the canonical private split registry")
-    reviewed, reviewed_sha = _read_json(args.reviewed_manifest, "reviewed manifest")
-    ledger, ledger_sha = _read_json(args.review_ledger, "review ledger")
+    reviewed_path = _project_path_without_symlinks(args.reviewed_manifest)
+    ledger_path = _project_path_without_symlinks(args.review_ledger)
+    output = _project_path_without_symlinks(args.output)
+    expected_reviewed = Path(os.path.abspath(
+        CANONICAL_IDENTITY_AUDIT_ROOT / "reviewed" / "identity_manifest.json"
+    ))
+    expected_ledger = Path(os.path.abspath(
+        CANONICAL_IDENTITY_AUDIT_ROOT / "review" / "review_ledger.json"
+    ))
+    expected_output = Path(os.path.abspath(CANONICAL_OUTPUT))
+    if (
+        reviewed_path != expected_reviewed
+        or ledger_path != expected_ledger
+        or output != expected_output
+    ):
+        raise ValueError("split freezer inputs/output must use the canonical lifecycle")
+    reviewed, reviewed_sha = _read_json(reviewed_path, "reviewed manifest")
+    ledger, ledger_sha = _read_json(ledger_path, "review ledger")
     registry = build_person_split_registry(
         reviewed,
         ledger,
         reviewed_manifest_sha256=reviewed_sha,
         review_ledger_sha256=ledger_sha,
     )
-    write_person_split_registry(args.output, registry)
+    write_person_split_registry(output, registry)
 
 
 if __name__ == "__main__":

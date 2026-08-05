@@ -65,10 +65,17 @@ def _fixture() -> tuple[dict[str, object], dict[str, object]]:
             "recording_id_b": second,
             "decision": "same" if groups[first] == groups[second] else "different",
         })
+    source_fingerprint = hashlib.sha256()
+    for row in sorted(
+        recordings, key=lambda item: (item["source_label"], item["source_sha256"])
+    ):
+        source_fingerprint.update(
+            f"{row['source_label']}:{row['source_sha256']}\n".encode("ascii")
+        )
     ledger = {
         "schema_version": "palsynet_identity_review_ledger_v1",
         "dataset": "PalsyNet",
-        "source_collection_sha256": _sha("source-collection"),
+        "source_collection_sha256": source_fingerprint.hexdigest(),
         "generated_manifest_sha256": _sha("generated-manifest"),
         "contact_inventory_sha256": _sha("contact-inventory"),
         "reviewer_evidence_sha256": _sha("reviewer-evidence"),
@@ -215,9 +222,71 @@ def test_digest_label_and_registry_drift_fail_closed(c: Check):
              ValueError, "alternate split registries are rejected")
 
 
+def test_impossible_finalizer_projection_and_source_drift_fail_closed(c: Check):
+    reviewed, ledger, _ = _build()
+    ledger_sha = hashlib.sha256(canonical_json_bytes(ledger)).hexdigest()
+
+    eligible_exclusion = copy.deepcopy(reviewed)
+    eligible_exclusion["recordings"][0].update({
+        "adjudication_outcome": "exclude_whole_group",
+        "adjudication_evidence_sha256": _sha("exclusion-evidence"),
+    })
+    c.raises(lambda: build_person_split_registry(
+        eligible_exclusion, ledger,
+        reviewed_manifest_sha256=hashlib.sha256(
+            canonical_json_bytes(eligible_exclusion)
+        ).hexdigest(),
+        review_ledger_sha256=ledger_sha,
+    ), ValueError, "excluded groups cannot remain training-eligible")
+
+    group_wide_drift = copy.deepcopy(reviewed)
+    group_wide_drift["recordings"][0].update({
+        "training_eligible": False,
+        "adjudication_outcome": "exclude_whole_group",
+        "adjudication_evidence_sha256": _sha("exclusion-evidence"),
+    })
+    c.raises(lambda: build_person_split_registry(
+        group_wide_drift, ledger,
+        reviewed_manifest_sha256=hashlib.sha256(
+            canonical_json_bytes(group_wide_drift)
+        ).hexdigest(),
+        review_ledger_sha256=ledger_sha,
+    ), ValueError, "adjudication must apply to the whole reviewed identity")
+
+    duplicate_source = copy.deepcopy(reviewed)
+    duplicate_source["recordings"][1]["source_sha256"] = (
+        duplicate_source["recordings"][0]["source_sha256"]
+    )
+    c.raises(lambda: build_person_split_registry(
+        duplicate_source, ledger,
+        reviewed_manifest_sha256=hashlib.sha256(
+            canonical_json_bytes(duplicate_source)
+        ).hexdigest(),
+        review_ledger_sha256=ledger_sha,
+    ), ValueError, "one source video cannot appear twice")
+
+    fingerprint_drift = copy.deepcopy(reviewed)
+    drifted_ledger = copy.deepcopy(ledger)
+    drifted_ledger["source_collection_sha256"] = _sha("drifted-source-collection")
+    drifted_ledger_sha = hashlib.sha256(
+        canonical_json_bytes(drifted_ledger)
+    ).hexdigest()
+    fingerprint_drift["fingerprints"]["source_collection_sha256"] = (
+        drifted_ledger["source_collection_sha256"]
+    )
+    fingerprint_drift["fingerprints"]["review_ledger_sha256"] = drifted_ledger_sha
+    c.raises(lambda: build_person_split_registry(
+        fingerprint_drift, drifted_ledger,
+        reviewed_manifest_sha256=hashlib.sha256(
+            canonical_json_bytes(fingerprint_drift)
+        ).hexdigest(),
+        review_ledger_sha256=drifted_ledger_sha,
+    ), ValueError, "source fingerprint is recomputed from exact rows")
+
+
 def test_registry_write_is_private_and_no_overwrite(c: Check):
     reviewed, ledger, registry = _build()
-    with tempfile.TemporaryDirectory() as temporary:
+    with tempfile.TemporaryDirectory(dir=ROOT / "outputs") as temporary:
         output = Path(temporary) / "person_split_registry.json"
         write_person_split_registry(output, registry)
         c.eq(output.read_bytes(), canonical_json_bytes(registry))
@@ -225,6 +294,26 @@ def test_registry_write_is_private_and_no_overwrite(c: Check):
              "private split registry is owner-readable only")
         c.raises(lambda: write_person_split_registry(output, registry),
                  FileExistsError, "registry is immutable")
+
+
+def test_registry_write_rejects_insecure_parent_and_symlink_ancestors(c: Check):
+    _, _, registry = _build()
+    with tempfile.TemporaryDirectory(dir=ROOT / "outputs") as temporary:
+        root = Path(temporary)
+        insecure = root / "insecure"
+        insecure.mkdir(mode=0o755)
+        os.chmod(insecure, 0o755)
+        c.raises(lambda: write_person_split_registry(
+            insecure / "person_split_registry.json", registry
+        ), ValueError, "output parent must remain owner-only")
+
+        real = root / "real"
+        real.mkdir(mode=0o700)
+        linked = root / "linked"
+        linked.symlink_to(real, target_is_directory=True)
+        c.raises(lambda: write_person_split_registry(
+            linked / "person_split_registry.json", registry
+        ), ValueError, "no ancestor symlink may redirect the private mapping")
 
 
 if __name__ == "__main__":
