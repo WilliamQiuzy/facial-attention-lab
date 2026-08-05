@@ -1,0 +1,111 @@
+{
+  "as_of": "2026-08-05",
+  "datasets": {
+    "aflfp": {
+      "access_evidence": {
+        "access_grant_evidence": "absent",
+        "application_sent_on": "2026-06-18",
+        "reply_received_on": "2026-06-20"
+      },
+      "access_status": "not_established",
+      "application": {
+        "draft_status": "prepared_not_sent",
+        "eligible_signer": "full_time_faculty_or_organization_employee",
+        "eula_sha256": "15b4cf3beb1d9ea4da519b267d31deeb9aa9c22db8beca1ee33e4fdced8fcca3",
+        "institutional_email_required": true,
+        "software_may_send_or_sign": false
+      },
+      "official_sources": {
+        "dataset_page": "https://researchportal.port.ac.uk/en/datasets/aflfp-database/",
+        "eula": "https://github.com/Yifan313/AFLFP/blob/main/End_User_License_Agreement.pdf",
+        "readme": "https://github.com/Yifan313/AFLFP/blob/main/README.md"
+      },
+      "permitted_use": "noncommercial_academic_research",
+      "status": "application_sent_reply_received_no_grant_evidence"
+    },
+    "meei": {
+      "access": {
+        "application_required": false,
+        "local_acquisition": "complete_ignored_quarantine",
+        "publisher_linked_public_download": true,
+        "redistribution_license_status": "not_established"
+      },
+      "cohort": {
+        "flaccid": 25,
+        "normal": 10,
+        "participants": 60,
+        "synkinetic": 25
+      },
+      "dynamic_binary_endpoint": {
+        "eligible_media_type": "video",
+        "eligible_mp4_files": 60,
+        "nonmedia_or_supporting_files_excluded": 5,
+        "participant_unit": true,
+        "photo_files_excluded": 482,
+        "primary_target": "normal_vs_facial_palsy",
+        "secondary_descriptive_strata": [
+          "House-Brackmann",
+          "Sunnybrook",
+          "eFACE"
+        ]
+      },
+      "inventory": {
+        "aggregate_member_manifest_sha256": "0583d9cc349029ccca927438ef4bdb2cba2e4cec1a21fd7d55e922597b2d3bf2",
+        "file_counts": {
+          "extensionless": 3,
+          "jpg": 480,
+          "mp4": 60,
+          "pdf": 1,
+          "tif": 2,
+          "xlsx": 1
+        },
+        "files": 547,
+        "metadata_xlsx_sha256": "52f60e8fc73d00bdbb0888ee9b2dc592b2172a234de9049480f66f4e28cfbbd6",
+        "paper_pdf_sha256": "57e483f2c44b74d75f4fa033f1e5721dc804b6f404cb15863ee90b0c1a23d243",
+        "total_bytes": 1316600371
+      },
+      "metadata_reconciliation": {
+        "spreadsheet_keys_without_video": [],
+        "spreadsheet_participant_rows": 51,
+        "video_participants": 60,
+        "video_without_spreadsheet_metadata": {
+          "count": 9,
+          "keys": [
+            "mildflaccid4",
+            "mildflaccid5",
+            "moderateflaccid2",
+            "nearnormalflaccid3",
+            "severeflaccid4",
+            "synkinetic_complete5",
+            "synkinetic_mild4",
+            "synkinetic_moderate4",
+            "synkinetic_severe5"
+          ],
+          "metadata": null,
+          "policy": "do_not_invent_or_impute"
+        }
+      },
+      "official_sources": {
+        "doi": "10.1002/lary.27986",
+        "paper": "https://pubmed.ncbi.nlm.nih.gov/31021433/",
+        "public_drive": "https://drive.google.com/drive/folders/1fSWluSuOJ5_SwiLfOr1yK63NSzy-95uZ",
+        "resources_page": "https://www.hadlockfacialplasticsurgery.com/resources/"
+      },
+      "scoring": {
+        "final_palsynet_artifact_status": "not_frozen",
+        "meei_outcomes_exposed": false,
+        "one_shot_authorization_status": "absent",
+        "status": "unauthorized"
+      },
+      "status": "acquired_quarantined_not_scored"
+    }
+  },
+  "lane": {
+    "meei_data_may_select_palsynet_candidate": false,
+    "model_selection_isolation": "strict",
+    "palsynet_final_artifact_required_before_meei_scoring": true,
+    "status": "independent_non_model_selection_lane"
+  },
+  "protocol": "110d-generalization-v1",
+  "schema_version": "external_dataset_status_v1"
+}
