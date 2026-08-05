@@ -1,6 +1,6 @@
 # Facial-Paralysis Model — Design and Architecture History
 
-_Current status updated: 2026-07-27._
+_Current status updated: 2026-08-05._
 
 `CURRENT_MODEL.md` is the source of truth for the current champion and its
 claim boundary. This document preserves the broader neural architecture and
@@ -14,14 +14,15 @@ The current development champion is not the MARLIN/GRU architecture described
 below. It is the 110D Landmark trajectory representation followed by a fixed
 standardized L2 logistic regression:
 
-- PalsyNet affected-vs-unaffected grouped inner-OOF AUROC: **0.938**;
-- balanced accuracy: **0.905**;
-- sensitivity: **0.810**;
+- identity-reviewed, patient/group-disjoint PalsyNet development AUROC:
+  **0.980**;
+- balanced accuracy: **0.952**;
+- sensitivity: **0.905**;
 - specificity: **1.000**.
 
 The MARLIN, geometry-only web, Fusion, and SSL models below are historical
 research baselines. No model is currently authorized for HB claims, Mayo
-clinical accuracy claims, or deployment.
+clinical accuracy claims, protected PalsyNet outer-test claims, or deployment.
 
 ## 1. Problem statement
 

@@ -6,8 +6,9 @@ in `tests/test_pipeline_e2e.py`; this file records runs on real datasets.
 
 > **Historical run log:** Run-level winners below are not the current project
 > champion. For current reporting use `docs/CURRENT_MODEL.md`: the 110D
-> Landmark development model has AUROC 0.938 and balanced accuracy 0.905 on the
-> PalsyNet grouped inner-OOF screen, with the protected outer fold still sealed.
+> Landmark development model has AUROC 0.980 and balanced accuracy 0.952 on the
+> identity-reviewed, patient/group-disjoint PalsyNet development set, with the
+> protected outer fold still sealed.
 
 ---
 

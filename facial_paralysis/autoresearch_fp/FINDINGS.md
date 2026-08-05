@@ -4,8 +4,9 @@
 > earlier web-QWK search. Its uses of “champion”, “winner”, and “deployable”
 > are historical within that experiment. The only current development
 > champion is the 110D Landmark trajectory model documented in
-> `../docs/CURRENT_MODEL.md` (PalsyNet inner-OOF AUROC 0.938; balanced accuracy
-> 0.905). It is not HB-, Mayo-, outer-, or clinically validated.
+> `../docs/CURRENT_MODEL.md` (identity-reviewed PalsyNet patient/group-disjoint
+> development AUROC 0.980; balanced accuracy 0.952). It is not HB-, Mayo-,
+> outer-, or clinically validated.
 
 # autoresearch-FP — findings (Run: jul1 branch)
 
