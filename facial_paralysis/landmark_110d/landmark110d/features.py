@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .clinical23 import CLINICAL23_NAMES
+from .clinical23 import CLINICAL23_NAMES, mirror_clinical23
 
 
 INPUT_SHAPE = (4, 32, 23)
@@ -255,6 +255,31 @@ def build_110d_features(
     return output
 
 
+def build_mirror_invariant_110d_views(
+    clinical23: np.ndarray,
+    valid_mask: np.ndarray,
+    timestamps: np.ndarray,
+    source_frame_indices: np.ndarray,
+    source_frame_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build aligned original and horizontally mirrored 110D feature rows."""
+    original = build_110d_features(
+        clinical23,
+        valid_mask,
+        timestamps,
+        source_frame_indices,
+        source_frame_count,
+    )
+    mirrored = build_110d_features(
+        mirror_clinical23(np.asarray(clinical23)),
+        valid_mask,
+        timestamps,
+        source_frame_indices,
+        source_frame_count,
+    )
+    return original, mirrored
+
+
 __all__ = [
     "BILATERAL_PAIRS",
     "FEATURE_NAMES",
@@ -262,4 +287,5 @@ __all__ = [
     "MIN_RECORDING_COVERAGE",
     "SUMMARY_STAT_NAMES",
     "build_110d_features",
+    "build_mirror_invariant_110d_views",
 ]

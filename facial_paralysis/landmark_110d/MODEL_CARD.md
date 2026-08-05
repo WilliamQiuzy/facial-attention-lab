@@ -1,11 +1,12 @@
-# Model card: Landmark 110D
+# Model card: Mirror-invariant Landmark 110D
 
 ## Summary
 
-Landmark 110D is a development-stage binary facial-paralysis research model.
-MediaPipe is the upstream landmark detector. The model reduces each recording
-to dynamic, clinically interpretable eye, brow, and mouth geometry and applies
-a standardized L2 logistic regression with fixed parameters.
+Mirror-invariant Landmark 110D is a development-stage binary facial-paralysis
+research model. MediaPipe is the upstream landmark detector. The model reduces
+each recording to dynamic, clinically interpretable eye, brow, and mouth
+geometry, trains a standardized L2 logistic regression on original and
+horizontally mirrored views, and averages both view probabilities at inference.
 
 ## Intended use
 
@@ -24,12 +25,15 @@ non-overlapping 32-frame windows spanning a recording under the frozen
 `clinical23_v2` contract, plus validity masks, timestamps in seconds, and
 adjacent source-frame indices together with the original recording frame count.
 At least 90% of sampled frames must be valid; masked rows must be canonical
-zero. It emits one ordered vector of 110 finite floating-point values.
+zero. It emits aligned original and mirrored vectors, each containing 110
+finite floating-point values.
 
 The fixed classifier uses standardized L2 logistic regression with `C=0.01`,
 `liblinear`, `max_iter=2000`, random state `0`, threshold `0.5`, and equal total
-training weight per group. The output is an exploratory affected-versus-
-unaffected score, not a calibrated clinical probability or HB grade.
+training weight per group across both augmented views. Symmetric inference
+makes the output invariant to horizontal mirror direction. The output is an
+exploratory affected-versus-unaffected score, not a calibrated clinical
+probability or HB grade.
 
 ## Development evaluation
 
@@ -38,14 +42,19 @@ unaffected score, not a calibrated clinical probability or HB grade.
 - Development: 39 recordings / 38 provisional groups.
 - Class groups: 21 affected / 17 unaffected.
 - Evaluation: four-fold grouped inner out-of-fold predictions.
-- Protected partition: 10 recordings / 10 groups, never extracted, fit, or
-  predicted for the reported result.
+- Protected partition: 10 recordings / 10 groups, with zero candidate-110D
+  feature construction, fits, or predictions. The common loader still checks
+  schema and quality for all registered cache records.
 - Claim unit: video-held-out; identity status remains unreviewed.
 
-The 110D candidate achieved AUROC `0.938375350140056`, balanced accuracy
-`0.9047619047619048`, sensitivity `0.8095238095238095`, and specificity `1.0`.
-Small counts and unresolved identity mean these figures have wide uncertainty
-and are not patient-level or clinical validation.
+The mirror-invariant candidate achieved AUROC `0.9439775910364145`, balanced
+accuracy `0.9047619047619048`, sensitivity `0.8095238095238095`, specificity
+`1.0`, and Brier score `0.13284986045296437`. The AUROC change from standard
+110D was `+0.0056022408963585235`; its descriptive paired-bootstrap 95%
+interval was `[0.0, 0.022408963585434316]`. This supports exact mirror
+robustness and observed non-inferiority on this development split, not a
+statistically reliable superiority claim. Small counts and unresolved identity
+mean these figures are not patient-level or clinical validation.
 
 ## Known limitations
 
@@ -55,8 +64,9 @@ and are not patient-level or clinical validation.
 - Mayo currently lacks row-level labels, verified patient mapping, and healthy
   controls; its all-positive screening run cannot estimate specificity, AUROC,
   balanced accuracy, or negative predictive value.
-- Mirror provenance is unresolved, so capture-side geometry cannot be called
-  anatomical patient left/right.
+- Mirror provenance is unresolved. The symmetric model removes capture mirror
+  direction as a prediction nuisance, but capture-side geometry still cannot
+  be called anatomical patient left/right.
 - MediaPipe may localize landmarks less accurately on severe palsy faces.
 - No HB, Sunnybrook, or eFACE claim is authorized.
 

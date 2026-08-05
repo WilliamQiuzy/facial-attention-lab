@@ -37,15 +37,15 @@ pnpm build
 
 The application source is in `facial_paralysis/facial_defect_web/`. Its ten approved synthetic assets remain in `facial_defect_synthesis/output/synthetic/` so the byte-verification and static imports use the same repository-relative paths as the research workspace. Sanitized generation evidence is recorded in `facial_paralysis/facial_defect_web/audits/approved-synthetic-provenance.json`.
 
-## Facial-paralysis Landmark 110D model
+## Facial-paralysis mirror-invariant Landmark 110D model
 
 The public, collaboration-ready source package for the current development
 champion is in
 [`facial_paralysis/landmark_110d/`](facial_paralysis/landmark_110d/). It
 contains the frozen MediaPipe-to-clinical23 transform, exact 110D trajectory
-representation, fixed standardized L2-logistic estimator, tests, model card,
-and deidentified aggregate result. It intentionally contains no fitted weights
-or patient-level artifacts.
+representation, horizontal-mirror transform, paired-view standardized
+L2-logistic estimator, tests, model card, and deidentified aggregate result. It
+intentionally contains no fitted weights or patient-level artifacts.
 
 ## Vitestro phlebotomy safety
 

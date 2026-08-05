@@ -206,6 +206,89 @@ class Landmark110DEstimator:
         return estimator
 
 
+class MirrorInvariantLandmark110DEstimator(Landmark110DEstimator):
+    """Fixed 110D estimator trained and evaluated with paired mirror views."""
+
+    _SCHEMA_VERSION = "mirror_invariant_landmark110d_estimator_v1"
+
+    @staticmethod
+    def _paired_matrices(
+        original_features: np.ndarray,
+        mirrored_features: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        original = _matrix(original_features)
+        mirrored = _matrix(mirrored_features)
+        if original.shape != mirrored.shape:
+            raise ValueError("original and mirrored feature rows must align")
+        return original, mirrored
+
+    def fit(
+        self,
+        original_features: np.ndarray,
+        mirrored_features: np.ndarray,
+        labels: Sequence[int],
+        group_ids: Sequence[object],
+    ) -> "MirrorInvariantLandmark110DEstimator":
+        original, mirrored = self._paired_matrices(
+            original_features, mirrored_features
+        )
+        target = np.asarray(labels)
+        groups = np.asarray(group_ids, dtype=object)
+        if target.shape != (original.shape[0],) or groups.shape != target.shape:
+            raise ValueError("labels and group_ids must align with feature rows")
+        super().fit(
+            np.concatenate((original, mirrored), axis=0),
+            np.concatenate((target, target), axis=0),
+            np.concatenate((groups, groups), axis=0),
+        )
+        return self
+
+    def predict_proba(
+        self,
+        original_features: np.ndarray,
+        mirrored_features: np.ndarray,
+    ) -> np.ndarray:
+        original, mirrored = self._paired_matrices(
+            original_features, mirrored_features
+        )
+        original_probability = Landmark110DEstimator.predict_proba(self, original)
+        mirrored_probability = Landmark110DEstimator.predict_proba(self, mirrored)
+        return 0.5 * (original_probability + mirrored_probability)
+
+    def predict(
+        self,
+        original_features: np.ndarray,
+        mirrored_features: np.ndarray,
+    ) -> np.ndarray:
+        return (
+            self.predict_proba(original_features, mirrored_features) >= self.threshold
+        ).astype(np.int64)
+
+    def to_dict(self) -> dict[str, object]:
+        payload = dict(super().to_dict())
+        payload["schema_version"] = self._SCHEMA_VERSION
+        return payload
+
+    @classmethod
+    def from_dict(
+        cls, payload: Mapping[str, object]
+    ) -> "MirrorInvariantLandmark110DEstimator":
+        if not isinstance(payload, Mapping) or (
+            payload.get("schema_version") != cls._SCHEMA_VERSION
+        ):
+            raise ValueError("mirror-invariant estimator artifact is unsupported")
+        base_payload = dict(payload)
+        base_payload["schema_version"] = "landmark110d_estimator_v1"
+        base = Landmark110DEstimator.from_dict(base_payload)
+        estimator = cls()
+        estimator.mean_ = base.mean_.copy()
+        estimator.scale_ = base.scale_.copy()
+        estimator.coef_ = base.coef_.copy()
+        estimator.intercept_ = base.intercept_
+        estimator._fitted = True
+        return estimator
+
+
 __all__ = [
     "FIXED_C",
     "FIXED_MAX_ITER",
@@ -213,5 +296,6 @@ __all__ = [
     "FIXED_SOLVER",
     "FIXED_THRESHOLD",
     "Landmark110DEstimator",
+    "MirrorInvariantLandmark110DEstimator",
     "equal_group_weights",
 ]

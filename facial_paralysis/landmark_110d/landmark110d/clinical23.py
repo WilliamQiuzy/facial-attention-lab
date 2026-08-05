@@ -46,6 +46,13 @@ CLINICAL23_NAMES: tuple[str, ...] = (
 
 SIDE_CONVENTION = "mesh33_vs_mesh263_capture_mirror_required"
 
+_MIRROR_PAIRS = ((0, 1), (4, 5), (7, 8), (10, 11), (14, 15), (18, 19))
+_MIRROR_SIGN_INDICES = (3, 13, 17)
+_MIRROR_INDICES = list(range(len(CLINICAL23_NAMES)))
+for _first, _second in _MIRROR_PAIRS:
+    _MIRROR_INDICES[_first], _MIRROR_INDICES[_second] = _second, _first
+_MIRROR_INDICES = tuple(_MIRROR_INDICES)
+
 _REQUIRED_INDICES = tuple(sorted(set(
     RIGHT_EYE_RING
     + LEFT_EYE_RING
@@ -202,8 +209,22 @@ def clinical23_from_mediapipe(
     return vector
 
 
+def mirror_clinical23(clinical23: np.ndarray) -> np.ndarray:
+    """Horizontally mirror frozen clinical23 geometry along its final axis."""
+    array = np.asarray(clinical23)
+    if array.ndim < 1 or array.shape[-1] != len(CLINICAL23_NAMES):
+        raise ValueError("clinical23 must end with exactly 23 feature columns")
+    if array.dtype.kind != "f" or not np.isfinite(array).all():
+        raise ValueError("clinical23 must contain finite floating values")
+    signs = np.ones(len(CLINICAL23_NAMES), dtype=array.dtype)
+    signs[np.asarray(_MIRROR_SIGN_INDICES)] = -1
+    mirrored = array[..., _MIRROR_INDICES] * signs
+    return np.asarray(mirrored, dtype=array.dtype).copy()
+
+
 __all__ = [
     "CLINICAL23_NAMES",
     "SIDE_CONVENTION",
     "clinical23_from_mediapipe",
+    "mirror_clinical23",
 ]
