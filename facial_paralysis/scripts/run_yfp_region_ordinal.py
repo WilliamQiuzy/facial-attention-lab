@@ -17,8 +17,8 @@ if str(ROOT) not in sys.path:
 from scripts.extract_yfp_clinical23 import CACHE_SCHEMA
 from src.datasets.yfp_region_manifest import (
     ManifestError,
+    authenticate_eligible_manifest,
     clinical23_region_features,
-    require_eligible_manifest,
     write_manifest_once,
 )
 from src.models.l2_cumulative_logit import (
@@ -62,11 +62,10 @@ def run_yfp_region_ordinal(
     """Evaluate both targets; eligibility is checked before cache/model access."""
     manifest_path = Path(manifest_path)
     feature_cache_root = Path(feature_cache_root)
-    manifest = _load_json(manifest_path, "YFP manifest")
-    require_eligible_manifest(manifest)
+    manifest, manifest_digest = authenticate_eligible_manifest(
+        manifest_path, return_digest=True)
     cache_manifest_path = feature_cache_root / "manifest.json"
     cache = _load_json(cache_manifest_path, "YFP feature cache manifest")
-    manifest_digest = _sha256_file(manifest_path)
     if (cache.get("schema_version") != CACHE_SCHEMA
             or cache.get("eligible_manifest_sha256") != manifest_digest
             or cache.get("feature_schema") != "clinical23_v2_static_single_frame"

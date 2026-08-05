@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import re
+import stat
 import struct
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
@@ -27,9 +27,12 @@ SUBJECT_MAP_SCHEMA = "yfp_reviewed_subject_map_v1"
 AUTHORIZATION_SCHEMA = "yfp_region_eligibility_authorization_v1"
 AUTHORIZATION_PURPOSE = "110d-generalization-v1-yfp-static-region-ordinal"
 
+# Fail closed until a separately reviewed activation commit pins the exact
+# authorization artifact. Runtime trust must not come from the eligible JSON.
+PINNED_YFP_AUTHORIZATION_SHA256: str | None = None
+
 EYE_LABELS = {"Normal_Eyes": 0, "SlightPalsy_Eyes": 1, "StrongPalsy_Eyes": 2}
 MOUTH_LABELS = {"Normal_Mouth": 0, "SlightPalsy_Mouth": 1, "StrongPalsy_Mouth": 2}
-KNOWN_LABELS = frozenset((*EYE_LABELS, *MOUTH_LABELS))
 
 EYE_FEATURE_NAMES = (
     "fissure_height_bilateral_mean",
@@ -67,6 +70,14 @@ class ParsedRegionalXML:
     parse_status: str
 
 
+@dataclass(frozen=True)
+class _SecureArtifact:
+    canonical_path: str
+    data: bytes
+    sha256: str
+    identity: tuple[int, int]
+
+
 def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -82,6 +93,70 @@ def _sha256_file(path: Path) -> str:
 def _canonical_json_bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=True).encode("utf-8")
+
+
+def _valid_digest(value: Any) -> bool:
+    text = str(value)
+    return bool(_HEX64.fullmatch(text)) and text != "0" * 64
+
+
+def _secure_read_artifact(path: str | Path, label: str) -> _SecureArtifact:
+    """Read and hash one regular non-symlink file from a stable descriptor."""
+    path = Path(path).expanduser()
+    try:
+        leaf = path.lstat()
+    except OSError as exc:
+        raise ManifestError(f"cannot open {label}") from exc
+    if stat.S_ISLNK(leaf.st_mode) or not stat.S_ISREG(leaf.st_mode):
+        raise ManifestError(f"{label} must be a regular non-symlink file")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ManifestError(f"cannot securely open {label}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ManifestError(f"{label} descriptor is not a regular file")
+        chunks: list[bytes] = []
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+        raise ManifestError(f"{label} changed while it was authenticated")
+    try:
+        current = os.stat(path, follow_symlinks=False)
+        canonical = str(path.resolve(strict=True))
+    except OSError as exc:
+        raise ManifestError(f"{label} changed after it was authenticated") from exc
+    if ((current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+            or stat.S_ISLNK(current.st_mode)):
+        raise ManifestError(f"{label} path was replaced during authentication")
+    return _SecureArtifact(
+        canonical_path=canonical,
+        data=b"".join(chunks),
+        sha256=digest.hexdigest(),
+        identity=(before.st_dev, before.st_ino),
+    )
+
+
+def _secure_json_artifact(path: str | Path, label: str) -> tuple[_SecureArtifact, dict[str, Any]]:
+    artifact = _secure_read_artifact(path, label)
+    try:
+        value = json.loads(artifact.data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ManifestError(f"{label} must be a UTF-8 JSON object") from exc
+    if not isinstance(value, dict):
+        raise ManifestError(f"{label} must be a JSON object")
+    return artifact, value
 
 
 def _safe_regular_file(path: Path, root: Path) -> Path:
@@ -107,22 +182,83 @@ def _safe_regular_file(path: Path, root: Path) -> Path:
     return resolved
 
 
+def _decoded_xml_and_encoding(data: bytes) -> tuple[str, str, bytes]:
+    """Decode once so security inspection and parsing consume identical text."""
+    encodings = (
+        (b"\x00\x00\xfe\xff", "utf-32-be"),
+        (b"\xff\xfe\x00\x00", "utf-32-le"),
+        (b"\xfe\xff", "utf-16-be"),
+        (b"\xff\xfe", "utf-16-le"),
+        (b"\xef\xbb\xbf", "utf-8"),
+    )
+    bom = b""
+    encoding: str | None = None
+    for prefix, candidate in encodings:
+        if data.startswith(prefix):
+            bom, encoding = prefix, candidate
+            break
+    text: str | None = None
+    if encoding is None and b"\x00" in data:
+        candidates: list[tuple[str, str]] = []
+        for candidate in ("utf-32-be", "utf-32-le", "utf-16-be", "utf-16-le"):
+            try:
+                candidate_text = data.decode(candidate, errors="strict")
+            except UnicodeDecodeError:
+                continue
+            if "\x00" not in candidate_text and candidate_text.lstrip().startswith("<"):
+                candidates.append((candidate, candidate_text))
+        if len(candidates) != 1:
+            raise ManifestError("unsupported, ambiguous, or invalid wide XML encoding")
+        encoding, text = candidates[0]
+    if encoding is None:
+        encoding = "utf-8"
+        declaration = re.match(
+            br"\s*<\?xml\s+[^>]*encoding\s*=\s*['\"]([^'\"]+)['\"]",
+            data[:512], flags=re.IGNORECASE)
+        if declaration:
+            try:
+                requested = declaration.group(1).decode("ascii", errors="strict").lower()
+            except UnicodeDecodeError as exc:
+                raise ManifestError("unsupported or unsafe XML encoding") from exc
+            allowed = {
+                "utf-8": "utf-8", "us-ascii": "ascii", "ascii": "ascii",
+                "iso-8859-1": "iso-8859-1", "latin-1": "iso-8859-1",
+            }
+            if requested not in allowed:
+                raise ManifestError("unsupported or unsafe XML encoding")
+            encoding = allowed[requested]
+    if text is None:
+        try:
+            text = data[len(bom):].decode(encoding, errors="strict")
+        except (UnicodeDecodeError, LookupError) as exc:
+            raise ManifestError("XML encoding is invalid") from exc
+    if re.search(r"<!\s*(?:doctype|entity)\b", text, flags=re.IGNORECASE):
+        raise ManifestError("DTD and entity declarations are forbidden")
+    return text, encoding, bom
+
+
 def parse_regional_xml(path: str | Path) -> ParsedRegionalXML:
     """Parse one combined regional XML with exactly one allowed EOF repair."""
     path = Path(path)
     data = path.read_bytes()
-    upper = data.upper()
-    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
-        raise ManifestError("DTD and entity declarations are forbidden")
+    decoded, _encoding, _bom = _decoded_xml_and_encoding(data)
     try:
-        root = ET.fromstring(data)
+        root = ET.fromstring(decoded)
         status = "native"
     except ET.ParseError as native_error:
-        stripped = data.rstrip()
-        if (not stripped.startswith(b"<annotation")
-                or stripped.endswith(b"</annotation>")):
+        stripped = decoded.rstrip()
+        root_text = stripped.lstrip()
+        if root_text.startswith("<?xml"):
+            declaration_end = root_text.find("?>")
+            if declaration_end < 0:
+                raise ManifestError(
+                    "XML is malformed beyond the allowed terminal repair"
+                ) from native_error
+            root_text = root_text[declaration_end + 2:].lstrip()
+        if (not root_text.startswith("<annotation")
+                or root_text.endswith("</annotation>")):
             raise ManifestError("XML is malformed beyond the allowed terminal repair") from native_error
-        repaired = stripped + b"</annotation>"
+        repaired = stripped + "</annotation>"
         try:
             root = ET.fromstring(repaired)
         except ET.ParseError as repair_error:
@@ -173,21 +309,31 @@ def _bmp_dimensions(path: Path) -> tuple[int, int]:
     if len(header) < 54 or header[:2] != b"BM":
         raise ManifestError("truncated_bmp")
     declared_size, pixel_offset = struct.unpack_from("<I", header, 2)[0], struct.unpack_from("<I", header, 10)[0]
+    reserved1, reserved2 = struct.unpack_from("<HH", header, 6)
     dib_size = struct.unpack_from("<I", header, 14)[0]
-    if dib_size < 40:
-        raise ManifestError("unsupported_bmp")
+    clr_used, clr_important = struct.unpack_from("<II", header, 46)
+    if (dib_size != 40 or pixel_offset != 54
+            or reserved1 != 0 or reserved2 != 0
+            or clr_used != 0 or clr_important != 0):
+        raise ManifestError("unsupported_bmp_layout")
     width, raw_height = struct.unpack_from("<ii", header, 18)
     planes, bit_count = struct.unpack_from("<HH", header, 26)
     compression = struct.unpack_from("<I", header, 30)[0]
+    declared_image_size = struct.unpack_from("<I", header, 34)[0]
     if width <= 0 or raw_height == 0 or planes != 1:
         raise ManifestError("invalid_bmp_dimensions")
     height = abs(raw_height)
-    if declared_size > actual_size or pixel_offset >= actual_size:
+    if compression != 0:
+        raise ManifestError("unsupported_bmp_compression")
+    if bit_count not in (24, 32):
+        raise ManifestError("unsupported_bmp_bit_depth")
+    if declared_size != actual_size or pixel_offset >= actual_size:
         raise ManifestError("truncated_bmp")
-    if compression == 0 and bit_count in (1, 4, 8, 16, 24, 32):
-        row_bytes = ((width * bit_count + 31) // 32) * 4
-        if pixel_offset + row_bytes * height > actual_size:
-            raise ManifestError("truncated_bmp")
+    row_bytes = ((width * bit_count + 31) // 32) * 4
+    required_image_size = row_bytes * height
+    if (declared_image_size != required_image_size
+            or pixel_offset + required_image_size != actual_size):
+        raise ManifestError("truncated_bmp")
     return width, height
 
 
@@ -357,16 +503,6 @@ def write_manifest_once(manifest: dict[str, Any], output: str | Path) -> None:
         raise
 
 
-def _load_json_object(path: Path, label: str) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ManifestError(f"cannot read {label}") from exc
-    if not isinstance(value, dict):
-        raise ManifestError(f"{label} must be a JSON object")
-    return value
-
-
 def _validate_audit_shape(manifest: dict[str, Any]) -> None:
     if manifest.get("schema_version") != AUDIT_SCHEMA or manifest.get("stage") != "audit":
         raise ManifestError("not a YFP audit manifest")
@@ -380,57 +516,43 @@ def _validate_audit_shape(manifest: dict[str, Any]) -> None:
 
 
 def _revalidate_audit_sources(manifest: dict[str, Any]) -> None:
+    """Rebuild the complete audit and require canonical content equality."""
     _validate_audit_shape(manifest)
     root = Path(manifest.get("source_root", ""))
     if not root.exists() or root.is_symlink():
         raise ManifestError("audit source root is unavailable or unsafe")
-    seen_anchors: set[str] = set()
-    seen_digests: set[str] = set()
-    for row in manifest["rows"]:
-        if row.get("anchor_key") in seen_anchors:
-            raise ManifestError("duplicate anchor key")
-        seen_anchors.add(row.get("anchor_key"))
-        xml_path = _safe_regular_file(root / row["xml"]["relative_path"], root)
-        image_path = _safe_regular_file(root / row["image"]["relative_path"], root)
-        xml_digest, image_digest = _sha256_file(xml_path), _sha256_file(image_path)
-        if xml_digest != row["xml"]["sha256"] or image_digest != row["image"]["sha256"]:
-            raise ManifestError("source digest changed after audit")
-        if xml_digest in seen_digests or image_digest in seen_digests:
-            raise ManifestError("duplicate source digest")
-        seen_digests.update((xml_digest, image_digest))
-        parsed = parse_regional_xml(xml_path)
-        dimensions = _bmp_dimensions(image_path)
-        if dimensions != (row["image"]["width"], row["image"]["height"]):
-            raise ManifestError("source image dimensions changed")
-        if dimensions != (parsed.width, parsed.height):
-            raise ManifestError("source XML/image dimensions mismatch")
-        expected_targets = {"eye": parsed.eye, "mouth": parsed.mouth,
-                            "brow": None, "action": None, "phase": None}
-        if row.get("targets") != expected_targets:
-            raise ManifestError("target values changed after audit")
+    rebuilt = build_audit_manifest(root)
+    if _canonical_json_bytes(rebuilt) != _canonical_json_bytes(manifest):
+        raise ManifestError(
+            "audit does not exactly match the rebuilt source inventory, aggregate, "
+            "collection commitment, anchors, targets, filenames, parse states, and grouping"
+        )
 
 
-def finalize_eligible_manifest(
-    audit_manifest: str | Path,
-    license_artifact: str | Path,
-    reviewed_subject_map: str | Path,
-    eligibility_authorization: str | Path,
+def _artifact_reference(artifact: _SecureArtifact) -> dict[str, str]:
+    return {"path": artifact.canonical_path, "sha256": artifact.sha256}
+
+
+def _construct_eligible_successor(
+    audit_artifact: _SecureArtifact,
+    manifest: dict[str, Any],
+    license_artifact: _SecureArtifact,
+    map_artifact: _SecureArtifact,
+    subject_map: dict[str, Any],
+    authorization_artifact: _SecureArtifact,
+    authorization: dict[str, Any],
 ) -> dict[str, Any]:
-    """Authenticate three independent evidence files and create a successor."""
-    audit_path = Path(audit_manifest)
-    license_path = Path(license_artifact)
-    map_path = Path(reviewed_subject_map)
-    auth_path = Path(eligibility_authorization)
-    if not all(path.exists() and path.is_file() and not path.is_symlink()
-               for path in (audit_path, license_path, map_path, auth_path)):
-        raise ManifestError("license, reviewed map, and authorization are all required")
-    manifest = _load_json_object(audit_path, "audit manifest")
+    artifacts = (audit_artifact, license_artifact, map_artifact, authorization_artifact)
+    if len({artifact.identity for artifact in artifacts}) != len(artifacts):
+        raise ManifestError("audit, license, reviewed map, and authorization must be distinct files")
+    if not license_artifact.data:
+        raise ManifestError("license artifact must be nonempty")
+    if any(not _valid_digest(artifact.sha256) for artifact in artifacts):
+        raise ManifestError("evidence artifact digest is invalid")
     _revalidate_audit_sources(manifest)
-    audit_digest = _sha256_file(audit_path)
-    license_digest = _sha256_file(license_path)
-    map_digest = _sha256_file(map_path)
-    subject_map = _load_json_object(map_path, "reviewed subject map")
-    authorization = _load_json_object(auth_path, "eligibility authorization")
+    audit_digest = audit_artifact.sha256
+    license_digest = license_artifact.sha256
+    map_digest = map_artifact.sha256
     if set(subject_map) != {"schema_version", "audit_manifest_sha256", "mappings"}:
         raise ManifestError("reviewed subject map has unexpected fields")
     if (subject_map["schema_version"] != SUBJECT_MAP_SCHEMA
@@ -463,7 +585,6 @@ def finalize_eligible_manifest(
         mapping[proxy] = group
     if set(mapping) != proxy_set:
         raise ManifestError("reviewed subject map must cover every subject proxy exactly")
-
     eligible_rows = [dict(row, reviewed_group=mapping[row["subject_proxy"]])
                      for row in manifest["rows"]]
     return {
@@ -475,10 +596,35 @@ def finalize_eligible_manifest(
         "audit_manifest_sha256": audit_digest,
         "license_artifact_sha256": license_digest,
         "reviewed_subject_map_sha256": map_digest,
-        "eligibility_authorization_sha256": _sha256_file(auth_path),
+        "eligibility_authorization_sha256": authorization_artifact.sha256,
+        "evidence_artifacts": {
+            "audit_manifest": _artifact_reference(audit_artifact),
+            "license_artifact": _artifact_reference(license_artifact),
+            "reviewed_subject_map": _artifact_reference(map_artifact),
+            "eligibility_authorization": _artifact_reference(authorization_artifact),
+        },
         "grouping_claim": "independently_reviewed_group_map",
         "rows": eligible_rows,
     }
+
+
+def finalize_eligible_manifest(
+    audit_manifest: str | Path,
+    license_artifact: str | Path,
+    reviewed_subject_map: str | Path,
+    eligibility_authorization: str | Path,
+) -> dict[str, Any]:
+    """Authenticate four independent evidence files and create a successor."""
+    audit_file, manifest = _secure_json_artifact(audit_manifest, "audit manifest")
+    license_file = _secure_read_artifact(license_artifact, "license artifact")
+    map_file, subject_map = _secure_json_artifact(
+        reviewed_subject_map, "reviewed subject map")
+    authorization_file, authorization = _secure_json_artifact(
+        eligibility_authorization, "eligibility authorization")
+    return _construct_eligible_successor(
+        audit_file, manifest, license_file, map_file, subject_map,
+        authorization_file, authorization,
+    )
 
 
 def require_eligible_manifest(manifest: dict[str, Any]) -> None:
@@ -493,9 +639,27 @@ def require_eligible_manifest(manifest: dict[str, Any]) -> None:
         "reviewed_subject_map_sha256", "eligibility_authorization_sha256",
         "source_collection_sha256",
     )
-    if any(not _HEX64.fullmatch(str(manifest.get(field, "")))
+    if any(not _valid_digest(manifest.get(field, ""))
            for field in evidence_fields):
         raise ManifestError("eligible manifest lacks authenticated evidence commitments")
+    references = manifest.get("evidence_artifacts")
+    expected_reference_keys = {
+        "audit_manifest", "license_artifact", "reviewed_subject_map",
+        "eligibility_authorization",
+    }
+    if not isinstance(references, dict) or set(references) != expected_reference_keys:
+        raise ManifestError("eligible manifest lacks exact evidence artifact references")
+    for reference in references.values():
+        if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
+                or not isinstance(reference["path"], str)
+                or not Path(reference["path"]).is_absolute()
+                or not _valid_digest(reference["sha256"])):
+            raise ManifestError("eligible evidence artifact reference is malformed")
+    if (references["audit_manifest"]["sha256"] != manifest["audit_manifest_sha256"]
+            or references["license_artifact"]["sha256"] != manifest["license_artifact_sha256"]
+            or references["reviewed_subject_map"]["sha256"] != manifest["reviewed_subject_map_sha256"]
+            or references["eligibility_authorization"]["sha256"] != manifest["eligibility_authorization_sha256"]):
+        raise ManifestError("eligible evidence references disagree with top-level commitments")
     if manifest.get("grouping_claim") != "independently_reviewed_group_map":
         raise ManifestError("eligible manifest lacks an independently reviewed group claim")
     if manifest.get("targets") != {
@@ -519,13 +683,63 @@ def require_eligible_manifest(manifest: dict[str, Any]) -> None:
         anchor = str(row.get("anchor_key", ""))
         commitment = str(row.get("source_commitment", ""))
         if (anchor in seen or not anchor.startswith("anchor_")
-                or not _HEX64.fullmatch(anchor[7:])
-                or not _HEX64.fullmatch(commitment)
+                or not _valid_digest(anchor[7:])
+                or not _valid_digest(commitment)
                 or row.get("targets_commitment") != commitment
                 or row.get("group_status") != "unreviewed_subject_folder_proxy"
                 or not _GROUP.fullmatch(str(row.get("reviewed_group", "")))):
             raise ManifestError("eligible row provenance or reviewed group is invalid")
         seen.add(anchor)
+
+
+def authenticate_eligible_manifest(
+    manifest_path: str | Path,
+    *,
+    return_digest: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], str]:
+    """Reopen all evidence, rebuild the audit, and reconstruct the successor."""
+    pinned_authorization = PINNED_YFP_AUTHORIZATION_SHA256
+    if not _valid_digest(pinned_authorization):
+        raise ManifestError(
+            "YFP extraction and training are locked until a separately reviewed "
+            "authorization digest is pinned"
+        )
+    eligible_file, manifest = _secure_json_artifact(manifest_path, "eligible manifest")
+    require_eligible_manifest(manifest)
+    if manifest["eligibility_authorization_sha256"] != pinned_authorization:
+        raise ManifestError("eligible manifest is not bound to the pinned authorization")
+    references = manifest["evidence_artifacts"]
+    audit_file, audit = _secure_json_artifact(
+        references["audit_manifest"]["path"], "audit manifest")
+    license_file = _secure_read_artifact(
+        references["license_artifact"]["path"], "license artifact")
+    map_file, subject_map = _secure_json_artifact(
+        references["reviewed_subject_map"]["path"], "reviewed subject map")
+    authorization_file, authorization = _secure_json_artifact(
+        references["eligibility_authorization"]["path"],
+        "eligibility authorization",
+    )
+    evidence = (audit_file, license_file, map_file, authorization_file)
+    if eligible_file.identity in {artifact.identity for artifact in evidence}:
+        raise ManifestError("eligible manifest cannot serve as its own evidence")
+    for key, artifact in zip(
+        ("audit_manifest", "license_artifact", "reviewed_subject_map",
+         "eligibility_authorization"),
+        evidence,
+    ):
+        reference = references[key]
+        if (artifact.canonical_path != reference["path"]
+                or artifact.sha256 != reference["sha256"]):
+            raise ManifestError(f"{key.replace('_', ' ')} evidence digest or path changed")
+    reconstructed = _construct_eligible_successor(
+        audit_file, audit, license_file, map_file, subject_map,
+        authorization_file, authorization,
+    )
+    if _canonical_json_bytes(reconstructed) != _canonical_json_bytes(manifest):
+        raise ManifestError("eligible manifest is not the exact reconstructed successor")
+    if return_digest:
+        return manifest, eligible_file.sha256
+    return manifest
 
 
 def clinical23_region_features(clinical23: np.ndarray, target: str) -> np.ndarray:
@@ -555,8 +769,9 @@ def clinical23_region_features(clinical23: np.ndarray, target: str) -> np.ndarra
 
 __all__ = [
     "AUDIT_SCHEMA", "ELIGIBLE_SCHEMA", "EYE_FEATURE_NAMES",
-    "MOUTH_FEATURE_NAMES", "ManifestError", "ParsedRegionalXML",
-    "build_audit_manifest", "clinical23_region_features",
+    "MOUTH_FEATURE_NAMES", "ManifestError", "PINNED_YFP_AUTHORIZATION_SHA256",
+    "ParsedRegionalXML",
+    "authenticate_eligible_manifest", "build_audit_manifest", "clinical23_region_features",
     "finalize_eligible_manifest", "parse_regional_xml",
     "require_eligible_manifest", "write_manifest_once",
 ]

@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from src.datasets.yfp_region_manifest import (
     ManifestError,
-    require_eligible_manifest,
+    authenticate_eligible_manifest,
     write_manifest_once,
 )
 
@@ -35,16 +35,6 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_manifest(path: Path) -> dict:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ManifestError("cannot read YFP manifest") from exc
-    if not isinstance(value, dict):
-        raise ManifestError("YFP manifest must be a JSON object")
-    return value
-
-
 def extract_yfp_clinical23(
     manifest_path: str | Path,
     output_root: str | Path,
@@ -53,8 +43,8 @@ def extract_yfp_clinical23(
     """Fail before imports/output creation unless the successor is eligible."""
     manifest_path = Path(manifest_path)
     output_root = Path(output_root)
-    manifest = _load_manifest(manifest_path)
-    require_eligible_manifest(manifest)
+    manifest, manifest_digest = authenticate_eligible_manifest(
+        manifest_path, return_digest=True)
     if output_root.exists():
         raise FileExistsError(f"output root already exists: {output_root}")
     model_path = Path(model_path)
@@ -66,7 +56,6 @@ def extract_yfp_clinical23(
     from src.preprocessing.action_bundle import MediaPipeFeatureExtractor
 
     source_root = Path(manifest["source_root"])
-    manifest_digest = _sha256_file(manifest_path)
     model_digest = _sha256_file(model_path)
     output_root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = output_root.with_name(output_root.name + f".tmp-{uuid.uuid4().hex}")
