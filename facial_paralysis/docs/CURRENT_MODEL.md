@@ -84,6 +84,7 @@ successor protocol, and evaluate the untouched outer partition exactly once.
 
 - Source branch: `codex/mirror-invariant-110d`
 - Base protocol commit: `632bf993a8d38a7426fc52b23923e1d8d14dd857`
+- Implementation commit: `7c64c26005895083766dac7760ce498b253741e8`
 - Experiment: `mirror-invariant-110d-v1`
 - Runner SHA-256:
   `ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12`
