@@ -132,9 +132,12 @@ def _assert_no_symlink_components(
     return absolute
 
 
-def _assert_tree_has_no_symlinks(root: str | Path) -> Path:
+def _assert_tree_has_no_symlinks(
+    root: str | Path,
+    anchor: str | Path | None = None,
+) -> Path:
     """Reject a symlink root or any existing descendant without following it."""
-    root = _assert_no_symlink_components(root)
+    root = _assert_no_symlink_components(root, anchor)
     try:
         root_info = os.lstat(root)
     except FileNotFoundError:
@@ -172,6 +175,29 @@ def _mkdirs_no_symlink(path: str | Path, root: str | Path) -> Path:
             info = os.lstat(current)
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
             raise ValueError("audit output directory component is not a real directory")
+    return current
+
+
+def _create_private_lifecycle_parent(
+    path: str | Path,
+    anchor: str | Path,
+) -> Path:
+    """Create only the canonical project descendants, one real directory at a time."""
+    anchor = _assert_no_symlink_components(anchor)
+    relative = _relative_within(path, anchor)
+    current = anchor
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            os.mkdir(current, mode=0o700)
+            info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ValueError("identity audit parent component must be a real directory")
+    info = os.lstat(current)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError("identity audit lifecycle parent must be owner-only")
     return current
 
 
@@ -830,7 +856,7 @@ def validate_output_root(path: str | Path) -> Path:
             "output-root must be the canonical ignored "
             "facial_paralysis/outputs/palsynet_identity_audit directory"
         )
-    return _assert_tree_has_no_symlinks(absolute)
+    return _assert_tree_has_no_symlinks(absolute, PROJECT_ROOT)
 
 
 def _write_bytes_exclusive(
@@ -1050,7 +1076,7 @@ def _promote_generation(staging_root: Path, output_root: Path) -> None:
     """Publish one complete generation exactly once, without replacement."""
     staging_root = _assert_tree_has_no_symlinks(staging_root)
     output_root = validate_output_root(output_root)
-    parent = _assert_no_symlink_components(output_root.parent)
+    parent = _assert_no_symlink_components(output_root.parent, PROJECT_ROOT)
     _rename_directory_exclusive(staging_root, output_root)
     directory_fd = os.open(parent, os.O_RDONLY)
     try:
@@ -1079,7 +1105,10 @@ def run_audit(
         salt_relative = _relative_within(salt_path, output_root)
     except ValueError as exc:
         raise ValueError("salt-file must live under the ignored output-root") from exc
-    _assert_no_symlink_components(salt_path)
+    _assert_no_symlink_components(salt_path, PROJECT_ROOT)
+    parent = _create_private_lifecycle_parent(
+        output_root.parent, PROJECT_ROOT
+    )
     try:
         salt = _read_salt(salt_path)
     except FileNotFoundError:
@@ -1100,9 +1129,7 @@ def run_audit(
     if reserved & set(carried):
         raise ValueError("carried local evidence conflicts with generated audit files")
 
-    parent = _assert_no_symlink_components(output_root.parent)
-    if not parent.is_dir():
-        raise ValueError("canonical output parent must already be a real directory")
+    parent = _assert_no_symlink_components(parent, PROJECT_ROOT)
     staging_root = Path(tempfile.mkdtemp(
         prefix=f".{output_root.name}.staging-",
         dir=parent,

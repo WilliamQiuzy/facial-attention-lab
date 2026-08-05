@@ -82,14 +82,17 @@ def _write_provenance(path: Path, rows: list[dict[str, str]]) -> None:
 
 def _temporary_canonical(root: Path):
     """Patch the module-level canonical path; caller restores in ``finally``."""
-    original = audit_module.CANONICAL_OUTPUT_ROOT
+    original_project_root = audit_module.PROJECT_ROOT
+    original_output_root = audit_module.CANONICAL_OUTPUT_ROOT
+    project_root = root / "facial_paralysis"
+    project_root.mkdir(mode=0o700)
     canonical = (
-        root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
+        project_root / "outputs" / "palsynet_identity_audit"
         / "generation"
     )
-    canonical.parent.mkdir(parents=True, exist_ok=True)
+    audit_module.PROJECT_ROOT = project_root
     audit_module.CANONICAL_OUTPUT_ROOT = canonical
-    return original, canonical
+    return original_project_root, original_output_root, project_root, canonical
 
 
 def test_hmac_ids_are_deterministic_and_domain_separated(c: Check):
@@ -153,7 +156,9 @@ def test_output_tree_rejects_every_symlink_escape_before_any_write(c: Check):
     for scenario in scenarios:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            original_root, canonical = _temporary_canonical(root)
+            originals = _temporary_canonical(root)
+            original_project_root, original_output_root, _, canonical = originals
+            canonical.parent.mkdir(parents=True, mode=0o700)
             outside = root / "outside"
             outside.mkdir()
             sentinel = outside / "sentinel.txt"
@@ -207,21 +212,64 @@ def test_output_tree_rejects_every_symlink_escape_before_any_write(c: Check):
                     ".palsynet_identity_audit.staging-*"
                 )), "symlink rejection happens before staging is created")
             finally:
-                audit_module.CANONICAL_OUTPUT_ROOT = original_root
+                audit_module.PROJECT_ROOT = original_project_root
+                audit_module.CANONICAL_OUTPUT_ROOT = original_output_root
+
+
+def test_generation_rejects_outputs_ancestor_symlink_before_any_io(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        originals = _temporary_canonical(root)
+        original_project_root, original_output_root, project_root, canonical = originals
+        outside = root / "outside"
+        outside.mkdir(mode=0o700)
+        sentinel = outside / "sentinel.txt"
+        sentinel.write_text("untouched")
+        (project_root / "outputs").symlink_to(
+            outside, target_is_directory=True
+        )
+        calls: list[str] = []
+        guarded = {
+            "_read_salt": audit_module._read_salt,
+            "collect_identity_records": audit_module.collect_identity_records,
+            "sha256_file": audit_module.sha256_file,
+        }
+
+        def forbidden(name: str):
+            def invoke(*_args, **_kwargs):
+                calls.append(name)
+                raise AssertionError(f"{name} ran before ancestor validation")
+            return invoke
+
+        for name in guarded:
+            setattr(audit_module, name, forbidden(name))
+        try:
+            c.raises(lambda: run_audit(
+                video_root=root / "videos",
+                bundle_root=root / "bundles",
+                bundle_provenance=root / "provenance.json",
+                output_root=canonical,
+            ), ValueError, "an outputs ancestor symlink fails before audit IO")
+            c.eq(calls, [], "ancestor validation precedes reads and hashes")
+            c.eq(sentinel.read_text(), "untouched",
+                 "ancestor rejection cannot mutate the outside target")
+            c.true(not (outside / "palsynet_identity_audit").exists(),
+                   "no lifecycle path is created through the outputs symlink")
+        finally:
+            for name, value in guarded.items():
+                setattr(audit_module, name, value)
+            audit_module.PROJECT_ROOT = original_project_root
+            audit_module.CANONICAL_OUTPUT_ROOT = original_output_root
 
 
 def test_cli_rejects_noncanonical_output_and_external_salt_before_writing(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        canonical = (
-            root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
-            / "generation"
-        )
-        wrong_output = root / "facial_paralysis" / "outputs" / "identity_typo"
+        originals = _temporary_canonical(root)
+        original_project_root, original_output_root, project_root, canonical = originals
+        wrong_output = project_root / "outputs" / "identity_typo"
         outside_salt = root / "tracked" / "audit_salt.bin"
-        original_root = audit_module.CANONICAL_OUTPUT_ROOT
         original_argv = sys.argv
-        audit_module.CANONICAL_OUTPUT_ROOT = canonical
         try:
             sys.argv = [
                 "audit_palsynet_identity.py",
@@ -248,7 +296,8 @@ def test_cli_rejects_noncanonical_output_and_external_salt_before_writing(c: Che
             c.true(not outside_salt.exists(), "invalid salt file is never created")
         finally:
             sys.argv = original_argv
-            audit_module.CANONICAL_OUTPUT_ROOT = original_root
+            audit_module.PROJECT_ROOT = original_project_root
+            audit_module.CANONICAL_OUTPUT_ROOT = original_output_root
 
 
 def test_generation_cli_has_no_reviewed_promotion_surface(c: Check):
@@ -268,11 +317,74 @@ def test_generation_cli_has_no_reviewed_promotion_surface(c: Check):
          "generation defaults to every unordered recording pair")
 
 
+def test_planned_generation_cli_creates_fresh_private_lifecycle_parent(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        originals = _temporary_canonical(root)
+        original_project_root, original_output_root, _, canonical = originals
+        original_argv = sys.argv
+        replacements = {
+            "collect_identity_records": lambda *_args, **_kwargs: [],
+            "build_manifest": lambda *_args, **_kwargs: {
+                "counts": {"total": 0},
+                "identity_review": {"status": "unreviewed"},
+            },
+            "generate_contact_sheets": lambda *_args, **_kwargs: {
+                "recordings": 0, "ranked_pairs": 0, "overview": 0,
+            },
+            "build_contact_sheet_inventory": lambda *_args, **_kwargs: {
+                "probe": "inventory",
+            },
+            "build_review_ledger_template": lambda *_args, **_kwargs: {
+                "probe": "ledger",
+            },
+            "sha256_file": lambda path: hashlib.sha256(
+                Path(path).as_posix().encode("utf-8")
+            ).hexdigest(),
+            "_validate_generation": lambda *_args, **_kwargs: None,
+        }
+        original_functions = {
+            name: getattr(audit_module, name) for name in replacements
+        }
+
+        def observe_collection(*_args, **_kwargs):
+            c.true(canonical.parent.is_dir(),
+                   "canonical lifecycle parent exists before source collection")
+            c.eq(stat.S_IMODE(canonical.parent.stat().st_mode), 0o700,
+                 "fresh lifecycle parent is owner-only")
+            return []
+
+        replacements["collect_identity_records"] = observe_collection
+        for name, value in replacements.items():
+            setattr(audit_module, name, value)
+        try:
+            c.true(not canonical.parent.exists(),
+                   "fresh-checkout probe does not precreate the lifecycle parent")
+            sys.argv = [
+                "audit_palsynet_identity.py",
+                "--video-root", str(root / "videos"),
+                "--bundle-root", str(root / "bundles"),
+                "--bundle-provenance", str(root / "provenance.json"),
+                "--output-root", str(canonical),
+            ]
+            audit_module.main()
+            c.true(canonical.is_dir(), "the exact planned CLI publishes generation")
+            c.eq(stat.S_IMODE(canonical.stat().st_mode), 0o700,
+                 "published generation remains owner-only")
+        finally:
+            sys.argv = original_argv
+            for name, value in original_functions.items():
+                setattr(audit_module, name, value)
+            audit_module.PROJECT_ROOT = original_project_root
+            audit_module.CANONICAL_OUTPUT_ROOT = original_output_root
+
+
 def test_existing_generation_is_immutable_and_fails_before_collection(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        original_root, canonical = _temporary_canonical(root)
-        canonical.mkdir()
+        originals = _temporary_canonical(root)
+        original_project_root, original_output_root, _, canonical = originals
+        canonical.mkdir(parents=True)
         old_manifest = b'{"complete":"old"}\n'
         (canonical / "identity_manifest.json").write_bytes(old_manifest)
         original_collect = audit_module.collect_identity_records
@@ -297,7 +409,8 @@ def test_existing_generation_is_immutable_and_fails_before_collection(c: Check):
             )), "failed staging directories are cleaned")
         finally:
             audit_module.collect_identity_records = original_collect
-            audit_module.CANONICAL_OUTPUT_ROOT = original_root
+            audit_module.PROJECT_ROOT = original_project_root
+            audit_module.CANONICAL_OUTPUT_ROOT = original_output_root
 
 
 def test_generation_directory_publication_is_no_overwrite(c: Check):
@@ -314,7 +427,9 @@ def test_generation_directory_publication_is_no_overwrite(c: Check):
     )
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        original_root, canonical = _temporary_canonical(root)
+        originals = _temporary_canonical(root)
+        original_project_root, original_output_root, _, canonical = originals
+        canonical.parent.mkdir(parents=True, mode=0o700)
         first_staging = canonical.parent / ".generation.staging-first"
         first_staging.mkdir()
         (first_staging / "sentinel").write_text("first")
@@ -333,7 +448,8 @@ def test_generation_directory_publication_is_no_overwrite(c: Check):
             c.eq((canonical / "sentinel").read_text(), "first",
                  "no-overwrite preserves the first generation")
         finally:
-            audit_module.CANONICAL_OUTPUT_ROOT = original_root
+            audit_module.PROJECT_ROOT = original_project_root
+            audit_module.CANONICAL_OUTPUT_ROOT = original_output_root
 
 
 def test_marlin_loader_means_windows_and_l2_normalizes(c: Check):

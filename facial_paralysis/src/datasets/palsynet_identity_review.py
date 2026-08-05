@@ -1041,7 +1041,7 @@ def _validate_lifecycle_paths(
         cross_label_adjudication,
         output,
     ]
-    absolute = [Path(os.path.abspath(path)) for path in paths]
+    absolute = [_project_path_without_symlinks(path) for path in paths]
     generated_manifest, contact_inventory, review_ledger, reviewer_evidence, (
         cross_label_adjudication
     ), output = absolute
@@ -1073,7 +1073,34 @@ def _validate_lifecycle_paths(
     return root
 
 
+def _project_path_without_symlinks(path: str | Path) -> Path:
+    """Anchor a lexical project descendant and reject every existing link component."""
+    project_root = Path(os.path.abspath(PROJECT_ROOT))
+    absolute = Path(os.path.abspath(path))
+    try:
+        relative = absolute.relative_to(project_root)
+    except ValueError as exc:
+        raise ValueError("identity review path must stay within the project root") from exc
+    try:
+        root_info = os.lstat(project_root)
+    except FileNotFoundError as exc:
+        raise ValueError("trusted project root must be a real directory") from exc
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        raise ValueError("trusted project root must be a real directory")
+    current = project_root
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("identity review path component must not be a symlink")
+    return absolute
+
+
 def _write_private_exclusive(path: Path, payload: bytes) -> None:
+    path = _project_path_without_symlinks(path)
     if path.exists() or path.is_symlink():
         raise FileExistsError("refusing to overwrite reviewed identity manifest")
     parent = path.parent

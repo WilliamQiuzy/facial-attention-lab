@@ -571,22 +571,28 @@ def _write_contact_sheet_files(
         path.chmod(0o600)
 
 
-def _finalize_for_canonical_test(root: Path, *paths: Path) -> dict[str, object]:
-    attribute = "CANONICAL_IDENTITY_AUDIT_ROOT"
-    original = getattr(
-        review_module, attribute, ROOT / "outputs" / "palsynet_identity_audit"
-    )
-    setattr(review_module, attribute, root)
+def _finalize_for_canonical_test(
+    project_root: Path,
+    root: Path,
+    *paths: Path,
+) -> dict[str, object]:
+    original_project_root = review_module.PROJECT_ROOT
+    original_root = review_module.CANONICAL_IDENTITY_AUDIT_ROOT
+    review_module.PROJECT_ROOT = project_root
+    review_module.CANONICAL_IDENTITY_AUDIT_ROOT = root
     try:
         return finalize_identity_review(*paths)
     finally:
-        setattr(review_module, attribute, original)
+        review_module.PROJECT_ROOT = original_project_root
+        review_module.CANONICAL_IDENTITY_AUDIT_ROOT = original_root
 
 
 def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check):
     fixture = _fixture()
     with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory) / "palsynet_identity_audit"
+        project_root = Path(directory) / "facial_paralysis"
+        project_root.mkdir(mode=0o700)
+        root = project_root / "outputs" / "palsynet_identity_audit"
         generated = root / "generation" / "identity_manifest.json"
         inventory = root / "generation" / "contact_sheet_inventory.json"
         ledger = root / "review" / "review_ledger.json"
@@ -604,6 +610,7 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
         _write_contact_sheet_files(root, fixture)
 
         reviewed = _finalize_for_canonical_test(
+            project_root,
             root,
             generated,
             inventory,
@@ -619,7 +626,8 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
         c.eq(stat.S_IMODE(output.parent.stat().st_mode), 0o700,
              "reviewed directory is owner-only")
         c.raises(lambda: _finalize_for_canonical_test(
-            root, generated, inventory, ledger, evidence, adjudication, output
+            project_root, root, generated, inventory, ledger, evidence,
+            adjudication, output
         ), FileExistsError, "reviewed publication never overwrites")
         c.eq(output.read_bytes(), first_bytes,
              "a repeated finalization preserves reviewed bytes")
@@ -632,7 +640,8 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
         tampered_sheet.write_bytes(b"tampered contact sheet")
         tampered_sheet.chmod(0o600)
         c.raises(lambda: _finalize_for_canonical_test(
-            root, generated, inventory, ledger, evidence, adjudication, output
+            project_root, root, generated, inventory, ledger, evidence,
+            adjudication, output
         ), ValueError, "finalization rehashes every generated contact sheet")
         c.true(not output.exists(), "stale contact inventory fails before publication")
         tampered_sheet.write_bytes(original_sheet)
@@ -640,12 +649,14 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
 
         wrong_stage = root / "generation" / "reviewed.json"
         c.raises(lambda: _finalize_for_canonical_test(
-            root, generated, inventory, ledger, evidence, adjudication, wrong_stage
+            project_root, root, generated, inventory, ledger, evidence,
+            adjudication, wrong_stage
         ), ValueError, "reviewed output cannot alias the generation stage")
 
         ledger.chmod(0o640)
         c.raises(lambda: _finalize_for_canonical_test(
-            root, generated, inventory, ledger, evidence, adjudication, output
+            project_root, root, generated, inventory, ledger, evidence,
+            adjudication, output
         ), ValueError, "review inputs must be owner-only")
         c.true(not output.exists(), "bad permissions fail before publication")
 
@@ -653,7 +664,10 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
 def test_finalizer_rejects_arbitrary_tracked_or_public_lifecycle_root(c: Check):
     fixture = _fixture()
     with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory) / "tracked" / "public" / "palsynet_identity_audit"
+        project_root = Path(directory) / "facial_paralysis"
+        project_root.mkdir(mode=0o700)
+        canonical_root = project_root / "outputs" / "palsynet_identity_audit"
+        root = project_root / "tracked" / "public" / "palsynet_identity_audit"
         paths = (
             root / "generation" / "identity_manifest.json",
             root / "generation" / "contact_sheet_inventory.json",
@@ -671,17 +685,69 @@ def test_finalizer_rejects_arbitrary_tracked_or_public_lifecycle_root(c: Check):
         )):
             _write_private(path, payload)
         _write_contact_sheet_files(root, fixture)
-        c.raises(lambda: finalize_identity_review(*paths), ValueError,
+        c.raises(lambda: _finalize_for_canonical_test(
+            project_root, canonical_root, *paths
+        ), ValueError,
                  "finalizer is locked to the canonical ignored lifecycle root")
 
-        canonical_alias = Path(directory) / "canonical_audit_alias"
+        canonical_alias = project_root / "canonical_audit_alias"
         canonical_alias.symlink_to(root, target_is_directory=True)
         aliased_paths = tuple(
             canonical_alias / path.relative_to(root) for path in paths
         )
         c.raises(lambda: _finalize_for_canonical_test(
-            canonical_alias, *aliased_paths
+            project_root, canonical_alias, *aliased_paths
         ), ValueError, "canonical lifecycle paths cannot traverse a root symlink")
+
+
+def test_finalizer_rejects_outputs_ancestor_symlink_before_any_io(c: Check):
+    with tempfile.TemporaryDirectory() as directory:
+        base = Path(directory)
+        project_root = base / "facial_paralysis"
+        project_root.mkdir(mode=0o700)
+        outside = base / "outside"
+        outside.mkdir(mode=0o700)
+        sentinel = outside / "sentinel.txt"
+        sentinel.write_text("untouched")
+        (project_root / "outputs").symlink_to(
+            outside, target_is_directory=True
+        )
+        root = project_root / "outputs" / "palsynet_identity_audit"
+        paths = (
+            root / "generation" / "identity_manifest.json",
+            root / "generation" / "contact_sheet_inventory.json",
+            root / "review" / "review_ledger.json",
+            root / "review" / "reviewer_evidence.json",
+            root / "review" / "cross_label_adjudication.json",
+            root / "reviewed" / "identity_manifest.json",
+        )
+        guarded = {
+            "_read_private_json": review_module._read_private_json,
+            "_verify_contact_sheet_files": review_module._verify_contact_sheet_files,
+            "_write_private_exclusive": review_module._write_private_exclusive,
+        }
+        calls: list[str] = []
+
+        def forbidden(name: str):
+            def invoke(*_args, **_kwargs):
+                calls.append(name)
+                raise AssertionError(f"{name} ran before ancestor validation")
+            return invoke
+
+        for name in guarded:
+            setattr(review_module, name, forbidden(name))
+        try:
+            c.raises(lambda: _finalize_for_canonical_test(
+                project_root, root, *paths
+            ), ValueError, "an outputs ancestor symlink fails before finalizer IO")
+            c.eq(calls, [], "ancestor validation precedes every finalizer read/write")
+            c.eq(sentinel.read_text(), "untouched",
+                 "finalizer rejection cannot mutate the outside target")
+            c.true(not paths[-1].exists(),
+                   "reviewed output is never written through the symlink")
+        finally:
+            for name, value in guarded.items():
+                setattr(review_module, name, value)
 
 
 def test_finalizer_cli_exposes_only_the_five_evidence_inputs_and_output(c: Check):
