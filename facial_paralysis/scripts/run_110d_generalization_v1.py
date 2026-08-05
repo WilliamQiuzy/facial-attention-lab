@@ -19,6 +19,12 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    average_precision_score,
+    balanced_accuracy_score,
+    brier_score_loss,
+    roc_auc_score,
+)
 from sklearn.preprocessing import StandardScaler
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +38,9 @@ from scripts.run_dynamic_landmark_classical import (  # noqa: E402
     _validate_task2_collection_manifest,
     group_mean_predictions,
     group_sample_weights,
+)
+from scripts.freeze_palsynet_person_split_registry import (  # noqa: E402
+    validate_person_split_registry,
 )
 from scripts.run_mirror_invariant_110d import mirror_dynamic_features  # noqa: E402
 from src.datasets.dynamic_landmark import load_dynamic_landmark_recordings  # noqa: E402
@@ -69,6 +78,17 @@ _PAIR_KEYS = tuple(
     for left_index, left in enumerate(CANDIDATE_ORDER)
     for right in CANDIDATE_ORDER[left_index + 1:]
 )
+_IMPLEMENTATION_COMPONENT_PATHS = {
+    "runner": Path(__file__).resolve(),
+    "generalization_features": PROJECT_ROOT / "src/preprocessing/generalization_110d.py",
+    "trajectory_features": PROJECT_ROOT / "src/preprocessing/trajectory_features.py",
+    "clinical_dynamics": PROJECT_ROOT / "src/preprocessing/clinical_dynamics.py",
+    "mirror_runner": PROJECT_ROOT / "scripts/run_mirror_invariant_110d.py",
+    "dynamic_landmark_model": PROJECT_ROOT / "src/models/dynamic_landmark.py",
+    "dynamic_landmark_loader": PROJECT_ROOT / "src/datasets/dynamic_landmark.py",
+    "classical_group_evaluation": PROJECT_ROOT / "scripts/run_dynamic_landmark_classical.py",
+    "person_split_registry": PROJECT_ROOT / "scripts/freeze_palsynet_person_split_registry.py",
+}
 
 
 @dataclass
@@ -119,10 +139,23 @@ class DevelopmentResult:
 
 
 def canonical_json_sha256(payload: object) -> str:
-    encoded = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+    encoded = (
+        json.dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False,
+        ) + "\n"
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _implementation_fingerprints() -> tuple[dict[str, str], str]:
+    """Bind every execution-affecting local implementation component."""
+    components: dict[str, str] = {}
+    for name, path in _IMPLEMENTATION_COMPONENT_PATHS.items():
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"implementation component {name!r} is unavailable")
+        components[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return components, canonical_json_sha256(components)
 
 
 def _exact_object(value: object, fields: set[str], name: str) -> Mapping[str, object]:
@@ -159,6 +192,9 @@ def validate_development_gate(
     if not isinstance(audit, GateAudit):
         raise TypeError("audit must be GateAudit")
     audit.gate_attempts += 1
+    validate_person_split_registry(
+        split_registry, reviewed_manifest, review_ledger
+    )
     manifest_sha = _sha(reviewed_manifest_sha256, "reviewed manifest digest")
     ledger_sha = _sha(review_ledger_sha256, "review ledger digest")
     registry_sha = (
@@ -540,20 +576,14 @@ def _fast_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict[str, fl
     negative = probabilities[labels == 0]
     if positive.size == 0 or negative.size == 0:
         raise ValueError("binary metrics require both classes")
-    comparisons = positive[:, None] - negative[None, :]
-    auroc = float(np.mean((comparisons > 0) + 0.5 * (comparisons == 0)))
-    order = np.argsort(-probabilities, kind="mergesort")
-    sorted_labels = labels[order]
-    precision = np.cumsum(sorted_labels) / np.arange(1, labels.size + 1)
-    average_precision = float(np.sum(precision * sorted_labels) / positive.size)
     predictions = probabilities >= FIXED_THRESHOLD
     sensitivity = float(np.mean(predictions[labels == 1]))
     specificity = float(np.mean(~predictions[labels == 0]))
     return {
-        "auroc": auroc,
-        "average_precision": average_precision,
-        "brier": float(np.mean((probabilities - labels) ** 2)),
-        "balanced_accuracy": 0.5 * (sensitivity + specificity),
+        "auroc": float(roc_auc_score(labels, probabilities)),
+        "average_precision": float(average_precision_score(labels, probabilities)),
+        "brier": float(brier_score_loss(labels, probabilities)),
+        "balanced_accuracy": float(balanced_accuracy_score(labels, predictions)),
         "sensitivity": sensitivity,
         "specificity": specificity,
     }
@@ -608,6 +638,134 @@ def _paired_bootstrap(
                     "ci95": [float(value) for value in np.quantile(delta, (0.025, 0.975))],
                 }
     return candidate_output, delta_output
+
+
+def _independent_expected_aggregates(
+    labels: np.ndarray,
+    group_ids: np.ndarray,
+    probabilities: Mapping[str, np.ndarray],
+    *,
+    repeats: int,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]], np.ndarray]:
+    """Recompute group aggregation, metrics, and paired draws independently."""
+    labels = np.asarray(labels, dtype=np.int64)
+    groups = np.asarray(group_ids)
+    if tuple(probabilities) != tuple(CANDIDATE_ORDER):
+        raise ValueError("verification probabilities must cover candidates in order")
+    ordered_groups = sorted(set(groups.tolist()), key=str)
+    grouped_labels: list[int] = []
+    grouped_probabilities = {
+        candidate: [] for candidate in CANDIDATE_ORDER
+    }
+    for group in ordered_groups:
+        indices = np.flatnonzero(groups == group)
+        observed = np.unique(labels[indices])
+        if observed.size != 1:
+            raise ValueError("verification group crosses labels")
+        grouped_labels.append(int(observed[0]))
+        for candidate in CANDIDATE_ORDER:
+            values = np.asarray(probabilities[candidate], dtype=np.float64)
+            if values.shape != labels.shape or not np.isfinite(values).all() or np.any(
+                (values < 0.0) | (values > 1.0)
+            ):
+                raise ValueError("verification probabilities are invalid or unaligned")
+            grouped_probabilities[candidate].append(float(np.mean(values[indices])))
+    group_labels = np.asarray(grouped_labels, dtype=np.int64)
+    group_probabilities = {
+        candidate: np.asarray(values, dtype=np.float64)
+        for candidate, values in grouped_probabilities.items()
+    }
+
+    def metrics_for(values: np.ndarray) -> dict[str, float]:
+        predictions = (values >= FIXED_THRESHOLD).astype(np.int64)
+        positive = group_labels == 1
+        negative = group_labels == 0
+        return {
+            "auroc": float(roc_auc_score(group_labels, values)),
+            "average_precision": float(
+                average_precision_score(group_labels, values)
+            ),
+            "brier": float(brier_score_loss(group_labels, values)),
+            "balanced_accuracy": float(
+                balanced_accuracy_score(group_labels, predictions)
+            ),
+            "sensitivity": float(np.mean(predictions[positive] == 1)),
+            "specificity": float(np.mean(predictions[negative] == 0)),
+        }
+
+    points = {
+        candidate: metrics_for(group_probabilities[candidate])
+        for candidate in CANDIDATE_ORDER
+    }
+    distributions = {
+        candidate: {metric: np.empty(repeats, dtype=np.float64) for metric in _METRICS}
+        for candidate in CANDIDATE_ORDER
+    }
+    class_indices = {
+        label: np.flatnonzero(group_labels == label) for label in (0, 1)
+    }
+    if any(indices.size == 0 for indices in class_indices.values()):
+        raise ValueError("verification bootstrap requires both classes")
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    for repeat in range(repeats):
+        draw = np.concatenate(tuple(
+            rng.choice(indices, size=indices.size, replace=True)
+            for indices in (class_indices[0], class_indices[1])
+        ))
+        sampled_labels = group_labels[draw]
+        for candidate in CANDIDATE_ORDER:
+            values = group_probabilities[candidate][draw]
+            predictions = (values >= FIXED_THRESHOLD).astype(np.int64)
+            sampled_positive = sampled_labels == 1
+            sampled_negative = sampled_labels == 0
+            independently_computed = {
+                "auroc": float(roc_auc_score(sampled_labels, values)),
+                "average_precision": float(
+                    average_precision_score(sampled_labels, values)
+                ),
+                "brier": float(brier_score_loss(sampled_labels, values)),
+                "balanced_accuracy": float(
+                    balanced_accuracy_score(sampled_labels, predictions)
+                ),
+                "sensitivity": float(np.mean(
+                    predictions[sampled_positive] == 1
+                )),
+                "specificity": float(np.mean(
+                    predictions[sampled_negative] == 0
+                )),
+            }
+            for metric in _METRICS:
+                distributions[candidate][metric][repeat] = (
+                    independently_computed[metric]
+                )
+    metric_report = {
+        candidate: {
+            metric: {
+                "point": points[candidate][metric],
+                "ci95": [float(value) for value in np.quantile(
+                    distributions[candidate][metric], (0.025, 0.975)
+                )],
+            }
+            for metric in _METRICS
+        }
+        for candidate in CANDIDATE_ORDER
+    }
+    delta_report: dict[str, dict[str, object]] = {}
+    for left_index, left in enumerate(CANDIDATE_ORDER):
+        for right in CANDIDATE_ORDER[left_index + 1:]:
+            key = f"{right}_minus_{left}"
+            delta_report[key] = {}
+            for metric in _METRICS:
+                distribution = (
+                    distributions[right][metric] - distributions[left][metric]
+                )
+                delta_report[key][metric] = {
+                    "point": points[right][metric] - points[left][metric],
+                    "ci95": [float(value) for value in np.quantile(
+                        distribution, (0.025, 0.975)
+                    )],
+                }
+    return metric_report, delta_report, group_labels
 
 
 def select_locked_candidate(metrics: Mapping[str, Mapping[str, float]]) -> tuple[str, dict[str, bool]]:
@@ -719,6 +877,9 @@ def run_development_comparison(
         for candidate in CANDIDATE_ORDER
     }
     locked, gates = select_locked_candidate(point_metrics)
+    implementation_components, implementation_aggregate = (
+        _implementation_fingerprints()
+    )
     report: dict[str, object] = {
         "schema_version": "110d_generalization_v1_development_report",
         "claim_scope": "identity_reviewed_palsynet_development_inner_oof_only",
@@ -732,7 +893,8 @@ def run_development_comparison(
             "review_ledger_sha256": gate.review_ledger_sha256,
             "person_split_registry_sha256": gate.split_registry_sha256,
             "source_collection_sha256": gate.source_collection_sha256,
-            "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "implementation_components_sha256": implementation_components,
+            "implementation_aggregate_sha256": implementation_aggregate,
         },
         "protocol": {
             "candidates": list(CANDIDATE_ORDER),
@@ -781,6 +943,10 @@ def run_development_comparison(
         },
     }
     _validate_report(report, expected_bootstrap_repeats=bootstrap_repeats)
+    _validate_report_against_oof(
+        report, dataset, gate, probabilities,
+        expected_bootstrap_repeats=bootstrap_repeats,
+    )
     return DevelopmentResult(report=report, probabilities=probabilities)
 
 
@@ -821,10 +987,20 @@ def _validate_report(payload: Mapping[str, object], *, expected_bootstrap_repeat
     provenance = _exact_object(top["provenance"], {
         "reviewed_identity_manifest_sha256", "review_ledger_sha256",
         "person_split_registry_sha256", "source_collection_sha256",
-        "implementation_sha256",
+        "implementation_components_sha256", "implementation_aggregate_sha256",
     }, "report provenance")
-    for name, value in provenance.items():
-        _sha(value, name)
+    for name in (
+        "reviewed_identity_manifest_sha256", "review_ledger_sha256",
+        "person_split_registry_sha256", "source_collection_sha256",
+        "implementation_aggregate_sha256",
+    ):
+        _sha(provenance[name], name)
+    expected_components, expected_aggregate = _implementation_fingerprints()
+    if (
+        provenance["implementation_components_sha256"] != expected_components
+        or provenance["implementation_aggregate_sha256"] != expected_aggregate
+    ):
+        raise ValueError("report implementation component fingerprints drifted")
     protocol = _exact_object(top["protocol"], {
         "candidates", "candidate_dimensions", "candidate_feature_names",
         "inner_folds", "model", "bootstrap",
@@ -939,6 +1115,64 @@ def _validate_report(payload: Mapping[str, object], *, expected_bootstrap_repeat
         or decision["next_gate"] != "freeze_candidate_then_explicit_one_shot_outer_authorization"
     ):
         raise ValueError("candidate lock/claim decision is invalid")
+
+
+def _validate_report_against_oof(
+    payload: Mapping[str, object],
+    dataset: ClassicalDataset,
+    gate: DevelopmentGate,
+    probabilities: Mapping[str, np.ndarray],
+    *,
+    expected_bootstrap_repeats: int = BOOTSTRAP_REPEATS,
+) -> None:
+    """Rebuild every published result from aligned OOF rows before writing."""
+    _validate_report(
+        payload, expected_bootstrap_repeats=expected_bootstrap_repeats
+    )
+    development = np.asarray(gate.development_indices, dtype=np.int64)
+    protected = np.asarray(gate.protected_indices, dtype=np.int64)
+    if set(development.tolist()) & set(protected.tolist()):
+        raise ValueError("verification split overlaps protected rows")
+    expected_metrics, expected_deltas, grouped_labels = (
+        _independent_expected_aggregates(
+            dataset.labels[development], gate.group_ids[development],
+            probabilities, repeats=expected_bootstrap_repeats,
+        )
+    )
+    if payload["metrics"] != expected_metrics:
+        raise ValueError("published metrics/intervals differ from independent OOF recomputation")
+    if payload["pairwise_deltas"] != expected_deltas:
+        raise ValueError("published paired deltas differ from independent resample plan")
+    development_groups = gate.group_ids[development]
+    protected_groups = gate.group_ids[protected]
+    eligible_indices = np.concatenate((development, protected))
+    expected_counts = {
+        "eligible_recordings": int(eligible_indices.size),
+        "eligible_groups": len(set(gate.group_ids[eligible_indices].tolist())),
+        "development_recordings": int(development.size),
+        "development_groups": len(set(development_groups.tolist())),
+        "development_affected_groups": int(np.sum(grouped_labels == 1)),
+        "development_unaffected_groups": int(np.sum(grouped_labels == 0)),
+        "protected_recordings": int(protected.size),
+        "protected_groups": len(set(protected_groups.tolist())),
+    }
+    if payload["counts"] != expected_counts:
+        raise ValueError("published counts differ from authenticated split/OOF rows")
+    point_metrics = {
+        candidate: {
+            metric: float(expected_metrics[candidate][metric]["point"])
+            for metric in _METRICS
+        }
+        for candidate in CANDIDATE_ORDER
+    }
+    locked, gates = select_locked_candidate(point_metrics)
+    decision = payload["decision"]
+    if (
+        decision["gates"] != gates
+        or decision["locked_candidate"] != locked
+        or decision["passed"] is not (locked != CANDIDATE_ORDER[0])
+    ):
+        raise ValueError("published lock differs from independently recomputed point metrics")
 
 
 def _read_json(path: Path) -> tuple[dict[str, object], str]:
@@ -1057,8 +1291,15 @@ def load_development_cache_records(
         raise AssertionError("protected cache load audit must remain zero")
 
 
-def _write_private_report(path: Path, payload: Mapping[str, object]) -> None:
-    _validate_report(payload)
+def _write_private_report(
+    path: Path,
+    payload: Mapping[str, object],
+    *,
+    dataset: ClassicalDataset,
+    gate: DevelopmentGate,
+    probabilities: Mapping[str, np.ndarray],
+) -> None:
+    _validate_report_against_oof(payload, dataset, gate, probabilities)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
     if path.exists() or path.is_symlink():
@@ -1113,7 +1354,10 @@ def main() -> None:
     )
     prepared = prepare_development_candidates(dataset, gate, audit=audit)
     result = run_development_comparison(dataset, gate, prepared, audit=audit)
-    _write_private_report(DEFAULT_REPORT_PATH, result.report)
+    _write_private_report(
+        DEFAULT_REPORT_PATH, result.report, dataset=dataset, gate=gate,
+        probabilities=result.probabilities,
+    )
     print(json.dumps(result.report, sort_keys=True, indent=2, allow_nan=False))
 
 

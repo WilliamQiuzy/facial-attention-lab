@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from scripts.run_dynamic_landmark_classical import ClassicalDataset  # noqa: E402
+from scripts.freeze_palsynet_person_split_registry import (  # noqa: E402
+    build_person_split_registry,
+)
 from scripts.run_110d_generalization_v1 import (  # noqa: E402
     BOOTSTRAP_REPEATS,
     BOOTSTRAP_SEED,
@@ -23,8 +26,11 @@ from scripts.run_110d_generalization_v1 import (  # noqa: E402
     FIXED_C,
     FIXED_THRESHOLD,
     GateAudit,
+    _fast_metrics,
+    _implementation_fingerprints,
     _parser,
     _validate_report,
+    _validate_report_against_oof,
     canonical_json_sha256,
     load_development_cache_records,
     prepare_development_candidates,
@@ -34,6 +40,39 @@ from scripts.run_110d_generalization_v1 import (  # noqa: E402
 )
 from src.preprocessing.generalization_110d import CANDIDATE_REGISTRY  # noqa: E402
 from _testlib import Check, run_all  # noqa: E402
+
+
+def test_artifact_digest_uses_shared_canonical_bytes(c: Check):
+    payload = {"z": 1, "a": [True, None]}
+    expected = hashlib.sha256(
+        (json.dumps(
+            payload, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False,
+        ) + "\n").encode("utf-8")
+    ).hexdigest()
+    c.eq(canonical_json_sha256(payload), expected,
+         "runner digest matches the immutable artifact canonicalization")
+
+
+def test_tied_average_precision_matches_sklearn_definition(c: Check):
+    labels = np.asarray([1, 0, 1, 0], dtype=np.int64)
+    tied = np.full(4, 0.5, dtype=np.float64)
+    c.eq(_fast_metrics(labels, tied)["average_precision"], 0.5,
+         "AP groups tied score thresholds instead of using row order")
+
+
+def test_implementation_digest_binds_every_execution_component(c: Check):
+    components, aggregate = _implementation_fingerprints()
+    c.eq(set(components), {
+        "runner", "generalization_features", "trajectory_features",
+        "clinical_dynamics", "mirror_runner", "dynamic_landmark_model",
+        "dynamic_landmark_loader", "classical_group_evaluation",
+        "person_split_registry",
+    }, "all execution-affecting local sources are bound")
+    c.true(all(len(value) == 64 for value in components.values()),
+           "each component has a SHA-256")
+    c.eq(aggregate, canonical_json_sha256(components),
+         "aggregate digest is over the exact closed component map")
 
 
 def _dataset() -> ClassicalDataset:
@@ -49,7 +88,7 @@ def _dataset() -> ClassicalDataset:
         np.stack([w * 100 + np.arange(32) for w in range(4)]),
         (count, 1, 1),
     ).astype(np.int64)
-    labels = np.asarray([index % 2 for index in range(count)], dtype=np.int64)
+    labels = np.asarray([1] * 27 + [0] * 22, dtype=np.int64)
     return ClassicalDataset(
         features=features,
         valid_masks=masks,
@@ -66,9 +105,7 @@ def _dataset() -> ClassicalDataset:
 
 
 def _artifacts(dataset: ClassicalDataset):
-    source_sha = "a" * 64
     recordings = []
-    assignments = []
     for index, recording_id in enumerate(dataset.recording_ids):
         group_id = f"grp_{index:064x}"
         source_member = f"{index + 100:064x}"
@@ -84,21 +121,22 @@ def _artifacts(dataset: ClassicalDataset):
             "adjudication_outcome": "none",
             "adjudication_evidence_sha256": None,
         })
-        protected = index >= 40
-        semantic = hashlib.sha256(
-            ("110d-generalization-v1-person-split:" + source_member).encode()
-        ).hexdigest()
-        assignments.append({
-            "recording_id": recording_id,
-            "group_id": group_id,
-            "semantic_group_key_sha256": semantic,
-            "partition": "protected" if protected else "development",
-            "outer_fold": 0 if protected else 1 + (index // 2) % 4,
-            "inner_fold": None if protected else (index // 2) % 4,
-        })
+    source_fingerprint = hashlib.sha256()
+    for row in sorted(
+        recordings, key=lambda value: (value["source_label"], value["source_sha256"])
+    ):
+        source_fingerprint.update(
+            f"{row['source_label']}:{row['source_sha256']}\n".encode("ascii")
+        )
+    source_sha = source_fingerprint.hexdigest()
     ledger = {
         "schema_version": "palsynet_identity_review_ledger_v1",
         "dataset": "PalsyNet",
+        "source_collection_sha256": source_sha,
+        "generated_manifest_sha256": "1" * 64,
+        "contact_inventory_sha256": "2" * 64,
+        "reviewer_evidence_sha256": "3" * 64,
+        "label_blinded": True,
         "uncertainty_status": "resolved",
         "recording_to_group": [
             {"recording_id": row["recording_id"], "group_id": row["group_id"]}
@@ -138,25 +176,11 @@ def _artifacts(dataset: ClassicalDataset):
         "recordings": recordings,
     }
     manifest_sha = canonical_json_sha256(manifest)
-    registry = {
-        "schema_version": "palsynet_person_split_registry_v1",
-        "dataset": "PalsyNet", "claim_unit": "person_held_out",
-        "identity_status": "reviewed", "source_collection_sha256": source_sha,
-        "reviewed_manifest_sha256": manifest_sha,
-        "review_ledger_sha256": ledger_sha, "outer_fold_number": 0,
-        "protocol": {
-            "domain_separator": "110d-generalization-v1-person-split",
-            "outer_folds": 5, "inner_folds": 4,
-            "semantic_group_key": "sha256(domain_separator + ':' + comma_join(sorted_member_source_sha256))",
-            "stratification": "binary_label_then_group_size_then_semantic_key",
-        },
-        "counts": {
-            "eligible_recordings": 49, "eligible_groups": 49,
-            "development_recordings": 40, "development_groups": 40,
-            "protected_recordings": 9, "protected_groups": 9,
-        },
-        "assignments": assignments,
-    }
+    registry = build_person_split_registry(
+        manifest, ledger,
+        reviewed_manifest_sha256=manifest_sha,
+        review_ledger_sha256=ledger_sha,
+    )
     return manifest, ledger, registry, manifest_sha, ledger_sha
 
 
@@ -214,6 +238,40 @@ def test_exact_fixed_protocol_and_no_tuning_cli(c: Check):
     }, "CLI exposes authenticated locations only")
 
 
+def test_alternate_balanced_registry_fails_before_cache_or_features(c: Check):
+    dataset = _dataset()
+    manifest, ledger, registry, manifest_sha, ledger_sha = _artifacts(dataset)
+    alternate = copy.deepcopy(registry)
+    labels = {row["recording_id"]: row["label"] for row in manifest["recordings"]}
+    selected = None
+    for first_index, first in enumerate(alternate["assignments"]):
+        if first["partition"] != "development":
+            continue
+        for second in alternate["assignments"][first_index + 1:]:
+            if (
+                second["partition"] == "development"
+                and labels[first["recording_id"]] == labels[second["recording_id"]]
+                and first["inner_fold"] != second["inner_fold"]
+            ):
+                selected = (first, second)
+                break
+        if selected is not None:
+            break
+    c.true(selected is not None, "fixture has a same-class valid-looking fold swap")
+    first, second = selected
+    first["inner_fold"], second["inner_fold"] = (
+        second["inner_fold"], first["inner_fold"]
+    )
+    audit = GateAudit()
+    c.raises(lambda: validate_development_gate(
+        dataset, manifest, ledger, alternate,
+        reviewed_manifest_sha256=manifest_sha,
+        review_ledger_sha256=ledger_sha, audit=audit,
+    ), ValueError, "only the deterministic semantic split is accepted")
+    c.eq(audit.as_dict(), GateAudit(gate_attempts=1).as_dict(),
+         "alternate registry fails before cache/load/extract/fit/predict")
+
+
 def test_pairing_and_protected_contamination_fail_closed(c: Check):
     dataset = _dataset()
     manifest, ledger, registry, manifest_sha, ledger_sha = _artifacts(dataset)
@@ -257,7 +315,7 @@ def test_pairing_and_protected_contamination_fail_closed(c: Check):
         Path("/sealed-cache"), dataset, gate, rows,
         audit=audit, record_loader=trapped_loader,
     )
-    c.eq(audit.development_cache_records_loaded, 40,
+    c.eq(audit.development_cache_records_loaded, gate.development_indices.size,
          "every development cache is loaded once")
     c.eq(audit.protected_cache_records_loaded, 0,
          "protected cache loader trap is never invoked")
@@ -314,6 +372,10 @@ def test_report_is_closed_aggregate_and_recomputed(c: Check):
         dataset, gate, prepared, audit=run_audit, bootstrap_repeats=32,
     )
     _validate_report(result.report, expected_bootstrap_repeats=32)
+    _validate_report_against_oof(
+        result.report, dataset, gate, result.probabilities,
+        expected_bootstrap_repeats=32,
+    )
     encoded = json.dumps(result.report, allow_nan=False)
     c.true("rec_" not in encoded and "grp_" not in encoded,
            "report has no identifiers")
@@ -341,6 +403,42 @@ def test_report_is_closed_aggregate_and_recomputed(c: Check):
         c.raises(lambda m=mutated: _validate_report(
             m, expected_bootstrap_repeats=32
         ), ValueError, "schema/metric/count/decision mutation is rejected")
+
+    valid_range_metric_tamper = copy.deepcopy(result.report)
+    point = valid_range_metric_tamper["metrics"][CANDIDATE_ORDER[0]]["auroc"]["point"]
+    valid_range_metric_tamper["metrics"][CANDIDATE_ORDER[0]]["auroc"]["point"] = (
+        point + 0.01 if point <= 0.98 else point - 0.01
+    )
+    c.raises(lambda: _validate_report_against_oof(
+        valid_range_metric_tamper, dataset, gate, result.probabilities,
+        expected_bootstrap_repeats=32,
+    ), ValueError, "pre-serialization recomputation catches valid-range metric tamper")
+
+    ci_tamper = copy.deepcopy(result.report)
+    ci_tamper["metrics"][CANDIDATE_ORDER[0]]["brier"]["ci95"][0] += 1e-6
+    c.raises(lambda: _validate_report_against_oof(
+        ci_tamper, dataset, gate, result.probabilities,
+        expected_bootstrap_repeats=32,
+    ), ValueError, "pre-serialization recomputation catches bootstrap tamper")
+
+    altered_probabilities = {
+        candidate: values.copy() for candidate, values in result.probabilities.items()
+    }
+    altered_probabilities[CANDIDATE_ORDER[0]][0] = min(
+        1.0, altered_probabilities[CANDIDATE_ORDER[0]][0] + 0.1
+    )
+    c.raises(lambda: _validate_report_against_oof(
+        result.report, dataset, gate, altered_probabilities,
+        expected_bootstrap_repeats=32,
+    ), ValueError, "report is bound to aligned grouped OOF probabilities")
+
+    component_tamper = copy.deepcopy(result.report)
+    component_tamper["provenance"]["implementation_components_sha256"][
+        "trajectory_features"
+    ] = "f" * 64
+    c.raises(lambda: _validate_report(
+        component_tamper, expected_bootstrap_repeats=32
+    ), ValueError, "component map is recomputed from current source bytes")
 
 
 if __name__ == "__main__":
