@@ -22,6 +22,7 @@ from src.datasets.palsynet_identity_review import (  # noqa: E402
     finalize_identity_review,
 )
 import scripts.finalize_palsynet_identity_review as finalizer_module  # noqa: E402
+import src.datasets.palsynet_identity_review as review_module  # noqa: E402
 from _testlib import Check, run_all  # noqa: E402
 
 
@@ -44,6 +45,17 @@ def _documented_evidence(payload: bytes) -> dict[str, str]:
         "payload_base64": base64.b64encode(payload).decode("ascii"),
         "sha256": _sha(payload),
     }
+
+
+def _source_collection_sha256(recordings: list[dict[str, object]]) -> str:
+    digest = hashlib.sha256()
+    for row in sorted(
+        recordings, key=lambda item: (item["label"], item["source_sha256"])
+    ):
+        digest.update(
+            f"{row['label']}:{row['source_sha256']}\n".encode("ascii")
+        )
+    return digest.hexdigest()
 
 
 def _ids() -> list[str]:
@@ -95,7 +107,7 @@ def _generated_manifest() -> dict[str, object]:
             "ranked_pairs": PAIR_COUNT,
         },
         "fingerprints": {
-            "source_collection_sha256": "a" * 64,
+            "source_collection_sha256": _source_collection_sha256(recordings),
             "bundle_provenance_sha256": "b" * 64,
             "embedding_collection_sha256": "c" * 64,
         },
@@ -209,6 +221,53 @@ def _refresh(fixture: dict[str, dict[str, object] | str]) -> None:
     fixture["adjudication_sha"] = _payload_sha(fixture["adjudication"])
 
 
+def _refresh_generated_bindings(
+    fixture: dict[str, dict[str, object] | str],
+) -> None:
+    generated_sha256 = _payload_sha(fixture["generated"])
+    fixture["inventory"]["generated_manifest_sha256"] = generated_sha256
+    fixture["inventory"]["source_collection_sha256"] = fixture["generated"][
+        "fingerprints"
+    ]["source_collection_sha256"]
+    _refresh(fixture)
+
+
+def _correction_evidence(
+    fixture: dict[str, dict[str, object] | str],
+    group_id: str,
+    recording_ids: set[str],
+    corrected_label: str,
+    payload: bytes = b"authoritative source-label correction record",
+) -> dict[str, object]:
+    recordings = {
+        row["recording_id"]: row for row in fixture["generated"]["recordings"]
+    }
+    claims = [
+        {
+            "recording_id": recording_id,
+            "source_sha256": recordings[recording_id]["source_sha256"],
+            "old_label": recordings[recording_id]["label"],
+            "new_label": corrected_label,
+        }
+        for recording_id in sorted(recording_ids)
+    ]
+    return {
+        "schema_version": "palsynet_source_label_correction_evidence_v1",
+        "group_id": group_id,
+        "claims": claims,
+        "rationale": {
+            "finding": "verified_source_annotation_error",
+            "basis": "dataset_steward_confirmation",
+        },
+        "provenance": {
+            "source": "dataset_steward_confirmation",
+            "reference_id": "evidence_" + "4" * 64,
+            "claims_sha256": _payload_sha(claims),
+            "document": _documented_evidence(payload),
+        },
+    }
+
+
 def _build(fixture: dict[str, dict[str, object] | str]) -> dict[str, object]:
     return build_reviewed_identity_manifest(
         fixture["generated"],
@@ -258,7 +317,9 @@ def test_exhaustive_label_blind_ledger_builds_reviewed_manifest(c: Check):
     c.true(all(row["training_eligible"] for row in reviewed["recordings"]),
            "complete nonconflicting review makes every recording eligible")
     c.eq(reviewed["fingerprints"], {
-        "source_collection_sha256": "a" * 64,
+        "source_collection_sha256": fixture["generated"]["fingerprints"][
+            "source_collection_sha256"
+        ],
         "generated_manifest_sha256": fixture["generated_sha"],
         "contact_inventory_sha256": fixture["inventory_sha"],
         "review_ledger_sha256": fixture["ledger_sha"],
@@ -380,6 +441,14 @@ def test_every_digest_binding_is_exact(c: Check):
              "ledger cannot retain a stale reviewer-evidence digest")
 
 
+def test_source_collection_fingerprint_is_recomputed_from_exact_rows(c: Check):
+    stale_source = _fixture()
+    stale_source["generated"]["recordings"][0]["source_sha256"] = "f" * 64
+    _refresh_generated_bindings(stale_source)
+    c.raises(lambda: _build(stale_source), ValueError,
+             "stale source fingerprint cannot survive refreshed artifact bindings")
+
+
 def test_cross_label_groups_require_closed_adjudication_outcomes(c: Check):
     first, second = _ids()[0], _ids()[27]
     fixture = _fixture()
@@ -413,8 +482,8 @@ def test_cross_label_groups_require_closed_adjudication_outcomes(c: Check):
     corrected["adjudication"]["decisions"] = [{
         "group_id": _group(999),
         "outcome": "correct_proven_source_label_error",
-        "evidence": _documented_evidence(
-            b"documented source-label correction"
+        "evidence": _correction_evidence(
+            corrected, _group(999), {first, second}, "affected"
         ),
         "corrected_label": "affected",
     }]
@@ -429,19 +498,32 @@ def test_cross_label_groups_require_closed_adjudication_outcomes(c: Check):
            "documented source correction yields one consistent group label")
     correction_evidence_sha256 = corrected["adjudication"]["decisions"][0][
         "evidence"
-    ]["sha256"]
+    ]["provenance"]["document"]["sha256"]
     c.true(all(
         row["adjudication_evidence_sha256"] == correction_evidence_sha256
         for row in corrected_rows
     ), "reviewed rows retain the authenticated correction-evidence digest")
 
     tampered_evidence = copy.deepcopy(corrected)
-    tampered_evidence["adjudication"]["decisions"][0]["evidence"][
+    tampered_evidence["adjudication"]["decisions"][0]["evidence"]["provenance"][
+        "document"
+    ][
         "payload_base64"
     ] = base64.b64encode(b"fabricated replacement").decode("ascii")
     _refresh(tampered_evidence)
     c.raises(lambda: _build(tampered_evidence), ValueError,
              "documented evidence bytes must match their authenticated digest")
+
+    one_byte_blob = copy.deepcopy(fixture)
+    one_byte_blob["adjudication"]["decisions"] = [{
+        "group_id": _group(999),
+        "outcome": "correct_proven_source_label_error",
+        "evidence": _documented_evidence(b"x"),
+        "corrected_label": "affected",
+    }]
+    _refresh(one_byte_blob)
+    c.raises(lambda: _build(one_byte_blob), ValueError,
+             "an arbitrary one-byte blob cannot prove a source-label correction")
 
     invalid = copy.deepcopy(fixture)
     invalid["adjudication"]["decisions"] = [{
@@ -489,6 +571,18 @@ def _write_contact_sheet_files(
         path.chmod(0o600)
 
 
+def _finalize_for_canonical_test(root: Path, *paths: Path) -> dict[str, object]:
+    attribute = "CANONICAL_IDENTITY_AUDIT_ROOT"
+    original = getattr(
+        review_module, attribute, ROOT / "outputs" / "palsynet_identity_audit"
+    )
+    setattr(review_module, attribute, root)
+    try:
+        return finalize_identity_review(*paths)
+    finally:
+        setattr(review_module, attribute, original)
+
+
 def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check):
     fixture = _fixture()
     with tempfile.TemporaryDirectory() as directory:
@@ -509,7 +603,8 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
             _write_private(path, payload)
         _write_contact_sheet_files(root, fixture)
 
-        reviewed = finalize_identity_review(
+        reviewed = _finalize_for_canonical_test(
+            root,
             generated,
             inventory,
             ledger,
@@ -523,8 +618,8 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
              "reviewed manifest is owner-only")
         c.eq(stat.S_IMODE(output.parent.stat().st_mode), 0o700,
              "reviewed directory is owner-only")
-        c.raises(lambda: finalize_identity_review(
-            generated, inventory, ledger, evidence, adjudication, output
+        c.raises(lambda: _finalize_for_canonical_test(
+            root, generated, inventory, ledger, evidence, adjudication, output
         ), FileExistsError, "reviewed publication never overwrites")
         c.eq(output.read_bytes(), first_bytes,
              "a repeated finalization preserves reviewed bytes")
@@ -536,23 +631,57 @@ def test_finalizer_enforces_immutable_paths_owner_only_and_no_overwrite(c: Check
         original_sheet = tampered_sheet.read_bytes()
         tampered_sheet.write_bytes(b"tampered contact sheet")
         tampered_sheet.chmod(0o600)
-        c.raises(lambda: finalize_identity_review(
-            generated, inventory, ledger, evidence, adjudication, output
+        c.raises(lambda: _finalize_for_canonical_test(
+            root, generated, inventory, ledger, evidence, adjudication, output
         ), ValueError, "finalization rehashes every generated contact sheet")
         c.true(not output.exists(), "stale contact inventory fails before publication")
         tampered_sheet.write_bytes(original_sheet)
         tampered_sheet.chmod(0o600)
 
         wrong_stage = root / "generation" / "reviewed.json"
-        c.raises(lambda: finalize_identity_review(
-            generated, inventory, ledger, evidence, adjudication, wrong_stage
+        c.raises(lambda: _finalize_for_canonical_test(
+            root, generated, inventory, ledger, evidence, adjudication, wrong_stage
         ), ValueError, "reviewed output cannot alias the generation stage")
 
         ledger.chmod(0o640)
-        c.raises(lambda: finalize_identity_review(
-            generated, inventory, ledger, evidence, adjudication, output
+        c.raises(lambda: _finalize_for_canonical_test(
+            root, generated, inventory, ledger, evidence, adjudication, output
         ), ValueError, "review inputs must be owner-only")
         c.true(not output.exists(), "bad permissions fail before publication")
+
+
+def test_finalizer_rejects_arbitrary_tracked_or_public_lifecycle_root(c: Check):
+    fixture = _fixture()
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory) / "tracked" / "public" / "palsynet_identity_audit"
+        paths = (
+            root / "generation" / "identity_manifest.json",
+            root / "generation" / "contact_sheet_inventory.json",
+            root / "review" / "review_ledger.json",
+            root / "review" / "reviewer_evidence.json",
+            root / "review" / "cross_label_adjudication.json",
+            root / "reviewed" / "identity_manifest.json",
+        )
+        for path, payload in zip(paths[:5], (
+            fixture["generated"],
+            fixture["inventory"],
+            fixture["ledger"],
+            fixture["evidence"],
+            fixture["adjudication"],
+        )):
+            _write_private(path, payload)
+        _write_contact_sheet_files(root, fixture)
+        c.raises(lambda: finalize_identity_review(*paths), ValueError,
+                 "finalizer is locked to the canonical ignored lifecycle root")
+
+        canonical_alias = Path(directory) / "canonical_audit_alias"
+        canonical_alias.symlink_to(root, target_is_directory=True)
+        aliased_paths = tuple(
+            canonical_alias / path.relative_to(root) for path in paths
+        )
+        c.raises(lambda: _finalize_for_canonical_test(
+            canonical_alias, *aliased_paths
+        ), ValueError, "canonical lifecycle paths cannot traverse a root symlink")
 
 
 def test_finalizer_cli_exposes_only_the_five_evidence_inputs_and_output(c: Check):

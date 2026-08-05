@@ -17,11 +17,16 @@ from pathlib import Path
 RECORDING_COUNT = 49
 PAIR_COUNT = 1176
 LABEL_COUNTS = {"affected": 27, "unaffected": 22}
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CANONICAL_IDENTITY_AUDIT_ROOT = (
+    PROJECT_ROOT / "outputs" / "palsynet_identity_audit"
+)
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _RECORDING_ID = re.compile(r"^rec_[0-9a-f]{64}$")
 _GROUP_ID = re.compile(r"^grp_[0-9a-f]{64}$")
 _REVIEWER_ID = re.compile(r"^reviewer_[0-9a-f]{64}$")
+_EVIDENCE_ID = re.compile(r"^evidence_[0-9a-f]{64}$")
 _MAX_JSON_BYTES = 4 * 1024 * 1024
 _MAX_EMBEDDED_EVIDENCE_BYTES = 1024 * 1024
 _EVIDENCE_MEDIA_TYPES = {
@@ -201,6 +206,16 @@ def _validate_generated_manifest(
         observed_labels[str(label)] += 1
     if observed_labels != LABEL_COUNTS:
         raise ValueError("generated recording labels differ from frozen counts")
+    recomputed_source_fingerprint = hashlib.sha256()
+    for row in sorted(
+        recordings.values(),
+        key=lambda item: (item["label"], item["source_sha256"]),
+    ):
+        recomputed_source_fingerprint.update(
+            f"{row['label']}:{row['source_sha256']}\n".encode("ascii")
+        )
+    if recomputed_source_fingerprint.hexdigest() != source_collection_sha256:
+        raise ValueError("source collection digest differs from exact recording rows")
 
     expected_pairs = set(itertools_combinations(sorted(recordings)))
     observed_pairs: set[tuple[str, str]] = set()
@@ -530,6 +545,112 @@ def _validate_review_ledger(
     return groups
 
 
+def _validate_embedded_document(
+    payload: object,
+    *,
+    minimum_bytes: int = 1,
+) -> str:
+    evidence = _require_exact_fields(payload, {
+        "encoding", "media_type", "payload_base64", "sha256",
+    }, "documented adjudication evidence")
+    if (
+        evidence["encoding"] != "base64"
+        or evidence["media_type"] not in _EVIDENCE_MEDIA_TYPES
+        or not isinstance(evidence["payload_base64"], str)
+    ):
+        raise ValueError("documented adjudication evidence metadata is invalid")
+    try:
+        evidence_bytes = base64.b64decode(
+            evidence["payload_base64"], validate=True
+        )
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError(
+            "documented adjudication evidence is not canonical base64"
+        ) from exc
+    if (
+        len(evidence_bytes) < minimum_bytes
+        or len(evidence_bytes) > _MAX_EMBEDDED_EVIDENCE_BYTES
+        or base64.b64encode(evidence_bytes).decode("ascii")
+        != evidence["payload_base64"]
+    ):
+        raise ValueError("documented adjudication evidence bytes are invalid")
+    evidence_sha256 = _require_sha256(
+        evidence["sha256"], "adjudication evidence digest"
+    )
+    if hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha256:
+        raise ValueError("adjudication evidence digest does not match exact bytes")
+    return evidence_sha256
+
+
+def _validate_correction_evidence(
+    payload: object,
+    *,
+    group_id: str,
+    group_members: set[str],
+    recordings: Mapping[str, Mapping[str, object]],
+    corrected_label: str,
+) -> str:
+    evidence = _require_exact_fields(payload, {
+        "schema_version", "group_id", "claims", "rationale", "provenance",
+    }, "source-label correction evidence")
+    if (
+        evidence["schema_version"]
+        != "palsynet_source_label_correction_evidence_v1"
+        or evidence["group_id"] != group_id
+    ):
+        raise ValueError("correction evidence is not bound to the exact group")
+
+    ordered_members = sorted(group_members)
+    claims = _require_sequence(
+        evidence["claims"], len(ordered_members), "source-label correction claims"
+    )
+    changed_labels = 0
+    for expected_recording_id, claim_value in zip(ordered_members, claims):
+        claim = _require_exact_fields(claim_value, {
+            "recording_id", "source_sha256", "old_label", "new_label",
+        }, "source-label correction claim")
+        source = recordings[expected_recording_id]
+        if (
+            claim["recording_id"] != expected_recording_id
+            or claim["source_sha256"] != source["source_sha256"]
+            or claim["old_label"] != source["label"]
+            or claim["new_label"] != corrected_label
+        ):
+            raise ValueError("correction evidence contains a stale source-label claim")
+        changed_labels += claim["old_label"] != claim["new_label"]
+    if changed_labels < 1:
+        raise ValueError("correction evidence must prove at least one label change")
+
+    rationale = _require_exact_fields(
+        evidence["rationale"], {"finding", "basis"}, "correction rationale"
+    )
+    allowed_bases = {
+        "authoritative_source_record",
+        "dataset_steward_confirmation",
+    }
+    if (
+        rationale["finding"] != "verified_source_annotation_error"
+        or rationale["basis"] not in allowed_bases
+    ):
+        raise ValueError("correction rationale is not an allowed verified finding")
+
+    provenance = _require_exact_fields(evidence["provenance"], {
+        "source", "reference_id", "claims_sha256", "document",
+    }, "correction evidence provenance")
+    if (
+        provenance["source"] != rationale["basis"]
+        or not isinstance(provenance["reference_id"], str)
+        or _EVIDENCE_ID.fullmatch(provenance["reference_id"]) is None
+        or _require_sha256(
+            provenance["claims_sha256"], "correction claims digest"
+        ) != _payload_sha256(claims)
+    ):
+        raise ValueError("correction evidence provenance is stale or invalid")
+    return _validate_embedded_document(
+        provenance["document"], minimum_bytes=16
+    )
+
+
 def _validate_adjudication(
     payload: object,
     recordings: Mapping[str, Mapping[str, object]],
@@ -557,7 +678,9 @@ def _validate_adjudication(
         raise ValueError("cross-label adjudication digest binding drifted")
 
     labels_by_group: dict[str, set[str]] = {}
+    members_by_group: dict[str, set[str]] = {}
     for recording_id, group_id in groups.items():
+        members_by_group.setdefault(group_id, set()).add(recording_id)
         labels_by_group.setdefault(group_id, set()).add(
             str(recordings[recording_id]["label"])
         )
@@ -580,46 +703,25 @@ def _validate_adjudication(
             or group_id not in cross_label_groups
         ):
             raise ValueError("adjudication must cover each cross-label group exactly once")
-        evidence = _require_exact_fields(row["evidence"], {
-            "encoding", "media_type", "payload_base64", "sha256",
-        }, "documented adjudication evidence")
-        if (
-            evidence["encoding"] != "base64"
-            or evidence["media_type"] not in _EVIDENCE_MEDIA_TYPES
-            or not isinstance(evidence["payload_base64"], str)
-        ):
-            raise ValueError("documented adjudication evidence metadata is invalid")
-        try:
-            evidence_bytes = base64.b64decode(
-                evidence["payload_base64"], validate=True
-            )
-        except (ValueError, binascii.Error) as exc:
-            raise ValueError(
-                "documented adjudication evidence is not canonical base64"
-            ) from exc
-        if (
-            not evidence_bytes
-            or len(evidence_bytes) > _MAX_EMBEDDED_EVIDENCE_BYTES
-            or base64.b64encode(evidence_bytes).decode("ascii")
-            != evidence["payload_base64"]
-        ):
-            raise ValueError("documented adjudication evidence bytes are invalid")
-        evidence_sha256 = _require_sha256(
-            evidence["sha256"], "adjudication evidence digest"
-        )
-        if hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha256:
-            raise ValueError("adjudication evidence digest does not match exact bytes")
         outcome = row["outcome"]
         corrected_label = row["corrected_label"]
         if outcome == "exclude_whole_group":
             if corrected_label is not None:
                 raise ValueError("whole-group exclusion cannot provide a corrected label")
+            evidence_sha256 = _validate_embedded_document(row["evidence"])
         elif outcome == "correct_proven_source_label_error":
             if corrected_label not in LABEL_COUNTS:
                 raise ValueError("source-label correction requires one binary label")
+            evidence_sha256 = _validate_correction_evidence(
+                row["evidence"],
+                group_id=group_id,
+                group_members=members_by_group[group_id],
+                recordings=recordings,
+                corrected_label=str(corrected_label),
+            )
         else:
             raise ValueError("cross-label adjudication outcome is not allowed")
-        decisions[group_id] = row
+        decisions[group_id] = {**row, "_evidence_sha256": evidence_sha256}
     if set(decisions) != cross_label_groups:
         raise ValueError("every cross-label group requires closed adjudication")
     return decisions
@@ -712,12 +814,12 @@ def _build_reviewed_identity_manifest(
             training_eligible = False
             final_label = source_label
             outcome = "exclude_whole_group"
-            evidence_sha256 = str(decision["evidence"]["sha256"])
+            evidence_sha256 = str(decision["_evidence_sha256"])
         else:
             training_eligible = True
             final_label = str(decision["corrected_label"])
             outcome = "correct_proven_source_label_error"
-            evidence_sha256 = str(decision["evidence"]["sha256"])
+            evidence_sha256 = str(decision["_evidence_sha256"])
         rows.append({
             "recording_id": recording_id,
             "group_id": group_id,
@@ -954,6 +1056,7 @@ def _validate_lifecycle_paths(
     if tuple(path.name for path in absolute) != expected_names:
         raise ValueError("identity review artifact filenames differ from the lifecycle contract")
     root = generated_manifest.parent.parent
+    canonical_root = Path(os.path.abspath(CANONICAL_IDENTITY_AUDIT_ROOT))
     if (
         generated_manifest.parent != root / "generation"
         or contact_inventory.parent != root / "generation"
@@ -963,6 +1066,8 @@ def _validate_lifecycle_paths(
         or output.parent != root / "reviewed"
     ):
         raise ValueError("identity review artifacts must use generation/review/reviewed stages")
+    if root != canonical_root:
+        raise ValueError("identity review lifecycle root must be canonical and ignored")
     if len(set(absolute)) != len(absolute):
         raise ValueError("identity review artifact paths cannot alias")
     return root
@@ -1072,6 +1177,7 @@ def finalize_identity_review(
 
 
 __all__ = [
+    "CANONICAL_IDENTITY_AUDIT_ROOT",
     "PAIR_COUNT",
     "RECORDING_COUNT",
     "build_contact_sheet_inventory",
