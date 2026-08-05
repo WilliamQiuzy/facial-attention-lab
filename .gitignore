@@ -10,3 +10,17 @@
 *.key
 *.p12
 *.pfx
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/*.egg-info/
+*.py[cod]
+*.npy
+*.npz
+*.pt
+*.pth
+*.joblib
+*.pkl
+facial_paralysis/landmark_110d/data/
+facial_paralysis/landmark_110d/outputs/
+facial_paralysis/landmark_110d/artifacts/

@@ -1,0 +1,106 @@
+{
+  "schema_version": "facial_paralysis_current_development_model_v1",
+  "status": "current_development_champion_not_outer_validated",
+  "recorded_on": "2026-07-27",
+  "model": {
+    "name": "landmark_trajectory_110d_l2_logistic",
+    "feature_dimension": 110,
+    "input_contract": "clinical23_v2",
+    "feature_construction": {
+      "channel_summaries": 92,
+      "bilateral_dynamics": 18
+    },
+    "classifier": {
+      "type": "standardized_l2_logistic_regression",
+      "c": 0.01,
+      "solver": "liblinear",
+      "threshold": 0.5,
+      "group_balanced_sample_weights": true,
+      "hyperparameter_search": false
+    }
+  },
+  "task": {
+    "dataset": "PalsyNet",
+    "target": "binary_affected_vs_unaffected_not_hb_grade",
+    "claim_unit": "video_held_out",
+    "identity_status": "unreviewed"
+  },
+  "evaluation": {
+    "full_recordings": 49,
+    "full_groups": 48,
+    "development_recordings": 39,
+    "development_groups": 38,
+    "development_affected_groups": 21,
+    "development_unaffected_groups": 17,
+    "inner_folds": 4,
+    "protected_outer_fold_number": 0,
+    "protected_recordings": 10,
+    "protected_groups": 10,
+    "protected_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "candidates": {
+    "nuisance_only": {
+      "feature_dimension": 9,
+      "auroc": 0.7675070028011204,
+      "balanced_accuracy": 0.7156862745098038,
+      "sensitivity": 0.6666666666666666,
+      "specificity": 0.7647058823529411
+    },
+    "clinical_dynamics_58d": {
+      "feature_dimension": 58,
+      "auroc": 0.9215686274509803,
+      "balanced_accuracy": 0.8571428571428572,
+      "sensitivity": 0.7142857142857143,
+      "specificity": 1.0
+    },
+    "clinical_dynamics_plus_nuisance": {
+      "feature_dimension": 67,
+      "auroc": 0.9131652661064426,
+      "balanced_accuracy": 0.8809523809523809,
+      "sensitivity": 0.7619047619047619,
+      "specificity": 1.0
+    },
+    "landmark_110d": {
+      "feature_dimension": 110,
+      "auroc": 0.938375350140056,
+      "balanced_accuracy": 0.9047619047619048,
+      "sensitivity": 0.8095238095238095,
+      "specificity": 1.0
+    }
+  },
+  "primary_comparison": {
+    "baseline": "nuisance_only",
+    "candidate": "clinical_dynamics_plus_nuisance",
+    "delta_auroc": 0.14565826330532217,
+    "paired_bootstrap_repeats": 5000,
+    "ci95": [
+      0.0,
+      0.2941176470588236
+    ]
+  },
+  "decision": {
+    "development_champion": "landmark_110d",
+    "development_champion_basis": "numerically_highest_fixed_reference_comparator",
+    "preregistered_primary_candidate": "clinical_dynamics_plus_nuisance",
+    "preregistered_direction_gate_passed": false,
+    "outer_evaluation_authorized": false,
+    "hb_claim_authorized": false,
+    "clinical_validation": false,
+    "deployment_authorized": false
+  },
+  "supersedes_for_current_reporting": [
+    "web_static_autoresearch_champion",
+    "geometry_only_web_candidate",
+    "static_landmark_fusion_ablation",
+    "focused_mayo_fusion_reconstruction",
+    "ssl_transfer_smoke"
+  ],
+  "provenance": {
+    "source_branch": "codex/action-clinical-geometry",
+    "source_commit": "e3b069cfef3634b8f210b4315dd574d8b9fa46a6",
+    "experiment": "action-clinical-geometry-v1",
+    "private_source_report_sha256": "2c50940b61f633eb4b664b364a7767f0fca215fda92ef85beeb92bb364529649"
+  }
+}
