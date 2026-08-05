@@ -83,6 +83,7 @@ facial_paralysis/outputs/landmark_fusion/mayo_clinical23_trajectories/
 facial_paralysis/outputs/landmark_fusion/mayo_clinical23_audit.json
 # Local face sheets, salts, and manual identity-review state.
 facial_paralysis/outputs/palsynet_identity_audit/
+facial_paralysis/outputs/yfp_region_manifest_v1/
 facial_paralysis/outputs/.palsynet_identity_audit.staging-*/
 facial_paralysis/outputs/.palsynet_identity_audit.backup-*/
 # Large SSL caches/checkpoints and the Mayo development-exposure ledger.
