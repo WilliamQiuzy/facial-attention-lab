@@ -102,6 +102,20 @@ def phase_proxy_feature_vector(
     mask = np.asarray(valid_mask)
     if mask.shape != (4, 32) or mask.dtype != np.dtype(bool):
         raise ValueError("valid_mask must be bool with shape (4, 32)")
+    timestamp_array = np.asarray(timestamps)
+    if timestamp_array.shape != (4, 32) or timestamp_array.dtype.kind not in {
+        "f", "i", "u",
+    }:
+        raise ValueError("timestamps must be numeric with shape (4, 32)")
+    normalized_timestamps = timestamp_array.astype(np.float64, copy=False)
+    if not np.isfinite(normalized_timestamps).all():
+        raise ValueError("timestamps must remain finite after float64 normalization")
+    if not np.all(
+        normalized_timestamps[:, 1:] > normalized_timestamps[:, :-1]
+    ):
+        raise ValueError(
+            "timestamps must increase strictly after float64 normalization"
+        )
 
     pair_channels = tuple(
         channel
@@ -119,7 +133,7 @@ def phase_proxy_feature_vector(
         summaries = summarize_trajectory_channels(
             features,
             window_mask,
-            timestamps,
+            normalized_timestamps,
             source_frame_indices,
             pair_channels,
         ).reshape(len(pair_channels), len(SUMMARY_STAT_NAMES))

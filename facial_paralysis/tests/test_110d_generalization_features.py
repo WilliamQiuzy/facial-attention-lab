@@ -35,6 +35,7 @@ from src.preprocessing.generalization_110d import (  # noqa: E402
     PHASE_PROXY_DIM,
     candidate_feature_names,
     candidate_feature_vector,
+    phase_proxy_feature_vector,
 )
 from src.preprocessing.trajectory_features import (  # noqa: E402
     LANDMARK_BILATERAL_PAIRS,
@@ -271,6 +272,34 @@ def test_phase_velocity_never_crosses_window_or_detector_gaps(c: Check):
     )[168:].reshape(4, 3, 3)
     c.true(np.array_equal(phase[..., 2], np.zeros((4, 3))),
            "peak velocity never bridges a window boundary or invalid detector gap")
+
+
+def test_phase_rejects_integer_timestamps_that_collapse_in_float64(c: Check):
+    features, mask, _, source_indices = _recording()
+    features.fill(0.0)
+    ramp = np.arange(32, dtype=np.float32)
+    for _, first, second in LANDMARK_BILATERAL_PAIRS:
+        features[..., first] = ramp
+        features[..., second] = ramp
+
+    ordinary = np.stack([
+        window * 100 + np.arange(32, dtype=np.int64)
+        for window in range(4)
+    ])
+    phase = phase_proxy_feature_vector(
+        features, mask, ordinary, source_indices
+    ).reshape(4, 3, 3)
+    c.true(np.array_equal(phase[..., 2], np.ones((4, 3))),
+           "exactly representable integer seconds retain unit peak velocity")
+
+    precision_boundary = np.stack([
+        np.int64(2**53 + window * 1000) + np.arange(32, dtype=np.int64)
+        for window in range(4)
+    ])
+    c.raises(lambda: phase_proxy_feature_vector(
+        features, mask, precision_boundary, source_indices
+    ), ValueError,
+        "timestamps must remain strictly increasing after float64 normalization")
 
 
 def test_added_blocks_are_exactly_capture_side_swap_invariant(c: Check):
