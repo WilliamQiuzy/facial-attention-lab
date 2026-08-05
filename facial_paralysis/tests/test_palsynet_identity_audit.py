@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import stat
@@ -82,7 +83,10 @@ def _write_provenance(path: Path, rows: list[dict[str, str]]) -> None:
 def _temporary_canonical(root: Path):
     """Patch the module-level canonical path; caller restores in ``finally``."""
     original = audit_module.CANONICAL_OUTPUT_ROOT
-    canonical = root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
+    canonical = (
+        root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
+        / "generation"
+    )
     canonical.parent.mkdir(parents=True, exist_ok=True)
     audit_module.CANONICAL_OUTPUT_ROOT = canonical
     return original, canonical
@@ -209,7 +213,10 @@ def test_output_tree_rejects_every_symlink_escape_before_any_write(c: Check):
 def test_cli_rejects_noncanonical_output_and_external_salt_before_writing(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
-        canonical = root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
+        canonical = (
+            root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
+            / "generation"
+        )
         wrong_output = root / "facial_paralysis" / "outputs" / "identity_typo"
         outside_salt = root / "tracked" / "audit_salt.bin"
         original_root = audit_module.CANONICAL_OUTPUT_ROOT
@@ -244,125 +251,34 @@ def test_cli_rejects_noncanonical_output_and_external_salt_before_writing(c: Che
             audit_module.CANONICAL_OUTPUT_ROOT = original_root
 
 
-def test_cli_reviewed_status_requires_evidence_before_writing(c: Check):
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        canonical = root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
-        original_root = audit_module.CANONICAL_OUTPUT_ROOT
-        original_argv = sys.argv
-        audit_module.CANONICAL_OUTPUT_ROOT = canonical
-        try:
-            sys.argv = [
-                "audit_palsynet_identity.py",
-                "--video-root", str(root / "missing-videos"),
-                "--bundle-root", str(root / "missing-bundles"),
-                "--bundle-provenance", str(root / "missing-provenance.json"),
-                "--output-root", str(canonical),
-                "--group-overrides", str(root / "groups.json"),
-                "--identity-review-status", "reviewed",
-            ]
-            c.raises(audit_module.main, ValueError,
-                     "reviewed CLI status requires separate reviewer evidence")
-            c.true(not canonical.exists(),
-                   "missing reviewed evidence fails before output creation")
-        finally:
-            sys.argv = original_argv
-            audit_module.CANONICAL_OUTPUT_ROOT = original_root
+def test_generation_cli_has_no_reviewed_promotion_surface(c: Check):
+    destinations = {
+        action.dest for action in audit_module._parser()._actions
+        if action.dest != "help"
+    }
+    c.eq(destinations, {
+        "video_root",
+        "bundle_root",
+        "bundle_provenance",
+        "output_root",
+        "salt_file",
+        "top_pairs",
+    }, "generation cannot accept groups, evidence, or a reviewed-status flag")
+    c.eq(audit_module._parser().get_default("top_pairs"), 1176,
+         "generation defaults to every unordered recording pair")
 
 
-def test_review_evidence_must_be_independent_of_groups_and_salt(c: Check):
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td).resolve()
-        canonical = root / "facial_paralysis" / "outputs" / "palsynet_identity_audit"
-        canonical.mkdir(parents=True)
-        salt_path = canonical / "audit_salt.bin"
-        salt_path.write_bytes(b"s" * 32)
-        os.chmod(salt_path, 0o600)
-        groups_path = canonical / "groups.json"
-        groups_path.write_text("{}")
-        evidence_hardlink = canonical / "review.txt"
-        os.link(groups_path, evidence_hardlink)
-        original_root = audit_module.CANONICAL_OUTPUT_ROOT
-        original_collect = audit_module.collect_identity_records
-        audit_module.CANONICAL_OUTPUT_ROOT = canonical
-        audit_module.collect_identity_records = lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("identity collection must not run before evidence independence")
-        )
-        common = dict(
-            video_root=root / "missing-videos",
-            bundle_root=root / "missing-bundles",
-            bundle_provenance=root / "missing-provenance.json",
-            output_root=canonical,
-            identity_review_status="reviewed",
-        )
-        try:
-            c.raises(
-                lambda: run_audit(
-                    **common,
-                    group_overrides=groups_path,
-                    reviewer_evidence=groups_path,
-                ),
-                ValueError,
-                "one path cannot serve as both grouping and review evidence",
-            )
-            c.raises(
-                lambda: run_audit(
-                    **common,
-                    group_overrides=groups_path,
-                    reviewer_evidence=evidence_hardlink,
-                ),
-                ValueError,
-                "hard-linked grouping and review evidence are not independent",
-            )
-            c.raises(
-                lambda: run_audit(
-                    **common,
-                    group_overrides=groups_path,
-                    reviewer_evidence=salt_path,
-                ),
-                ValueError,
-                "the audit salt cannot double as reviewer evidence",
-            )
-            c.eq(groups_path.read_text(), "{}", "rejection does not mutate groups")
-            c.eq(salt_path.read_bytes(), b"s" * 32, "rejection does not mutate salt")
-        finally:
-            audit_module.collect_identity_records = original_collect
-            audit_module.CANONICAL_OUTPUT_ROOT = original_root
-
-
-def test_failed_transaction_preserves_previous_complete_audit(c: Check):
+def test_existing_generation_is_immutable_and_fails_before_collection(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         original_root, canonical = _temporary_canonical(root)
         canonical.mkdir()
-        old_salt = b"q" * 32
-        (canonical / "audit_salt.bin").write_bytes(old_salt)
-        (canonical / "audit_salt.bin").chmod(0o600)
         old_manifest = b'{"complete":"old"}\n'
         (canonical / "identity_manifest.json").write_bytes(old_manifest)
-        stale = canonical / "contact_sheets" / "pairs" / "pair_9999.jpg"
-        stale.parent.mkdir(parents=True)
-        stale.write_bytes(b"old-image")
-
         original_collect = audit_module.collect_identity_records
-        original_generate = audit_module.generate_contact_sheets
-
-        def fake_collect(*args, **kwargs):
-            salt = args[2]
-            return [
-                _record("1" * 64, "affected", salt, "private-a.mp4"),
-                _record("2" * 64, "unaffected", salt, "private-b.mp4",
-                        np.r_[0.0, 1.0, np.zeros(766)]),
-            ]
-
-        def fail_after_partial_write(records, pairs, output_root, top_pairs):
-            partial = Path(output_root) / "contact_sheets" / "recordings" / "partial.jpg"
-            partial.parent.mkdir(parents=True)
-            partial.write_bytes(b"partial-generation")
-            raise RuntimeError("synthetic render failure")
-
-        audit_module.collect_identity_records = fake_collect
-        audit_module.generate_contact_sheets = fail_after_partial_write
+        audit_module.collect_identity_records = lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("immutable generation must fail before source collection")
+        )
         try:
             c.raises(
                 lambda: run_audit(
@@ -371,91 +287,52 @@ def test_failed_transaction_preserves_previous_complete_audit(c: Check):
                     bundle_provenance=root / "provenance.json",
                     output_root=canonical,
                 ),
-                RuntimeError,
-                "a partial staged render fails the whole transaction",
+                FileExistsError,
+                "a generated audit can never be replaced in place",
             )
-            c.eq((canonical / "audit_salt.bin").read_bytes(), old_salt,
-                 "failed rerun preserves the stable audit salt")
             c.eq((canonical / "identity_manifest.json").read_bytes(), old_manifest,
-                 "failed rerun preserves the previous manifest byte-for-byte")
-            c.eq(stale.read_bytes(), b"old-image",
-                 "failed rerun preserves the complete previous contact-sheet tree")
+                 "failed rerun preserves generated evidence byte-for-byte")
             c.true(not list(canonical.parent.glob(
-                ".palsynet_identity_audit.staging-*"
+                ".generation.staging-*"
             )), "failed staging directories are cleaned")
-            c.true(not list(canonical.parent.glob(
-                ".palsynet_identity_audit.backup-*"
-            )), "failed generation never creates a backup")
         finally:
             audit_module.collect_identity_records = original_collect
-            audit_module.generate_contact_sheets = original_generate
             audit_module.CANONICAL_OUTPUT_ROOT = original_root
 
 
-def test_successful_transaction_replaces_generation_and_removes_stale_pairs(c: Check):
+def test_generation_directory_publication_is_no_overwrite(c: Check):
+    exclusive_rename = getattr(
+        audit_module, "_rename_directory_exclusive", None
+    )
+    c.true(callable(exclusive_rename),
+           "generation publication has an atomic exclusive rename primitive")
+    c.true(
+        "_rename_directory_exclusive" in inspect.getsource(
+            audit_module._promote_generation
+        ),
+        "promotion uses atomic no-replace rather than check-then-rename",
+    )
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         original_root, canonical = _temporary_canonical(root)
-        original_collect = audit_module.collect_identity_records
-        original_reader = audit_module.read_representative_frames
-
-        def fake_collect(*args, **kwargs):
-            salt = args[2]
-            return [
-                _record("3" * 64, "affected", salt, "private-a.mp4",
-                        np.r_[1.0, 0.0, np.zeros(766)]),
-                _record("4" * 64, "affected", salt, "private-b.mp4",
-                        np.r_[0.8, 0.2, np.zeros(766)]),
-                _record("5" * 64, "unaffected", salt, "private-c.mp4",
-                        np.r_[0.0, 1.0, np.zeros(766)]),
-            ]
-
-        def fake_reader(path):
-            return [np.full((8, 8, 3), value, dtype=np.uint8)
-                    for value in (25, 50, 75, 100)]
-
-        audit_module.collect_identity_records = fake_collect
-        audit_module.read_representative_frames = fake_reader
+        first_staging = canonical.parent / ".generation.staging-first"
+        first_staging.mkdir()
+        (first_staging / "sentinel").write_text("first")
+        second_staging = canonical.parent / ".generation.staging-second"
+        second_staging.mkdir()
+        (second_staging / "sentinel").write_text("second")
         try:
-            first = run_audit(
-                video_root=root / "videos",
-                bundle_root=root / "bundles",
-                bundle_provenance=root / "provenance.json",
-                output_root=canonical,
-                top_pairs=3,
+            audit_module._promote_generation(first_staging, canonical)
+            c.eq((canonical / "sentinel").read_text(), "first",
+                 "fresh generation is published exactly once")
+            c.raises(
+                lambda: audit_module._promote_generation(second_staging, canonical),
+                FileExistsError,
+                "a second generation cannot replace the first",
             )
-            first_salt = (canonical / "audit_salt.bin").read_bytes()
-            c.eq(first["contact_sheets"]["ranked_pairs"], 3,
-                 "first complete generation contains three ranked pairs")
-            c.true((canonical / "contact_sheets" / "pairs" / "pair_0003.jpg").is_file(),
-                   "first complete generation publishes its final pair")
-
-            second = run_audit(
-                video_root=root / "videos",
-                bundle_root=root / "bundles",
-                bundle_provenance=root / "provenance.json",
-                output_root=canonical,
-                top_pairs=1,
-            )
-            pair_files = sorted(
-                path.name for path in
-                (canonical / "contact_sheets" / "pairs").glob("*.jpg")
-            )
-            c.eq(second["contact_sheets"]["ranked_pairs"], 1,
-                 "second complete generation records its reduced pair count")
-            c.eq(pair_files, ["pair_0001.jpg"],
-                 "whole-directory promotion cannot retain stale pair images")
-            c.eq((canonical / "audit_salt.bin").read_bytes(), first_salt,
-                 "successful reruns preserve stable opaque ids")
-            c.true(not list(canonical.parent.glob(
-                ".palsynet_identity_audit.staging-*"
-            )), "successful promotion cleans staging")
-            c.true(not list(canonical.parent.glob(
-                ".palsynet_identity_audit.backup-*"
-            )), "successful promotion cleans the old generation")
+            c.eq((canonical / "sentinel").read_text(), "first",
+                 "no-overwrite preserves the first generation")
         finally:
-            audit_module.collect_identity_records = original_collect
-            audit_module.read_representative_frames = original_reader
             audit_module.CANONICAL_OUTPUT_ROOT = original_root
 
 
@@ -708,7 +585,7 @@ def test_manifest_rejects_missing_or_duplicate_source_hashes(c: Check):
              "every source must have a SHA-256 digest")
 
 
-def test_group_overrides_require_exact_valid_same_label_coverage(c: Check):
+def test_group_overrides_require_exact_valid_coverage_but_allow_cross_label(c: Check):
     salt = b"u" * 32
     records = [
         _record("5" * 64, "affected", salt, "one.mp4"),
@@ -722,7 +599,7 @@ def test_group_overrides_require_exact_valid_same_label_coverage(c: Check):
         records[2].recording_id: group_b,
     }
     c.eq(validate_group_overrides(valid, records), valid,
-         "review may merge recordings only within one label")
+         "complete opaque grouping is accepted")
     c.raises(lambda: validate_group_overrides({
         records[0].recording_id: group_a,
         records[1].recording_id: group_a,
@@ -730,11 +607,13 @@ def test_group_overrides_require_exact_valid_same_label_coverage(c: Check):
     c.raises(lambda: validate_group_overrides({
         **valid, "rec_" + "f" * 64: group_b
     }, records), ValueError, "unknown recording ids are rejected")
-    c.raises(lambda: validate_group_overrides({
+    cross_label = {
         records[0].recording_id: group_a,
         records[1].recording_id: group_a,
         records[2].recording_id: group_a,
-    }, records), ValueError, "one group cannot cross labels")
+    }
+    c.eq(validate_group_overrides(cross_label, records), cross_label,
+         "identity review never splits a real person because labels differ")
     c.raises(lambda: validate_group_overrides({
         **valid, records[2].recording_id: "group-human-name"
     }, records), ValueError, "group ids stay canonical and opaque")
@@ -770,39 +649,16 @@ def test_group_overrides_alone_remain_unreviewed_video_holdout(c: Check):
     c.true("Private Person" not in encoded, "review does not deidentify by leakage")
 
 
-def test_person_holdout_requires_reviewed_status_grouping_and_evidence(c: Check):
+def test_generation_builder_cannot_promote_person_holdout(c: Check):
     salt = b"z" * 32
     record = _record("c" * 64, "affected", salt, "Private Person.mp4")
-    overrides = {record.recording_id: "grp_" + "d" * 64}
-    evidence_sha256 = "e" * 64
-
-    c.raises(
-        lambda: build_manifest(
-            [record], [], group_overrides=overrides,
-            identity_review_status="reviewed",
-        ),
-        ValueError,
-        "reviewed status requires evidence",
-    )
-    c.raises(
-        lambda: build_manifest(
-            [record], [], identity_review_status="reviewed",
-            reviewer_evidence_sha256=evidence_sha256,
-        ),
-        ValueError,
-        "reviewed status requires complete group mapping",
-    )
-    reviewed = build_manifest(
-        [record], [], group_overrides=overrides,
-        identity_review_status="reviewed",
-        reviewer_evidence_sha256=evidence_sha256,
-    )
-    c.eq(reviewed["identity_review"]["status"], "reviewed",
-         "explicit attestation records reviewed status")
-    c.eq(reviewed["identity_review"]["reviewer_evidence_sha256"], evidence_sha256,
-         "deidentified manifest fingerprints the separate evidence")
-    c.eq(reviewed["claim_unit"], "person_held_out",
-         "person-held-out is enabled only after explicit attestation")
+    parameters = set(inspect.signature(build_manifest).parameters)
+    c.true("identity_review_status" not in parameters
+           and "reviewer_evidence_sha256" not in parameters,
+           "only the separate finalizer can create a reviewed claim")
+    generated = build_manifest([record], [])
+    c.eq(generated["identity_review"]["status"], "unreviewed")
+    c.eq(generated["claim_unit"], "video_held_out")
 
 
 def test_contact_sheet_sampling_is_deterministic_and_aspect_preserving(c: Check):
@@ -821,6 +677,41 @@ def test_contact_sheet_sampling_is_deterministic_and_aspect_preserving(c: Check)
     c.true((sheet[:, :80] > 0).all(), "wide panel retains its full image")
     c.true((sheet[:, 80:100] > 0).all() and (sheet[:, 100:] == 0).all(),
            "tall panel is pillar-boxed, not stretched")
+
+
+def test_contact_sheet_generation_adds_label_blind_owner_only_overview(c: Check):
+    salt = b"o" * 32
+    records = [
+        _record("d" * 64, "affected", salt, "Private A.mp4"),
+        _record("e" * 64, "unaffected", salt, "Private B.mp4"),
+    ]
+    pairs = rank_cosine_pairs({
+        record.recording_id: record.embedding for record in records
+    })
+    original_reader = audit_module.read_representative_frames
+    audit_module.read_representative_frames = lambda _path: [
+        np.full((8, 8, 3), value, dtype=np.uint8)
+        for value in (32, 64, 96, 128)
+    ]
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            output_root = Path(td) / "generation"
+            output_root.mkdir(mode=0o700)
+            counts = generate_contact_sheets(
+                records, pairs, output_root, top_pairs=1
+            )
+            overview = output_root / "contact_sheets" / "overview.jpg"
+            c.eq(counts, {"recordings": 2, "ranked_pairs": 1, "overview": 1},
+                 "generation declares one label-blind overview")
+            decoded = audit_module.cv2.imread(str(overview))
+            c.true(decoded is not None and decoded.size > 0,
+                   "overview is a decodable opaque-record contact sheet")
+            for path in output_root.rglob("*"):
+                expected_mode = 0o700 if path.is_dir() else 0o600
+                c.eq(stat.S_IMODE(path.stat().st_mode), expected_mode,
+                     "generated identity artifacts remain owner-only")
+    finally:
+        audit_module.read_representative_frames = original_reader
 
 
 def test_representative_frame_read_rejects_post_seek_position_mismatch(c: Check):

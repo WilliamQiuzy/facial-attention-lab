@@ -9,6 +9,8 @@ paths, filenames, or per-record cache paths.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import hmac
 import itertools
@@ -19,6 +21,7 @@ import re
 import secrets
 import shutil
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -27,13 +30,24 @@ from typing import Mapping, Sequence
 import cv2
 import numpy as np
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.datasets.palsynet_identity_review import (  # noqa: E402
+    PAIR_COUNT,
+    build_contact_sheet_inventory,
+    build_review_ledger_template,
+)
+
 
 EXPECTED_LABEL_COUNTS = {"affected": 27, "unaffected": 22}
 MARLIN_WIDTH = 768
-DEFAULT_TOP_PAIRS = 25
+DEFAULT_TOP_PAIRS = PAIR_COUNT
 SEEK_POSITION_TOLERANCE_FRAMES = 0.25
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CANONICAL_OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "palsynet_identity_audit"
+CANONICAL_OUTPUT_ROOT = (
+    PROJECT_ROOT / "outputs" / "palsynet_identity_audit" / "generation"
+)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RECORDING_ID_RE = re.compile(r"^rec_[0-9a-f]{64}$")
 _GROUP_ID_RE = re.compile(r"^grp_[0-9a-f]{64}$")
@@ -475,16 +489,12 @@ def validate_group_overrides(
         )
 
     validated: dict[str, str] = {}
-    labels_by_group: dict[str, set[str]] = {}
     for recording_id, group_id in overrides.items():
         if _RECORDING_ID_RE.fullmatch(recording_id) is None:
             raise ValueError("group override contains a malformed recording id")
         if not isinstance(group_id, str) or _GROUP_ID_RE.fullmatch(group_id) is None:
             raise ValueError("group override contains a malformed group id")
         validated[recording_id] = group_id
-        labels_by_group.setdefault(group_id, set()).add(expected[recording_id])
-    if any(len(labels) != 1 for labels in labels_by_group.values()):
-        raise ValueError("one reviewed identity group cannot cross labels")
     return validated
 
 
@@ -578,8 +588,6 @@ def build_manifest(
     records: Sequence[IdentityRecord],
     ranked_pairs: Sequence[Mapping[str, object]],
     group_overrides: Mapping[str, str] | None = None,
-    identity_review_status: str = "unreviewed",
-    reviewer_evidence_sha256: str | None = None,
 ) -> dict:
     """Build the JSON-safe projection; raw record location/name is not copied."""
     checked = _validate_records(records)
@@ -590,22 +598,6 @@ def build_manifest(
         if group_overrides is not None
         else {record.recording_id: record.group_id for record in checked}
     )
-    if identity_review_status not in {"unreviewed", "reviewed"}:
-        raise ValueError("identity review status must be unreviewed or reviewed")
-    reviewed = identity_review_status == "reviewed"
-    if reviewed:
-        if group_overrides is None:
-            raise ValueError("reviewed identity status requires complete group overrides")
-        if (
-            reviewer_evidence_sha256 is None
-            or _SHA256_RE.fullmatch(reviewer_evidence_sha256) is None
-        ):
-            raise ValueError("reviewed identity status requires reviewer evidence SHA-256")
-    elif reviewer_evidence_sha256 is not None:
-        raise ValueError("reviewer evidence requires explicit reviewed identity status")
-    review_status = identity_review_status
-    claim_unit = "person_held_out" if reviewed else "video_held_out"
-
     source_fingerprint = hashlib.sha256()
     bundle_provenance_fingerprint = hashlib.sha256()
     embedding_fingerprint = hashlib.sha256()
@@ -637,12 +629,12 @@ def build_manifest(
     return {
         "schema_version": "palsynet_identity_audit_v1",
         "dataset": "PalsyNet",
-        "claim_unit": claim_unit,
+        "claim_unit": "video_held_out",
         "identity_review": {
-            "status": review_status,
+            "status": "unreviewed",
             "group_override_applied": group_overrides is not None,
-            "manual_review_required": not reviewed,
-            "reviewer_evidence_sha256": reviewer_evidence_sha256,
+            "manual_review_required": True,
+            "reviewer_evidence_sha256": None,
         },
         "counts": counts,
         "fingerprints": {
@@ -662,8 +654,8 @@ def build_manifest(
                 "group_id": groups[record.recording_id],
                 "label": record.label,
                 "source_sha256": record.source_sha256,
-                "identity_status": review_status,
-                "claim_unit": claim_unit,
+                "identity_status": "unreviewed",
+                "claim_unit": "video_held_out",
             }
             for record in checked
         ],
@@ -796,7 +788,8 @@ def generate_contact_sheets(
     recording_root = output_root / "contact_sheets" / "recordings"
     pair_root = output_root / "contact_sheets" / "pairs"
     frames: dict[str, list[np.ndarray]] = {}
-    for record in sorted(records, key=lambda item: item.recording_id):
+    ordered_records = sorted(records, key=lambda item: item.recording_id)
+    for record in ordered_records:
         decoded = read_representative_frames(record.source_path)
         frames[record.recording_id] = decoded
         _write_image(
@@ -813,7 +806,19 @@ def generate_contact_sheets(
             compose_contact_sheet([frames[first], frames[second]]),
             output_root,
         )
-    return {"recordings": len(records), "ranked_pairs": len(selected)}
+    _write_image(
+        output_root / "contact_sheets" / "overview.jpg",
+        compose_contact_sheet(
+            [frames[record.recording_id] for record in ordered_records],
+            panel_height=48,
+        ),
+        output_root,
+    )
+    return {
+        "recordings": len(records),
+        "ranked_pairs": len(selected),
+        "overview": 1,
+    }
 
 
 def validate_output_root(path: str | Path) -> Path:
@@ -862,47 +867,11 @@ def _write_manifest(
     _write_bytes_exclusive(path, encoded, trusted_root)
 
 
-def _read_regular_bytes(path: str | Path, description: str) -> bytes:
-    path = _assert_no_symlink_components(path)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError as exc:
-        raise ValueError(f"cannot read {description}") from exc
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"{description} must be a regular file")
-        with os.fdopen(fd, "rb", closefd=False) as handle:
-            return handle.read()
-    finally:
-        os.close(fd)
-
-
-def _try_relative_within(path: str | Path, root: str | Path) -> Path | None:
-    try:
-        return _relative_within(path, root)
-    except ValueError:
-        return None
-
-
-def _paths_alias(first: str | Path, second: str | Path) -> bool:
-    """Return whether two paths name the same file, including hard links."""
-    first_path = _lexical_absolute(first)
-    second_path = _lexical_absolute(second)
-    if first_path == second_path:
-        return True
-    try:
-        return os.path.samefile(first_path, second_path)
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        raise ValueError("cannot verify independent review evidence") from exc
-
-
 def _validate_generation(
     staging_root: Path,
     manifest: Mapping[str, object],
+    contact_inventory: Mapping[str, object],
+    review_ledger_template: Mapping[str, object],
     records: Sequence[IdentityRecord],
     ranked_pair_count: int,
     carried_files: set[Path],
@@ -911,6 +880,9 @@ def _validate_generation(
     staging_root = _assert_tree_has_no_symlinks(staging_root)
     expected_files = {
         Path("identity_manifest.json"),
+        Path("contact_sheet_inventory.json"),
+        Path("review_ledger_template.json"),
+        Path("contact_sheets") / "overview.jpg",
         *carried_files,
         *(Path("contact_sheets") / "recordings" / f"{record.recording_id}.jpg"
           for record in records),
@@ -919,19 +891,36 @@ def _validate_generation(
     }
     observed_files: set[Path] = set()
     observed_directories: set[Path] = set()
+    root_info = os.lstat(staging_root)
+    if (
+        stat.S_IMODE(root_info.st_mode) != 0o700
+        or root_info.st_uid != os.getuid()
+    ):
+        raise ValueError("staged audit root must be owner-only")
     for current, directories, files in os.walk(staging_root, followlinks=False):
         current_path = Path(current)
         for directory in directories:
             candidate = current_path / directory
             info = os.lstat(candidate)
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ValueError("staged audit contains an unsafe directory")
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISDIR(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o700
+                or info.st_uid != os.getuid()
+            ):
+                raise ValueError("staged audit contains a non-owner-only directory")
             observed_directories.add(candidate.relative_to(staging_root))
         for filename in files:
             candidate = current_path / filename
             info = os.lstat(candidate)
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-                raise ValueError("staged audit contains an unsafe file")
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode)
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_uid != os.getuid()
+                or info.st_nlink != 1
+            ):
+                raise ValueError("staged audit contains a non-owner-only file")
             if info.st_size < 1:
                 raise ValueError("staged audit contains an empty file")
             observed_files.add(candidate.relative_to(staging_root))
@@ -961,6 +950,43 @@ def _validate_generation(
         raise ValueError("staged recording contact-sheet count mismatch")
     if contact.get("ranked_pairs") != ranked_pair_count:
         raise ValueError("staged pair contact-sheet count mismatch")
+    if contact.get("overview") != 1:
+        raise ValueError("staged overview contact-sheet count mismatch")
+
+    inventory_path = staging_root / "contact_sheet_inventory.json"
+    template_path = staging_root / "review_ledger_template.json"
+    try:
+        observed_inventory = json.loads(inventory_path.read_text())
+        observed_template = json.loads(template_path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("staged identity review artifact cannot be decoded") from exc
+    if observed_inventory != contact_inventory:
+        raise ValueError("staged contact inventory differs from validated content")
+    if observed_template != review_ledger_template:
+        raise ValueError("staged review template differs from validated content")
+    manifest_sha256 = sha256_file(manifest_path)
+    inventory_sha256 = sha256_file(inventory_path)
+    if contact_inventory.get("generated_manifest_sha256") != manifest_sha256:
+        raise ValueError("contact inventory does not bind exact manifest bytes")
+    if (
+        review_ledger_template.get("generated_manifest_sha256") != manifest_sha256
+        or review_ledger_template.get("contact_inventory_sha256")
+        != inventory_sha256
+    ):
+        raise ValueError("review template does not bind exact generated artifacts")
+    inventory_rows = [contact_inventory.get("overview")]
+    inventory_rows.extend(contact_inventory.get("recordings", []))
+    inventory_rows.extend(contact_inventory.get("pairs", []))
+    for row in inventory_rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("contact inventory contains an invalid row")
+        relative_path = row.get("relative_path")
+        if not isinstance(relative_path, str):
+            raise ValueError("contact inventory path is invalid")
+        artifact_path = staging_root / relative_path
+        _relative_within(artifact_path, staging_root)
+        if row.get("sha256") != sha256_file(artifact_path):
+            raise ValueError("contact inventory digest differs from exact sheet bytes")
     for relative in expected_files:
         if relative.suffix.lower() != ".jpg":
             continue
@@ -979,34 +1005,58 @@ def _remove_generation_tree(path: Path) -> None:
     shutil.rmtree(path)
 
 
+def _rename_directory_exclusive(source: Path, destination: Path) -> None:
+    """Atomically rename one directory only when destination is absent."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    destination_bytes = os.fsencode(destination)
+    if sys.platform == "darwin":
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        result = rename(source_bytes, destination_bytes, 0x00000004)
+    elif sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        rename = libc.renameat2
+        rename.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        rename.restype = ctypes.c_int
+        result = rename(
+            -100,
+            source_bytes,
+            -100,
+            destination_bytes,
+            0x00000001,
+        )
+    else:
+        raise RuntimeError("atomic exclusive directory rename is unavailable")
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(
+            error_number,
+            "refusing to overwrite an identity audit generation",
+            destination,
+        )
+    raise OSError(error_number, os.strerror(error_number), destination)
+
+
 def _promote_generation(staging_root: Path, output_root: Path) -> None:
-    """Promote one complete directory and restore the prior audit on failure."""
+    """Publish one complete generation exactly once, without replacement."""
     staging_root = _assert_tree_has_no_symlinks(staging_root)
     output_root = validate_output_root(output_root)
     parent = _assert_no_symlink_components(output_root.parent)
-    backup = parent / f".{output_root.name}.backup-{secrets.token_hex(8)}"
-    previous_moved = False
+    _rename_directory_exclusive(staging_root, output_root)
+    directory_fd = os.open(parent, os.O_RDONLY)
     try:
-        if output_root.exists():
-            os.replace(output_root, backup)
-            previous_moved = True
-        try:
-            os.replace(staging_root, output_root)
-        except BaseException:
-            if previous_moved:
-                if output_root.exists() or _is_symlink(output_root):
-                    raise RuntimeError(
-                        "cannot restore previous audit because output path reappeared"
-                    )
-                os.replace(backup, output_root)
-                previous_moved = False
-            raise
-        if previous_moved:
-            _remove_generation_tree(backup)
-            previous_moved = False
+        os.fsync(directory_fd)
     finally:
-        if previous_moved and not output_root.exists() and backup.exists():
-            os.replace(backup, output_root)
+        os.close(directory_fd)
 
 
 def run_audit(
@@ -1016,13 +1066,12 @@ def run_audit(
     output_root: str | Path,
     salt_file: str | Path | None = None,
     top_pairs: int = DEFAULT_TOP_PAIRS,
-    group_overrides: str | Path | None = None,
-    identity_review_status: str = "unreviewed",
-    reviewer_evidence: str | Path | None = None,
 ) -> dict:
     output_root = validate_output_root(output_root)
-    if top_pairs < 0:
-        raise ValueError("top-pairs must be nonnegative")
+    if output_root.exists() or _is_symlink(output_root):
+        raise FileExistsError("refusing to overwrite an identity audit generation")
+    if top_pairs != PAIR_COUNT:
+        raise ValueError("generation requires all 1176 unordered recording pairs")
     salt_path = _lexical_absolute(
         Path(salt_file) if salt_file is not None else output_root / "audit_salt.bin"
     )
@@ -1036,70 +1085,18 @@ def run_audit(
     except FileNotFoundError:
         salt = secrets.token_bytes(32)
 
-    if identity_review_status not in {"unreviewed", "reviewed"}:
-        raise ValueError("identity review status must be unreviewed or reviewed")
-    evidence_path: Path | None = None
-    evidence_payload: bytes | None = None
-    evidence_relative: Path | None = None
-    if identity_review_status == "reviewed":
-        if group_overrides is None or reviewer_evidence is None:
-            raise ValueError(
-                "reviewed identity status requires group overrides and reviewer evidence"
-            )
-        evidence_path = _lexical_absolute(reviewer_evidence)
-        override_path = _lexical_absolute(group_overrides)
-        if _paths_alias(evidence_path, override_path) or _paths_alias(
-            evidence_path, salt_path
-        ):
-            raise ValueError(
-                "reviewer evidence must be independent of group overrides and audit salt"
-            )
-        try:
-            evidence_relative = _relative_within(evidence_path, output_root)
-        except ValueError as exc:
-            raise ValueError(
-                "reviewer evidence must live under the ignored output-root"
-            ) from exc
-        evidence_payload = _read_regular_bytes(
-            evidence_path, "reviewer evidence"
-        )
-        if not evidence_payload:
-            raise ValueError("reviewer evidence must be a nonempty regular file")
-        evidence_sha256 = hashlib.sha256(evidence_payload).hexdigest()
-    else:
-        if reviewer_evidence is not None:
-            raise ValueError(
-                "reviewer evidence requires --identity-review-status reviewed"
-            )
-        evidence_sha256 = None
-
     records = collect_identity_records(
         video_root, bundle_root, salt, bundle_provenance
     )
     pairs = rank_cosine_pairs({record.recording_id: record.embedding for record in records})
-    overrides = (
-        load_group_overrides(group_overrides, records)
-        if group_overrides is not None else None
-    )
-    manifest = build_manifest(
-        records,
-        pairs,
-        group_overrides=overrides,
-        identity_review_status=identity_review_status,
-        reviewer_evidence_sha256=evidence_sha256,
-    )
+    manifest = build_manifest(records, pairs)
 
     carried: dict[Path, bytes] = {salt_relative: salt}
-    if evidence_path is not None and evidence_relative is not None:
-        carried[evidence_relative] = evidence_payload or b""
-    if group_overrides is not None:
-        override_path = _lexical_absolute(group_overrides)
-        override_relative = _try_relative_within(override_path, output_root)
-        if override_relative is not None:
-            carried[override_relative] = _read_regular_bytes(
-                override_path, "group override JSON"
-            )
-    reserved = {Path("identity_manifest.json")}
+    reserved = {
+        Path("identity_manifest.json"),
+        Path("contact_sheet_inventory.json"),
+        Path("review_ledger_template.json"),
+    }
     if reserved & set(carried):
         raise ValueError("carried local evidence conflicts with generated audit files")
 
@@ -1132,9 +1129,54 @@ def run_audit(
         _write_manifest(
             staging_root / "identity_manifest.json", manifest, staging_root
         )
+        manifest_sha256 = sha256_file(staging_root / "identity_manifest.json")
+        recording_sheet_sha256 = {
+            record.recording_id: sha256_file(
+                staging_root / "contact_sheets" / "recordings"
+                / f"{record.recording_id}.jpg"
+            )
+            for record in records
+        }
+        pair_sheet_sha256 = {
+            (str(pair["recording_id_a"]), str(pair["recording_id_b"])):
+            sha256_file(
+                staging_root / "contact_sheets" / "pairs"
+                / f"pair_{int(pair['rank']):04d}.jpg"
+            )
+            for pair in pairs
+        }
+        contact_inventory = build_contact_sheet_inventory(
+            manifest,
+            generated_manifest_sha256=manifest_sha256,
+            overview_sha256=sha256_file(
+                staging_root / "contact_sheets" / "overview.jpg"
+            ),
+            recording_sheet_sha256=recording_sheet_sha256,
+            pair_sheet_sha256=pair_sheet_sha256,
+        )
+        _write_manifest(
+            staging_root / "contact_sheet_inventory.json",
+            contact_inventory,
+            staging_root,
+        )
+        inventory_sha256 = sha256_file(
+            staging_root / "contact_sheet_inventory.json"
+        )
+        review_ledger_template = build_review_ledger_template(
+            manifest,
+            generated_manifest_sha256=manifest_sha256,
+            contact_inventory_sha256=inventory_sha256,
+        )
+        _write_manifest(
+            staging_root / "review_ledger_template.json",
+            review_ledger_template,
+            staging_root,
+        )
         _validate_generation(
             staging_root=staging_root,
             manifest=manifest,
+            contact_inventory=contact_inventory,
+            review_ledger_template=review_ledger_template,
             records=records,
             ranked_pair_count=sheet_counts["ranked_pairs"],
             carried_files=set(carried),
@@ -1162,25 +1204,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--salt-file", type=Path)
     parser.add_argument("--top-pairs", type=int, default=DEFAULT_TOP_PAIRS)
-    parser.add_argument(
-        "--group-overrides",
-        type=Path,
-        help=(
-            "optional JSON object mapping every rec_ id to one grp_ id; "
-            "mapping alone remains unreviewed"
-        ),
-    )
-    parser.add_argument(
-        "--identity-review-status",
-        choices=("unreviewed", "reviewed"),
-        default="unreviewed",
-        help="reviewed requires group overrides plus separate reviewer evidence",
-    )
-    parser.add_argument(
-        "--reviewer-evidence",
-        type=Path,
-        help="nonempty local evidence file under output-root; only its SHA-256 is stored",
-    )
     return parser
 
 
@@ -1193,9 +1216,6 @@ def main() -> None:
         output_root=args.output_root,
         salt_file=args.salt_file,
         top_pairs=args.top_pairs,
-        group_overrides=args.group_overrides,
-        identity_review_status=args.identity_review_status,
-        reviewer_evidence=args.reviewer_evidence,
     )
     print(
         "PalsyNet identity audit complete: "
