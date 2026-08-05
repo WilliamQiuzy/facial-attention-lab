@@ -11,8 +11,12 @@ mediapipe → a RunPod GPU box). Start here to reproduce any result in the docs.
 - `scripts/run_action_clinical_geometry_v1.py` — fixed 110D Landmark /
   58D Clinical Dynamics development screen. It requires the private PalsyNet
   cache and never opens the protected outer fold.
-- Current development champion: 110D Landmark, AUROC 0.938 and balanced
-  accuracy 0.905. This is binary PalsyNet development evidence, not HB or Mayo.
+- `scripts/run_mirror_invariant_110d.py` — fixed standard-110D versus
+  mirror-invariant-110D successor screen, with training augmentation,
+  symmetric inference, paired grouped bootstrap, and zero-use outer audit.
+- Current development champion: mirror-invariant 110D Landmark, AUROC 0.944
+  and balanced accuracy 0.905. This is binary PalsyNet development evidence,
+  not HB or Mayo.
 
 ## Historical web model (autoresearch)
 - `autoresearch_fp/prepare_fp.py` — FIXED harness: data + leak-safe split + 3-seed QWK metric.

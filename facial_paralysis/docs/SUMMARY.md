@@ -1,4 +1,4 @@
-# Facial-palsy project — technical summary (as of 2026-07-27)
+# Facial-palsy project — technical summary (as of 2026-08-05)
 
 One authoritative narrative over the scattered docs (`model_design.md`,
 `training_runs.md`, `autoresearch_fp/FINDINGS.md`, `mayo_faces_analysis.md`,
@@ -10,17 +10,24 @@ One authoritative narrative over the scattered docs (`model_design.md`,
 
 ## Current canonical result
 
-- The current development champion is the **110D Landmark trajectory model**:
-  AUROC **0.938**, balanced accuracy **0.905**, sensitivity **0.810**, and
-  specificity **1.000** on PalsyNet grouped inner-OOF development evaluation.
+- The current development champion is the **mirror-invariant 110D Landmark
+  trajectory model**: AUROC **0.944**, balanced accuracy **0.905**, sensitivity
+  **0.810**, and specificity **1.000** on PalsyNet grouped inner-OOF development
+  evaluation.
+- It augments training with horizontal mirrors and averages original/mirrored
+  probabilities at inference. Observed mirror probability error was exactly
+  zero; its AUROC gain over standard 110D was modest (`+0.0056`, descriptive
+  95% interval `[0.0000, 0.0224]`) and is not a superiority claim.
 - It is a fixed standardized L2 logistic regression over interpretable MediaPipe
   landmark dynamics, not a deeper neural-network result.
 - This is affected-vs-unaffected classification on 38 development groups. It is
   not HB grading, Mayo-65 accuracy, independent patient-held-out validation, or
   deployment evidence.
-- Ten protected groups remain untouched. The preregistered direction gate did
-  not fully pass because the paired-bootstrap improvement interval had a lower
-  bound of exactly zero; outer evaluation remains unauthorized.
+- Ten protected groups are excluded from candidate-110D feature construction,
+  scaler/model fitting, and prediction; the shared loader still performs
+  schema and quality checks over every registered cache record. Identity is
+  unreviewed and the result remains video-held-out, so outer evaluation remains
+  unauthorized.
 
 ## Bottom line
 - We now have a strong, interpretable Landmark development classifier on

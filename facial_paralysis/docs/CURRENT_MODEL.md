@@ -6,25 +6,28 @@ document calls a MARLIN, web-QWK, Blendshape, Fusion, or SSL model the
 
 ## Canonical result
 
-The current development-set champion is the **110-dimensional Landmark
-trajectory model**.
+The current development-set champion is the **mirror-invariant
+110-dimensional Landmark trajectory model**.
 
 | Development candidate | AUROC | Balanced accuracy | Sensitivity | Specificity |
 |---|---:|---:|---:|---:|
 | Nuisance-only | 0.768 | 0.716 | 0.667 | 0.765 |
 | 58D Clinical Dynamics | 0.922 | 0.857 | 0.714 | 1.000 |
 | Clinical Dynamics + Nuisance | 0.913 | 0.881 | 0.762 | 1.000 |
-| **110D Landmark** | **0.938** | **0.905** | **0.810** | **1.000** |
+| 110D Landmark | 0.938 | **0.905** | **0.810** | **1.000** |
+| **Mirror-invariant 110D Landmark** | **0.944** | **0.905** | **0.810** | **1.000** |
 
-The 110D model was a fixed reference comparator and was numerically highest
-among the four development candidates. Calling it the current development
-champion records that rank; it does not turn it into the preregistered primary
-comparison or authorize outer evaluation.
+The successor uses the same fixed 110D representation and classifier, but
+trains on each trajectory and its horizontal mirror and averages the two
+probabilities at inference. Its maximum observed mirror probability error was
+`0.0`. It passed the fixed robustness/non-inferiority gates, so it replaces the
+standard 110D model for development reporting; this does not authorize outer
+evaluation.
 
-The classifier is a standardized L2 logistic regression with fixed
+The classifier remains a standardized L2 logistic regression with fixed
 `C=0.01`, `liblinear`, threshold `0.5`, group-balanced sample weights, and no
-hyperparameter search. The performance gain comes from the representation,
-not a deeper neural network.
+hyperparameter search. The robustness change comes from fixed symmetry
+handling, not a deeper neural network or parameter search.
 
 ## What 110D Landmark means
 
@@ -48,8 +51,10 @@ Together these form the 110-dimensional recording-level Landmark vector.
   and 17 unaffected groups.
 - Protocol: outer fold 0 was reserved first; four-fold grouped inner
   out-of-fold evaluation used only the remaining development groups.
-- Protected partition: 10 recordings / 10 groups; zero protected feature
-  extractions, model fits, or predictions.
+- Protected partition: 10 recordings / 10 groups; zero protected candidate-110D
+  feature construction, model fits, or predictions. The shared loader still
+  performs schema and quality validation over all registered cache records
+  before the split is applied.
 - Claim unit: video-held-out; identity status remains unreviewed.
 
 These numbers are not Mayo-65 performance, HB accuracy, patient-held-out
@@ -57,16 +62,16 @@ clinical validation, or deployment evidence.
 
 ## Promotion state
 
-The 110D Landmark model is the only current **development champion**. It
+The mirror-invariant 110D Landmark model is the current **development
+champion**. It
 supersedes older models for present-tense status reporting, while the older
 experiments remain preserved as historical baselines.
 
-The preregistered primary comparison was Clinical Dynamics + Nuisance versus
-Nuisance-only, not selection of the 110D reference. Its direction gate did not
-fully pass. Clinical Dynamics +
-Nuisance improved over Nuisance-only by AUROC `0.1457`, but the descriptive
-paired-bootstrap 95% interval was `[0.0000, 0.2941]`; its lower bound was not
-strictly above zero. Therefore:
+Against the standard 110D baseline, the fixed mirror successor improved AUROC
+by `0.0056`; the descriptive paired-bootstrap 95% interval was
+`[0.0000, 0.0224]`. The result establishes exact mirror robustness and no
+observed loss on the fixed development metrics, but does **not** establish a
+statistically reliable superiority claim. Therefore:
 
 - protected outer evaluation is not authorized;
 - HB claims are not authorized;
@@ -77,13 +82,18 @@ successor protocol, and evaluate the untouched outer partition exactly once.
 
 ## Provenance
 
-- Source branch: `codex/action-clinical-geometry`
-- Source commit: `e3b069cfef3634b8f210b4315dd574d8b9fa46a6`
-- Experiment: `action-clinical-geometry-v1`
-- Private source report SHA-256:
-  `2c50940b61f633eb4b664b364a7767f0fca215fda92ef85beeb92bb364529649`
+- Source branch: `codex/mirror-invariant-110d`
+- Base protocol commit: `632bf993a8d38a7426fc52b23923e1d8d14dd857`
+- Experiment: `mirror-invariant-110d-v1`
+- Runner SHA-256:
+  `ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12`
+- Protocol-test SHA-256:
+  `e2c0855b5afce630160e83db9bdbec08299f707686226a7e3beb2d40bdbee10c`
+- Aggregate source report SHA-256:
+  `f84fbd1605dea3515cde524946b1d3e4c1003aac77ece2bcef8b3e413f75cb29`
 - Machine-readable tracked summary:
   `docs/results/current_development_model.json`
 
-The source report remains local and private by protocol. Only its
-deidentified aggregate summary and hash are tracked.
+The owner-private source report remains ignored by Git. The tracked summary is
+closed-schema, deidentified aggregate evidence and contains no per-record
+predictions, IDs, or local paths.
