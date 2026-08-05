@@ -536,6 +536,42 @@ def test_bundle_provenance_requires_exact_source_and_bundle_hashes(c: Check):
             )
 
 
+def test_generator_bundle_keys_resolve_from_the_planned_parent_root(c: Check):
+    with tempfile.TemporaryDirectory() as td:
+        identity_root = Path(td) / "identity_marlin_v1"
+        source_sha256 = hashlib.sha256(b"generator-source").hexdigest()
+        bundle_key = f"bundles/{source_sha256}/clip.npz"
+        bundle_sha256 = _write_bundle(identity_root / bundle_key, 1.0)
+        provenance = identity_root / "provenance.json"
+        _write_provenance(provenance, [{
+            "source_sha256": source_sha256,
+            "bundle_key": bundle_key,
+            "bundle_sha256": bundle_sha256,
+        }])
+
+        loaded = audit_module.load_bundle_provenance(
+            provenance, identity_root, {source_sha256}
+        )
+        c.eq(loaded[source_sha256].bundle_path,
+             identity_root / bundle_key,
+             "generator-style bundle keys resolve once from the parent root")
+        c.raises(lambda: audit_module.load_bundle_provenance(
+            provenance, identity_root / "bundles", {source_sha256}
+        ), ValueError, "the child bundles directory cannot silently double-prefix keys")
+
+    plan = (
+        ROOT / "docs" / "superpowers" / "plans"
+        / "2026-08-05-110d-generalization-v1.md"
+    ).read_text()
+    expected = (
+        "--bundle-root /Users/williamqiu/Desktop/Harvard/Mayo-Clinic/"
+        "facial_paralysis/data/external/palsynet/derived/identity_marlin_v1 "
+        "--bundle-provenance"
+    )
+    c.true(expected in plan,
+           "the exact Task 5 command supplies the provenance key parent root")
+
+
 def test_bundle_provenance_rejects_path_escape_duplicate_keys_and_symlinks(c: Check):
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
