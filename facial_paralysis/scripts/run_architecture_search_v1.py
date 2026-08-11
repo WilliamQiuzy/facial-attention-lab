@@ -38,6 +38,7 @@ from src.training.architecture_search_v1 import (  # noqa: E402
     ScreeningResult,
     evaluate_fixed_ensembles,
     run_confirmation,
+    run_logistic_stability_audit,
     run_screening,
 )
 
@@ -81,6 +82,7 @@ def build_aggregate_report(
     protected_recordings: int,
     confirmation: ConfirmationResult | None = None,
     adaptive_ensembles: Mapping[str, Mapping[str, object]] | None = None,
+    stability_audit: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Create an identifier-free aggregate report for independent audit."""
     required_provenance = {
@@ -139,6 +141,7 @@ def build_aggregate_report(
         "adaptive_ensemble_round": None if adaptive_ensembles is None else {
             name: dict(values) for name, values in adaptive_ensembles.items()
         },
+        "validation_stress_test": None if stability_audit is None else dict(stability_audit),
         "decision": {
             "screening_winner": result.winner,
             "current_model_replaced": False,
@@ -258,6 +261,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     confirmation = None
     adaptive_ensembles = None
+    stability_audit = None
     if not args.smoke:
         confirmation = run_confirmation(
             search_dataset,
@@ -273,6 +277,7 @@ def main(argv: list[str] | None = None) -> None:
             search_dataset.group_ids[development],
             result.candidate_oof_probabilities,
         )
+        stability_audit = run_logistic_stability_audit(search_dataset)
     report = build_aggregate_report(
         result,
         smoke=args.smoke,
@@ -288,6 +293,7 @@ def main(argv: list[str] | None = None) -> None:
         protected_recordings=int(gate.protected_indices.size),
         confirmation=confirmation,
         adaptive_ensembles=adaptive_ensembles,
+        stability_audit=stability_audit,
     )
     if not args.smoke:
         _write_no_overwrite(DEFAULT_REPORT_PATH, report)

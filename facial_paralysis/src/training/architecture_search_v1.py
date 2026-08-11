@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -140,6 +140,64 @@ def group_balanced_weights(group_ids: Sequence[object] | np.ndarray) -> np.ndarr
         raise ValueError("group_ids must be nonempty strings")
     counts = {group: values.count(group) for group in set(values)}
     return np.asarray([1.0 / counts[group] for group in values], dtype=np.float64)
+
+
+def build_repeated_stratified_group_folds(
+    labels: Sequence[int] | np.ndarray,
+    group_ids: Sequence[object] | np.ndarray,
+    *,
+    repeats: int,
+    seed: int,
+) -> tuple[np.ndarray, ...]:
+    """Create deterministic four-fold assignments without splitting groups."""
+    label_array = np.asarray(labels)
+    groups = np.asarray(group_ids, dtype=object)
+    if (
+        label_array.ndim != 1 or groups.shape != label_array.shape
+        or label_array.dtype.kind not in {"i", "u"}
+        or not np.isin(label_array, (0, 1)).all()
+    ):
+        raise ValueError("repeated folds require aligned binary labels and groups")
+    if isinstance(repeats, bool) or not isinstance(repeats, int) or repeats < 1:
+        raise ValueError("repeats must be a positive integer")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed must be an integer")
+    group_labels: dict[str, int] = {}
+    for label, group in zip(label_array.tolist(), groups.tolist()):
+        if not isinstance(group, str) or not group:
+            raise ValueError("repeated-fold group IDs must be nonempty strings")
+        previous = group_labels.setdefault(group, int(label))
+        if previous != int(label):
+            raise ValueError("one repeated-fold group cannot cross labels")
+    by_label = {
+        label: np.asarray(sorted(
+            group for group, group_label in group_labels.items()
+            if group_label == label
+        ), dtype=object)
+        for label in (0, 1)
+    }
+    if any(values.size < 4 for values in by_label.values()):
+        raise ValueError("four-fold stratification needs at least four groups per class")
+    rng = np.random.default_rng(seed)
+    assignments: list[np.ndarray] = []
+    for _repeat in range(repeats):
+        fold_by_group: dict[str, int] = {}
+        for label in (0, 1):
+            shuffled = rng.permutation(by_label[label])
+            for fold, chunk in enumerate(np.array_split(shuffled, 4)):
+                for group in chunk.tolist():
+                    fold_by_group[str(group)] = fold
+        assignment = np.asarray(
+            [fold_by_group[str(group)] for group in groups.tolist()], dtype=np.int64
+        )
+        for fold in range(4):
+            if (
+                set(label_array[assignment == fold].tolist()) != {0, 1}
+                or set(label_array[assignment != fold].tolist()) != {0, 1}
+            ):
+                raise AssertionError("stratified group fold lost one class")
+        assignments.append(assignment)
+    return tuple(assignments)
 
 
 def _metric(metrics: Mapping[str, object], name: str) -> float:
@@ -423,6 +481,144 @@ def _fit_classical_fold(
         scaler.transform(dataset.mirrored_summary_features[validation])
     )[:, 1]
     return 0.5 * (original + mirrored), parameter_count
+
+
+def _logistic_oof_for_assignment(
+    dataset: SearchDataset,
+    fold_assignment: np.ndarray,
+) -> dict[str, float]:
+    development = np.asarray(dataset.development_indices, dtype=np.int64)
+    assignment = np.asarray(fold_assignment)
+    if assignment.shape != (development.size,) or assignment.dtype.kind not in {"i", "u"}:
+        raise ValueError("stability fold assignment must align with development rows")
+    if set(assignment.tolist()) != {0, 1, 2, 3}:
+        raise ValueError("stability audit requires exactly four folds")
+    require_development_only(
+        development, dataset.development_indices, dataset.protected_indices,
+        "stability audit",
+    )
+    probabilities = np.full(development.size, np.nan, dtype=np.float64)
+    for fold in range(4):
+        train_local = np.flatnonzero(assignment != fold)
+        validation_local = np.flatnonzero(assignment == fold)
+        train = development[train_local]
+        validation = development[validation_local]
+        if set(dataset.labels[train].tolist()) != {0, 1}:
+            raise ValueError("stability training fold lost one class")
+        fold_probabilities, _parameters = _fit_classical_fold(
+            "logistic_110d", dataset, train, validation, seed=0
+        )
+        probabilities[validation_local] = fold_probabilities
+    if not np.isfinite(probabilities).all():
+        raise RuntimeError("stability audit did not fill all OOF probabilities")
+    group_labels, group_probabilities = _aggregate_groups(
+        dataset.labels[development], probabilities, dataset.group_ids[development]
+    )
+    return _binary_metrics(group_labels, group_probabilities)
+
+
+def _distribution_summary(values: Sequence[float] | np.ndarray) -> dict[str, float]:
+    array = np.asarray(values, dtype=np.float64)
+    if array.ndim != 1 or array.size == 0 or not np.isfinite(array).all():
+        raise ValueError("stability metric distribution must be finite and nonempty")
+    quantiles = np.quantile(array, (0.05, 0.5, 0.95))
+    return {
+        "minimum": float(array.min()),
+        "q05": float(quantiles[0]),
+        "median": float(quantiles[1]),
+        "q95": float(quantiles[2]),
+        "maximum": float(array.max()),
+    }
+
+
+def run_logistic_stability_audit(
+    dataset: SearchDataset,
+    *,
+    repeats: int = 50,
+    permutations: int = 500,
+    seed: int = 20260811,
+) -> dict[str, object]:
+    """Stress-test the frozen winner across splits and a group-label null."""
+    _validate_search_dataset(dataset)
+    if isinstance(permutations, bool) or not isinstance(permutations, int) or permutations < 1:
+        raise ValueError("permutations must be a positive integer")
+    development = np.asarray(dataset.development_indices, dtype=np.int64)
+    development_labels = np.asarray(dataset.labels[development], dtype=np.int64)
+    development_groups = np.asarray(dataset.group_ids[development], dtype=object)
+    repeated_assignments = build_repeated_stratified_group_folds(
+        development_labels, development_groups, repeats=repeats, seed=seed
+    )
+    repeated_metrics = [
+        _logistic_oof_for_assignment(dataset, assignment)
+        for assignment in repeated_assignments
+    ]
+    fixed_assignment = np.asarray(
+        dataset.inner_fold_by_index[development], dtype=np.int64
+    )
+    observed = _logistic_oof_for_assignment(dataset, fixed_assignment)
+
+    group_names = sorted(set(development_groups.tolist()))
+    label_by_group = {
+        group: int(development_labels[development_groups == group][0])
+        for group in group_names
+    }
+    base_group_labels = np.asarray(
+        [label_by_group[group] for group in group_names], dtype=np.int64
+    )
+    rng = np.random.default_rng(seed + 1)
+    null_aurocs: list[float] = []
+    attempts = 0
+    while len(null_aurocs) < permutations:
+        attempts += 1
+        if attempts > permutations * 20:
+            raise RuntimeError("could not construct enough valid group-label permutations")
+        shuffled = rng.permutation(base_group_labels)
+        permuted_by_group = dict(zip(group_names, shuffled.tolist()))
+        permuted_development_labels = np.asarray(
+            [permuted_by_group[str(group)] for group in development_groups.tolist()],
+            dtype=np.int64,
+        )
+        if any(
+            set(permuted_development_labels[fixed_assignment != fold].tolist()) != {0, 1}
+            for fold in range(4)
+        ):
+            continue
+        full_labels = np.asarray(dataset.labels, dtype=np.int64).copy()
+        full_labels[development] = permuted_development_labels
+        permuted_dataset = replace(dataset, labels=full_labels)
+        null_aurocs.append(
+            _logistic_oof_for_assignment(permuted_dataset, fixed_assignment)["auroc"]
+        )
+    null_array = np.asarray(null_aurocs, dtype=np.float64)
+    return {
+        "schema_version": "logistic_110d_stability_audit_v1",
+        "repeated_group_cv": {
+            "repeats": repeats,
+            "folds": 4,
+            "auroc": {
+                **_distribution_summary([value["auroc"] for value in repeated_metrics]),
+                "fraction_at_least_0_95": float(np.mean([
+                    value["auroc"] >= 0.95 for value in repeated_metrics
+                ])),
+            },
+            "balanced_accuracy": _distribution_summary([
+                value["balanced_accuracy"] for value in repeated_metrics
+            ]),
+            "brier": _distribution_summary([
+                value["brier"] for value in repeated_metrics
+            ]),
+        },
+        "group_label_permutation": {
+            "permutations": permutations,
+            "observed_fixed_fold_auroc": observed["auroc"],
+            "null_auroc_mean": float(null_array.mean()),
+            "null_auroc_q95": float(np.quantile(null_array, 0.95)),
+            "p_value": float(
+                (1 + np.sum(null_array >= observed["auroc"])) / (permutations + 1)
+            ),
+        },
+        "protected_predictions": 0,
+    }
 
 
 @dataclass(frozen=True)

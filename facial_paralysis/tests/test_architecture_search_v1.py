@@ -22,10 +22,12 @@ from src.training.architecture_search_v1 import (  # noqa: E402
     SearchDataset,
     SearchConfig,
     candidate_rank_key,
+    build_repeated_stratified_group_folds,
     evaluate_fixed_ensembles,
     group_balanced_weights,
     require_development_only,
     run_confirmation,
+    run_logistic_stability_audit,
     run_screening,
     select_screening_winner,
 )
@@ -113,6 +115,61 @@ def test_group_weights_and_development_gate_fail_closed(c: Check):
         ValueError,
         "unknown rows cannot enter the development experiment",
     )
+
+
+def test_repeated_group_folds_are_deterministic_stratified_and_disjoint(c: Check):
+    labels = np.asarray([0] * 9 + [1] * 11, dtype=np.int64)
+    groups = np.asarray([f"repeat-{index}" for index in range(20)], dtype=object)
+    first = build_repeated_stratified_group_folds(
+        labels, groups, repeats=5, seed=811
+    )
+    second = build_repeated_stratified_group_folds(
+        labels, groups, repeats=5, seed=811
+    )
+    c.eq(len(first), 5)
+    c.true(all(np.array_equal(left, right) for left, right in zip(first, second)))
+    for assignment in first:
+        c.eq(set(assignment.tolist()), {0, 1, 2, 3})
+        for fold in range(4):
+            c.eq(set(labels[assignment == fold].tolist()), {0, 1})
+            c.eq(set(labels[assignment != fold].tolist()), {0, 1})
+
+
+def test_logistic_stability_audit_is_development_only_and_aggregate(c: Check):
+    generator = np.random.default_rng(2026)
+    n_development, n_protected = 20, 2
+    n = n_development + n_protected
+    summaries = generator.normal(size=(n, 110)).astype(np.float64)
+    summaries[:10, :5] -= 1.0
+    summaries[10:20, :5] += 1.0
+    raw = generator.normal(size=(n, 4, 32, 95)).astype(np.float32)
+    labels = np.asarray([0] * 10 + [1] * 10 + [0, 1], dtype=np.int64)
+    folds = np.full(n, -1, dtype=np.int64)
+    folds[:20] = np.tile(np.arange(4), 5)
+    protected = np.arange(20, 22, dtype=np.int64)
+    raw[protected] = np.nan
+    summaries[protected] = np.nan
+    dataset = SearchDataset(
+        raw_features=raw,
+        mirrored_raw_features=raw.copy(),
+        valid_masks=np.ones((n, 4, 32), dtype=bool),
+        summary_features=summaries,
+        mirrored_summary_features=summaries.copy(),
+        labels=labels,
+        group_ids=np.asarray([f"stability-{index}" for index in range(n)], dtype=object),
+        development_indices=np.arange(20, dtype=np.int64),
+        protected_indices=protected,
+        inner_fold_by_index=folds,
+    )
+    audit = run_logistic_stability_audit(
+        dataset, repeats=4, permutations=20, seed=811
+    )
+    c.eq(audit["repeated_group_cv"]["repeats"], 4)
+    c.eq(audit["group_label_permutation"]["permutations"], 20)
+    c.eq(audit["protected_predictions"], 0)
+    c.true(0 < audit["group_label_permutation"]["p_value"] <= 1)
+    encoded = str(audit).lower()
+    c.true("recording_id" not in encoded and "group_id" not in encoded)
 
 
 def test_short_budget_and_winner_policy_are_fixed(c: Check):

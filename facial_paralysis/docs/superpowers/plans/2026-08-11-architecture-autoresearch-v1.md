@@ -82,3 +82,27 @@
 - [ ] Keep the protected outer test, MEEI outcomes, and Mayo confidence outcomes unopened during architecture selection.
 - [ ] Run a final secret scan, provenance audit, regression suite, and working-tree scope check before committing or pushing.
 
+### Task 7: Add a local-only Mayo positive-cohort challenge
+
+**Files:**
+- Create: `tests/test_mayo_positive_challenge_v1.py`
+- Create: `src/evaluation/mayo_positive_challenge_v1.py`
+- Create: `scripts/build_mayo_positive_challenge_v1.py`
+- Create: `scripts/run_mayo_positive_challenge_v1.py`
+
+- [ ] RED-test content-hash deduplication, opaque identifiers, coverage exclusions, and identifier-free aggregate reporting.
+- [ ] Extract exactly four 32-frame windows with the same MediaPipe model, 95-channel schema, and 110D transform as PalsyNet; keep raw Mayo videos local and retain the audited 47/49 unique contents that satisfy the fixed face-coverage gate.
+- [ ] Fit the frozen mirror-invariant 110D Logistic model on authenticated PalsyNet development rows only, then score deduplicated Mayo records once.
+- [ ] Report positive-call rate, Wilson interval, confidence distribution, and extraction coverage; do not call an all-positive cohort an accuracy benchmark.
+- [ ] Keep Mayo out of architecture selection and keep the protected PalsyNet outer test sealed.
+
+### Task 8: Stress-test the winner beyond one split
+
+**Files:**
+- Modify: `tests/test_architecture_search_v1.py`
+- Modify: `src/training/architecture_search_v1.py`
+- Modify: `scripts/run_architecture_search_v1.py`
+
+- [ ] Add repeated stratified group-disjoint development splits for the frozen Logistic winner only.
+- [ ] Add a group-label permutation null test and aggregate stability intervals without opening the protected test.
+- [ ] Run the added audit on H200, record provenance, and reject claims of 95% on any source not containing both verified classes.
