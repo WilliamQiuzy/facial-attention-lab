@@ -36,6 +36,7 @@ from src.training.architecture_search_v1 import (  # noqa: E402
     SearchConfig,
     SearchDataset,
     ScreeningResult,
+    evaluate_fixed_ensembles,
     run_confirmation,
     run_screening,
 )
@@ -79,6 +80,7 @@ def build_aggregate_report(
     protected_groups: int,
     protected_recordings: int,
     confirmation: ConfirmationResult | None = None,
+    adaptive_ensembles: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     """Create an identifier-free aggregate report for independent audit."""
     required_provenance = {
@@ -133,6 +135,9 @@ def build_aggregate_report(
             },
             "ensemble_metrics": dict(confirmation.ensemble_metrics),
             "parameter_count": confirmation.parameter_count,
+        },
+        "adaptive_ensemble_round": None if adaptive_ensembles is None else {
+            name: dict(values) for name, values in adaptive_ensembles.items()
         },
         "decision": {
             "screening_winner": result.winner,
@@ -252,12 +257,21 @@ def main(argv: list[str] | None = None) -> None:
         device=device,
     )
     confirmation = None
+    adaptive_ensembles = None
     if not args.smoke:
         confirmation = run_confirmation(
             search_dataset,
             winner=result.winner,
             config=config,
             device=device,
+        )
+        if result.candidate_oof_probabilities is None:
+            raise RuntimeError("full screening did not retain aligned private OOF values")
+        development = search_dataset.development_indices
+        adaptive_ensembles = evaluate_fixed_ensembles(
+            search_dataset.labels[development],
+            search_dataset.group_ids[development],
+            result.candidate_oof_probabilities,
         )
     report = build_aggregate_report(
         result,
@@ -273,6 +287,7 @@ def main(argv: list[str] | None = None) -> None:
         protected_groups=len(set(gate.group_ids[gate.protected_indices].tolist())),
         protected_recordings=int(gate.protected_indices.size),
         confirmation=confirmation,
+        adaptive_ensembles=adaptive_ensembles,
     )
     if not args.smoke:
         _write_no_overwrite(DEFAULT_REPORT_PATH, report)

@@ -54,6 +54,7 @@ class ScreeningResult:
     development_recordings: int
     development_groups: int
     protected_predictions: int
+    candidate_oof_probabilities: Mapping[str, np.ndarray] | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +178,105 @@ def select_screening_winner(
         metrics_by_candidate,
         key=lambda name: candidate_rank_key(name, metrics_by_candidate[name]),
     )
+
+
+_ENSEMBLE_RECIPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("logistic_extra_trees_mean", ("logistic_110d", "extra_trees_110d")),
+    ("logistic_mlp_mean", ("logistic_110d", "mlp_110d")),
+    ("logistic_hybrid_mean", ("logistic_110d", "hybrid_110d_tcn")),
+    (
+        "logistic_extra_hybrid_mean",
+        ("logistic_110d", "extra_trees_110d", "hybrid_110d_tcn"),
+    ),
+)
+
+
+def evaluate_fixed_ensembles(
+    labels: Sequence[int] | np.ndarray,
+    group_ids: Sequence[object] | np.ndarray,
+    oof_probabilities: Mapping[str, Sequence[float] | np.ndarray],
+    *,
+    bootstrap_repeats: int = 5000,
+) -> dict[str, dict[str, object]]:
+    """Evaluate four fixed arithmetic ensembles in an explicitly adaptive round."""
+    label_array = np.asarray(labels)
+    groups = np.asarray(group_ids, dtype=object)
+    if (
+        label_array.ndim != 1 or groups.shape != label_array.shape
+        or label_array.dtype.kind not in {"i", "u"}
+        or not np.isin(label_array, (0, 1)).all()
+    ):
+        raise ValueError("ensemble labels and groups must be aligned binary vectors")
+    if isinstance(bootstrap_repeats, bool) or not isinstance(bootstrap_repeats, int) or bootstrap_repeats < 1:
+        raise ValueError("bootstrap_repeats must be a positive integer")
+    required = {candidate for _, recipe in _ENSEMBLE_RECIPES for candidate in recipe}
+    if not required.issubset(oof_probabilities):
+        raise ValueError("ensemble round is missing a required base candidate")
+    aligned: dict[str, np.ndarray] = {}
+    for candidate in required:
+        values = np.asarray(oof_probabilities[candidate], dtype=np.float64)
+        if values.shape != label_array.shape or not np.isfinite(values).all():
+            raise ValueError("ensemble OOF probabilities must be finite and aligned")
+        if np.any((values < 0) | (values > 1)):
+            raise ValueError("ensemble inputs must be probabilities")
+        aligned[candidate] = values
+    group_labels, logistic_groups = _aggregate_groups(
+        label_array, aligned["logistic_110d"], groups
+    )
+    logistic_point = _binary_metrics(group_labels, logistic_groups)
+    class_rows = {label: np.flatnonzero(group_labels == label) for label in (0, 1)}
+    if any(rows.size == 0 for rows in class_rows.values()):
+        raise ValueError("ensemble bootstrap requires both group-level classes")
+    output: dict[str, dict[str, object]] = {}
+    for recipe_index, (name, recipe) in enumerate(_ENSEMBLE_RECIPES):
+        recording_probabilities = np.mean(
+            np.stack([aligned[candidate] for candidate in recipe], axis=0), axis=0
+        )
+        candidate_labels, group_probabilities = _aggregate_groups(
+            label_array, recording_probabilities, groups
+        )
+        if not np.array_equal(candidate_labels, group_labels):
+            raise AssertionError("ensemble group alignment drifted")
+        point = _binary_metrics(group_labels, group_probabilities)
+        rng = np.random.default_rng(20260811 + recipe_index)
+        deltas = {
+            "auroc": np.empty(bootstrap_repeats),
+            "balanced_accuracy": np.empty(bootstrap_repeats),
+            "brier": np.empty(bootstrap_repeats),
+        }
+        for repeat in range(bootstrap_repeats):
+            sampled = np.concatenate([
+                rng.choice(rows, size=rows.size, replace=True)
+                for rows in class_rows.values()
+            ])
+            ensemble_metrics = _binary_metrics(
+                group_labels[sampled], group_probabilities[sampled]
+            )
+            baseline_metrics = _binary_metrics(
+                group_labels[sampled], logistic_groups[sampled]
+            )
+            for metric in deltas:
+                deltas[metric][repeat] = (
+                    ensemble_metrics[metric] - baseline_metrics[metric]
+                )
+        output[name] = {
+            **point,
+            "components": list(recipe),
+            "adaptive_after_base_screen": True,
+            "bootstrap": {
+                "repeats": bootstrap_repeats,
+                **{
+                    f"{metric}_delta_vs_logistic": {
+                        "point": point[metric] - logistic_point[metric],
+                        "ci95": [float(value) for value in np.quantile(
+                            values, (0.025, 0.975)
+                        )],
+                    }
+                    for metric, values in deltas.items()
+                },
+            },
+        }
+    return output
 
 
 def _validate_search_dataset(dataset: SearchDataset) -> None:
@@ -519,6 +619,7 @@ def run_screening(
     groups = np.asarray(dataset.group_ids, dtype=object)
     candidate_metrics: dict[str, dict[str, object]] = {}
     candidate_fold_metrics: dict[str, tuple[Mapping[str, float], ...]] = {}
+    candidate_oof_probabilities: dict[str, np.ndarray] = {}
     for name in requested:
         started = time.perf_counter()
         oof = np.full(labels.shape[0], np.nan, dtype=np.float64)
@@ -563,6 +664,7 @@ def run_screening(
         })
         candidate_metrics[name] = metrics
         candidate_fold_metrics[name] = tuple(fold_metrics)
+        candidate_oof_probabilities[name] = oof[development].copy()
     winner = select_screening_winner(candidate_metrics)
     return ScreeningResult(
         candidate_metrics=candidate_metrics,
@@ -571,6 +673,7 @@ def run_screening(
         development_recordings=int(development.size),
         development_groups=len(set(groups[development].tolist())),
         protected_predictions=0,
+        candidate_oof_probabilities=candidate_oof_probabilities,
     )
 
 
@@ -643,6 +746,6 @@ __all__ = [
     "ConfirmationResult", "OuterSearchLockedError", "SearchConfig", "SearchDataset",
     "ScreeningResult",
     "candidate_rank_key",
-    "group_balanced_weights", "require_development_only",
+    "evaluate_fixed_ensembles", "group_balanced_weights", "require_development_only",
     "run_confirmation", "run_screening", "select_screening_winner",
 ]

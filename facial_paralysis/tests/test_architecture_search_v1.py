@@ -22,6 +22,7 @@ from src.training.architecture_search_v1 import (  # noqa: E402
     SearchDataset,
     SearchConfig,
     candidate_rank_key,
+    evaluate_fixed_ensembles,
     group_balanced_weights,
     require_development_only,
     run_confirmation,
@@ -266,6 +267,36 @@ def test_confirmation_uses_exact_three_seeds_and_keeps_outer_sealed(c: Check):
     c.eq(result.winner, "logistic_110d")
     c.eq(result.protected_predictions, 0)
     c.true(0 <= result.ensemble_metrics["auroc"] <= 1)
+
+
+def test_adaptive_ensemble_round_uses_only_aligned_oof_probabilities(c: Check):
+    labels = np.asarray([0, 0, 1, 1], dtype=np.int64)
+    groups = np.asarray(["e0", "e1", "e2", "e3"], dtype=object)
+    probabilities = {
+        "logistic_110d": np.asarray([0.10, 0.40, 0.60, 0.90]),
+        "extra_trees_110d": np.asarray([0.20, 0.20, 0.80, 0.80]),
+        "mlp_110d": np.asarray([0.15, 0.30, 0.70, 0.85]),
+        "hybrid_110d_tcn": np.asarray([0.20, 0.20, 0.80, 0.80]),
+    }
+    metrics = evaluate_fixed_ensembles(labels, groups, probabilities, bootstrap_repeats=50)
+    c.eq(tuple(metrics), (
+        "logistic_extra_trees_mean",
+        "logistic_mlp_mean",
+        "logistic_hybrid_mean",
+        "logistic_extra_hybrid_mean",
+    ))
+    for name, values in metrics.items():
+        c.eq(values["auroc"], 1.0, f"{name} uses aligned OOF probabilities")
+        c.eq(values["balanced_accuracy"], 1.0)
+        c.eq(values["bootstrap"]["repeats"], 50)
+        c.true("auroc_delta_vs_logistic" in values["bootstrap"])
+    broken = dict(probabilities)
+    broken["mlp_110d"] = broken["mlp_110d"][:-1]
+    c.raises(
+        lambda: evaluate_fixed_ensembles(labels, groups, broken, bootstrap_repeats=10),
+        ValueError,
+        "unaligned OOF candidates cannot be ensembled",
+    )
 
 
 if __name__ == "__main__":
