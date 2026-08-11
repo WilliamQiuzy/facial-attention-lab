@@ -52,6 +52,38 @@ position Phase proxies**. PalsyNet has no standardized action or frame-level
 phase annotations, so this experiment does not establish a true action- or
 phase-specific disease mechanism.
 
+## Architecture and split-stability stress tests
+
+Architecture Autoresearch v1 compared nine fixed candidates on the same 39
+development recordings / 38 reviewed groups: Logistic, Extra Trees,
+HistGradientBoosting, MLP, TCN, BiGRU, Transformer, region-factorized TCN, and a
+110D + TCN hybrid. The 110D Logistic model remained first (AUROC 0.980,
+balanced accuracy 0.952). The closest hybrid reached AUROC 0.978 but balanced
+accuracy 0.899. Four adaptive ensembles improved Brier calibration but did not
+simultaneously improve AUROC and balanced accuracy, so no candidate advanced.
+
+Across 50 additional deterministic, stratified group-disjoint four-fold
+partitions, 110D AUROC had median 0.966, 5th–95th percentile range 0.956–0.981,
+and 49/50 repeats were at least 0.95. A 500-repeat reviewed-group label
+permutation test produced null mean AUROC 0.489 and null 95th percentile 0.686;
+the real fixed-fold AUROC 0.980 gave p=0.001996. These are development-only
+stability checks, not an opening of the protected outer partition.
+
+## Mayo positive-only challenge
+
+The current 65-session Mayo folder contains 50 MOV files / 49 unique video
+contents after exact SHA-256 deduplication. One insufficient-frame file and one
+video below the frozen face-coverage gate were excluded, yielding 47 challenge
+videos. The same MediaPipe model, rotation-aware face-present sampling,
+clinical23_v2 representation, and frozen 110D classifier called 45/47 positive
+at threshold 0.5: positive-call rate 0.957, Wilson 95% interval 0.858–0.988.
+Confidence mean was 0.665, median 0.649, IQR 0.598–0.716; extraction coverage
+median was 1.000 and minimum 0.922. Raw Mayo videos remained local.
+
+Because this cohort contains no verified negatives, 45/47 is **not binary
+accuracy** and cannot estimate specificity or AUROC. Mayo was not used for
+candidate selection, and the result is not independent clinical validation.
+
 ## Evaluation boundary
 
 - Cohort: PalsyNet binary affected versus unaffected; this is not HB grading.
@@ -81,11 +113,12 @@ permitted step is to freeze an authorization artifact bound to the candidate,
 identity manifest, person split, source collection, protocol, and implementation
 digests, and then run outer fold 0 exactly once.
 
-No result here is Mayo-65 accuracy, HB accuracy, cross-institutional validation,
-clinical validation, or deployment evidence. MEEI is locally acquired and
-quarantined but cannot be scored until the protected PalsyNet result and final
-PalsyNet artifact are sealed. AFLFP access is not established and requires an
-eligible non-student institutional recipient to complete its EULA process.
+No result here is Mayo-65 two-class accuracy, HB accuracy, cross-institutional
+validation, clinical validation, or deployment evidence. The new Mayo result is
+a positive-only consistency challenge. MEEI is locally acquired and quarantined
+but cannot be scored until the protected PalsyNet result and final PalsyNet
+artifact are sealed. AFLFP access is not established and requires an eligible
+non-student institutional recipient to complete its EULA process.
 
 YFP has a separate static regional-severity audit manifest with 10,838 accepted
 anchors, but it remains `training_eligible=false`: no MediaPipe extraction,
@@ -95,7 +128,8 @@ independently reviewed subject map, and eligibility authorization.
 ## Provenance
 
 - Source branch: `codex/110d-generalization-v1`
-- Runner implementation commit: `14a47f9`
+- Generalization lock implementation commit: `14a47f9`
+- Architecture/stability/Mayo challenge implementation commit: `036e033`
 - Reviewed identity manifest SHA-256:
   `fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f`
 - Review ledger SHA-256:
@@ -106,6 +140,10 @@ independently reviewed subject map, and eligibility authorization.
   `4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208`
 - Owner-private aggregate report SHA-256:
   `e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43`
+- Architecture Autoresearch report SHA-256:
+  `4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7`
+- Mayo positive-challenge report SHA-256:
+  `bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060`
 - Machine-readable public summary:
   `docs/results/current_development_model.json`
 

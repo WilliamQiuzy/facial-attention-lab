@@ -1,7 +1,7 @@
 {
-  "schema_version": "facial_paralysis_current_development_model_v2",
+  "schema_version": "facial_paralysis_current_development_model_v3",
   "status": "current_development_champion_not_outer_validated",
-  "recorded_on": "2026-08-05",
+  "recorded_on": "2026-08-11",
   "model": {
     "name": "landmark_mi_110d",
     "feature_dimension": 110,
@@ -58,7 +58,10 @@
     "bootstrap_unit": "reviewed_group",
     "paired_class_stratified": true,
     "candidate_lock": "hierarchical_unrounded_110d_to_168d_to_204d",
-    "candidate_specific_tuning": false
+    "candidate_specific_tuning": false,
+    "architecture_screen_candidates": 9,
+    "stability_group_cv_repeats": 50,
+    "group_label_permutations": 500
   },
   "candidates": {
     "landmark_mi_110d": {
@@ -124,6 +127,33 @@
       ]
     }
   },
+  "architecture_autoresearch": {
+    "screening_winner": "logistic_110d",
+    "current_model_replaced": false,
+    "nearest_auroc_candidate": {
+      "name": "hybrid_110d_tcn",
+      "auroc": 0.9775910364145657,
+      "balanced_accuracy": 0.8991596638655461,
+      "brier": 0.05959993510250452
+    },
+    "repeated_group_cv": {
+      "repeats": 50,
+      "auroc_median": 0.9663865546218486,
+      "auroc_q05": 0.9564425770308123,
+      "auroc_q95": 0.980672268907563,
+      "auroc_minimum": 0.9411764705882353,
+      "auroc_maximum": 0.9859943977591036,
+      "fraction_auroc_at_least_0_95": 0.98,
+      "balanced_accuracy_median": 0.9166666666666667
+    },
+    "group_label_permutation": {
+      "permutations": 500,
+      "observed_auroc": 0.980392156862745,
+      "null_auroc_mean": 0.4885882352941176,
+      "null_auroc_q95": 0.6864145658263304,
+      "p_value": 0.001996007984031936
+    }
+  },
   "decision": {
     "locked_candidate": "landmark_mi_110d",
     "action_proxy_advances": false,
@@ -156,6 +186,31 @@
     }
   },
   "auxiliary_and_external": {
+    "mayo_positive_challenge": {
+      "sessions_in_source_folder": 65,
+      "source_video_files": 50,
+      "unique_video_contents": 49,
+      "exact_duplicate_files": 1,
+      "quality_excluded_unique_contents": 2,
+      "scored_assumed_positive_videos": 47,
+      "positive_calls_at_0_5": 45,
+      "positive_call_rate": 0.9574468085106383,
+      "positive_call_rate_wilson95": [
+        0.8575147232210055,
+        0.9882517240332106
+      ],
+      "confidence_mean": 0.6646102416924612,
+      "confidence_median": 0.6493885746913206,
+      "confidence_q25": 0.5981296258115187,
+      "confidence_q75": 0.715546015418507,
+      "extraction_coverage_median": 1.0,
+      "extraction_coverage_minimum": 0.921875,
+      "accuracy_defined": false,
+      "specificity_defined": false,
+      "auroc_defined": false,
+      "candidate_selection_eligible": false,
+      "raw_videos_uploaded": 0
+    },
     "yfp": {
       "task": "static_eye_and_mouth_regional_ordinal_audit",
       "accepted_anchors": 10838,
@@ -177,16 +232,23 @@
   },
   "provenance": {
     "source_branch": "codex/110d-generalization-v1",
-    "runner_implementation_commit": "14a47f9",
+    "generalization_lock_implementation_commit": "14a47f9",
+    "architecture_challenge_implementation_commit": "036e033",
     "reviewed_identity_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
     "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
     "person_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
     "implementation_aggregate_sha256": "4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208",
-    "aggregate_source_report_sha256": "e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43"
+    "aggregate_source_report_sha256": "e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43",
+    "architecture_report_sha256": "4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7",
+    "mayo_positive_challenge_report_sha256": "bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060",
+    "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
+    "h200_release": "architecture-autoresearch-v1-036e033-r4",
+    "h200_code_archive_sha256": "df07df417e9981503ed3803d209cfd3724ea75cfcd89bce3b496f34403c3f3e5"
   },
   "claim_boundary": {
     "not_directly_comparable_to_legacy_video_held_out_score": true,
     "mayo_65_performance": false,
+    "mayo_positive_challenge_is_not_binary_accuracy": true,
     "house_brackmann_accuracy": false,
     "cross_institutional_validation": false,
     "clinical_use": false

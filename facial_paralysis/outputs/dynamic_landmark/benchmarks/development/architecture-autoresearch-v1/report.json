@@ -1,0 +1,707 @@
+{
+  "adaptive_ensemble_round": {
+    "logistic_extra_hybrid_mean": {
+      "adaptive_after_base_screen": true,
+      "auroc": 0.9775910364145658,
+      "average_precision": 0.9858276643990933,
+      "balanced_accuracy": 0.9229691876750701,
+      "bootstrap": {
+        "auroc_delta_vs_logistic": {
+          "ci95": [
+            -0.022408963585434205,
+            0.008403361344537785
+          ],
+          "point": -0.0028011204481791507
+        },
+        "balanced_accuracy_delta_vs_logistic": {
+          "ci95": [
+            -0.08823529411764719,
+            0.0
+          ],
+          "point": -0.02941176470588225
+        },
+        "brier_delta_vs_logistic": {
+          "ci95": [
+            -0.053610026259316323,
+            -0.02489720060417505
+          ],
+          "point": -0.040558112751495484
+        },
+        "repeats": 5000
+      },
+      "brier": 0.07680901417970047,
+      "components": [
+        "logistic_110d",
+        "extra_trees_110d",
+        "hybrid_110d_tcn"
+      ],
+      "sensitivity": 0.9047619047619048,
+      "specificity": 0.9411764705882353
+    },
+    "logistic_extra_trees_mean": {
+      "adaptive_after_base_screen": true,
+      "auroc": 0.9635854341736695,
+      "average_precision": 0.9804164089878378,
+      "balanced_accuracy": 0.9523809523809523,
+      "bootstrap": {
+        "auroc_delta_vs_logistic": {
+          "ci95": [
+            -0.0672268907563024,
+            0.008403361344537785
+          ],
+          "point": -0.01680672268907546
+        },
+        "balanced_accuracy_delta_vs_logistic": {
+          "ci95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "brier_delta_vs_logistic": {
+          "ci95": [
+            -0.029923601301146196,
+            -0.007634202072489621
+          ],
+          "point": -0.019190823000611257
+        },
+        "repeats": 5000
+      },
+      "brier": 0.0981763039305847,
+      "components": [
+        "logistic_110d",
+        "extra_trees_110d"
+      ],
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    },
+    "logistic_hybrid_mean": {
+      "adaptive_after_base_screen": true,
+      "auroc": 0.9803921568627451,
+      "average_precision": 0.9852261606396948,
+      "balanced_accuracy": 0.8991596638655461,
+      "bootstrap": {
+        "auroc_delta_vs_logistic": {
+          "ci95": [
+            -0.022408963585434205,
+            0.02240896358543421
+          ],
+          "point": 1.1102230246251565e-16
+        },
+        "balanced_accuracy_delta_vs_logistic": {
+          "ci95": [
+            -0.13585434173669464,
+            0.0
+          ],
+          "point": -0.053221288515406195
+        },
+        "brier_delta_vs_logistic": {
+          "ci95": [
+            -0.056346318039624754,
+            -0.025272080145223797
+          ],
+          "point": -0.041866039227385674
+        },
+        "repeats": 5000
+      },
+      "brier": 0.07550108770381028,
+      "components": [
+        "logistic_110d",
+        "hybrid_110d_tcn"
+      ],
+      "sensitivity": 0.8571428571428571,
+      "specificity": 0.9411764705882353
+    },
+    "logistic_mlp_mean": {
+      "adaptive_after_base_screen": true,
+      "auroc": 0.9747899159663864,
+      "average_precision": 0.9845961373054972,
+      "balanced_accuracy": 0.9229691876750701,
+      "bootstrap": {
+        "auroc_delta_vs_logistic": {
+          "ci95": [
+            -0.025210084033613467,
+            1.1102230246251565e-16
+          ],
+          "point": -0.0056022408963585235
+        },
+        "balanced_accuracy_delta_vs_logistic": {
+          "ci95": [
+            -0.08823529411764719,
+            0.0
+          ],
+          "point": -0.02941176470588225
+        },
+        "brier_delta_vs_logistic": {
+          "ci95": [
+            -0.04839680618886789,
+            -0.015645433071384565
+          ],
+          "point": -0.03377900830775864
+        },
+        "repeats": 5000
+      },
+      "brier": 0.08358811862343732,
+      "components": [
+        "logistic_110d",
+        "mlp_110d"
+      ],
+      "sensitivity": 0.9047619047619048,
+      "specificity": 0.9411764705882353
+    }
+  },
+  "audit": {
+    "protected_cache_records_loaded": 0,
+    "protected_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "claim_scope": "identity_reviewed_palsynet_development_oof_only",
+  "confirmation": {
+    "ensemble_metrics": {
+      "auroc": 0.980392156862745,
+      "average_precision": 0.9871504157218447,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119596,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    },
+    "parameter_count": 111,
+    "seeds": {
+      "0": {
+        "auroc": 0.980392156862745,
+        "average_precision": 0.9871504157218447,
+        "balanced_accuracy": 0.9523809523809523,
+        "brier": 0.11736712693119596,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0
+      },
+      "1": {
+        "auroc": 0.980392156862745,
+        "average_precision": 0.9871504157218447,
+        "balanced_accuracy": 0.9523809523809523,
+        "brier": 0.11736712693119596,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0
+      },
+      "2": {
+        "auroc": 0.980392156862745,
+        "average_precision": 0.9871504157218447,
+        "balanced_accuracy": 0.9523809523809523,
+        "brier": 0.11736712693119596,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0
+      }
+    },
+    "winner": "logistic_110d"
+  },
+  "counts": {
+    "development_groups": 38,
+    "development_recordings": 39,
+    "protected_groups": 10,
+    "protected_recordings": 10
+  },
+  "decision": {
+    "clinical_validation": false,
+    "current_model_replaced": false,
+    "mayo_used_for_selection": false,
+    "meei_used_for_selection": false,
+    "outer_evaluation_authorized": false,
+    "screening_winner": "logistic_110d"
+  },
+  "fold_metrics": {
+    "bigru_landmark23": [
+      {
+        "auroc": 0.8,
+        "average_precision": 0.71,
+        "balanced_accuracy": 0.8,
+        "brier": 0.15429872872152148,
+        "sensitivity": 1.0,
+        "specificity": 0.6
+      },
+      {
+        "auroc": 0.9,
+        "average_precision": 0.9266666666666667,
+        "balanced_accuracy": 0.875,
+        "brier": 0.1461717364881945,
+        "sensitivity": 1.0,
+        "specificity": 0.75
+      },
+      {
+        "auroc": 0.9583333333333334,
+        "average_precision": 0.976190476190476,
+        "balanced_accuracy": 0.625,
+        "brier": 0.15282292620965174,
+        "sensitivity": 1.0,
+        "specificity": 0.25
+      },
+      {
+        "auroc": 0.95,
+        "average_precision": 0.9666666666666668,
+        "balanced_accuracy": 0.9,
+        "brier": 0.08921425633860085,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      }
+    ],
+    "extra_trees_110d": [
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.10960532305127621,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 0.8500000000000001,
+        "average_precision": 0.925,
+        "balanced_accuracy": 0.9,
+        "brier": 0.11197875128299449,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 0.875,
+        "brier": 0.07012996540762315,
+        "sensitivity": 1.0,
+        "specificity": 0.75
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.055598354548765445,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      }
+    ],
+    "hist_gradient_boosting_110d": [
+      {
+        "auroc": 0.8400000000000001,
+        "average_precision": 0.885,
+        "balanced_accuracy": 0.7,
+        "brier": 0.21075493050057145,
+        "sensitivity": 0.8,
+        "specificity": 0.6
+      },
+      {
+        "auroc": 0.9,
+        "average_precision": 0.9428571428571428,
+        "balanced_accuracy": 0.9,
+        "brier": 0.11333101487450101,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 0.9166666666666666,
+        "average_precision": 0.9484126984126984,
+        "balanced_accuracy": 0.7916666666666667,
+        "brier": 0.1318725250975533,
+        "sensitivity": 0.8333333333333334,
+        "specificity": 0.75
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.03544224954644802,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      }
+    ],
+    "hybrid_110d_tcn": [
+      {
+        "auroc": 0.9600000000000001,
+        "average_precision": 0.9666666666666666,
+        "balanced_accuracy": 0.8,
+        "brier": 0.08592821629081035,
+        "sensitivity": 0.8,
+        "specificity": 0.8
+      },
+      {
+        "auroc": 0.9,
+        "average_precision": 0.9428571428571428,
+        "balanced_accuracy": 0.8,
+        "brier": 0.140540006567857,
+        "sensitivity": 0.6,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.008923534140002933,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.005713330052925096,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      }
+    ],
+    "logistic_110d": [
+      {
+        "auroc": 0.9600000000000001,
+        "average_precision": 0.9666666666666666,
+        "balanced_accuracy": 0.9,
+        "brier": 0.14396400899754,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 0.95,
+        "average_precision": 0.9666666666666668,
+        "balanced_accuracy": 0.9,
+        "brier": 0.15079910304353955,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.08594016750170505,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.08930190344457103,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      }
+    ],
+    "mlp_110d": [
+      {
+        "auroc": 0.9600000000000001,
+        "average_precision": 0.9666666666666666,
+        "balanced_accuracy": 0.8,
+        "brier": 0.10279962266930427,
+        "sensitivity": 0.8,
+        "specificity": 0.8
+      },
+      {
+        "auroc": 0.8500000000000001,
+        "average_precision": 0.925,
+        "balanced_accuracy": 0.9,
+        "brier": 0.12345203592580062,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.024309727153280326,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 1.0,
+        "brier": 0.017608285640748487,
+        "sensitivity": 1.0,
+        "specificity": 1.0
+      }
+    ],
+    "region_tcn_landmark23": [
+      {
+        "auroc": 0.8,
+        "average_precision": 0.8999999999999999,
+        "balanced_accuracy": 0.5,
+        "brier": 0.24939217720600199,
+        "sensitivity": 1.0,
+        "specificity": 0.0
+      },
+      {
+        "auroc": 0.9,
+        "average_precision": 0.9428571428571428,
+        "balanced_accuracy": 0.65,
+        "brier": 0.19776969611335232,
+        "sensitivity": 0.8,
+        "specificity": 0.5
+      },
+      {
+        "auroc": 0.8333333333333333,
+        "average_precision": 0.9107142857142856,
+        "balanced_accuracy": 0.75,
+        "brier": 0.20703254254861037,
+        "sensitivity": 1.0,
+        "specificity": 0.5
+      },
+      {
+        "auroc": 0.95,
+        "average_precision": 0.9666666666666668,
+        "balanced_accuracy": 0.625,
+        "brier": 0.19775892913399634,
+        "sensitivity": 1.0,
+        "specificity": 0.25
+      }
+    ],
+    "tcn_landmark23": [
+      {
+        "auroc": 0.48,
+        "average_precision": 0.5059523809523809,
+        "balanced_accuracy": 0.5,
+        "brier": 0.24996307094860343,
+        "sensitivity": 1.0,
+        "specificity": 0.0
+      },
+      {
+        "auroc": 0.8,
+        "average_precision": 0.8761904761904762,
+        "balanced_accuracy": 0.5,
+        "brier": 0.20979667162745297,
+        "sensitivity": 1.0,
+        "specificity": 0.0
+      },
+      {
+        "auroc": 0.9583333333333334,
+        "average_precision": 0.976190476190476,
+        "balanced_accuracy": 0.625,
+        "brier": 0.19754410721127477,
+        "sensitivity": 1.0,
+        "specificity": 0.25
+      },
+      {
+        "auroc": 0.9,
+        "average_precision": 0.9266666666666667,
+        "balanced_accuracy": 0.5,
+        "brier": 0.18940029408456263,
+        "sensitivity": 1.0,
+        "specificity": 0.0
+      }
+    ],
+    "transformer_landmark23": [
+      {
+        "auroc": 0.8,
+        "average_precision": 0.7861904761904761,
+        "balanced_accuracy": 0.8,
+        "brier": 0.14169490565008097,
+        "sensitivity": 0.8,
+        "specificity": 0.8
+      },
+      {
+        "auroc": 0.95,
+        "average_precision": 0.9666666666666668,
+        "balanced_accuracy": 0.875,
+        "brier": 0.10471861938033207,
+        "sensitivity": 1.0,
+        "specificity": 0.75
+      },
+      {
+        "auroc": 0.9166666666666666,
+        "average_precision": 0.9484126984126984,
+        "balanced_accuracy": 0.625,
+        "brier": 0.17022659362786857,
+        "sensitivity": 1.0,
+        "specificity": 0.25
+      },
+      {
+        "auroc": 1.0,
+        "average_precision": 1.0,
+        "balanced_accuracy": 0.9,
+        "brier": 0.08751538870234118,
+        "sensitivity": 0.8,
+        "specificity": 1.0
+      }
+    ]
+  },
+  "metrics": {
+    "bigru_landmark23": {
+      "auroc": 0.8991596638655462,
+      "average_precision": 0.9208064491899082,
+      "balanced_accuracy": 0.7997198879551821,
+      "brier": 0.1365708022303392,
+      "elapsed_seconds": 0.9237797330133617,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 16753,
+      "sensitivity": 0.9523809523809523,
+      "specificity": 0.6470588235294118
+    },
+    "extra_trees_110d": {
+      "auroc": 0.9523809523809523,
+      "average_precision": 0.975510204081633,
+      "balanced_accuracy": 0.9467787114845938,
+      "brier": 0.08698807465986402,
+      "elapsed_seconds": 0.6045215089689009,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 256,
+      "sensitivity": 0.9523809523809523,
+      "specificity": 0.9411764705882353
+    },
+    "hist_gradient_boosting_110d": {
+      "auroc": 0.9075630252100839,
+      "average_precision": 0.935650602612124,
+      "balanced_accuracy": 0.8403361344537814,
+      "brier": 0.1254008930465734,
+      "elapsed_seconds": 0.20087766501819715,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 1500,
+      "sensitivity": 0.8571428571428571,
+      "specificity": 0.8235294117647058
+    },
+    "hybrid_110d_tcn": {
+      "auroc": 0.9775910364145657,
+      "average_precision": 0.9836876991012333,
+      "balanced_accuracy": 0.8991596638655461,
+      "brier": 0.05959993510250452,
+      "elapsed_seconds": 0.8668085579993203,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 12707,
+      "sensitivity": 0.8571428571428571,
+      "specificity": 0.9411764705882353
+    },
+    "logistic_110d": {
+      "auroc": 0.980392156862745,
+      "average_precision": 0.9871504157218447,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119596,
+      "elapsed_seconds": 0.016302248986903578,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 111,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    },
+    "mlp_110d": {
+      "auroc": 0.9607843137254902,
+      "average_precision": 0.9764761606396948,
+      "balanced_accuracy": 0.9229691876750701,
+      "brier": 0.06685885242959969,
+      "elapsed_seconds": 1.680790274986066,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 8817,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 0.9411764705882353
+    },
+    "region_tcn_landmark23": {
+      "auroc": 0.8375350140056023,
+      "average_precision": 0.882394857111465,
+      "balanced_accuracy": 0.623249299719888,
+      "brier": 0.21378960065190158,
+      "elapsed_seconds": 1.1942957919673063,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 7211,
+      "sensitivity": 0.9523809523809523,
+      "specificity": 0.29411764705882354
+    },
+    "tcn_landmark23": {
+      "auroc": 0.7478991596638656,
+      "average_precision": 0.8451080128506621,
+      "balanced_accuracy": 0.5294117647058824,
+      "brier": 0.2123116966580769,
+      "elapsed_seconds": 0.8242327100015245,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 5035,
+      "sensitivity": 1.0,
+      "specificity": 0.058823529411764705
+    },
+    "transformer_landmark23": {
+      "auroc": 0.8935574229691876,
+      "average_precision": 0.9079555046162744,
+      "balanced_accuracy": 0.8053221288515406,
+      "brier": 0.12761371225061988,
+      "elapsed_seconds": 0.6976580410264432,
+      "oof_groups": 38,
+      "oof_recordings": 39,
+      "parameter_count": 40753,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 0.7058823529411765
+    }
+  },
+  "mode": "full_screening",
+  "protocol": {
+    "candidate_order": [
+      "logistic_110d",
+      "extra_trees_110d",
+      "hist_gradient_boosting_110d",
+      "mlp_110d",
+      "tcn_landmark23",
+      "bigru_landmark23",
+      "transformer_landmark23",
+      "region_tcn_landmark23",
+      "hybrid_110d_tcn"
+    ],
+    "confirmation_seeds": [
+      0,
+      1,
+      2
+    ],
+    "development_folds": 4,
+    "device": "cuda",
+    "patience": 6,
+    "ranking": [
+      "auroc",
+      "balanced_accuracy",
+      "brier",
+      "simplicity"
+    ],
+    "screen_epochs": 40,
+    "screen_seed": 0,
+    "threshold": 0.5
+  },
+  "provenance": {
+    "implementation_sha256": "50e8b8e405385ea5859b154b8b2856ea69df4a9291317fe809ddd20907800d09",
+    "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "source_collection_sha256": "30263bc3784a1ed9eeec196f1448b3b36234036e25282d2bed17dcee97aab3ae",
+    "split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "architecture_autoresearch_v1_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade",
+  "validation_stress_test": {
+    "group_label_permutation": {
+      "null_auroc_mean": 0.4885882352941176,
+      "null_auroc_q95": 0.6864145658263304,
+      "observed_fixed_fold_auroc": 0.980392156862745,
+      "p_value": 0.001996007984031936,
+      "permutations": 500
+    },
+    "protected_predictions": 0,
+    "repeated_group_cv": {
+      "auroc": {
+        "fraction_at_least_0_95": 0.98,
+        "maximum": 0.9859943977591036,
+        "median": 0.9663865546218486,
+        "minimum": 0.9411764705882353,
+        "q05": 0.9564425770308123,
+        "q95": 0.980672268907563
+      },
+      "balanced_accuracy": {
+        "maximum": 0.9523809523809523,
+        "median": 0.9166666666666667,
+        "minimum": 0.8809523809523809,
+        "q05": 0.8809523809523809,
+        "q95": 0.9523809523809523
+      },
+      "brier": {
+        "maximum": 0.12815755931164882,
+        "median": 0.11835859737840451,
+        "minimum": 0.11358534962039642,
+        "q05": 0.11386934768050652,
+        "q95": 0.12639113630405244
+      },
+      "folds": 4,
+      "repeats": 50
+    },
+    "schema_version": "logistic_110d_stability_audit_v1"
+  }
+}
