@@ -6,10 +6,10 @@ historical baselines rather than the current validation claim.
 
 ## Canonical result
 
-The current development champion remains the **mirror-invariant 110D Landmark
-trajectory representation** with a fixed standardized L2 logistic classifier.
-It has now been selected under an identity-reviewed, patient/group-disjoint
-PalsyNet development protocol.
+The released model is the **mirror-invariant 110D Landmark trajectory
+representation** with a fixed standardized L2 logistic classifier. It was
+selected under an identity-reviewed, patient/group-disjoint PalsyNet
+development protocol and then evaluated once on the untouched outer partition.
 
 | Frozen development candidate | AUROC | Balanced accuracy | Sensitivity | Specificity | Brier |
 |---|---:|---:|---:|---:|---:|
@@ -29,6 +29,14 @@ These values must not be presented as an improvement over the older AUROC
 video-held-out partition. The new result is stronger evidence because its
 evaluation unit is a reviewed person group, not because the numerical score is
 directly comparable.
+
+The one-shot protected outer test contained 10 reviewed person groups (5
+affected and 5 unaffected). It produced AUROC `1.000`, average precision
+`1.000`, balanced accuracy `0.900`, sensitivity `0.800`, specificity `1.000`,
+and Brier `0.118` at the frozen threshold `0.5`. The perfect ranking on only ten
+groups is encouraging but statistically fragile: one affected group fell below
+the fixed decision threshold, and this remains an internal PalsyNet outer test,
+not cross-institutional or clinical validation.
 
 ## Model and representation
 
@@ -93,9 +101,12 @@ candidate selection, and the result is not independent clinical validation.
 - Frozen split: 49 eligible recordings / 48 groups total.
 - Development evaluation: 39 recordings / 38 groups, comprising 21 affected
   and 17 unaffected groups, with four-fold group-disjoint OOF predictions.
-- Protected partition: 10 recordings / 10 groups in outer fold 0.
-- Protected access counters: zero cache loads, feature extractions, scaler fits,
-  model fits, and predictions.
+- Protected partition: 10 recordings / 10 groups in outer fold 0, comprising 5
+  affected and 5 unaffected groups.
+- One-shot outer execution: 39 development recordings loaded for one scaler and
+  one model fit; 10 protected recordings loaded, transformed, and predicted
+  once. No candidate, threshold, feature, calibration, or split changed after
+  the result.
 - Bootstrap: 5,000 paired, class-stratified reviewed-group resamples at seed
   `20260805`.
 - Claim unit: `person_held_out`; identity status: `reviewed`.
@@ -107,11 +118,18 @@ result can be serialized.
 
 ## Decision and remaining gates
 
-`landmark_mi_110d` is locked as the 110D-Generalization v1 development
-candidate. This does **not** authorize the protected outer test. The next
-permitted step is to freeze an authorization artifact bound to the candidate,
-identity manifest, person split, source collection, protocol, and implementation
-digests, and then run outer fold 0 exactly once.
+`landmark_mi_110d` is now sealed as 110D-Generalization v1. After the protected
+result was pinned, the final inference artifact was fit once on all 49 eligible
+recordings / 48 reviewed groups (26 affected and 22 unaffected groups). The
+artifact contains the 110 feature names, scaler statistics, Logistic
+coefficients/intercept, mirror-inference rule, threshold, and authenticated
+provenance; it contains no patient identifiers, filenames, paths, or row-level
+predictions.
+
+The next scientific gate is unchanged cross-institutional scoring on MEEI after
+its license, labels, identity/group structure, and preprocessing eligibility are
+audited. MEEI must not be used for tuning this sealed artifact. Mayo remains a
+positive-only consistency challenge and cannot supply specificity or AUROC.
 
 No result here is Mayo-65 two-class accuracy, HB accuracy, cross-institutional
 validation, clinical validation, or deployment evidence. The new Mayo result is
@@ -129,6 +147,7 @@ independently reviewed subject map, and eligibility authorization.
 
 - Source branch: `codex/110d-generalization-v1`
 - Generalization lock implementation commit: `14a47f9`
+- One-shot outer release implementation commit: `ad5b670`
 - Architecture/stability/Mayo challenge implementation commit: `036e033`
 - Reviewed identity manifest SHA-256:
   `fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f`
@@ -136,10 +155,20 @@ independently reviewed subject map, and eligibility authorization.
   `865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd`
 - Person split registry SHA-256:
   `738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0`
-- Implementation aggregate SHA-256:
+- Development implementation aggregate SHA-256:
   `4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208`
-- Owner-private aggregate report SHA-256:
+- Development aggregate report SHA-256:
   `e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43`
+- Outer authorization SHA-256:
+  `7aca8ddffeca5479a53ee28103b091acf1f1d64badd46d62ce8a601654b0881b`
+- Outer release implementation aggregate SHA-256:
+  `b5ac56315b161648662d7b3dcf0991b30413b1dffada11b697547ed7db2aff9d`
+- Sealed protected report SHA-256:
+  `0e44cfaf2fe5bb3e8e9d9ea8629f8ef873a5af2d94a56025b3f6f32f35227df3`
+- Final PalsyNet artifact SHA-256:
+  `cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9`
+- H200 release:
+  `/home/ssh-ziyue/facial-paralysis-h200/releases/110d-outer-release-v1-ad5b670`
 - Architecture Autoresearch report SHA-256:
   `4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7`
 - Mayo positive-challenge report SHA-256:
@@ -147,8 +176,7 @@ independently reviewed subject map, and eligibility authorization.
 - Machine-readable public summary:
   `docs/results/current_development_model.json`
 
-The first invocation created the immutable report. Because its asynchronous
-completion was not surfaced immediately, the identical frozen command was
-inadvertently invoked once more; it reached the no-overwrite gate and failed
-without changing the report. No protocol, candidate, threshold, or protected
-data access changed between invocations.
+The protected outer evaluator was invoked exactly once and created the sealed
+report in 17.68 seconds. The separate final-artifact freezer was then invoked
+exactly once and completed in 2.36 seconds. The release scripts reject output
+overwrite, and the H200 release is retained as the execution evidence.

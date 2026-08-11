@@ -64,12 +64,12 @@
 - Generate: `outputs/dynamic_landmark/benchmarks/protected/110d-generalization-v1/report.json`
 - Generate: `outputs/dynamic_landmark/artifacts/110d-generalization-v1/final_palsynet_artifact.json`
 
-- [ ] Freeze the release code and authorization digests locally; run `py_compile`, `git diff --check`, closed-schema/secret scans, and the complete relevant test suite before any protected access.
-- [ ] Sync only the exact commit, 49-record authenticated cache, reviewed identity evidence, frozen split registry, locked development report, and authorization to a new immutable H200 release directory.
-- [ ] On H200, verify GPU/runtime availability, repository/cache/evidence digests, authorization, and focused tests without loading protected NPZ arrays.
-- [ ] Invoke `run_110d_outer_release_v1.py` exactly once. Require an exit-zero, no-overwrite aggregate protected report and independently verify its digest/schema/counts.
-- [ ] Invoke `freeze_110d_generalization_v1_artifact.py` exactly once and independently reproduce its probabilities from serialized scaler/model parameters on a synthetic known-answer input.
-- [ ] Copy only aggregate report/artifact evidence back to the canonical local worktree; raw videos and per-record predictions never leave their governed locations.
+- [x] Freeze the release code and authorization digests locally; run `py_compile`, `git diff --check`, closed-schema/secret scans, and the complete relevant test suite before any protected access.
+- [x] Sync only the exact commit, 49-record authenticated cache, reviewed identity evidence, frozen split registry, locked development report, and authorization to a new immutable H200 release directory.
+- [x] On H200, verify GPU/runtime availability, repository/cache/evidence digests, authorization, and focused tests without loading protected NPZ arrays.
+- [x] Invoke `run_110d_outer_release_v1.py` exactly once. Require an exit-zero, no-overwrite aggregate protected report and independently verify its digest/schema/counts.
+- [x] Invoke `freeze_110d_generalization_v1_artifact.py` exactly once and independently reproduce its probabilities from serialized scaler/model parameters on a synthetic known-answer input.
+- [x] Copy only aggregate report/artifact evidence back to the canonical local worktree; raw videos and per-record predictions never leave their governed locations.
 
 ## Task 5: Publish the release evidence
 
@@ -78,7 +78,7 @@
 - Modify: `docs/results/current_development_model.json`
 - Create: `docs/results/110d_outer_release_v1.md`
 
-- [ ] Report the protected metric separately from development AUROC `0.980`; do not retune or relabel the protected result as Mayo/HB/clinical validation.
-- [ ] Record the exact release commit, host release path, input/implementation/report/artifact SHA-256 values, counts, and test results.
-- [ ] Run fresh focused and full relevant verification, `py_compile`, `git diff --check`, secret scan, and worktree-scope audit.
+- [x] Report the protected metric separately from development AUROC `0.980`; do not retune or relabel the protected result as Mayo/HB/clinical validation.
+- [x] Record the exact release commit, host release path, input/implementation/report/artifact SHA-256 values, counts, and test results.
+- [x] Run fresh focused and full relevant verification, `py_compile`, `git diff --check`, secret scan, and worktree-scope audit.
 - [ ] Commit only intended code/tests/docs/aggregate artifacts and push `codex/110d-generalization-v1`.

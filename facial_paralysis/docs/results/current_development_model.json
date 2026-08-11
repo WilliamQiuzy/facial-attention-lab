@@ -1,6 +1,6 @@
 {
-  "schema_version": "facial_paralysis_current_development_model_v3",
-  "status": "current_development_champion_not_outer_validated",
+  "schema_version": "facial_paralysis_current_model_v4",
+  "status": "sealed_palsynet_outer_evaluated_not_externally_validated",
   "recorded_on": "2026-08-11",
   "model": {
     "name": "landmark_mi_110d",
@@ -50,7 +50,9 @@
     "inner_folds": 4,
     "protected_outer_fold_number": 0,
     "protected_recordings": 10,
-    "protected_groups": 10
+    "protected_groups": 10,
+    "protected_affected_groups": 5,
+    "protected_unaffected_groups": 5
   },
   "protocol": {
     "bootstrap_repeats": 5000,
@@ -127,6 +129,57 @@
       ]
     }
   },
+  "protected_outer": {
+    "schema_version": "110d_generalization_protected_outer_v1",
+    "execution": "one_shot_sealed",
+    "candidate": "landmark_mi_110d",
+    "candidate_dimension": 110,
+    "training_recordings": 39,
+    "training_groups": 38,
+    "protected_recordings": 10,
+    "protected_groups": 10,
+    "protected_affected_groups": 5,
+    "protected_unaffected_groups": 5,
+    "metrics": {
+      "auroc": 1.0,
+      "auroc_descriptive_bootstrap_ci95": [
+        1.0,
+        1.0
+      ],
+      "average_precision": 1.0,
+      "balanced_accuracy": 0.9,
+      "balanced_accuracy_descriptive_bootstrap_ci95": [
+        0.7,
+        1.0
+      ],
+      "sensitivity": 0.8,
+      "sensitivity_descriptive_bootstrap_ci95": [
+        0.4,
+        1.0
+      ],
+      "specificity": 1.0,
+      "specificity_descriptive_bootstrap_ci95": [
+        1.0,
+        1.0
+      ],
+      "brier": 0.11762731663417376
+    },
+    "candidate_changed_after_result": false,
+    "threshold_changed_after_result": false,
+    "external_validation": false,
+    "clinical_validation": false
+  },
+  "final_artifact": {
+    "schema_version": "110d_generalization_final_artifact_v1",
+    "eligible_recordings": 49,
+    "eligible_groups": 48,
+    "affected_groups": 26,
+    "unaffected_groups": 22,
+    "scaler_fits": 1,
+    "model_fits": 1,
+    "contains_identifiers_paths_or_row_probabilities": false,
+    "sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9"
+  },
   "architecture_autoresearch": {
     "screening_winner": "logistic_110d",
     "current_model_replaced": false,
@@ -159,11 +212,12 @@
     "action_proxy_advances": false,
     "phase_proxy_advances_against_both_simpler_candidates": false,
     "promotion_passed": false,
-    "outer_evaluation_authorized": false,
+    "outer_evaluation_completed_once": true,
+    "outer_result_sealed": true,
     "hb_claim_authorized": false,
     "clinical_validation": false,
     "deployment_authorized": false,
-    "next_gate": "freeze_candidate_then_explicit_one_shot_outer_authorization"
+    "next_gate": "audit_meei_then_score_the_unchanged_sealed_artifact_once"
   },
   "execution_audit": {
     "gate_attempts": 1,
@@ -173,17 +227,23 @@
     "development_scaler_fits": 12,
     "development_model_fits": 12,
     "development_predictions": 117,
-    "protected_cache_records_loaded": 0,
-    "protected_feature_extractions": 0,
+    "protected_cache_records_loaded": 10,
+    "protected_feature_extractions": 10,
     "protected_scaler_fits": 0,
     "protected_model_fits": 0,
-    "protected_predictions": 0,
-    "implementation_components_bound": 9,
+    "protected_predictions": 10,
+    "outer_training_scaler_fits": 1,
+    "outer_training_model_fits": 1,
+    "final_artifact_scaler_fits": 1,
+    "final_artifact_model_fits": 1,
+    "outer_release_implementation_components_bound": 12,
     "report_contains_identifiers_paths_or_row_probabilities": false,
-    "immutable_report_invocations": {
+    "development_report_invocations": {
       "created": 1,
       "identical_repeat_rejected_no_overwrite": 1
-    }
+    },
+    "protected_outer_report_invocations": 1,
+    "final_artifact_invocations": 1
   },
   "auxiliary_and_external": {
     "mayo_positive_challenge": {
@@ -223,7 +283,8 @@
       "local_acquisition_complete": true,
       "videos": 60,
       "candidate_selection_eligible": false,
-      "external_scoring_authorized": false
+      "external_scoring_authorized": false,
+      "next_requirement": "license_label_identity_and_preprocessing_eligibility_audit"
     },
     "aflfp": {
       "access_granted": false,
@@ -234,21 +295,27 @@
     "source_branch": "codex/110d-generalization-v1",
     "generalization_lock_implementation_commit": "14a47f9",
     "architecture_challenge_implementation_commit": "036e033",
+    "outer_release_implementation_commit": "ad5b670",
     "reviewed_identity_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
     "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
     "person_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
     "implementation_aggregate_sha256": "4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208",
     "aggregate_source_report_sha256": "e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43",
+    "outer_authorization_sha256": "7aca8ddffeca5479a53ee28103b091acf1f1d64badd46d62ce8a601654b0881b",
+    "outer_release_implementation_sha256": "b5ac56315b161648662d7b3dcf0991b30413b1dffada11b697547ed7db2aff9d",
+    "protected_outer_report_sha256": "0e44cfaf2fe5bb3e8e9d9ea8629f8ef873a5af2d94a56025b3f6f32f35227df3",
+    "final_palsynet_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
     "architecture_report_sha256": "4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7",
     "mayo_positive_challenge_report_sha256": "bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060",
     "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
-    "h200_release": "architecture-autoresearch-v1-036e033-r4",
-    "h200_code_archive_sha256": "df07df417e9981503ed3803d209cfd3724ea75cfcd89bce3b496f34403c3f3e5"
+    "h200_release": "/home/ssh-ziyue/facial-paralysis-h200/releases/110d-outer-release-v1-ad5b670",
+    "h200_code_archive_sha256": "73ba31c664557a9b4efedd31653dc6a9d702871af8005670ed2cf94e3a959df3"
   },
   "claim_boundary": {
     "not_directly_comparable_to_legacy_video_held_out_score": true,
     "mayo_65_performance": false,
     "mayo_positive_challenge_is_not_binary_accuracy": true,
+    "palsynet_protected_outer_completed": true,
     "house_brackmann_accuracy": false,
     "cross_institutional_validation": false,
     "clinical_use": false
