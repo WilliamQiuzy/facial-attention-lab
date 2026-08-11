@@ -99,3 +99,5 @@ facial_paralysis/outputs/dynamic_landmark/benchmarks/development/mirror-invarian
 facial_paralysis/outputs/dynamic_landmark/benchmarks/development/110d-generalization-v1/
 facial_paralysis/data_acquisition/youtube/clips/
 facial_paralysis/data_acquisition/youtube/faces/
+# Private participant-level MEEI inventory; only closed aggregate reports may be published.
+facial_paralysis/outputs/meei_external_v1/participant_manifest.json
