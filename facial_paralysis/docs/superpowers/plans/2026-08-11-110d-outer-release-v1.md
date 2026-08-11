@@ -81,4 +81,4 @@
 - [x] Report the protected metric separately from development AUROC `0.980`; do not retune or relabel the protected result as Mayo/HB/clinical validation.
 - [x] Record the exact release commit, host release path, input/implementation/report/artifact SHA-256 values, counts, and test results.
 - [x] Run fresh focused and full relevant verification, `py_compile`, `git diff --check`, secret scan, and worktree-scope audit.
-- [ ] Commit only intended code/tests/docs/aggregate artifacts and push `codex/110d-generalization-v1`.
+- [x] Commit only intended code/tests/docs/aggregate artifacts and push `codex/110d-generalization-v1`.
