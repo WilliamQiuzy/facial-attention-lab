@@ -1,6 +1,6 @@
 {
-  "schema_version": "facial_paralysis_current_model_v4",
-  "status": "sealed_palsynet_outer_evaluated_not_externally_validated",
+  "schema_version": "facial_paralysis_current_model_v5",
+  "status": "sealed_110d_externally_evaluated_generalization_gap_identified",
   "recorded_on": "2026-08-11",
   "model": {
     "name": "landmark_mi_110d",
@@ -217,7 +217,7 @@
     "hb_claim_authorized": false,
     "clinical_validation": false,
     "deployment_authorized": false,
-    "next_gate": "audit_meei_then_score_the_unchanged_sealed_artifact_once"
+    "next_gate": "palsynet_only_source_robust_development_then_new_untouched_external_cohort"
   },
   "execution_audit": {
     "gate_attempts": 1,
@@ -282,9 +282,32 @@
     "meei": {
       "local_acquisition_complete": true,
       "videos": 60,
+      "participants": 60,
+      "affected_participants": 50,
+      "unaffected_participants": 10,
       "candidate_selection_eligible": false,
-      "external_scoring_authorized": false,
-      "next_requirement": "license_label_identity_and_preprocessing_eligibility_audit"
+      "external_scoring_authorized": true,
+      "external_scoring_completed_once": true,
+      "all_participants_scored": true,
+      "photos_scored": 0,
+      "model_scaler_or_calibration_fits": 0,
+      "metrics": {
+        "auroc": 0.776,
+        "auroc_descriptive_bootstrap_ci95": [
+          0.62195,
+          0.902
+        ],
+        "average_precision": 0.9492225568570813,
+        "balanced_accuracy": 0.65,
+        "sensitivity": 0.9,
+        "specificity": 0.4,
+        "brier": 0.14306942317843108,
+        "ordinary_accuracy_derived_from_aggregate_counts": 0.8166666666666667,
+        "correct_participants_at_0_5": 49
+      },
+      "requested_95_percent_target_met": false,
+      "dominant_failure": "external_normal_false_positives_low_specificity",
+      "may_tune_successor_on_meei": false
     },
     "aflfp": {
       "access_granted": false,
@@ -292,7 +315,7 @@
     }
   },
   "provenance": {
-    "source_branch": "codex/110d-generalization-v1",
+    "source_branch": "codex/meei-external-validation-v1",
     "generalization_lock_implementation_commit": "14a47f9",
     "architecture_challenge_implementation_commit": "036e033",
     "outer_release_implementation_commit": "ad5b670",
@@ -305,6 +328,13 @@
     "outer_release_implementation_sha256": "b5ac56315b161648662d7b3dcf0991b30413b1dffada11b697547ed7db2aff9d",
     "protected_outer_report_sha256": "0e44cfaf2fe5bb3e8e9d9ea8629f8ef873a5af2d94a56025b3f6f32f35227df3",
     "final_palsynet_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
+    "meei_external_implementation_commit": "81a83df",
+    "meei_authorization_sha256": "8bf70dd1b04381a35af2de99b530e744425384a060b90a48c56156ec6b3ae6af",
+    "meei_participant_manifest_sha256": "7770473fe4479cf11e4c88474ee28105cef7db5fca026918fc89cd6dc023c5ed",
+    "meei_cache_manifest_sha256": "4ae13f6a77ea2ba3095665df6cccc0753b54a49f8cd3d676dccddb73d12f1d0e",
+    "meei_cache_artifact_collection_sha256": "9f9ac765eb0ce0aff317c27099ed9c4e9828f9f4303b51c1a03372774a3c3f6f",
+    "meei_external_report_sha256": "445fa3c770addbeb70820a3395c13304e602b91445bb218d404cd1dff5f54baf",
+    "meei_h200_release": "/home/ssh-ziyue/facial-paralysis-h200/releases/meei-external-v1-81a83df",
     "architecture_report_sha256": "4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7",
     "mayo_positive_challenge_report_sha256": "bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060",
     "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
@@ -317,7 +347,9 @@
     "mayo_positive_challenge_is_not_binary_accuracy": true,
     "palsynet_protected_outer_completed": true,
     "house_brackmann_accuracy": false,
-    "cross_institutional_validation": false,
+    "independent_public_cross_dataset_validation_completed": true,
+    "requested_external_accuracy_target_met": false,
+    "prospective_cross_institutional_clinical_validation": false,
     "clinical_use": false
   }
 }

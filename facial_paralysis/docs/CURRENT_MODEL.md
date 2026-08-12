@@ -38,6 +38,35 @@ groups is encouraging but statistically fragile: one affected group fell below
 the fixed decision threshold, and this remains an internal PalsyNet outer test,
 not cross-institutional or clinical validation.
 
+## MEEI independent external validation
+
+The final PalsyNet artifact was applied unchanged, exactly once, to all 60 MEEI
+participants (50 facial palsy, 10 normal). Every participant had one eligible
+video; all 60 passed the frozen label-blind extraction gate. No MEEI photo was
+decoded, and no scaler, model, calibration, threshold, or feature was fit or
+selected on MEEI.
+
+| External participant-level endpoint | Point estimate | Descriptive bootstrap 95% interval |
+|---|---:|---:|
+| AUROC | 0.776 | 0.622–0.902 |
+| Average precision | 0.949 | 0.910–0.980 |
+| Balanced accuracy at 0.5 | 0.650 | 0.500–0.810 |
+| Sensitivity at 0.5 | 0.900 | 0.820–0.980 |
+| Specificity at 0.5 | 0.400 | 0.100–0.700 |
+| Brier score | 0.143 | 0.111–0.178 |
+
+At the frozen threshold, 45/50 affected and 4/10 normal participants were
+classified correctly, giving an ordinary accuracy of 49/60 = 81.7%. Balanced
+accuracy is the safer summary because the external cohort is 83.3% affected.
+For the same reason, the apparently high average precision of 94.9% must not be
+reported as accuracy. The main external failure is false-positive normal calls:
+sensitivity transferred reasonably, while specificity did not.
+
+This is a genuine independent public cross-dataset evaluation and it does not
+meet the requested 95% target. It narrows the next research problem to
+cross-source normal-reference and acquisition robustness; it is not permission
+to tune against the now-exposed MEEI test result.
+
 ## Model and representation
 
 MediaPipe remains the upstream detector. Its face landmarks are reduced to the
@@ -126,17 +155,19 @@ coefficients/intercept, mirror-inference rule, threshold, and authenticated
 provenance; it contains no patient identifiers, filenames, paths, or row-level
 predictions.
 
-The next scientific gate is unchanged cross-institutional scoring on MEEI after
-its license, labels, identity/group structure, and preprocessing eligibility are
-audited. MEEI must not be used for tuning this sealed artifact. Mayo remains a
-positive-only consistency challenge and cannot supply specificity or AUROC.
+The MEEI gate is complete and exposed a specificity/generalization gap. MEEI
+must not now become a tuning set. The next scientific gate is a PalsyNet-only,
+source-robust representation update selected without MEEI outcomes, followed by
+a new untouched external cohort such as AFLFP after legitimate access. Mayo
+remains a positive-only consistency challenge and cannot supply specificity or
+AUROC until verified negative labels exist.
 
-No result here is Mayo-65 two-class accuracy, HB accuracy, cross-institutional
-validation, clinical validation, or deployment evidence. The new Mayo result is
-a positive-only consistency challenge. MEEI is locally acquired and quarantined
-but cannot be scored until the protected PalsyNet result and final PalsyNet
-artifact are sealed. AFLFP access is not established and requires an eligible
-non-student institutional recipient to complete its EULA process.
+No result here is Mayo-65 two-class accuracy, HB accuracy, prospective clinical
+validation, or deployment evidence. MEEI is an independent public cross-dataset
+test, not HB grading or a clinical-use study. The Mayo result remains a
+positive-only consistency challenge. AFLFP access is not established and
+requires an eligible non-student institutional recipient to complete its EULA
+process.
 
 YFP has a separate static regional-severity audit manifest with 10,838 accepted
 anchors, but it remains `training_eligible=false`: no MediaPipe extraction,
@@ -145,7 +176,7 @@ independently reviewed subject map, and eligibility authorization.
 
 ## Provenance
 
-- Source branch: `codex/110d-generalization-v1`
+- Source branch: `codex/meei-external-validation-v1`
 - Generalization lock implementation commit: `14a47f9`
 - One-shot outer release implementation commit: `ad5b670`
 - Architecture/stability/Mayo challenge implementation commit: `036e033`
@@ -167,6 +198,19 @@ independently reviewed subject map, and eligibility authorization.
   `0e44cfaf2fe5bb3e8e9d9ea8629f8ef873a5af2d94a56025b3f6f32f35227df3`
 - Final PalsyNet artifact SHA-256:
   `cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9`
+- MEEI external implementation commit: `81a83df`
+- MEEI authorization SHA-256:
+  `8bf70dd1b04381a35af2de99b530e744425384a060b90a48c56156ec6b3ae6af`
+- MEEI participant manifest SHA-256:
+  `7770473fe4479cf11e4c88474ee28105cef7db5fca026918fc89cd6dc023c5ed`
+- MEEI dynamic-cache manifest SHA-256:
+  `4ae13f6a77ea2ba3095665df6cccc0753b54a49f8cd3d676dccddb73d12f1d0e`
+- MEEI cache-byte collection SHA-256:
+  `9f9ac765eb0ce0aff317c27099ed9c4e9828f9f4303b51c1a03372774a3c3f6f`
+- MEEI aggregate report SHA-256:
+  `445fa3c770addbeb70820a3395c13304e602b91445bb218d404cd1dff5f54baf`
+- MEEI H200 release:
+  `/home/ssh-ziyue/facial-paralysis-h200/releases/meei-external-v1-81a83df`
 - H200 release:
   `/home/ssh-ziyue/facial-paralysis-h200/releases/110d-outer-release-v1-ad5b670`
 - Architecture Autoresearch report SHA-256:
@@ -180,3 +224,9 @@ The protected outer evaluator was invoked exactly once and created the sealed
 report in 17.68 seconds. The separate final-artifact freezer was then invoked
 exactly once and completed in 2.36 seconds. The release scripts reject output
 overwrite, and the H200 release is retained as the execution evidence.
+
+The separate MEEI runner was also invoked exactly once. Its closed aggregate
+report contains no participant/recording identifiers, filenames, paths,
+labels, or row probabilities. The execution audit records 60 authenticated
+cache loads, 60 feature extractions, 60 frozen-artifact predictions, 120 mirror
+transforms, and zero scaler/model/calibration fits.

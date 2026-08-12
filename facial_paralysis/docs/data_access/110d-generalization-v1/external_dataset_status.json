@@ -1,5 +1,5 @@
 {
-  "as_of": "2026-08-05",
+  "as_of": "2026-08-11",
   "datasets": {
     "aflfp": {
       "access_evidence": {
@@ -62,7 +62,7 @@
         ]
       },
       "inventory": {
-        "aggregate_member_manifest_sha256": "0583d9cc349029ccca927438ef4bdb2cba2e4cec1a21fd7d55e922597b2d3bf2",
+        "aggregate_member_manifest_sha256": "098ab51327be335ae08ddd16268cdfbd899a1c581cec95b951af3fd9bff93546",
         "file_counts": {
           "extensionless": 3,
           "jpg": 480,
@@ -82,17 +82,6 @@
         "video_participants": 60,
         "video_without_spreadsheet_metadata": {
           "count": 9,
-          "keys": [
-            "mildflaccid4",
-            "mildflaccid5",
-            "moderateflaccid2",
-            "nearnormalflaccid3",
-            "severeflaccid4",
-            "synkinetic_complete5",
-            "synkinetic_mild4",
-            "synkinetic_moderate4",
-            "synkinetic_severe5"
-          ],
           "metadata": null,
           "policy": "do_not_invent_or_impute"
         }
@@ -104,12 +93,21 @@
         "resources_page": "https://www.hadlockfacialplasticsurgery.com/resources/"
       },
       "scoring": {
-        "final_palsynet_artifact_status": "not_frozen",
-        "meei_outcomes_exposed": false,
-        "one_shot_authorization_status": "absent",
-        "status": "unauthorized"
+        "final_palsynet_artifact_status": "frozen",
+        "meei_outcomes_exposed": true,
+        "one_shot_authorization_status": "consumed",
+        "participants_scored": 60,
+        "model_scaler_or_calibration_fits": 0,
+        "auroc": 0.776,
+        "balanced_accuracy": 0.65,
+        "sensitivity": 0.9,
+        "specificity": 0.4,
+        "brier": 0.14306942317843108,
+        "ordinary_accuracy_derived_from_aggregate_counts": 0.8166666666666667,
+        "report_sha256": "445fa3c770addbeb70820a3395c13304e602b91445bb218d404cd1dff5f54baf",
+        "status": "completed_once_no_tuning"
       },
-      "status": "acquired_quarantined_not_scored"
+      "status": "acquired_audited_extracted_and_scored_once"
     }
   },
   "lane": {
