@@ -1,7 +1,7 @@
 """Leak-safe classical summaries for fixed dynamic facial trajectories.
 
 The 95-column input contract is already validated by the dynamic cache loader.
-This module preserves the four independent temporal windows: frame derivatives
+This module preserves independent temporal windows: frame derivatives
 and lagged pairs are never formed across a window boundary.
 """
 from __future__ import annotations
@@ -58,21 +58,32 @@ def _validated_recording_arrays(
     valid_mask = np.asarray(valid_mask)
     timestamps = np.asarray(timestamps)
     source_frame_indices = np.asarray(source_frame_indices)
-    if features.shape != DYNAMIC_FEATURE_SHAPE:
-        raise ValueError(f"features must have shape {DYNAMIC_FEATURE_SHAPE}")
+    if (
+        features.ndim != 3
+        or features.shape[0] < 1
+        or features.shape[1:] != DYNAMIC_FEATURE_SHAPE[1:]
+    ):
+        raise ValueError(
+            "features must have shape (n_windows, 32, 95) with at least one window"
+        )
     if features.dtype.kind not in {"f", "i", "u"}:
         raise ValueError("features must be real numeric values")
-    if valid_mask.shape != DYNAMIC_MASK_SHAPE or valid_mask.dtype != np.dtype(bool):
-        raise ValueError(f"valid_mask must be bool with shape {DYNAMIC_MASK_SHAPE}")
-    if timestamps.shape != DYNAMIC_MASK_SHAPE or timestamps.dtype.kind not in {
+    expected_mask_shape = features.shape[:2]
+    if valid_mask.shape != expected_mask_shape or valid_mask.dtype != np.dtype(bool):
+        raise ValueError(
+            f"valid_mask must be bool with shape {expected_mask_shape}"
+        )
+    if timestamps.shape != expected_mask_shape or timestamps.dtype.kind not in {
         "f", "i", "u",
     }:
-        raise ValueError(f"timestamps must be numeric with shape {DYNAMIC_MASK_SHAPE}")
-    if source_frame_indices.shape != DYNAMIC_MASK_SHAPE or (
+        raise ValueError(
+            f"timestamps must be numeric with shape {expected_mask_shape}"
+        )
+    if source_frame_indices.shape != expected_mask_shape or (
         source_frame_indices.dtype.kind not in {"i", "u"}
     ):
         raise ValueError(
-            f"source_frame_indices must be integer with shape {DYNAMIC_MASK_SHAPE}"
+            f"source_frame_indices must be integer with shape {expected_mask_shape}"
         )
     if not np.isfinite(timestamps).all():
         raise ValueError("timestamps must be finite")
@@ -169,12 +180,14 @@ def bilateral_dynamics(
     second = np.asarray(capture_side_b, dtype=np.float64)
     mask = np.asarray(valid_mask)
     times = np.asarray(timestamps, dtype=np.float64)
-    if first.shape != DYNAMIC_MASK_SHAPE or second.shape != DYNAMIC_MASK_SHAPE:
-        raise ValueError(f"bilateral trajectories must have shape {DYNAMIC_MASK_SHAPE}")
-    if mask.shape != DYNAMIC_MASK_SHAPE or mask.dtype != np.dtype(bool):
-        raise ValueError(f"valid_mask must be bool with shape {DYNAMIC_MASK_SHAPE}")
-    if times.shape != DYNAMIC_MASK_SHAPE or not np.isfinite(times).all():
-        raise ValueError(f"timestamps must be finite with shape {DYNAMIC_MASK_SHAPE}")
+    if first.ndim != 2 or first.shape[0] < 1 or first.shape[1] != DYNAMIC_MASK_SHAPE[1]:
+        raise ValueError("bilateral trajectories must have shape (n_windows, 32)")
+    if second.shape != first.shape:
+        raise ValueError("bilateral trajectories must have the same shape")
+    if mask.shape != first.shape or mask.dtype != np.dtype(bool):
+        raise ValueError(f"valid_mask must be bool with shape {first.shape}")
+    if times.shape != first.shape or not np.isfinite(times).all():
+        raise ValueError(f"timestamps must be finite with shape {first.shape}")
     if not np.all(times[:, 1:] > times[:, :-1]):
         raise ValueError("timestamps must increase strictly within each window")
     if isinstance(max_lag_frames, bool) or not isinstance(

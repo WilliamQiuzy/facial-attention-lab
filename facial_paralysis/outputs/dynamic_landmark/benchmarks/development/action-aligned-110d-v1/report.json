@@ -1,0 +1,105 @@
+{
+  "action_cache": {
+    "mean_coverage": 0.9998855311355311,
+    "minimum_coverage": 0.9955357142857143
+  },
+  "audit": {
+    "development_action_cache_reads": 39,
+    "development_baseline_cache_reads": 39,
+    "development_model_fits": 8,
+    "development_predictions": 78,
+    "protected_feature_reads": 0,
+    "protected_fits": 0,
+    "protected_predictions": 0
+  },
+  "claim_scope": "identity_reviewed_palsynet_development_group_oof_only",
+  "counts": {
+    "development_groups": 38,
+    "development_recordings": 39,
+    "protected_groups": 10,
+    "protected_recordings": 10
+  },
+  "decision": {
+    "action_promoted": true,
+    "clinical_validation": false,
+    "hb_claim_authorized": false,
+    "locked_candidate": "seven_action_window_110d",
+    "mayo_evaluation_authorized": true,
+    "outer_test_access_authorized": false
+  },
+  "metrics": {
+    "four_time_window_110d": {
+      "auroc": 0.980392156862745,
+      "average_precision": 0.9871504157218447,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119593,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    },
+    "seven_action_window_110d": {
+      "auroc": 0.9887955182072828,
+      "average_precision": 0.9923809523809526,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.10868243565724373,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    }
+  },
+  "paired_action_minus_baseline": {
+    "auroc": {
+      "ci95": [
+        -0.03368347338935582,
+        0.06162464985994398
+      ],
+      "point": 0.008403361344537896
+    },
+    "balanced_accuracy": {
+      "ci95": [
+        -0.09523809523809523,
+        0.09523809523809523
+      ],
+      "point": 0.0
+    },
+    "brier": {
+      "ci95": [
+        -0.03956186625120897,
+        0.022856119525058217
+      ],
+      "point": -0.008684691273952203
+    }
+  },
+  "protocol": {
+    "action_windows": {
+      "frames_per_slot": 32,
+      "proposal_rate_hz": 6.0,
+      "selection_uses_labels_or_classifier_scores": false,
+      "slots": 7
+    },
+    "candidate_dimensions": {
+      "four_time_window_110d": 110,
+      "seven_action_window_110d": 110
+    },
+    "candidates": [
+      "four_time_window_110d",
+      "seven_action_window_110d"
+    ],
+    "inner_folds": 4,
+    "model": {
+      "c": 0.01,
+      "hyperparameter_search": false,
+      "threshold": 0.5,
+      "training_augmentation": "original_plus_horizontal_mirror",
+      "type": "standardized_l2_logistic_regression",
+      "validation_inference": "mean_original_and_horizontal_mirror_probability"
+    }
+  },
+  "provenance": {
+    "action_development_cache_aggregate_sha256": "fce65638d5045ad364107f606af5bc1a4005a72555396ee89934f2dcb3dee072",
+    "implementation_sha256": "b8c30a112690c5a7d235dce59c39e2cad4499474188ea7fcbc69f48440817f88",
+    "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "action_aligned_110d_v1_development_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}
