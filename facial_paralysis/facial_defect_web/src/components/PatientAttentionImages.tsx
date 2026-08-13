@@ -1,13 +1,18 @@
-import type { CSSProperties } from 'react'
+import { useId, type CSSProperties } from 'react'
 import type {
   PatientAttentionPoint,
+  PatientFaceRegistration,
 } from '../patientWorkflow/types'
+import { AttentionColorLegend } from './AttentionColorLegend'
+import { PatientFaceContour } from './PatientFaceContour'
+import { attentionColorRgb } from './attentionColorScale'
 
 type PatientAttentionImagesProps = {
   readonly previewUrl: string
   readonly width: number
   readonly height: number
   readonly points: readonly PatientAttentionPoint[]
+  readonly faceRegistration?: PatientFaceRegistration
 }
 
 function AttentionPointLayer({
@@ -29,6 +34,7 @@ function AttentionPointLayer({
               '--patient-point-y': `${point.y * 100}%`,
               '--patient-point-size': `${point.radius * 200}%`,
               '--patient-point-intensity': point.intensity,
+              '--attention-color-rgb': attentionColorRgb(point.intensity),
             } as CSSProperties
           }
         />
@@ -42,7 +48,14 @@ export function PatientAttentionImages({
   width,
   height,
   points,
+  faceRegistration,
 }: PatientAttentionImagesProps) {
+  const densityDescriptionId = useId()
+  const hasMatchedContour = faceRegistration !== undefined
+  const densityDescription = hasMatchedContour
+    ? 'Automatically estimated from this photograph for spatial reference. It is not a defect boundary, clinical segmentation, or attention prediction.'
+    : 'A face contour could not be matched reliably to this photograph. Retake or upload a centered frontal photograph before using a contour reference.'
+
   return (
     <section
       className="patient-attention-images"
@@ -87,25 +100,38 @@ export function PatientAttentionImages({
         Orientation confirmed for this frontal, non-mirrored photograph.
       </p>
 
+      <AttentionColorLegend />
+
       <figure className="patient-attention-images__figure patient-attention-images__density">
-        <h3>Attention density</h3>
+        <h3>
+          {hasMatchedContour
+            ? 'Attention density + matched face contour'
+            : 'Attention density'}
+        </h3>
         <div
           className="patient-attention-images__density-plane"
           role="img"
-          aria-label="Simulated attention density without the source photograph"
+          aria-label={
+            hasMatchedContour
+              ? "Simulated attention density aligned to this photograph's estimated face contour"
+              : 'Simulated attention density; face contour unavailable'
+          }
+          aria-describedby={densityDescriptionId}
           style={{ aspectRatio: `${width} / ${height}` }}
         >
           <AttentionPointLayer
             points={points}
             className="patient-attention-images__density-layer"
           />
+          {faceRegistration ? (
+            <PatientFaceContour registration={faceRegistration} />
+          ) : null}
           <span className="patient-attention-images__watermark">
             Simulated
           </span>
         </div>
-        <figcaption>
-          Brighter overlap indicates more simulated attention density.
-          Same deterministic simulation.
+        <figcaption id={densityDescriptionId}>
+          {densityDescription}
         </figcaption>
       </figure>
     </section>

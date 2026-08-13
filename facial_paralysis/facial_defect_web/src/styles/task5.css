@@ -63,7 +63,7 @@
 .task5-case-checklist label { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; min-height: 58px; align-items: center; padding: 10px 12px; background: #fff; cursor: pointer; }
 .task5-case-checklist label:has(input:checked) { background: var(--task5-wash); box-shadow: inset 3px 0 var(--research-blue); }
 .task5-case-checklist label:has(input:disabled) { cursor: not-allowed; opacity: .72; }
-.task5-case-checklist__row > a { margin-right: 12px; color: var(--research-blue-deep); font-size: .875rem; font-weight: 800; }
+.task5-case-checklist__row > a { display: inline-flex; min-height: 44px; align-items: center; margin-right: 12px; color: var(--research-blue-deep); font-size: .875rem; font-weight: 800; }
 .task5-case-checklist input { width: 20px; height: 20px; margin: 0; accent-color: var(--research-blue); }
 .task5-case-checklist__identity { display: grid; min-width: 0; gap: 3px; color: var(--research-muted); font-size: .875rem; line-height: 1.35; }
 .task5-case-checklist code { color: var(--task5-ink); font-size: .875rem; font-weight: 800; overflow-wrap: anywhere; }
@@ -77,6 +77,9 @@
 .task5-config-block select { min-height: 44px; padding-inline: 10px; border: 1px solid var(--research-control-border); border-radius: 4px; background: #fff; font-size: 1rem; }
 .task5-config-block input[type='range'] { width: 100%; min-height: 44px; accent-color: var(--research-blue); }
 .task5-primary-action { width: 100%; margin-top: 20px; }
+.task5-batch-summary { display: grid; gap: 8px; padding: 4px; }
+.task5-batch-summary h2 { margin: 0; color: var(--task5-ink); font: 750 1.35rem/1.2 var(--research-font-sans); }
+.task5-batch-summary p:last-child { margin: 0; color: var(--research-muted); font-size: .9375rem; line-height: 1.5; }
 
 .task5-empty-panel { display: grid; min-height: 260px; place-items: center; align-content: center; gap: 8px; padding: 36px; text-align: center; }
 .task5-empty-panel svg { color: var(--research-blue); }
@@ -85,6 +88,8 @@
 
 .task5-manifest__heading,
 .task5-progress__heading { padding: 18px 20px; border-bottom: 1px solid var(--task5-line); }
+.task5-progress__heading h2 { scroll-margin-top: 84px; }
+.task5-progress__active { margin: 14px 18px; }
 .task5-manifest__counts { display: grid; grid-template-columns: repeat(2, 1fr); border-bottom: 1px solid var(--task5-line); }
 .task5-manifest__counts span { padding: 14px 18px; border-right: 1px solid var(--task5-line); color: var(--research-muted); font-size: .875rem; }
 .task5-manifest__counts strong { margin-right: 5px; color: var(--task5-ink); font-size: 1.1rem; }
@@ -101,6 +106,7 @@
 .task5-preflight-list article > div:last-child { justify-items: end; }
 .task5-preflight-list a,
 .task5-exclusions a { color: var(--research-blue-deep); font-size: .875rem; font-weight: 800; }
+.task5-exclusions a { display: inline-flex; min-height: 44px; align-items: center; }
 
 .task5-exclusions { display: grid; gap: 16px; padding: 18px; border-top: 1px solid #e0c47d; background: #fffaf0; }
 .task5-exclusions > div { display: grid; gap: 10px; }
@@ -170,7 +176,7 @@
 
 @media (max-width: 540px) {
   .task5-case-checklist__row { grid-template-columns: 1fr; }
-  .task5-case-checklist__row > a { margin: 0; padding: 0 12px 12px 44px; }
+  .task5-case-checklist__row > a { margin: 0; padding: 0 12px 0 44px; }
   .task5-case-checklist label { grid-template-columns: 22px minmax(0, 1fr); }
   .task5-case-checklist .status-badge { grid-column: 2; }
 }
@@ -250,6 +256,7 @@
 .task5-model-panel__heading div { display: grid; gap: 3px; }
 .task5-model-panel__heading span { color: #bcd9f2; font-size: .875rem; font-weight: 850; }
 .task5-model-panel__heading h2 { margin: 0; font: 400 1.25rem var(--research-font-display); }
+.task5-model-panel__heading code { color: #fff; font-size: .875rem; font-weight: 750; overflow-wrap: anywhere; }
 .task5-model-panel .attention-card { margin: 0; border: 0; border-radius: 0; box-shadow: none; }
 .task5-model-panel .attention-card__id,
 .task5-model-panel .source-chip,
@@ -545,4 +552,12 @@
   .task5-model-technical__versions dl { grid-template-columns: 1fr; }
   .task5-model-picker { padding: 22px 18px; }
   .task5-model-picker .workspace-button { width: 100%; }
+}
+
+.task5-page h1,
+.task5-page h2,
+.task5-page h3 {
+  font-family: var(--research-font-sans);
+  font-weight: 750;
+  letter-spacing: -0.02em;
 }

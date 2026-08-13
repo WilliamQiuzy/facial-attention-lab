@@ -18,7 +18,7 @@ The interface uses a restrained Mayo-inspired visual system, but it is an indepe
 | Clinician workflow | Patient record → photo visit → frontal capture → four quality checks → local simulation → image-first result → review |
 | Patient records | Synthetic/test records in React memory only; no authentication, persistence, server record, or real-PHI support |
 | Camera and upload | Native camera/file input; validated JPEG/PNG/WebP bytes remain in an in-memory session vault |
-| Patient result | Original, simulated overlay, density-only field, and fixed-template AOI summary on one scrolling page |
+| Patient result | Original, simulated overlay, density field with a photo-matched face contour, and face-relative AOI summary on one scrolling page |
 | Clinician review | `Reviewed` or `Repeat photo`; the current simulated result remains exact-bound to its capture |
 | Case catalog | 10 hash-locked AI-generated synthetic identities |
 | Legacy research workbench | Case-to-Run, batch, model comparison, structured research review, and gated patient-explanation rehearsal |
@@ -31,13 +31,25 @@ The interface uses a restrained Mayo-inspired visual system, but it is an indepe
 | Result review | Structured research-demo review with independent actor roles |
 | Patient explanation | Available only for an approved, current mock result |
 | Export | Client-side, non-PHI JSON whitelist; never persisted |
-| Separate functional-assessment research | Non-spatial severity-oriented outputs; not connected and never converted into a heatmap |
+| Current `facial_paralysis` system | Palsy probability and eyes/mouth ordinal outputs plus separate label-free FACES research measures; not connected |
 | Connected seam | Explicit opt-in synthetic spatial contract rehearsal; no attention checkpoint or patient-media integration exists |
 | Human gaze | Not present |
 | Real patient backend and media gateway | Not present |
 | Clinical use | Blocked |
 
 Every mock output carries the permanent label `SIMULATED — NOT HUMAN GAZE`. A connected result must instead carry `MODEL PREDICTION — RESEARCH UNVALIDATED — NOT HUMAN GAZE — CLINICAL USE BLOCKED` and can never unlock the patient preview in the current governance model.
+
+The patient-visit simulation performs same-origin, on-device face-landmark
+preprocessing with the pinned MediaPipe Face Landmarker bundle. It requires
+exactly one valid face and binds the resulting contour to the decoded image
+SHA-256, intrinsic dimensions, and non-mirrored capture protocol. The
+illustrative attention anchors are transformed into that same source-image
+coordinate system before the overlay, density view, and face-relative summary
+are rendered. No generic face outline is used as a fallback. Failed,
+multi-face, invalid, or mismatched registration asks the user to replace the
+photograph and records no result. This contour is a display-location reference,
+not a defect boundary, clinical segmentation, diagnosis, or attention-model
+output.
 
 The intended future connected contract is a population-level predicted
 observer-attention spatial density field. The current browser generates a deterministic
@@ -57,10 +69,17 @@ mirror metadata, or registration quality control. Connected AOI reporting is
 therefore unavailable and fails closed until a later contract supplies and validates
 that geometry.
 
-The separate functional-assessment research system produces non-spatial,
-severity-oriented outputs, not a predicted observer-attention field. None of those
-outputs is a `HeatmapPoint[]`, and the browser never converts scores, ordinal outputs,
-temporal weights, or attribution analyses into one.
+The current `facial_paralysis` system is separate. Its checked-in scoring path returns
+palsy probability and eyes/mouth ordinal outputs. Separate analyses derive
+landmark-based left-right asymmetry, eye-closure dynamics, and a Mayo FACES label-free
+research measurement summary. No checked-in checkpoint includes an HB task; the
+architecture can support one, but Mayo HB calibration has not started. The
+FACES-action-derived regional research measures are not a validated eFACE, Sunnybrook,
+or HB composite or grade. None of these outputs is a `HeatmapPoint[]`, and the browser
+never converts them into one.
+`warmstart_v2_attention` uses temporal frame-pooling attention, not spatial facial
+attention. `warmstart_v4_expanded` contains a `coarse3` head, but the current
+`scripts/predict.py` path does not export that output.
 
 ## Image-first Run result
 
@@ -68,7 +87,9 @@ After a successful Run, Analysis and exact Run Detail show one continuous vertic
 story in this order:
 
 1. source image;
-2. signal-only field;
+2. signal field; legacy or connected results without exact registered geometry
+   explicitly show that a face outline is unavailable rather than drawing a
+   generic template;
 3. source-plus-signal overlay;
 4. mock-only fixed-template point-weight AOI summary with patient laterality (a
    connected result shows AOI unavailable);
@@ -199,10 +220,11 @@ representation, normalization, display scale, and production request/response
 schema before integration. No actual observer-attention checkpoint or output exists
 in this repository today.
 
-This seam is reserved for a separately defined spatial-attention model/API. A
-non-spatial severity or ordinal response without valid spatial points fails as
-`MALFORMED_RESPONSE`; the web app never invents a heatmap from severity scores,
-logits, temporal weights, or attribution analyses.
+This seam is reserved for a separately defined spatial-attention model/API. A response
+shaped like the current functional-assessment system—palsy probability or ordinal
+eyes/mouth outputs without valid spatial points—fails as `MALFORMED_RESPONSE`; the web
+app never invents a heatmap from severity scores, logits, temporal pooling weights, or
+occlusion analyses.
 
 A clinician-defined surgical-site mask is not part of the current request. If added
 later, it must be a separate, versioned contextual annotation. It may summarize how
@@ -228,7 +250,10 @@ The downloadable `application/json` manifest uses an explicit whitelist. It incl
 
 - All 10 images are separate AI-generated identities and standalone, unpaired demonstrations.
 - The UI must never describe them as before/after, the same patient, postoperative change, treatment outcome, or a scientific cross-case comparison.
-- No source under `output/real`, no facial-paralysis research image, no patient-derived feature, no clinical label, and no model weight is imported.
+- No source under `output/real`, no facial-paralysis research image, no
+  patient-derived feature, no clinical label, and no trained clinical or
+  observer-attention model weight is imported. The only checked-in model bundle
+  is the public MediaPipe Face Landmarker used for on-device registration.
 - Attention output cannot infer emotion, judgment, stigma, attractiveness, surgical success, diagnosis, or treatment need.
 - Workspace state is React memory only and resets on refresh or the explicit session-reset action.
 

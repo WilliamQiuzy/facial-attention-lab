@@ -1,7 +1,9 @@
 import {
+  useRef,
   useState,
   type ChangeEvent,
 } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import {
   PatientWorkflowProviderError,
 } from '../patientWorkflow/PatientWorkflowProvider'
@@ -12,6 +14,8 @@ import {
 type CapturePanelProps = {
   readonly title: string
   readonly previewUrl?: string
+  readonly previewWidth?: number
+  readonly previewHeight?: number
   readonly syntheticUnavailableReason?: string
   readonly onSelectFile: (
     file: File,
@@ -33,12 +37,15 @@ function safeCaptureError(error: unknown): string {
 export function CapturePanel({
   title,
   previewUrl,
+  previewWidth,
+  previewHeight,
   syntheticUnavailableReason,
   onSelectFile,
   onUseSynthetic,
 }: CapturePanelProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
+  const busyRef = useRef(false)
 
   const addFile = async (
     event: ChangeEvent<HTMLInputElement>,
@@ -46,8 +53,9 @@ export function CapturePanel({
   ) => {
     const input = event.currentTarget
     const file = input.files?.[0]
-    if (!file || busy) return
+    if (!file || busyRef.current) return
 
+    busyRef.current = true
     setBusy(true)
     setError(undefined)
     try {
@@ -56,12 +64,14 @@ export function CapturePanel({
       setError(safeCaptureError(nextError))
     } finally {
       input.value = ''
+      busyRef.current = false
       setBusy(false)
     }
   }
 
   const useSynthetic = async () => {
-    if (busy) return
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setError(undefined)
     try {
@@ -69,6 +79,7 @@ export function CapturePanel({
     } catch (nextError) {
       setError(safeCaptureError(nextError))
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
@@ -81,6 +92,7 @@ export function CapturePanel({
           : 'capture-panel'
       }
       aria-labelledby="capture-panel-title"
+      aria-busy={busy}
     >
       <header className="capture-panel__header">
         <h2 id="capture-panel-title">{title}</h2>
@@ -90,11 +102,34 @@ export function CapturePanel({
         </p>
       </header>
 
+      {busy ? (
+        <div
+          className="capture-panel__busy"
+          role="status"
+          aria-label="Photograph preparation status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <LoaderCircle
+            className="patient-loading-icon"
+            aria-hidden="true"
+          />
+          <span>
+            <strong>Preparing photograph…</strong>
+            <small>
+              Checking the image before it is added to this visit.
+            </small>
+          </span>
+        </div>
+      ) : null}
+
       {previewUrl ? (
         <figure className="capture-panel__preview">
           <img
             src={previewUrl}
             alt="Current frontal photograph"
+            width={previewWidth}
+            height={previewHeight}
             loading="eager"
             decoding="async"
           />

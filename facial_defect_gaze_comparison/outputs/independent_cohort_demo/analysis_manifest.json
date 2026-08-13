@@ -1,0 +1,100 @@
+{
+  "project_id": "SYN-INDEPENDENT-GAZE-500X2",
+  "synthetic": true,
+  "analysis_mode": "independent_cohort_mock_demo",
+  "seed": 20260813,
+  "n_webcam": 500,
+  "n_professional": 500,
+  "artifacts": [
+    {
+      "path": "figures/01_covariate_balance.png",
+      "bytes": 83670,
+      "sha256": "8583ce532ec7cca79805a846edd9ffe91292c55c6ab1f1b2825a420383429ad4"
+    },
+    {
+      "path": "figures/02_quality_equivalence.png",
+      "bytes": 92044,
+      "sha256": "2bfa54d0b3b295b62e8a489674f26f04c8cc9ccaa92e15149317eb7bb43b5951"
+    },
+    {
+      "path": "figures/03_quality_distributions.png",
+      "bytes": 151430,
+      "sha256": "747c25aab18e8f69521cdede1a15258ac9d4dd47d696b06c63ba30bb08c92322"
+    },
+    {
+      "path": "figures/04_group_attention_maps.png",
+      "bytes": 98287,
+      "sha256": "09e5383996348181a0f5152921fb43ed46fc49cbf7671408a597178e1e2c9c01"
+    },
+    {
+      "path": "figures/05_map_reproducibility.png",
+      "bytes": 76507,
+      "sha256": "c7a87c503920c391029ed5e9cc67c5f0b572f9248b793bd3e103c97ca96bb9b7"
+    },
+    {
+      "path": "figures/06_aoi_profile.png",
+      "bytes": 75466,
+      "sha256": "9ad417ba855c544888a9188b98303930ee86e20c2a736c5b9c18e4485e2679c7"
+    },
+    {
+      "path": "figures/07_domain_classifier.png",
+      "bytes": 71334,
+      "sha256": "d6d6aa5d02592b277ef7171571f69da325589cdd5a63fabb8ac8de3d9a5815b4"
+    },
+    {
+      "path": "independent_cohort_report.md",
+      "bytes": 9141,
+      "sha256": "d9f43cd3dccf0e4e92a0f8d4e5fa83e7f32b5a0e502c4ffee58e82332eaa98ed"
+    },
+    {
+      "path": "tables/aoi_summary.csv",
+      "bytes": 2847,
+      "sha256": "55a4231e05e586371b721bcce5e4aa9816b9aa25a703e27522a44daf65ec364a"
+    },
+    {
+      "path": "tables/cohort_characteristics.csv",
+      "bytes": 1315,
+      "sha256": "bb41871b82dfb4570b4b5af10c894fccd0d1926e3a207786333412e0c341d3d9"
+    },
+    {
+      "path": "tables/covariate_balance.csv",
+      "bytes": 741,
+      "sha256": "e265c43e8ef8275322333fd4c521c81cf27d08f24dd7c5f2c56d116060e6da4d"
+    },
+    {
+      "path": "tables/decision_summary.csv",
+      "bytes": 900,
+      "sha256": "094b11cb4df8e22a17c68036f7faa1a3c85d1c58b3b6ad99a63c0df4a4553b2d"
+    },
+    {
+      "path": "tables/domain_classifier.csv",
+      "bytes": 590,
+      "sha256": "d9dfe14252a5f1fbfb2f27b68d3acba9a7203f55d835e649bc41cf42ab0a9601"
+    },
+    {
+      "path": "tables/map_reliability.csv",
+      "bytes": 1377,
+      "sha256": "2bb095bda788611b7b89dd31423b8df749aca5957ce1626b1d4b409c75ac8862"
+    },
+    {
+      "path": "tables/participant_aoi_profiles.csv",
+      "bytes": 888371,
+      "sha256": "434ec46052682a658cfbb416d01558733a8babf414472bd394abb21bcc856568"
+    },
+    {
+      "path": "tables/participant_quality.csv",
+      "bytes": 66631,
+      "sha256": "3bee24c2ddaade8b74de9c2a9e6e263cd2fb9932bd8a3187b2deee9385479bba"
+    },
+    {
+      "path": "tables/protocol_gates.csv",
+      "bytes": 741,
+      "sha256": "ecfedbc338d7656e1c4e90fe96df34f36085e812bdd582f7a8e1df40edfe3f8e"
+    },
+    {
+      "path": "tables/quality_comparison.csv",
+      "bytes": 1310,
+      "sha256": "8dc0d7f257ed22772f137a9848121c6993e14cd7c7fb306e4e582cff072d0839"
+    }
+  ]
+}

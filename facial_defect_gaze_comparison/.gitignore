@@ -1,0 +1,16 @@
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+tmp/
+
+# Real/raw exports must never be committed to this public demo.
+data/raw/
+data/real/
+data/imports/
+outputs/real*/
+outputs/notebook_demo/
+*.edf
+*.idfx
+*.avi
+*.mp4

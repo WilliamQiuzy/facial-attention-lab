@@ -1,4 +1,9 @@
-import { useRef, useState, type FormEvent } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { approvedAssets } from '../data/approvedAssetManifest'
 import { CapturePanel } from '../components/CapturePanel'
@@ -69,6 +74,29 @@ export function PatientVisitPage() {
   const [reviewError, setReviewError] = useState<string>()
   const reviewedDecisionRef = useRef<HTMLInputElement>(null)
   const reviewNoteRef = useRef<HTMLTextAreaElement>(null)
+  const stateHeadingRef = useRef<HTMLHeadingElement>(null)
+  const visitAvailable =
+    Boolean(patient) &&
+    Boolean(visit) &&
+    visit?.patientId === patient?.id
+  const nextAction = visitAvailable
+    ? selectVisitNextAction(state, visitId)
+    : undefined
+
+  useEffect(() => {
+    if (
+      nextAction === 'retry_analysis' ||
+      nextAction === 'review_result' ||
+      nextAction === 'visit_complete'
+    ) {
+      const heading = stateHeadingRef.current
+      heading?.focus({ preventScroll: true })
+      heading?.scrollIntoView?.({
+        behavior: 'auto',
+        block: 'start',
+      })
+    }
+  }, [nextAction])
 
   if (!patient || !visit || visit.patientId !== patient.id) {
     return (
@@ -84,7 +112,6 @@ export function PatientVisitPage() {
     )
   }
 
-  const nextAction = selectVisitNextAction(state, visit.id)
   const capture = selectCurrentCapture(state, visit.id)
   const run = selectCurrentRun(state, visit.id)
   const result = selectCurrentResult(state, visit.id)
@@ -208,6 +235,8 @@ export function PatientVisitPage() {
         <CapturePanel
           title="Current photograph"
           previewUrl={previewUrl}
+          previewWidth={capture.width}
+          previewHeight={capture.height}
           onSelectFile={attachFile}
           onUseSynthetic={attachSynthetic}
           syntheticUnavailableReason={syntheticUnavailableReason}
@@ -228,7 +257,12 @@ export function PatientVisitPage() {
   ) {
     workflowContent = (
       <div className="patient-processing-step">
-        <PatientJobProgress status={run.status} />
+        <PatientJobProgress
+          status={run.status}
+          previewUrl={previewUrl}
+          width={capture?.width}
+          height={capture?.height}
+        />
         <Link
           className="patient-link-action"
           to={`/patients/${patient.id}`}
@@ -238,28 +272,56 @@ export function PatientVisitPage() {
       </div>
     )
   } else if (nextAction === 'retry_analysis' && capture) {
+    const faceRegistrationFailed =
+      run?.status === 'failed' &&
+      run.failure?.field?.startsWith('faceRegistration') === true
     workflowContent = (
       <section
         className="patient-retry-step"
         aria-labelledby="patient-retry-title"
       >
-        <h2 id="patient-retry-title">Analysis needs attention</h2>
-        <p>
-          The current exact-bound simulated run did not complete.
-        </p>
-        <p>
-          Retry uses this same photograph and confirmed quality record.
-        </p>
-        <button
-          className="patient-primary-action"
-          type="button"
-          onClick={retryAnalysis}
+        <h2
+          ref={stateHeadingRef}
+          id="patient-retry-title"
+          tabIndex={-1}
         >
-          Retry exact photo analysis
-        </button>
+          {faceRegistrationFailed
+            ? 'Face alignment needs attention'
+            : 'Analysis needs attention'}
+        </h2>
+        {faceRegistrationFailed ? (
+          <p>
+            We could not match one clear face to this photograph.
+            Retake or upload a centered frontal image with only one
+            face visible.
+          </p>
+        ) : (
+          <>
+            <p>
+              The current exact-bound simulated run did not complete.
+            </p>
+            <p>
+              Retry uses this same photograph and confirmed quality
+              record.
+            </p>
+            <button
+              className="patient-primary-action"
+              type="button"
+              onClick={retryAnalysis}
+            >
+              Retry exact photo analysis
+            </button>
+          </>
+        )}
         <CapturePanel
-          title="Replace photograph instead"
+          title={
+            faceRegistrationFailed
+              ? 'Replace photograph'
+              : 'Replace photograph instead'
+          }
           previewUrl={previewUrl}
+          previewWidth={capture.width}
+          previewHeight={capture.height}
           onSelectFile={attachFile}
           onUseSynthetic={attachSynthetic}
           syntheticUnavailableReason={syntheticUnavailableReason}
@@ -278,14 +340,15 @@ export function PatientVisitPage() {
         aria-labelledby="patient-result-title"
       >
         <header className="patient-result-review__header">
-          <h2 id="patient-result-title">Review result</h2>
+          <h2
+            ref={stateHeadingRef}
+            id="patient-result-title"
+            tabIndex={-1}
+          >
+            Review result
+          </h2>
           <p className="patient-result-review__disclaimer">
             {RESULT_DISCLAIMER}
-          </p>
-          <p className="patient-result-review__engine-boundary">
-            Demo engine only: this fixed-template field is seeded by the
-            capture hash. It does not detect this person’s scar and was not
-            produced by the checked-in facial-paralysis model.
           </p>
         </header>
 
@@ -294,11 +357,21 @@ export function PatientVisitPage() {
           width={capture.width}
           height={capture.height}
           points={result.output.points}
+          faceRegistration={result.faceRegistration}
         />
-        <PatientAoiSummary points={result.output.points} />
+        <PatientAoiSummary
+          points={result.output.points}
+          faceRegistration={result.faceRegistration}
+        />
 
         <details className="patient-result-review__technical">
           <summary>Technical details</summary>
+          <p className="patient-result-review__engine-boundary">
+            Demo engine only: this illustrative field is seeded by the
+            capture hash and positioned using on-device face landmarks.
+            It does not detect this person’s scar and was not produced by
+            the checked-in facial-paralysis model.
+          </p>
           <dl>
             <div>
               <dt>Capture version</dt>
@@ -375,6 +448,8 @@ export function PatientVisitPage() {
             </span>
             <textarea
               ref={reviewNoteRef}
+              name="reviewNote"
+              autoComplete="off"
               value={reviewNote}
               required={reviewDecision === 'repeat_photo'}
               aria-invalid={
@@ -387,7 +462,12 @@ export function PatientVisitPage() {
               }
               onChange={(event) => {
                 setReviewNote(event.currentTarget.value)
-                setReviewError(undefined)
+                if (
+                  reviewError ===
+                  'Enter a reason for the repeat photo.'
+                ) {
+                  setReviewError(undefined)
+                }
               }}
             />
           </label>
@@ -411,16 +491,26 @@ export function PatientVisitPage() {
   } else if (nextAction === 'visit_complete') {
     workflowContent = (
       <section className="patient-visit-complete">
-        <h2>Review complete</h2>
+        <h2 ref={stateHeadingRef} tabIndex={-1}>
+          Review complete
+        </h2>
         <p>
           This photo visit is complete in the current session.
         </p>
-        <Link
-          className="patient-primary-action"
-          to={`/patients/${patient.id}`}
-        >
-          Return to patient record
-        </Link>
+        <div className="patient-visit-complete__actions">
+          <Link
+            className="patient-primary-action"
+            to={`/patients/${patient.id}`}
+          >
+            Return to patient record
+          </Link>
+          <Link
+            className="patient-secondary-action"
+            to="/reviews"
+          >
+            Back to reviews
+          </Link>
+        </div>
       </section>
     )
   } else if (nextAction === 'retake') {
@@ -428,6 +518,8 @@ export function PatientVisitPage() {
       <CapturePanel
         title="Repeat photo"
         previewUrl={previewUrl}
+        previewWidth={capture?.width}
+        previewHeight={capture?.height}
         onSelectFile={attachFile}
         onUseSynthetic={attachSynthetic}
         syntheticUnavailableReason={syntheticUnavailableReason}
@@ -453,7 +545,11 @@ export function PatientVisitPage() {
         >
           Back to patient record
         </Link>
-        <PatientIdentityHeader patient={patient} headingLevel={1} />
+        <PatientIdentityHeader
+          patient={patient}
+          headingLevel={1}
+          compact
+        />
         <p className="patient-visit-page__context">
           {TIMEPOINT_LABELS[visit.timepoint]} photo visit ·{' '}
           {formatDate(visit.visitDate)}

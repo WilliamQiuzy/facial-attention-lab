@@ -9,6 +9,7 @@ import {
 } from '../patientWorkflow/reducer'
 import type {
   CaptureQualityChecks,
+  PatientFaceRegistration,
   PatientRecord,
   PatientRunBinding,
   PatientWorkflowState,
@@ -29,6 +30,36 @@ const COMPLETE_QUALITY: CaptureQualityChecks = {
   focusLightingAndOcclusionAcceptable: true,
   orientationConfirmed: true,
   authorizationDocumented: true,
+}
+
+function faceRegistrationFor(
+  binding: PatientRunBinding,
+): PatientFaceRegistration {
+  const points = [
+    { x: 0.3, y: 0.3 },
+    { x: 0.5, y: 0.7 },
+    { x: 0.7, y: 0.3 },
+  ] as const
+  return {
+    schemaVersion: 'patient-face-registration/1',
+    source: 'on_device_face_landmarks',
+    coordinateSpace: 'decoded_image_normalized_v1',
+    captureSha256: binding.captureSha256,
+    sourceWidth: 1_024,
+    sourceHeight: 1_024,
+    captureProtocol: binding.captureProtocol,
+    detectorId: 'mediapipe_face_landmarker',
+    detectorVersion: 'tasks-vision-1.0.0-model-float16-1',
+    faceCount: 1,
+    paths: [
+      { feature: 'face_oval', closed: true, points },
+      { feature: 'left_eye', closed: true, points },
+      { feature: 'right_eye', closed: true, points },
+      { feature: 'left_eyebrow', closed: false, points },
+      { feature: 'right_eyebrow', closed: false, points },
+      { feature: 'lips', closed: true, points },
+    ],
+  }
 }
 
 function addResult(
@@ -126,6 +157,7 @@ function addResult(
       binding,
       freshness: 'current',
       createdAt: '2026-07-27T10:03:00.000Z',
+      faceRegistration: faceRegistrationFor(binding),
       output: {
         origin: 'workflow_simulation',
         points: [
@@ -200,7 +232,7 @@ describe('ClinicalReviewQueuePage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows a plain empty state when no current result needs review', () => {
+  it('shows a compact empty state with a direct return to patients', () => {
     const reviewedState = addResult(
       createInitialPatientWorkflowState(
         [DEMO_PATIENT_RECORDS[0]!],
@@ -212,9 +244,13 @@ describe('ClinicalReviewQueuePage', () => {
     )
     renderQueue(reviewedState)
 
+    const emptyState = screen.getByRole('status', {
+      name: 'Review queue status',
+    })
+    expect(emptyState).toHaveTextContent('No results are waiting for review.')
     expect(
-      screen.getByRole('status', { name: 'Review queue status' }),
-    ).toHaveTextContent('No results are waiting for review.')
+      within(emptyState).getByRole('link', { name: 'View patients' }),
+    ).toHaveAttribute('href', '/patients')
     expect(screen.queryByRole('listitem')).not.toBeInTheDocument()
   })
 })

@@ -68,16 +68,28 @@ export function MethodsPage() {
             <div className="provenance-rule" role="note" aria-label="Current model boundary">
               <Ban aria-hidden="true" />
               <div>
-                <strong>Functional-assessment evidence remains a separate system</strong>
+                <strong>Facial-paralysis evidence remains a separate system</strong>
                 <p>
-                  The available functional-assessment research outputs are non-spatial severity
-                  or regional summaries. They are not a pixel attention map and are not
-                  connected to this workbench.
+                  The current facial_paralysis scoring path returns palsy probability and
+                  eyes/mouth ordinal outputs. Separate analysis code derives landmark-derived
+                  left-right asymmetry, eye-closure dynamics, and a Mayo FACES label-free
+                  research measurement summary. None of these outputs is a pixel attention map.
                 </p>
                 <p>
-                  A non-spatial score or ordinal payload without valid spatial points fails
-                  closed. The browser never converts severity scores, task logits, temporal
-                  weights, or attribution analyses into a heatmap.
+                  No checked-in checkpoint includes an HB task; the architecture can support
+                  one, but Mayo HB calibration has not started. The FACES-action-derived
+                  regional research measurement summary is not a validated eFACE, Sunnybrook,
+                  or HB composite or grade.
+                </p>
+                <p>
+                  A severity or ordinal payload without spatial points fails closed. The browser
+                  never converts palsy scores, task logits, temporal pooling weights, or
+                  occlusion analyses into a heatmap.
+                </p>
+                <p>
+                  The v2 attention checkpoint uses temporal frame pooling, not spatial
+                  facial attention. The v4 checkpoint includes a coarse3 head, but the
+                  current prediction script does not export it.
                 </p>
               </div>
             </div>
@@ -137,9 +149,9 @@ export function MethodsPage() {
                 </p>
                 {connected ? (
                   <p>
-                    The current functional-assessment research system remains separate and is
-                    not connected; enabling this seam does not make it a spatial-attention
-                    model.
+                    The current facial_paralysis functional-assessment system remains separate
+                    and is not connected; enabling this seam does not make it a
+                    spatial-attention model.
                   </p>
                 ) : null}
                 {connected ? <p>Accepted capability: <code>research_unvalidated</code>.</p> : null}

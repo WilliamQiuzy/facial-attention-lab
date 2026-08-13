@@ -58,7 +58,7 @@ export function ClinicalReviewQueuePage() {
       >
         {queue.length === 0 ? (
           <div
-            className="patient-empty-state"
+            className="patient-empty-state clinical-review-queue__empty"
             role="status"
             aria-label="Review queue status"
           >
@@ -67,6 +67,9 @@ export function ClinicalReviewQueuePage() {
               A visit appears here only after its current simulated result
               is prepared.
             </p>
+            <Link className="patient-primary-action" to="/patients">
+              View patients
+            </Link>
           </div>
         ) : (
           <ul className="clinical-review-queue__list">

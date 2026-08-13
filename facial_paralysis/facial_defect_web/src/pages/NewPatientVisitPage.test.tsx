@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
@@ -81,6 +81,22 @@ function stateWithOneVisit() {
 }
 
 describe('NewPatientVisitPage', () => {
+  it('keeps date autofill off and offers a clear way back to the patient record', () => {
+    const patient = DEMO_PATIENT_RECORDS[0]!
+    renderPage(
+      createInitialPatientWorkflowState([patient], '2026-07-27'),
+    )
+
+    expect(screen.getByLabelText('Visit date')).toHaveAttribute(
+      'autocomplete',
+      'off',
+    )
+    expect(screen.getByRole('link', { name: 'Cancel' })).toHaveAttribute(
+      'href',
+      `/patients/${patient.id}`,
+    )
+  })
+
   it('marks its header for the compact tablet layout', () => {
     const patient = DEMO_PATIENT_RECORDS[0]!
     const view = renderPage(
@@ -92,6 +108,32 @@ describe('NewPatientVisitPage', () => {
         'header.patient-page-header.patient-visit-create-header',
       ),
     ).toBeInTheDocument()
+  })
+
+  it('keeps secondary identity details closed while preserving access to them', async () => {
+    const user = userEvent.setup()
+    const patient = DEMO_PATIENT_RECORDS[0]!
+    renderPage(
+      createInitialPatientWorkflowState([patient], '2026-07-27'),
+    )
+
+    const identity = screen.getByRole('region', {
+      name: 'Patient identity',
+    })
+    expect(identity).toHaveTextContent(patient.displayName)
+    expect(identity).toHaveTextContent(patient.recordNumber)
+    const details = within(identity)
+      .getByText('More patient details')
+      .closest('details')
+    expect(details).not.toBeNull()
+    expect(details).not.toHaveAttribute('open')
+    expect(within(identity).getByText('Date of birth')).not.toBeVisible()
+
+    await user.click(within(identity).getByText('More patient details'))
+
+    expect(details).toHaveAttribute('open')
+    expect(within(identity).getByText('Date of birth')).toBeVisible()
+    expect(within(identity).getByText('Care pathway')).toBeVisible()
   })
 
   it('shows patient identity and blocks a missing timepoint and future visit date', async () => {
@@ -126,6 +168,41 @@ describe('NewPatientVisitPage', () => {
     ).toBeVisible()
     expect(timepoint).toHaveFocus()
     expect(screen.getByLabelText('Visit count')).toHaveTextContent('0')
+  })
+
+  it('clears only the corrected field error without waiting for another submit', async () => {
+    const user = userEvent.setup()
+    const patient = DEMO_PATIENT_RECORDS[0]!
+    renderPage(
+      createInitialPatientWorkflowState([patient], '2026-07-27'),
+    )
+
+    const timepoint = screen.getByRole('combobox', {
+      name: 'Timepoint',
+    })
+    const visitDate = screen.getByLabelText('Visit date')
+    await user.clear(visitDate)
+    await user.type(visitDate, '2099-01-01')
+    await user.click(
+      screen.getByRole('button', { name: 'Continue to photo' }),
+    )
+
+    expect(timepoint).toHaveAttribute('aria-invalid', 'true')
+    expect(visitDate).toHaveAttribute('aria-invalid', 'true')
+
+    await user.selectOptions(timepoint, 'preoperative')
+
+    expect(
+      screen.queryByText('Timepoint is required.'),
+    ).not.toBeInTheDocument()
+    expect(timepoint).toHaveAttribute('aria-invalid', 'false')
+    expect(
+      screen.getByText('Visit date cannot be in the future.'),
+    ).toBeVisible()
+    expect(visitDate).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Check the highlighted fields.',
+    )
   })
 
   it('creates exactly one initial visit and opens its photo screen', async () => {

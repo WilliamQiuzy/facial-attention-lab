@@ -1,4 +1,4 @@
-import type { FormEvent } from 'react'
+import { useEffect, useRef, type FormEvent } from 'react'
 import type {
   CaptureQualityChecks,
 } from '../patientWorkflow/types'
@@ -41,7 +41,12 @@ export function CaptureQualityChecklist({
   onChange,
   onRun,
 }: CaptureQualityChecklistProps) {
+  const titleRef = useRef<HTMLHeadingElement>(null)
   const ready = QUALITY_CHECKS.every(({ key }) => checks[key])
+
+  useEffect(() => {
+    titleRef.current?.focus()
+  }, [])
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -54,7 +59,13 @@ export function CaptureQualityChecklist({
       aria-labelledby="capture-quality-title"
       onSubmit={submit}
     >
-      <h2 id="capture-quality-title">Photo quality confirmation</h2>
+      <h2
+        ref={titleRef}
+        id="capture-quality-title"
+        tabIndex={-1}
+      >
+        Photo quality confirmation
+      </h2>
       <fieldset>
         <legend>Confirm all four capture checks</legend>
         <p>

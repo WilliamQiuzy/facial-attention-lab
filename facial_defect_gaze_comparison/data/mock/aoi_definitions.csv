@@ -1,0 +1,13 @@
+stimulus_id,stimulus_version,aoi_version,aoi_name,x_min,x_max,y_min,y_max
+SYN-FACE-01,v1,synthetic-face-v1,left_eye,0.18,0.43,0.28,0.47
+SYN-FACE-01,v1,synthetic-face-v1,right_eye,0.57,0.82,0.28,0.47
+SYN-FACE-01,v1,synthetic-face-v1,nose,0.39,0.61,0.42,0.68
+SYN-FACE-01,v1,synthetic-face-v1,mouth,0.28,0.72,0.66,0.86
+SYN-FACE-02,v1,synthetic-face-v1,left_eye,0.18,0.43,0.28,0.47
+SYN-FACE-02,v1,synthetic-face-v1,right_eye,0.57,0.82,0.28,0.47
+SYN-FACE-02,v1,synthetic-face-v1,nose,0.39,0.61,0.42,0.68
+SYN-FACE-02,v1,synthetic-face-v1,mouth,0.28,0.72,0.66,0.86
+SYN-FACE-03,v1,synthetic-face-v1,left_eye,0.18,0.43,0.28,0.47
+SYN-FACE-03,v1,synthetic-face-v1,right_eye,0.57,0.82,0.28,0.47
+SYN-FACE-03,v1,synthetic-face-v1,nose,0.39,0.61,0.42,0.68
+SYN-FACE-03,v1,synthetic-face-v1,mouth,0.28,0.72,0.66,0.86

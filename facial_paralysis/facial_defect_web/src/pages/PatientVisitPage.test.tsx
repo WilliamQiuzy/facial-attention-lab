@@ -25,6 +25,7 @@ import {
   patientWorkflowReducer,
 } from '../patientWorkflow/reducer'
 import type {
+  PatientFaceRegistration,
   PatientRunBinding,
   PatientSimulationOutput,
   PatientWorkflowState,
@@ -129,6 +130,43 @@ function validOutput(
   }
 }
 
+function validFaceRegistration(): PatientFaceRegistration {
+  const closedTriangle = [
+    { x: 0.25, y: 0.25 },
+    { x: 0.5, y: 0.82 },
+    { x: 0.75, y: 0.25 },
+  ] as const
+
+  return {
+    schemaVersion: 'patient-face-registration/1',
+    source: 'on_device_face_landmarks',
+    coordinateSpace: 'decoded_image_normalized_v1',
+    captureSha256: DEFAULT_SHA,
+    sourceWidth: 1_024,
+    sourceHeight: 900,
+    captureProtocol: 'frontal_relaxed_non_mirrored_v1',
+    detectorId: 'mediapipe_face_landmarker',
+    detectorVersion: 'tasks-vision-1.0.0-model-float16-1',
+    faceCount: 1,
+    paths: [
+      { feature: 'face_oval', closed: true, points: closedTriangle },
+      { feature: 'left_eye', closed: true, points: closedTriangle },
+      { feature: 'right_eye', closed: true, points: closedTriangle },
+      {
+        feature: 'left_eyebrow',
+        closed: false,
+        points: closedTriangle,
+      },
+      {
+        feature: 'right_eyebrow',
+        closed: false,
+        points: closedTriangle,
+      },
+      { feature: 'lips', closed: true, points: closedTriangle },
+    ],
+  }
+}
+
 function createVault() {
   let sequence = 0
   return new SessionMediaVault({
@@ -161,6 +199,13 @@ function renderVisit({
         prepareCapture={prepareCapture}
         loadSyntheticMedia={loadSyntheticMedia}
         simulationRunner={validOutput}
+        faceRegistrationRunner={async (input) => ({
+          ...validFaceRegistration(),
+          captureSha256: input.captureSha256,
+          sourceWidth: input.sourceWidth,
+          sourceHeight: input.sourceHeight,
+          captureProtocol: input.captureProtocol,
+        })}
         {...options}
       >
         <Routes>
@@ -283,11 +328,11 @@ describe('PatientVisitPage', () => {
     )
 
     expect(loadSynthetic).toHaveBeenCalledWith(approvedAssets[0])
-    expect(
-      await screen.findByRole('heading', {
-        name: 'Photo quality confirmation',
-      }),
-    ).toBeVisible()
+    const qualityHeading = await screen.findByRole('heading', {
+      name: 'Photo quality confirmation',
+    })
+    expect(qualityHeading).toBeVisible()
+    expect(qualityHeading).toHaveFocus()
     expect(
       screen.getByRole('img', { name: 'Current frontal photograph' }),
     ).toHaveAttribute('src', 'blob:patient-visit-1')
@@ -317,6 +362,53 @@ describe('PatientVisitPage', () => {
       screen.getByText(
         'A standalone catalog demo is already used by another visit in this record. Upload a separate test image; catalog demos cannot establish longitudinal identity.',
       ),
+    ).toBeVisible()
+  })
+
+  it('shows a calm, explicit busy state while a photograph is being prepared', async () => {
+    const user = userEvent.setup()
+    let resolveSynthetic!: (media: Blob) => void
+    const pendingSynthetic = new Promise<Blob>((resolve) => {
+      resolveSynthetic = resolve
+    })
+    renderVisit({
+      loadSyntheticMedia: () => pendingSynthetic,
+    })
+
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Use synthetic demo photo',
+      }),
+    )
+
+    const captureRegion = screen.getByRole('region', {
+      name: 'Add frontal photograph',
+    })
+    expect(captureRegion).toHaveAttribute('aria-busy', 'true')
+    expect(
+      within(captureRegion).getByRole('status', {
+        name: 'Photograph preparation status',
+      }),
+    ).toHaveTextContent('Preparing photograph…')
+    expect(
+      within(captureRegion).getByText(
+        'Checking the image before it is added to this visit.',
+      ),
+    ).toBeVisible()
+    expect(within(captureRegion).getByLabelText('Take photo')).toBeDisabled()
+    expect(within(captureRegion).getByLabelText('Upload photo')).toBeDisabled()
+    expect(
+      within(captureRegion).getByRole('button', {
+        name: 'Use synthetic demo photo',
+      }),
+    ).toBeDisabled()
+
+    resolveSynthetic(await loadSyntheticMedia())
+
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Photo quality confirmation',
+      }),
     ).toBeVisible()
   })
 
@@ -373,38 +465,67 @@ describe('PatientVisitPage', () => {
     const progress = screen.getByRole('region', {
       name: 'Analysis progress',
     })
-    expect(within(progress).getAllByRole('listitem')).toHaveLength(4)
-    expect(within(progress).getByText('Photo received')).toBeVisible()
-    expect(within(progress).getByText('Quality confirmed')).toBeVisible()
-    expect(within(progress).getByText('Analysis running')).toBeVisible()
-    expect(within(progress).getByText('Result prepared')).toBeVisible()
+    expect(progress).toHaveAttribute('aria-busy', 'true')
+    const progressHeading = within(progress).getByRole('heading', {
+      name: 'Preparing result',
+    })
+    expect(progressHeading).toHaveAttribute('tabindex', '-1')
+    expect(progressHeading).toHaveFocus()
     expect(
-      within(progress).getByRole('status'),
-    ).toHaveTextContent('Analysis queued')
-    const queuedAnalysisPhase = within(progress)
-      .getByText('Analysis running')
+      within(progress).getByRole('img', {
+        name: 'Photograph being analyzed',
+      }),
+    ).toBeVisible()
+    expect(
+      within(progress).getByRole('progressbar', {
+        name: 'Analysis completion',
+      }),
+    ).toHaveAttribute('value', '2')
+    expect(
+      within(progress).getByText(
+        'Keep this page open. No action is needed.',
+      ),
+    ).toBeVisible()
+    const phases = within(progress).getByRole('list')
+    expect(within(phases).getAllByRole('listitem')).toHaveLength(4)
+    expect(within(phases).getByText('Photo received')).toBeVisible()
+    expect(within(phases).getByText('Quality confirmed')).toBeVisible()
+    expect(within(phases).getByText('Analysis')).toBeVisible()
+    expect(within(phases).getByText('Result prepared')).toBeVisible()
+    expect(within(progress).queryByRole('status')).not.toBeInTheDocument()
+    const analysisAnnouncement = screen.getByRole('status', {
+      name: 'Analysis status announcement',
+    })
+    expect(progress).not.toContainElement(analysisAnnouncement)
+    expect(analysisAnnouncement).toHaveTextContent('Analysis queued')
+    const queuedAnalysisPhase = within(phases)
+      .getByText('Analysis')
       .closest('li')
-    expect(queuedAnalysisPhase).toHaveTextContent('Waiting')
-    expect(queuedAnalysisPhase).not.toHaveAttribute(
-      'aria-current',
-      'step',
+    expect(queuedAnalysisPhase).toHaveTextContent('Queued')
+    expect(progress).toHaveTextContent(
+      'Waiting for analysis to begin…',
     )
+    expect(progress).not.toHaveTextContent('Starting')
+    expect(progress).not.toHaveTextContent('Analysis running')
+    expect(queuedAnalysisPhase).toHaveAttribute('aria-current', 'step')
 
     await waitFor(() => {
-      expect(within(progress).getByRole('status')).toHaveTextContent(
+      expect(analysisAnnouncement).toHaveTextContent(
         'Analysis running',
       )
     })
     expect(queuedAnalysisPhase).toHaveTextContent('In progress')
     expect(queuedAnalysisPhase).toHaveAttribute('aria-current', 'step')
-    expect(
-      await screen.findByRole('heading', { name: 'Review result' }),
-    ).toBeVisible()
+    const resultHeading = await screen.findByRole('heading', {
+      name: 'Review result',
+    })
+    expect(resultHeading).toBeVisible()
+    expect(resultHeading).toHaveFocus()
   })
 
-  it('presents the image-first result in original, overlay, density, and post-inference facial-area order', async () => {
+  it('presents the image-first result with a contour matched to the uploaded photograph', async () => {
     const user = userEvent.setup()
-    renderVisit()
+    const { container } = renderVisit()
     await attachUpload(user)
     await confirmQuality(user)
     await user.click(
@@ -421,7 +542,7 @@ describe('PatientVisitPage', () => {
       name: 'Simulated overlay',
     })
     const density = screen.getByRole('heading', {
-      name: 'Attention density',
+      name: 'Attention density + matched face contour',
     })
     const aoi = screen.getByRole('heading', {
       name: 'Attention by facial area',
@@ -439,14 +560,22 @@ describe('PatientVisitPage', () => {
       density.compareDocumentPosition(aoi) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+    const densityGraphic = screen.getByRole('img', {
+      name: "Simulated attention density aligned to this photograph's estimated face contour",
+    })
+    expect(densityGraphic).toHaveStyle({ aspectRatio: '1024 / 900' })
+    expect(densityGraphic).toHaveAccessibleDescription(
+      'Automatically estimated from this photograph for spatial reference. It is not a defect boundary, clinical segmentation, or attention prediction.',
+    )
     expect(
-      screen.getByRole('img', {
-        name: 'Simulated attention density without the source photograph',
-      }),
-    ).toHaveStyle({ aspectRatio: '1024 / 900' })
+      container.querySelector('.face-reference-outline'),
+    ).not.toBeInTheDocument()
+    expect(
+      container.querySelector('.patient-face-contour'),
+    ).toBeInTheDocument()
     expect(
       screen.getByText(
-        'Brighter overlap indicates more simulated attention density. Same deterministic simulation.',
+        'Automatically estimated from this photograph for spatial reference. It is not a defect boundary, clinical segmentation, or attention prediction.',
       ),
     ).toBeVisible()
     expect(
@@ -456,19 +585,29 @@ describe('PatientVisitPage', () => {
     ).toBeVisible()
     expect(
       screen.getByText(
+        'Face-relative areas summarize this simulated density. They do not change the analysis.',
+      ),
+    ).toBeVisible()
+    expect(
+      screen.queryByText(
         'AOI is a post-inference summary only. It does not crop the photograph or alter the simulation.',
       ),
-    ).toBeVisible()
+    ).not.toBeInTheDocument()
+    const percentageDetails = screen
+      .getByText('How percentages are calculated')
+      .closest('details')
+    expect(percentageDetails).not.toBeNull()
+    expect(percentageDetails).not.toHaveAttribute('open')
     expect(
       screen.getByText(
-        'Percentages use a fixed illustrative face template, not detected landmarks or patient-specific anatomical registration.',
+        'Percentages use face-relative areas positioned within the face contour estimated from this photograph. The contour is a spatial reference, not clinical anatomical segmentation.',
       ),
-    ).toBeVisible()
+    ).not.toBeVisible()
     expect(
       screen.getByText(
-        'Four template facial bands plus outside-template density total 100%. Patient-right and patient-left shares form a separate 100% partition.',
+        'Four face-relative bands plus density outside those bands total 100%. Patient-right and patient-left shares form a separate 100% partition.',
       ),
-    ).toBeVisible()
+    ).not.toBeVisible()
     expect(
       screen.getByText(
         'Simulated estimate of where observers may attend. Not eye-tracking, diagnosis, severity, treatment guidance, or evidence of surgical outcome.',
@@ -476,9 +615,16 @@ describe('PatientVisitPage', () => {
     ).toBeVisible()
     expect(
       screen.getByText(
-        'Demo engine only: this fixed-template field is seeded by the capture hash. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
+        'Demo engine only: this illustrative field is seeded by the capture hash and positioned using on-device face landmarks. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
       ),
-    ).toBeVisible()
+    ).not.toBeVisible()
+    const engineBoundary = screen.getByText(
+      'Demo engine only: this illustrative field is seeded by the capture hash and positioned using on-device face landmarks. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
+    )
+    expect(
+      density.compareDocumentPosition(engineBoundary) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
 
     const technical = screen
       .getByText('Technical details')
@@ -523,6 +669,12 @@ describe('PatientVisitPage', () => {
     expect(
       screen.getByLabelText('Reason for repeat photo'),
     ).toHaveFocus()
+    expect(
+      screen.getByLabelText('Reason for repeat photo'),
+    ).toHaveAttribute('name', 'reviewNote')
+    expect(
+      screen.getByLabelText('Reason for repeat photo'),
+    ).toHaveAttribute('autocomplete', 'off')
 
     await user.type(
       screen.getByLabelText('Reason for repeat photo'),
@@ -557,6 +709,34 @@ describe('PatientVisitPage', () => {
     for (const checkbox of screen.getAllByRole('checkbox')) {
       expect(checkbox).not.toBeChecked()
     }
+  })
+
+  it('offers a direct return to the review queue after completing a review', async () => {
+    const user = userEvent.setup()
+    renderVisit()
+    await attachUpload(user)
+    await confirmQuality(user)
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Run simulated analysis',
+      }),
+    )
+    await screen.findByRole('heading', { name: 'Review result' })
+
+    await user.click(screen.getByRole('radio', { name: 'Reviewed' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Complete review' }),
+    )
+
+    expect(
+      screen.getByRole('heading', { name: 'Review complete' }),
+    ).toHaveFocus()
+    expect(
+      screen.getByRole('link', { name: 'Back to reviews' }),
+    ).toHaveAttribute('href', '/reviews')
+    expect(
+      screen.getByRole('link', { name: 'Return to patient record' }),
+    ).toHaveAttribute('href', `/patients/${patient.id}`)
   })
 
   it('offers an exact-photo retry for a failed current run and removes retry after capture replacement', async () => {
@@ -599,5 +779,40 @@ describe('PatientVisitPage', () => {
         name: 'Retry exact photo analysis',
       }),
     ).not.toBeInTheDocument()
+  })
+
+  it('gives a simple retake instruction when the uploaded face cannot be registered', async () => {
+    const user = userEvent.setup()
+    renderVisit({
+      faceRegistrationRunner: async () => {
+        throw new Error('NO_FACE')
+      },
+    })
+    await attachUpload(user)
+    await confirmQuality(user)
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Run simulated analysis',
+      }),
+    )
+
+    const alignmentHeading = await screen.findByRole('heading', {
+      name: 'Face alignment needs attention',
+    })
+    expect(alignmentHeading).toBeVisible()
+    expect(alignmentHeading).toHaveFocus()
+    expect(
+      screen.getByText(
+        'We could not match one clear face to this photograph. Retake or upload a centered frontal image with only one face visible.',
+      ),
+    ).toBeVisible()
+    expect(
+      screen.getByRole('heading', {
+        name: 'Replace photograph',
+      }),
+    ).toBeVisible()
+    expect(document.body).not.toHaveTextContent(
+      /mediapipe|landmark|wasm|NO_FACE/i,
+    )
   })
 })
