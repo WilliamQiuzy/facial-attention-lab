@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "facial-paralysis-landmark110d"
+version = "0.2.0"
+description = "Research-only mirror-invariant 110D facial-landmark model"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.26,<3",
+  "scikit-learn>=1.6,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["landmark110d*"]

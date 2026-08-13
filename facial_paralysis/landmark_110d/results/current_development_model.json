@@ -1,0 +1,126 @@
+{
+  "schema_version": "facial_paralysis_current_development_model_v1",
+  "status": "current_development_champion_not_outer_validated",
+  "recorded_on": "2026-08-05",
+  "model": {
+    "name": "mirror_invariant_landmark_trajectory_110d_l2_logistic",
+    "feature_dimension": 110,
+    "input_contract": "clinical23_v2",
+    "feature_construction": {
+      "channel_summaries": 92,
+      "bilateral_dynamics": 18
+    },
+    "classifier": {
+      "type": "standardized_l2_logistic_regression",
+      "c": 0.01,
+      "solver": "liblinear",
+      "threshold": 0.5,
+      "group_balanced_sample_weights": true,
+      "hyperparameter_search": false
+    },
+    "mirror_invariance": {
+      "training": "original_plus_horizontal_mirror",
+      "inference": "mean_original_and_horizontal_mirror_probability",
+      "maximum_observed_probability_error": 0.0
+    }
+  },
+  "task": {
+    "dataset": "PalsyNet",
+    "target": "binary_affected_vs_unaffected_not_hb_grade",
+    "claim_unit": "video_held_out",
+    "identity_status": "unreviewed"
+  },
+  "evaluation": {
+    "full_recordings": 49,
+    "full_groups": 48,
+    "development_recordings": 39,
+    "development_groups": 38,
+    "development_affected_groups": 21,
+    "development_unaffected_groups": 17,
+    "inner_folds": 4,
+    "protected_outer_fold_number": 0,
+    "protected_recordings": 10,
+    "protected_groups": 10,
+    "cache_records_schema_and_quality_validated": 49,
+    "protected_candidate_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "candidates": {
+    "nuisance_only": {
+      "feature_dimension": 9,
+      "auroc": 0.7675070028011204,
+      "balanced_accuracy": 0.7156862745098038,
+      "sensitivity": 0.6666666666666666,
+      "specificity": 0.7647058823529411
+    },
+    "clinical_dynamics_58d": {
+      "feature_dimension": 58,
+      "auroc": 0.9215686274509803,
+      "balanced_accuracy": 0.8571428571428572,
+      "sensitivity": 0.7142857142857143,
+      "specificity": 1.0
+    },
+    "clinical_dynamics_plus_nuisance": {
+      "feature_dimension": 67,
+      "auroc": 0.9131652661064426,
+      "balanced_accuracy": 0.8809523809523809,
+      "sensitivity": 0.7619047619047619,
+      "specificity": 1.0
+    },
+    "landmark_110d": {
+      "feature_dimension": 110,
+      "auroc": 0.938375350140056,
+      "balanced_accuracy": 0.9047619047619048,
+      "sensitivity": 0.8095238095238095,
+      "specificity": 1.0,
+      "brier": 0.13520128735483106
+    },
+    "mirror_invariant_landmark_110d": {
+      "feature_dimension": 110,
+      "auroc": 0.9439775910364145,
+      "balanced_accuracy": 0.9047619047619048,
+      "sensitivity": 0.8095238095238095,
+      "specificity": 1.0,
+      "brier": 0.13284986045296437
+    }
+  },
+  "primary_comparison": {
+    "baseline": "landmark_110d",
+    "candidate": "mirror_invariant_landmark_110d",
+    "delta_auroc": 0.0056022408963585235,
+    "paired_bootstrap_repeats": 5000,
+    "ci95": [
+      0.0,
+      0.022408963585434316
+    ],
+    "probability_delta_gt_zero": 0.686
+  },
+  "decision": {
+    "development_champion": "mirror_invariant_landmark_110d",
+    "development_champion_basis": "fixed_mirror_robustness_and_noninferiority_gates_passed",
+    "preregistered_primary_candidate": "clinical_dynamics_plus_nuisance",
+    "preregistered_direction_gate_passed": false,
+    "mirror_robustness_successor_gate_passed": true,
+    "outer_evaluation_authorized": false,
+    "hb_claim_authorized": false,
+    "clinical_validation": false,
+    "deployment_authorized": false
+  },
+  "supersedes_for_current_reporting": [
+    "web_static_autoresearch_champion",
+    "geometry_only_web_candidate",
+    "static_landmark_fusion_ablation",
+    "focused_mayo_fusion_reconstruction",
+    "ssl_transfer_smoke"
+  ],
+  "provenance": {
+    "source_branch": "codex/action-clinical-geometry",
+    "canonical_source_commit": "dca220584a90a9f8b797c3d7ee797bb7a692514c",
+    "implementation_commit": "7c64c26005895083766dac7760ce498b253741e8",
+    "experiment": "mirror-invariant-110d-v1",
+    "runner_sha256": "ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12",
+    "protocol_test_sha256": "e2c0855b5afce630160e83db9bdbec08299f707686226a7e3beb2d40bdbee10c",
+    "aggregate_source_report_sha256": "f84fbd1605dea3515cde524946b1d3e4c1003aac77ece2bcef8b3e413f75cb29"
+  }
+}
