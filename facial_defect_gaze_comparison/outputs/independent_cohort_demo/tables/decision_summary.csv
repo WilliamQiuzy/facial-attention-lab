@@ -1,0 +1,6 @@
+priority,question,method,decision,scope
+1,Were the two collections made comparable?,Protocol and common-stimulus gates,pass,Required before any numerical comparison
+2,Are core technical quality differences acceptably small?,Welch 90% CI plus independent-sample equivalence margins,all_primary_endpoints_within_mock_margins,"Calibration and completeness, not attention meaning"
+3,Are group attention maps as close as repeated cohort samples?,Repeated split-half bootstrap and cross-domain map similarity,group_maps_close_to_sampling_repeatability,Group-level maps for the same stimuli
+4,Can a simple model identify the technical acquisition domain?,Repeated cross-validated logistic-regression AUC,clearly_distinguishable,Technical features only
+5,Can a simple model identify the attention-pattern domain?,Repeated cross-validated logistic-regression AUC,low_detectability,AOI attention features only

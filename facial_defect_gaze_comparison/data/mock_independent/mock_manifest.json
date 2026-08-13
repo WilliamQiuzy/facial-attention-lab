@@ -1,0 +1,33 @@
+{
+  "project_id": "SYN-INDEPENDENT-GAZE-500X2",
+  "design": "independent_cohorts",
+  "synthetic": true,
+  "participants_per_cohort": 500,
+  "seed": 20260813,
+  "files": [
+    {
+      "path": "participant_summary.csv",
+      "rows": 1000,
+      "bytes": 127210,
+      "sha256": "bb556ae223fe168a020e76ca1b3e9c5355c84f0d228935ad03762495d1bdad73"
+    },
+    {
+      "path": "fixation_events.csv",
+      "rows": 72000,
+      "bytes": 8153127,
+      "sha256": "2ed6f0cd11e8966f16b6eb17b77a274718854dc302bbf6581d5c3abe0e7b078d"
+    },
+    {
+      "path": "aoi_definitions.csv",
+      "rows": 12,
+      "bytes": 800,
+      "sha256": "ca4e550e5f2ac1eeede5e37b4677dbe964b1fee6ef2fbcad1b2a57f5eede1a18"
+    },
+    {
+      "path": "stimuli.csv",
+      "rows": 3,
+      "bytes": 259,
+      "sha256": "75f196b595868b98194db45aab75f772f961f9afbf8f3bfc0f196dd5f3579fb3"
+    }
+  ]
+}

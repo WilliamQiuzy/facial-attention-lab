@@ -1,0 +1,4 @@
+stimulus_id,stimulus_version,label,width_px,height_px,synthetic
+SYN-FACE-01,v1,Abstract synthetic face stimulus 1,1024,1024,True
+SYN-FACE-02,v1,Abstract synthetic face stimulus 2,1024,1024,True
+SYN-FACE-03,v1,Abstract synthetic face stimulus 3,1024,1024,True

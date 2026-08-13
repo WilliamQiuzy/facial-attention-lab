@@ -1,0 +1,28 @@
+{
+  "project_id": "SYN-INDEPENDENT-GAZE-500X2",
+  "design": "independent_cohorts",
+  "synthetic": true,
+  "seed": 20260813,
+  "participants_per_cohort": 500,
+  "stimulus_ids": ["SYN-FACE-01", "SYN-FACE-02", "SYN-FACE-03"],
+  "fixations_per_stimulus": 24,
+  "map_grid_size": 32,
+  "bootstrap_replicates": 300,
+  "classifier_bootstrap_replicates": 500,
+  "illustrative_margins": {
+    "accuracy_deg": 0.75,
+    "rms_precision_deg": 0.40,
+    "data_loss": 0.08,
+    "valid_trial_share": 0.06,
+    "map_similarity_gap": 0.08,
+    "low_domain_auc": 0.60,
+    "clear_domain_auc": 0.70
+  },
+  "design_requirements": {
+    "same_stimulus_versions": true,
+    "same_task_instructions": true,
+    "same_exposure_duration": true,
+    "same_coordinate_transform": true,
+    "same_exclusion_rules": true
+  }
+}

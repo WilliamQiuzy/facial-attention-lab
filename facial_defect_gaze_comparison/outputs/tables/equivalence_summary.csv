@@ -1,0 +1,17 @@
+scenario,endpoint,mean_difference,ci90_lower,ci90_upper,margin,outcome,n_participants,margin_source
+high_dropout,accuracy_difference_deg,0.772415999321189,0.7603276957279482,0.7845043029144297,1.0,equivalent,3,illustrative_mock_only
+high_dropout,data_loss_difference,0.2932098765432099,0.21656115134921397,0.3698586017372058,0.12,not_equivalent,3,illustrative_mock_only
+high_dropout,map_disagreement,0.16673347973716945,0.15085632974716962,0.1826106297271693,0.35,equivalent,3,illustrative_mock_only
+high_dropout,absolute_lag_ms,37.03703703703704,26.222275628312893,47.851798445761176,100.0,equivalent,3,illustrative_mock_only
+near_equivalent,accuracy_difference_deg,0.20524844265693365,0.1674402971164258,0.24305658819744147,1.0,equivalent,3,illustrative_mock_only
+near_equivalent,data_loss_difference,0.0010288065843621446,-0.03033492228447594,0.032392535453200214,0.12,equivalent,3,illustrative_mock_only
+near_equivalent,map_disagreement,0.06538363415449792,0.058597185363264546,0.0721700829457313,0.35,equivalent,3,illustrative_mock_only
+near_equivalent,absolute_lag_ms,0.0,0.0,0.0,100.0,equivalent,3,illustrative_mock_only
+systematic_bias,accuracy_difference_deg,2.6014646776463137,2.52779648867101,2.6751328666216176,1.0,not_equivalent,3,illustrative_mock_only
+systematic_bias,data_loss_difference,0.05555555555555558,0.0014817485119347912,0.10962936259917633,0.12,equivalent,3,illustrative_mock_only
+systematic_bias,map_disagreement,0.48088518650307516,0.4582637522352708,0.5035066207708795,0.35,not_equivalent,3,illustrative_mock_only
+systematic_bias,absolute_lag_ms,0.0,0.0,0.0,100.0,equivalent,3,illustrative_mock_only
+temporal_lag,accuracy_difference_deg,0.5566485913424527,0.39476291028503463,0.7185342723998707,1.0,equivalent,3,illustrative_mock_only
+temporal_lag,data_loss_difference,0.05452674897119344,-0.007549916385301288,0.11660341432768812,0.12,equivalent,3,illustrative_mock_only
+temporal_lag,map_disagreement,0.1467751869453693,0.13296321362146465,0.16058716026927397,0.35,equivalent,3,illustrative_mock_only
+temporal_lag,absolute_lag_ms,233.33333333333334,233.33333333333334,233.33333333333334,100.0,not_equivalent,3,illustrative_mock_only

@@ -1,6 +1,7 @@
 # Facial Attention Lab
 
-Public source snapshot of two clinician-facing, research-only React prototypes:
+Public source snapshot of two clinician-facing, research-only React prototypes,
+plus reproducible synthetic research-methods projects:
 an eight-step FACES video-capture and inference-contract interface, and a
 synthetic facial-attention workbench for standardized photo visits, local
 simulation, and clinician-review exercises.
@@ -23,6 +24,7 @@ model.
 | [`facial_defect_synthesis/`](facial_defect_synthesis/) | Synthetic-image generation code, methodology, and the exact 10 approved demonstration assets; the larger internal dataset and generation log are excluded |
 | [`facial_paralysis/facial_paralysis_web/`](facial_paralysis/facial_paralysis_web/) | LifeLink Face upload or browser-camera capture with the FACES eight-step voice guide, explicit demonstration mode, and a fail-closed versioned research inference contract; no model runs in the browser |
 | [`facial_paralysis/facial_defect_web/`](facial_paralysis/facial_defect_web/) | Session-only clinician workflow, local simulation, on-device face registration, research workbench, tests, and safety documentation |
+| [`facial_defect_gaze_comparison/`](facial_defect_gaze_comparison/) | Independent 500+500 Webcam-versus-professional cohort comparison, with synthetic inputs, equivalence analysis, split-half map benchmarking, source-domain diagnostics, and seven interpretable figures |
 | [`vitestro_phlebotomy_safety/`](vitestro_phlebotomy_safety/) | English, budget-focused evaluation of devices with programmatic live-data paths for presyncope measurement research |
 
 ## Run locally
@@ -51,6 +53,15 @@ Synthetic facial-attention workbench:
 cd facial_paralysis/facial_defect_web
 pnpm install --frozen-lockfile
 pnpm dev
+```
+
+Synthetic independent-cohort Webcam/reference comparison:
+
+```bash
+cd facial_defect_gaze_comparison
+uv sync --extra dev
+uv run gaze-compare cohort-simulate
+uv run gaze-compare cohort-analyze
 ```
 
 ## Verify
