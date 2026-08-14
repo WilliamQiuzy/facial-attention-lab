@@ -5,7 +5,9 @@ not extract features, train models, or choose evaluation data.
 """
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -253,29 +255,68 @@ def _validate_arrays(
     )
 
 
-def load_dynamic_landmark_recording(
-    cache_path: str | Path,
-) -> DynamicLandmarkRecording:
-    """Load and fail-closed validate one NPZ cache representing one recording."""
-    path = Path(cache_path)
+def _load_npz_fields(
+    source,
+    *,
+    identity: str,
+) -> dict[str, np.ndarray]:
     try:
-        with np.load(path, allow_pickle=False) as saved:
+        if hasattr(source, "seek"):
+            source.seek(0)
+        expected_members = {
+            f"{field}.npy" for field in _REQUIRED_CACHE_FIELDS
+        }
+        with zipfile.ZipFile(source, "r") as archive:
+            member_names = [info.filename for info in archive.infolist()]
+        if (
+            len(member_names) != len(expected_members)
+            or len(set(member_names)) != len(member_names)
+            or set(member_names) != expected_members
+        ):
+            raise ValueError(
+                f"dynamic landmark cache {identity} has duplicate or "
+                "noncanonical NPZ members"
+            )
+        if hasattr(source, "seek"):
+            source.seek(0)
+        with np.load(source, allow_pickle=False) as saved:
+            saved_files = list(saved.files)
+            if (
+                len(saved_files) != len(_REQUIRED_CACHE_FIELDS)
+                or len(set(saved_files)) != len(saved_files)
+            ):
+                raise ValueError(
+                    f"dynamic landmark cache {identity} contains duplicate arrays"
+                )
             missing = sorted(_REQUIRED_CACHE_FIELDS.difference(saved.files))
             if missing:
                 raise ValueError(
-                    f"dynamic landmark cache {path} is missing required fields: {missing}"
+                    f"dynamic landmark cache {identity} is missing required fields: {missing}"
                 )
             unexpected = sorted(set(saved.files).difference(_REQUIRED_CACHE_FIELDS))
             if unexpected:
                 raise ValueError(
-                    f"dynamic landmark cache {path} has unexpected fields: {unexpected}"
+                    f"dynamic landmark cache {identity} has unexpected fields: {unexpected}"
                 )
             fields = {name: np.asarray(saved[name]) for name in _REQUIRED_CACHE_FIELDS}
     except ValueError:
         raise
-    except (OSError, KeyError) as exc:
-        raise ValueError(f"cannot load dynamic landmark cache {path}: {exc}") from exc
+    except (
+        EOFError,
+        KeyError,
+        OSError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ) as exc:
+        raise ValueError(f"cannot load dynamic landmark cache {identity}: {exc}") from exc
+    return fields
 
+
+def _recording_from_fields(
+    fields: dict[str, np.ndarray],
+    *,
+    cache_path: Path,
+) -> DynamicLandmarkRecording:
     source_frame_count = _source_frame_count(fields["source_frame_count"])
     timestamp_unit = _scalar_text(fields["timestamp_unit"], "timestamp_unit")
     if timestamp_unit != "seconds":
@@ -320,7 +361,32 @@ def load_dynamic_landmark_recording(
         group_id=group_id,
         label=label,
         source_sha256=source_sha256.lower(),
-        cache_path=path,
+        cache_path=cache_path,
+    )
+
+
+def load_dynamic_landmark_recording(
+    cache_path: str | Path,
+) -> DynamicLandmarkRecording:
+    """Load and fail-closed validate one NPZ cache representing one recording."""
+    path = Path(cache_path)
+    fields = _load_npz_fields(path, identity=str(path))
+    return _recording_from_fields(fields, cache_path=path)
+
+
+def load_dynamic_landmark_recording_bytes(
+    cache_payload: bytes,
+) -> DynamicLandmarkRecording:
+    """Validate one immutable NPZ byte string without creating or reopening a path."""
+    if type(cache_payload) is not bytes or not cache_payload:
+        raise ValueError("dynamic landmark cache payload must be nonempty exact bytes")
+    fields = _load_npz_fields(
+        io.BytesIO(cache_payload),
+        identity="<immutable-bytes>",
+    )
+    return _recording_from_fields(
+        fields,
+        cache_path=Path("<immutable-bytes>"),
     )
 
 
