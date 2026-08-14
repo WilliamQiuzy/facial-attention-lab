@@ -154,7 +154,30 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--private-manifest", type=Path, required=True)
     parser.add_argument("--mediapipe-model", type=Path, required=True)
     parser.add_argument("--dependency-lock", type=Path, required=True)
+    parser.add_argument("--private-pairs-output", type=Path)
     return parser
+
+
+def _write_private_pairs(path: Path, **arrays: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    if path.exists() or path.is_symlink():
+        raise FileExistsError("manual68 private pair cache already exists")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".manual68-pairs.", suffix=".npz", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        os.chmod(temporary, 0o600)
+        with temporary.open("wb") as stream:
+            np.savez_compressed(stream, **arrays)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+        os.chmod(path, 0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -278,6 +301,20 @@ def main(argv: list[str] | None = None) -> int:
             "seconds": float(time.perf_counter() - started),
         },
     )
+    if args.private_pairs_output is not None:
+        _write_private_pairs(
+            args.private_pairs_output,
+            schema_version=np.asarray("neuroface_manual68_pairs_private_v1"),
+            manual_semantic23=np.stack(manual_values).astype(np.float32),
+            mediapipe_semantic23=np.stack(mediapipe_values).astype(np.float32),
+            detected=np.asarray(detected, dtype=bool),
+            participant_ids=np.asarray(participants, dtype=str),
+            recording_ids=np.asarray(recordings, dtype=str),
+            cohorts=np.asarray(cohorts, dtype=str),
+            tasks=np.asarray(tasks, dtype=str),
+            private_manifest_sha256=np.asarray(private_sha),
+            mediapipe_model_sha256=np.asarray(model_sha),
+        )
     _write_no_overwrite_json(output, report)
     print(json.dumps({
         "schema_version": "neuroface_manual68_audit_v1_receipt",
