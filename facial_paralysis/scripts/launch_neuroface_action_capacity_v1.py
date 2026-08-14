@@ -42,6 +42,9 @@ HOST_IMAGE_ID_COMMITMENT_PATH = Path(
 CONTAINER_IMAGE = "facial-paralysis-neuroface:v1.4"
 CONTAINER_NAME = "neuroface-action-capacity-v1"
 CONTAINER_USER = "1001:1001"
+CONTAINER_TMPFS = {
+    "/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777",
+}
 HOST_INSTANCE_ID = "computeinstance-e00saxxvybxg7qvj0s"
 GPU_MODEL = "NVIDIA H200"
 PRIVATE_MANIFEST_SHA256 = (
@@ -294,7 +297,12 @@ def _validated_mount_projection(
     inspect: Mapping[str, object],
 ) -> tuple[list[dict[str, object]], str]:
     raw_mounts = inspect.get("Mounts")
-    if not isinstance(raw_mounts, list) or len(raw_mounts) != 2:
+    host_config = inspect.get("HostConfig")
+    if (
+        not isinstance(raw_mounts, list) or len(raw_mounts) != 2
+        or not isinstance(host_config, dict)
+        or host_config.get("Tmpfs") != CONTAINER_TMPFS
+    ):
         raise ValueError("container must have exactly two Docker mounts")
     projected = []
     for raw in raw_mounts:
@@ -353,6 +361,7 @@ def _docker_create_command() -> list[str]:
         "container", "create", "--name", CONTAINER_NAME,
         "--gpus", "all", "--network", "none", "--read-only",
         "--user", CONTAINER_USER,
+        "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777",
         "--mount", (
             f"type=bind,src={HOST_INPUT_RELEASE_ROOT},"
             "dst=/neuroface-input,readonly"
@@ -578,6 +587,7 @@ def _launch_once() -> str:
         "host_instance_id": HOST_INSTANCE_ID,
         "gpu_model": GPU_MODEL,
         "container_user": CONTAINER_USER,
+        "runtime_tmpfs": dict(CONTAINER_TMPFS),
         "container_image_id": pinned_image_id,
         "image_id_commitment_sha256": hashlib.sha256(
             (pinned_image_id + "\n").encode("ascii")

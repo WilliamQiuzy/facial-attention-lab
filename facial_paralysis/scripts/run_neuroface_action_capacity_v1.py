@@ -460,7 +460,7 @@ def _validate_mount_attestation(
     ]
     expected_keys = {
         "schema_version", "host_instance_id", "gpu_model", "container_user",
-        "container_image_id",
+        "runtime_tmpfs", "container_image_id",
         "image_id_commitment_sha256", "docker_inspect_mounts_sha256",
         "input_release", "output_release", "mounts", "nested_mounts",
         "protected_mounts",
@@ -511,6 +511,9 @@ def _validate_mount_attestation(
         or value.get("host_instance_id") != "computeinstance-e00saxxvybxg7qvj0s"
         or value.get("gpu_model") != "NVIDIA H200"
         or value.get("container_user") != "1001:1001"
+        or value.get("runtime_tmpfs") != {
+            "/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777",
+        }
         or not isinstance(value.get("container_image_id"), str)
         or _IMAGE_ID.fullmatch(str(value["container_image_id"])) is None
         or value.get("image_id_commitment_sha256") != hashlib.sha256(

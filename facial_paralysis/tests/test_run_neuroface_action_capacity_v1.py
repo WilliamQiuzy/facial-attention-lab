@@ -53,6 +53,9 @@ def _signed_host_payload() -> dict[str, object]:
         "image_id_commitment_sha256": hashlib.sha256(
             (("sha256:" + "a" * 64) + "\n").encode("ascii")
         ).hexdigest(),
+        "runtime_tmpfs": {
+            "/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777",
+        },
         "docker_inspect_mounts_sha256": hashlib.sha256(mount_bytes).hexdigest(),
         "input_release": {
             "id": "neuroface-action-capacity-input-v1",

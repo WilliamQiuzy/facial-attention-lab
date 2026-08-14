@@ -21,6 +21,9 @@ def _inspect(source_input: str, source_output: str) -> dict[str, object]:
     return {
         "Id": "d" * 64,
         "Image": "sha256:" + "a" * 64,
+        "HostConfig": {"Tmpfs": {
+            "/tmp": "rw,nosuid,nodev,noexec,size=64m,mode=1777",
+        }},
         "Config": {"User": "1001:1001"},
         "Mounts": [
             {
@@ -49,6 +52,9 @@ def test_mount_projection_is_closed_exact_and_committed(c: Check):
         mounts, sort_keys=True, separators=(",", ":"), allow_nan=False,
     ) + "\n").encode("ascii")
     c.eq(commitment, hashlib.sha256(canonical).hexdigest())
+    inspect["HostConfig"]["Tmpfs"] = {}
+    c.raises(lambda: launcher._validated_mount_projection(inspect), ValueError)
+    inspect["HostConfig"]["Tmpfs"] = dict(launcher.CONTAINER_TMPFS)
     inspect["Mounts"].append({
         "Type": "bind", "Source": "/protected", "Destination": "/extra",
         "Mode": "ro", "RW": False, "Propagation": "rprivate",
@@ -182,8 +188,11 @@ def test_launch_create_inspect_sign_start_order_and_no_third_bind(c: Check):
         c.eq(create.count("--mount"), 2)
         c.true("--user" in create)
         c.eq(create[create.index("--user") + 1], "1001:1001")
-        c.true("--tmpfs" not in create,
-               "the formal container has exactly the two signed mounts")
+        c.eq(create.count("--tmpfs"), 1)
+        c.eq(create[create.index("--tmpfs") + 1],
+             "/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777")
+        c.eq(create.count("--mount"), 2,
+             "the tmpfs does not add a third host-data mount")
         c.true(os.fspath(launcher.HOST_PRIVATE_KEY_PATH) not in create,
                "host private key is never mounted into the container")
 
