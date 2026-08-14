@@ -1,7 +1,7 @@
 {
-  "schema_version": "facial_paralysis_current_model_v5",
-  "status": "sealed_110d_externally_evaluated_generalization_gap_identified",
-  "recorded_on": "2026-08-11",
+  "schema_version": "facial_paralysis_current_model_v6",
+  "status": "sealed_110d_neuroface_generalization_and_measurement_gaps_identified",
+  "recorded_on": "2026-08-13",
   "model": {
     "name": "landmark_mi_110d",
     "feature_dimension": 110,
@@ -309,13 +309,33 @@
       "dominant_failure": "external_normal_false_positives_low_specificity",
       "may_tune_successor_on_meei": false
     },
+    "neuroface": {
+      "participants": 36,
+      "videos": 261,
+      "retained_videos_after_label_blind_qc": 231,
+      "manual_68_point_annotated_frames": 3306,
+      "frozen_110d_external_metrics": {
+        "auroc": 0.34909090909090906,
+        "balanced_accuracy": 0.4163636363636364,
+        "sensitivity": 0.56,
+        "specificity": 0.2727272727272727,
+        "brier": 0.2832172596186839
+      },
+      "manual_landmark_detection_rate": 1.0,
+      "manual68_measurement_gate_passed": false,
+      "slp_motion_pretraining_promoted": false,
+      "manual68_geometry_calibration_promoted": false,
+      "palsynet_protected_predictions": 0,
+      "may_reuse_as_untouched_external_validation": false,
+      "clinical_validation": false
+    },
     "aflfp": {
       "access_granted": false,
       "eligible_faculty_or_employee_signature_required": true
     }
   },
   "provenance": {
-    "source_branch": "codex/meei-external-validation-v1",
+    "source_branch": "codex/neuroface-external-validation-v1",
     "generalization_lock_implementation_commit": "14a47f9",
     "architecture_challenge_implementation_commit": "036e033",
     "outer_release_implementation_commit": "ad5b670",
@@ -334,6 +354,15 @@
     "meei_cache_manifest_sha256": "4ae13f6a77ea2ba3095665df6cccc0753b54a49f8cd3d676dccddb73d12f1d0e",
     "meei_cache_artifact_collection_sha256": "9f9ac765eb0ce0aff317c27099ed9c4e9828f9f4303b51c1a03372774a3c3f6f",
     "meei_external_report_sha256": "445fa3c770addbeb70820a3395c13304e602b91445bb218d404cd1dff5f54baf",
+    "neuroface_external_protocol_commit": "f3a0505",
+    "neuroface_motion_pretraining_commit": "4a9ea89",
+    "neuroface_manual68_audit_commit": "cfb3a7c",
+    "neuroface_geometry_calibration_commit": "1468a0d",
+    "neuroface_frozen_external_report_sha256": "beda5bee5ed3736a90245e98c165777198aee6d6be2bbcd8a13f0fb2b1a11984",
+    "neuroface_slp_transfer_report_sha256": "bc269696eadcb1850ec819962b7d623703cb1856bbf59deefd1573e590de421d",
+    "neuroface_motion_pretraining_report_sha256": "7a5cfcd813e48f7e6b42b9687df3d243651f6d5af5d8a9811de0b4362e7f8e80",
+    "neuroface_manual68_audit_report_sha256": "a58e42be8101deabd6797bcab24e50485713cbfe3d65c55b65c78594b932dddf",
+    "neuroface_geometry_calibration_report_sha256": "9d54a58eede9b6b4c12f4635ca213726e1fff8005df424c346808cba88d8b5a8",
     "meei_h200_release": "/home/ssh-ziyue/facial-paralysis-h200/releases/meei-external-v1-81a83df",
     "architecture_report_sha256": "4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7",
     "mayo_positive_challenge_report_sha256": "bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060",
@@ -348,6 +377,8 @@
     "palsynet_protected_outer_completed": true,
     "house_brackmann_accuracy": false,
     "independent_public_cross_dataset_validation_completed": true,
+    "neuroface_frozen_external_validation_completed_once": true,
+    "neuroface_reuse_as_external_validation": false,
     "requested_external_accuracy_target_met": false,
     "prospective_cross_institutional_clinical_validation": false,
     "clinical_use": false
