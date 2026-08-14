@@ -93,6 +93,8 @@ facial_paralysis/outputs/.palsynet_identity_audit.backup-*/
 facial_paralysis/outputs/dynamic_landmark/pretraining/
 facial_paralysis/outputs/dynamic_landmark/mayo_exposure_manifest.json
 facial_paralysis/outputs/dynamic_landmark/.mayo_exposure_manifest.json.*-*
+# Private Mayo action-timing hash registry and any future blinded row-level audit.
+facial_paralysis/outputs/dynamic_landmark/mayo_action_anchor_feasibility_v1/
 # Development reports remain owner-private. Publish only reviewed aggregate
 # summaries under facial_paralysis/docs/results/.
 facial_paralysis/outputs/dynamic_landmark/benchmarks/development/action-clinical-geometry-v1/

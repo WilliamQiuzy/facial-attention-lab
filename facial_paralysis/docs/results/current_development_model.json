@@ -1,7 +1,7 @@
 {
-  "schema_version": "facial_paralysis_current_model_v6",
-  "status": "sealed_110d_neuroface_generalization_and_measurement_gaps_identified",
-  "recorded_on": "2026-08-13",
+  "schema_version": "facial_paralysis_current_model_v7",
+  "status": "sealed_110d_with_separate_scripted_action_capacity_feasibility",
+  "recorded_on": "2026-08-14",
   "model": {
     "name": "landmark_mi_110d",
     "feature_dimension": 110,
@@ -219,6 +219,57 @@
     "deployment_authorized": false,
     "next_gate": "palsynet_only_source_robust_development_then_new_untouched_external_cohort"
   },
+  "research_only_branches": {
+    "scripted_action_capacity_v1": {
+      "status": "cross_disease_orofacial_capacity_feasibility_passed",
+      "neuroface_endpoint": "als_or_post_stroke_vs_healthy_control",
+      "participants": 36,
+      "primary_task_recordings": 108,
+      "actions": [
+        "NSM_KISS",
+        "NSM_OPEN",
+        "NSM_SPREAD"
+      ],
+      "action_experts": 3,
+      "feature_dimension_per_expert": 18,
+      "classifier_per_expert": "standardized_l2_logistic_regression_c_0_01",
+      "neuroface_metrics": {
+        "auroc": 0.7527272727272728,
+        "auroc_ci95": [
+          0.5781818181818182,
+          0.9018181818181817
+        ],
+        "average_precision": 0.8913145805105009,
+        "balanced_accuracy": 0.7436363636363637,
+        "sensitivity": 0.76,
+        "specificity": 0.7272727272727273,
+        "brier": 0.23533808890364177,
+        "per_task_auroc": {
+          "NSM_KISS": 0.629090909090909,
+          "NSM_OPEN": 0.8218181818181818,
+          "NSM_SPREAD": 0.46545454545454545
+        }
+      },
+      "mayo_action_timing_feasibility": {
+        "source_files": 53,
+        "unique_contents": 52,
+        "exact_duplicate_files": 1,
+        "audio_bearing_source_files": 51,
+        "audio_free_source_files": 2,
+        "probe_failed_unique_contents": 0,
+        "locked_two_annotator_events": 0,
+        "timing_gate_eligible": false,
+        "action_expert_predictions": 0,
+        "accuracy_defined": false
+      },
+      "neuroface_public_report_sha256": "be246d848e78598c47d0470ff5c4175dbe1a4b6b012fadedbbf0f7494f34c290",
+      "mayo_timing_audit_public_report_sha256": "b59b1f5fc727858ac6c490ddf0b35f6092070cc45ee398de30faa35f0a8977e6",
+      "current_110d_replaced": false,
+      "bell_palsy_transfer_claim_authorized": false,
+      "fusion_authorized": false,
+      "clinical_use_authorized": false
+    }
+  },
   "execution_audit": {
     "gate_attempts": 1,
     "gate_passes": 1,
@@ -363,6 +414,9 @@
     "neuroface_motion_pretraining_report_sha256": "7a5cfcd813e48f7e6b42b9687df3d243651f6d5af5d8a9811de0b4362e7f8e80",
     "neuroface_manual68_audit_report_sha256": "a58e42be8101deabd6797bcab24e50485713cbfe3d65c55b65c78594b932dddf",
     "neuroface_geometry_calibration_report_sha256": "9d54a58eede9b6b4c12f4635ca213726e1fff8005df424c346808cba88d8b5a8",
+    "neuroface_action_capacity_report_sha256": "be246d848e78598c47d0470ff5c4175dbe1a4b6b012fadedbbf0f7494f34c290",
+    "mayo_action_anchor_feasibility_report_sha256": "b59b1f5fc727858ac6c490ddf0b35f6092070cc45ee398de30faa35f0a8977e6",
+    "scripted_action_capacity_source_branch": "codex/script-aligned-action-experts-v1",
     "meei_h200_release": "/home/ssh-ziyue/facial-paralysis-h200/releases/meei-external-v1-81a83df",
     "architecture_report_sha256": "4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7",
     "mayo_positive_challenge_report_sha256": "bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060",
@@ -380,6 +434,10 @@
     "neuroface_frozen_external_validation_completed_once": true,
     "neuroface_reuse_as_external_validation": false,
     "requested_external_accuracy_target_met": false,
+    "scripted_action_capacity_feasibility_completed": true,
+    "scripted_action_capacity_is_bell_palsy_validation": false,
+    "mayo_action_timing_gate_eligible": false,
+    "mayo_action_expert_predictions": 0,
     "prospective_cross_institutional_clinical_validation": false,
     "clinical_use": false
   }
