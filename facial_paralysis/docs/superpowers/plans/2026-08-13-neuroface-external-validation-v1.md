@@ -54,7 +54,7 @@ The protocol, evaluator tests/code, artifact/model hashes, dependency lock, and 
 - [x] **Step 2: Run the focused test and confirm the expected missing-feature failure.**
 - [x] **Step 3: Implement per-member same-byte temporary decoding and validated deidentified NPZ output.**
 - [x] **Step 4: Run focused and existing frozen-extractor tests.**
-- [ ] **Step 5: Smoke one healthy-control, one ALS, and one stroke video before the full extraction.**
+- [x] **Step 5: Smoke one healthy-control, one ALS, and one stroke video before the full extraction.**
 
 ### Task 3: Frozen participant-level external evaluator
 

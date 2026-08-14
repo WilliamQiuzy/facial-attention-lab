@@ -13,7 +13,8 @@
     "cohort_identity_inherent_in_release": true,
     "neuroface_predictions_generated_before_registration": false,
     "slp_association_claim": "predeclared_exploratory",
-    "slp_workbooks_machine_parsed_during_inventory": true
+    "slp_workbooks_machine_parsed_during_inventory": true,
+    "three_recording_feature_only_smoke_completed": true
   },
   "locks": {
     "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
@@ -27,11 +28,11 @@
       "trajectory_features": "0a0900c9df418ce2856175d4027dbedd7db99d4873985bf3d61e7fa8be6d5ff7"
     },
     "evaluation_implementation_sha256": "3f597f585c46a0ea64913b1bc2e749d348fa34f593d35e99c4ed5ef6f1013f58",
-    "extraction_implementation_sha256": "c95528830477465a76400c7ad65783609d28cd14d308518adc40a4e8bf8c5ef6",
+    "extraction_implementation_sha256": "183102d34e541f2f154ecab5b73ed163df6429b5203b97bc602c4149827b3d06",
     "final_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
     "mediapipe_model_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
     "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
-    "protocol_plan_sha256": "af28c28c7810767e2e59928805847b128d76f3a98f86d7c85012983dfb0ee15b"
+    "protocol_plan_sha256": "54ddc9a3e78fa14c235e8e923e3f478c09345d97aa61d935d61fddbfcbabda82"
   },
   "post_extraction_authorization_rule": "may_add_only_cache_manifest_sha256_cache_artifact_collection_sha256_and_qc_counts",
   "protocol": {

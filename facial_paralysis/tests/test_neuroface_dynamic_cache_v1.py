@@ -159,5 +159,38 @@ def test_collection_manifest_is_complete_closed_and_no_tuning_cli(c: Check):
         c.true(forbidden not in options, f"CLI cannot tune {forbidden}")
 
 
+def test_collection_manifest_accounts_for_label_blind_qc_exclusions(c: Check):
+    row = _record()
+    private_manifest = {
+        "schema_version": "neuroface_external_private_manifest_v1",
+        "dataset": "Toronto_NeuroFace_v1",
+        "claim_unit": "participant",
+        "target": "neurological_orofacial_impairment_vs_healthy_control",
+        "primary_tasks": ["NSM_KISS", "NSM_OPEN", "NSM_SPREAD"],
+        "counts": {"participants": 1, "videos": 1},
+        "participants": [{"participant_id": row["participant_id"]}],
+        "records": [row],
+    }
+    manifest = build_collection_manifest(
+        private_manifest,
+        [{
+            "recording_id": row["recording_id"],
+            "participant_id": row["participant_id"],
+            "video_sha256": row["video_sha256"],
+            "status": "excluded",
+            "exclusion_reason": "coverage_below_0_90",
+        }],
+        private_manifest_sha256="8" * 64,
+        model_sha256=FROZEN_MEDIAPIPE_MODEL_SHA256,
+        implementation_sha256="9" * 64,
+    )
+    c.eq(manifest["counts"]["retained"], 0, "failed QC is never retained")
+    c.eq(manifest["counts"]["excluded"], 1, "failed QC remains in the flow count")
+    c.eq(manifest["counts"]["primary_complete_participants"], 0,
+         "primary eligibility fails closed when one primary task is excluded")
+    c.eq(manifest["records"][0]["exclusion_reason"], "coverage_below_0_90",
+         "technical exclusion reason is explicit and label blind")
+
+
 if __name__ == "__main__":
     run_all("test_neuroface_dynamic_cache_v1", dict(globals()))

@@ -59,6 +59,22 @@ _GROUP_ID = re.compile(r"^grp_[0-9a-f]{64}$")
 _FORBIDDEN_SERIALIZED_TOKENS = (
     "/Users/", "/home/", "\\", ".avi", "Videos/", "Landmarks_gt/",
 )
+_ALLOWED_EXTRACTION_EXCLUSIONS = {
+    "open_failed",
+    "invalid_fps",
+    "invalid_frame_count",
+    "nonintegral_frame_count",
+    "insufficient_frame_count",
+    "invalid_width",
+    "invalid_height",
+    "nonintegral_dimensions",
+    "seek_failed",
+    "decode_failed",
+    "frame_dimensions_changed",
+    "seek_position_mismatch",
+    "no_valid_detections",
+    "coverage_below_0_90",
+}
 
 
 def _sha256_file(path: Path) -> str:
@@ -213,37 +229,55 @@ def build_collection_manifest(
             raise ValueError("private recording IDs must be unique")
         expected[record_id] = row
     observed: dict[str, dict[str, object]] = {}
+    retained_ids: set[str] = set()
     for raw in cache_rows:
         row = dict(raw)
         record_id = str(row.get("recording_id", ""))
         if record_id not in expected or record_id in observed:
             raise ValueError("cache rows must exactly match private recording IDs")
-        status = row.get("status", "retained")
-        if status != "retained":
-            raise ValueError("v1 collection cannot silently retain exclusions")
         if (
             row.get("participant_id") != expected[record_id]["participant_id"]
             or row.get("video_sha256") != expected[record_id]["video_sha256"]
-            or _SHA256.fullmatch(str(row.get("cache_sha256", ""))) is None
         ):
-            raise ValueError("cache row is not bound to its private record")
-        coverage = float(row.get("coverage", -1.0))
-        if not (0.9 <= coverage <= 1.0):
-            raise ValueError("retained NeuroFace cache must meet 90 percent coverage")
-        observed[record_id] = {
-            "recording_id": record_id,
-            "participant_id": row["participant_id"],
-            "video_sha256": row["video_sha256"],
-            "cache_sha256": row["cache_sha256"],
-            "coverage": coverage,
-            "status": "retained",
-        }
+            raise ValueError("cache/QC row is not bound to its private record")
+        status = row.get("status", "retained")
+        if status == "retained":
+            if _SHA256.fullmatch(str(row.get("cache_sha256", ""))) is None:
+                raise ValueError("retained cache SHA-256 is malformed")
+            coverage = float(row.get("coverage", -1.0))
+            if not (0.9 <= coverage <= 1.0):
+                raise ValueError("retained NeuroFace cache must meet 90 percent coverage")
+            observed[record_id] = {
+                "recording_id": record_id,
+                "participant_id": row["participant_id"],
+                "video_sha256": row["video_sha256"],
+                "cache_sha256": row["cache_sha256"],
+                "coverage": coverage,
+                "status": "retained",
+            }
+            retained_ids.add(record_id)
+        elif status == "excluded":
+            reason = row.get("exclusion_reason")
+            if reason not in _ALLOWED_EXTRACTION_EXCLUSIONS or set(row) != {
+                "recording_id", "participant_id", "video_sha256",
+                "status", "exclusion_reason",
+            }:
+                raise ValueError("QC exclusion is not an exact allowed technical reason")
+            observed[record_id] = {
+                "recording_id": record_id,
+                "participant_id": row["participant_id"],
+                "video_sha256": row["video_sha256"],
+                "status": "excluded",
+                "exclusion_reason": reason,
+            }
+        else:
+            raise ValueError("cache/QC row status is invalid")
     if set(observed) != set(expected):
         raise ValueError("collection manifest requires every private recording")
     primary = set(private_manifest.get("primary_tasks", []))
     eligible_participants: dict[str, set[str]] = {}
     for record_id, source in expected.items():
-        if record_id not in observed:
+        if record_id not in retained_ids:
             continue
         if source.get("task") in primary:
             eligible_participants.setdefault(str(source["participant_id"]), set()).add(
@@ -260,8 +294,8 @@ def build_collection_manifest(
         "primary_tasks": sorted(primary),
         "counts": {
             "source_records": len(expected),
-            "retained": len(observed),
-            "excluded": 0,
+            "retained": len(retained_ids),
+            "excluded": len(observed) - len(retained_ids),
             "participants": len({str(row["participant_id"]) for row in expected.values()}),
             "primary_complete_participants": sum(
                 tasks == primary for tasks in eligible_participants.values()
@@ -278,6 +312,17 @@ def build_collection_manifest(
     if any(token in encoded for token in _FORBIDDEN_SERIALIZED_TOKENS):
         raise ValueError("collection manifest contains a raw identifier or location")
     return payload
+
+
+def _technical_exclusion_reason(error: BaseException) -> str:
+    if isinstance(error, RecordingExtractionError):
+        reason = str(error)
+        if reason in _ALLOWED_EXTRACTION_EXCLUSIONS:
+            return reason
+        raise error
+    if isinstance(error, ValueError) and str(error) == "recording coverage is below 90 percent":
+        return "coverage_below_0_90"
+    raise error
 
 
 def _implementation_sha256() -> str:
@@ -397,8 +442,15 @@ def run_extraction(
                         validate_retained_recording(result)
                         write_validated_recording_cache(cache_path, result)
                         cache_rows.append(validate_existing_cache(cache_path, row))
-                    except RecordingExtractionError as exc:
-                        raise ValueError(f"recording QC failed: {exc}") from None
+                    except (RecordingExtractionError, ValueError) as exc:
+                        reason = _technical_exclusion_reason(exc)
+                        cache_rows.append({
+                            "recording_id": row["recording_id"],
+                            "participant_id": row["participant_id"],
+                            "video_sha256": row["video_sha256"],
+                            "status": "excluded",
+                            "exclusion_reason": reason,
+                        })
                     finally:
                         if source_path.exists():
                             source_path.chmod(0o600)
