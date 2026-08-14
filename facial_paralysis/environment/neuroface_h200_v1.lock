@@ -1,7 +1,7 @@
 schema_version=neuroface_h200_environment_v1
 base_image=python:3.10.2-bullseye
 base_image_digest=sha256:122cd2f55639e0d2e1d191b7cccb720c0ece586e2b4e8ab5fd98cc6bcad03a25
-built_image_id=sha256:c7c05c8da09a9697fa27cad9e6e12660f3ca72952eb8645acdb6728e0661731e
+built_image_id=sha256:4db2bb708e6d517f65962446d1cd3278efd8406a33785219721d167094a7d56a
 python=3.10.2
 platform=linux_x86_64
 Jinja2==3.1.6
