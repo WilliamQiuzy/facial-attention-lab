@@ -4,6 +4,7 @@
 .env
 **/.env
 *.pem
+!facial_paralysis/environment/neuroface_action_capacity_host_audit_ed25519_public.pem
 *.key
 *credentials*
 
