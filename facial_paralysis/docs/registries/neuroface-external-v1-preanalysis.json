@@ -16,7 +16,7 @@
     "slp_workbooks_machine_parsed_during_inventory": true
   },
   "locks": {
-    "dependency_lock_sha256": "e052a40081258cb7ae39e37c018a9a28356c556dc3feff0343f70426ce97851b",
+    "dependency_lock_sha256": "cfdc79c0aa6d44307931e63914d39f85c403d4d8dde2c7769b3e95ea2f41c1c9",
     "evaluation_components_sha256": {
       "dynamic_loader": "e2a1accfe01b7f5d366457b78a8710f29b46bb074ac9cb3b50c6078060ee821b",
       "external_core": "32bb7ca77994687f179d558f1875a1f5c95bca0aa626c45ad71a6bf7ad3cfac9",

@@ -11,6 +11,8 @@ RUN apt-get update \
 
 WORKDIR /workspace/facial_paralysis
 COPY environment/neuroface_h200_v1.requirements.txt /tmp/requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir \
+      --extra-index-url https://download.pytorch.org/whl/cpu \
+      -r /tmp/requirements.txt
 
 CMD ["python", "--version"]
