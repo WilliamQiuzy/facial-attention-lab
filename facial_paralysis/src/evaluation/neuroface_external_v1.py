@@ -271,6 +271,65 @@ def aggregate_participant_scores(
     )
 
 
+def retained_private_records(
+    private_records: Sequence[Mapping[str, object]],
+    collection_rows: Sequence[Mapping[str, object]],
+) -> tuple[list[Mapping[str, object]], dict[str, int]]:
+    """Join the complete QC ledger and return only authenticated retained rows."""
+    private_by_id: dict[str, Mapping[str, object]] = {}
+    for row in private_records:
+        recording_id = row.get("recording_id")
+        if (
+            not isinstance(recording_id, str)
+            or not recording_id.startswith("rec_")
+            or recording_id in private_by_id
+        ):
+            raise ValueError("private recording IDs are invalid or duplicated")
+        private_by_id[recording_id] = row
+    collection_by_id: dict[str, Mapping[str, object]] = {}
+    for row in collection_rows:
+        recording_id = row.get("recording_id")
+        source = private_by_id.get(str(recording_id))
+        if source is None or recording_id in collection_by_id:
+            raise ValueError("collection QC rows add or duplicate a source")
+        if (
+            row.get("participant_id") != source.get("participant_id")
+            or row.get("video_sha256") != source.get("video_sha256")
+        ):
+            raise ValueError("collection QC row differs from its private source")
+        status = row.get("status")
+        if status == "retained":
+            if (
+                _SHA256.fullmatch(str(row.get("cache_sha256", ""))) is None
+                or not 0.9 <= float(row.get("coverage", -1.0)) <= 1.0
+            ):
+                raise ValueError("retained cache row violates the frozen QC gate")
+        elif status == "excluded":
+            if row.get("exclusion_reason") not in {
+                "open_failed", "invalid_fps", "invalid_frame_count",
+                "nonintegral_frame_count", "insufficient_frame_count",
+                "invalid_width", "invalid_height", "nonintegral_dimensions",
+                "seek_failed", "decode_failed", "frame_dimensions_changed",
+                "seek_position_mismatch", "no_valid_detections",
+                "coverage_below_0_90",
+            }:
+                raise ValueError("collection exclusion reason is not technical and locked")
+        else:
+            raise ValueError("collection QC status is invalid")
+        collection_by_id[str(recording_id)] = row
+    if set(collection_by_id) != set(private_by_id):
+        raise ValueError("collection QC ledger must account for every source exactly once")
+    retained = [
+        row for row in private_records
+        if collection_by_id[str(row["recording_id"])]["status"] == "retained"
+    ]
+    return retained, {
+        "source_records": len(private_records),
+        "retained": len(retained),
+        "excluded": len(private_records) - len(retained),
+    }
+
+
 def _points(labels: np.ndarray, scores: np.ndarray) -> dict[str, float]:
     labels = np.asarray(labels, dtype=np.int64)
     scores = np.asarray(scores, dtype=np.float64)
@@ -546,6 +605,6 @@ __all__ = [
     "ParticipantAggregate", "aggregate_participant_scores",
     "build_expected_authorization", "build_external_report",
     "canonical_json_sha256", "implementation_fingerprints", "metric_report",
-    "protocol", "score_authenticated_cache", "validate_external_authorization",
+    "protocol", "retained_private_records", "score_authenticated_cache", "validate_external_authorization",
     "validate_external_report",
 ]

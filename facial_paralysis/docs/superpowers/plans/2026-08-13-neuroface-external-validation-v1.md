@@ -89,8 +89,8 @@ The protocol, evaluator tests/code, artifact/model hashes, dependency lock, and 
 - Create: `outputs/neuroface_external_v1/report.json`
 - Keep private/ignored: participant manifest, per-video predictions, extracted NPZ caches, and landmark frame rows.
 
-- [ ] **Step 1: Verify the six raw ZIP hashes and full CRC tests again.**
-- [ ] **Step 2: Run extraction in a pinned isolated environment; resume safely if interrupted.**
+- [x] **Step 1: Verify the six raw ZIP hashes and full CRC tests again.**
+- [x] **Step 2: Run extraction in a pinned isolated environment; resume safely if interrupted.**
 - [ ] **Step 3: Freeze cache and implementation digests, then create the exact one-shot authorization.**
 - [ ] **Step 4: Run the external scorer once and the manual-landmark audit once.**
 - [ ] **Step 5: Independently recompute aggregate metrics from private rows and compare numerically.**

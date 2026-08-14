@@ -28,6 +28,7 @@ from src.evaluation.neuroface_external_v1 import (  # noqa: E402
     aggregate_participant_scores,
     build_external_report,
     implementation_fingerprints,
+    retained_private_records,
     score_authenticated_cache,
     validate_external_authorization,
     validate_external_report,
@@ -111,14 +112,26 @@ def main() -> int:
         or not isinstance(cache_rows, list) or len(cache_rows) != len(records)
     ):
         raise ValueError("NeuroFace cache manifest is incomplete")
-    by_recording = {str(row["recording_id"]): row for row in records}
-    if set(by_recording) != {str(row.get("recording_id")) for row in cache_rows}:
-        raise ValueError("private and cache recording sets differ")
+    retained_records, flow = retained_private_records(records, cache_rows)
+    if (
+        flow != {"source_records": 261, "retained": 231, "excluded": 30}
+        or cache_manifest.get("counts") != {
+            "source_records": 261,
+            "retained": 231,
+            "excluded": 30,
+            "participants": 36,
+            "primary_complete_participants": 36,
+        }
+    ):
+        raise ValueError("NeuroFace label-blind QC flow differs from the frozen run")
     if registration.get("schema_version") != "neuroface_preanalysis_registration_v1":
         raise ValueError("preanalysis registration schema is invalid")
     components, implementation_sha = implementation_fingerprints()
     audit = ExternalAudit()
-    inventory = cache_artifact_inventory(args.feature_cache_root, cache_rows, audit=audit)
+    retained_cache_rows = [row for row in cache_rows if row.get("status") == "retained"]
+    inventory = cache_artifact_inventory(
+        args.feature_cache_root, retained_cache_rows, audit=audit
+    )
     state = validate_external_authorization(
         authorization,
         authorization_sha256=authorization_sha,
@@ -134,10 +147,10 @@ def main() -> int:
         expected_participants=36,
         expected_affected=25,
         expected_unaffected=11,
-        expected_videos=261,
+        expected_videos=231,
     )
     video_rows = score_authenticated_cache(
-        inventory, records, artifact, state=state, audit=audit
+        inventory, retained_records, artifact, state=state, audit=audit
     )
     aggregate = aggregate_participant_scores(video_rows)
     audit.participant_aggregations = int(aggregate.labels.size)

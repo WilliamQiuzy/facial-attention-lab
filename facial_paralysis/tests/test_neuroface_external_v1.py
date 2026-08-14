@@ -21,6 +21,7 @@ from src.evaluation.neuroface_external_v1 import (  # noqa: E402
     build_external_report,
     canonical_json_sha256,
     metric_report,
+    retained_private_records,
     validate_external_authorization,
     validate_external_report,
 )
@@ -113,6 +114,40 @@ def test_primary_aggregation_uses_exact_three_common_tasks(c: Check):
     missing = _video_rows()[:-2]
     c.raises(lambda: aggregate_participant_scores(missing), ValueError,
              "missing a primary task invalidates the closed primary cohort")
+
+
+def test_cache_flow_scores_only_retained_rows_but_accounts_for_every_source(c: Check):
+    private_rows = [
+        {
+            "recording_id": f"rec_{index:064x}",
+            "participant_id": f"grp_{index:064x}",
+            "video_sha256": f"{index + 10:064x}",
+            "cohort": "healthy_control" if index == 1 else "als",
+            "binary_label": "unaffected" if index == 1 else "affected",
+            "task": task,
+        }
+        for index, task in enumerate(("NSM_KISS", "DDK_PA", "NSM_OPEN"), start=1)
+    ]
+    collection_rows = [
+        {
+            "recording_id": row["recording_id"],
+            "participant_id": row["participant_id"],
+            "video_sha256": row["video_sha256"],
+            "status": "excluded" if row["task"] == "DDK_PA" else "retained",
+            **({"exclusion_reason": "coverage_below_0_90"}
+               if row["task"] == "DDK_PA" else {
+                   "cache_sha256": f"{30 + index:064x}", "coverage": 1.0,
+               }),
+        }
+        for index, row in enumerate(private_rows)
+    ]
+    retained, flow = retained_private_records(private_rows, collection_rows)
+    c.eq([row["task"] for row in retained], ["NSM_KISS", "NSM_OPEN"],
+         "only authenticated retained sources can reach scoring")
+    c.eq(flow, {"source_records": 3, "retained": 2, "excluded": 1},
+         "every source remains accounted in the QC flow")
+    c.raises(lambda: retained_private_records(private_rows, collection_rows[:-1]),
+             ValueError, "omitting any source record fails closed")
 
 
 def test_metrics_and_report_are_participant_level_and_identifier_free(c: Check):
