@@ -142,8 +142,9 @@ frozen inventory; no QC rule changes are allowed. The primary endpoint uses
 only the three universally retained primary tasks above.
 
 Use the already frozen six participant-disjoint NeuroFace folds. Within every
-fold, fit three separate standardized L2 Logistic models (`C=0.01`, threshold
-0.5), one per task. Inside each task-specific fit, every participant's
+fold, fit three separate standardized L2 Logistic models (`C=0.01`,
+`solver=liblinear`, `max_iter=2000`, `random_state=0`, threshold 0.5), one per
+task. Inside each task-specific fit, every participant's
 original-plus-mirror rows have total sample weight one, split equally between
 the two rows; this preserves the intended effective regularization. At
 inference, average each held-out original/mirror probability first. A held-out
@@ -156,7 +157,9 @@ The binary target is frozen as `healthy_control=0` and both `als=1` and
 `post_stroke=1`. Bootstrap draws are stratified by the three original cohorts:
 sample 11 healthy-control, 11 ALS, and 14 post-stroke participants with
 replacement inside their own cohort for every draw, preserving the released
-cohort sizes and then recomputing the binary participant metrics.
+cohort sizes and then recomputing the binary participant metrics. Use 5,000
+draws with seed 20260814 and percentile 95% intervals; failed single-class
+draws count as invalid and at least 4,750 draws must remain valid.
 
 Report participant-level AUROC, average precision, Brier, balanced accuracy,
 sensitivity, specificity, each task's AUROC/coverage, and 5,000 cohort-
