@@ -104,3 +104,4 @@ facial_paralysis/data_acquisition/youtube/clips/
 facial_paralysis/data_acquisition/youtube/faces/
 # Private participant-level MEEI inventory; only closed aggregate reports may be published.
 facial_paralysis/outputs/meei_external_v1/participant_manifest.json
+.firecrawl/
