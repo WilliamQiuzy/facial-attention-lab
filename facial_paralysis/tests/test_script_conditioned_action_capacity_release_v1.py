@@ -31,7 +31,7 @@ def _sha256(path: Path) -> str:
 def test_current_model_keeps_110d_locked_and_records_research_branch(c: Check):
     current = json.loads(CURRENT.read_text())
     frozen = current["candidates"]["landmark_mi_110d"]
-    c.eq(current["schema_version"], "facial_paralysis_current_model_v7")
+    c.eq(current["schema_version"], "facial_paralysis_current_model_v8")
     c.eq(current["model"]["name"], "landmark_mi_110d")
     c.eq(frozen["feature_dimension"], 110)
     c.eq(frozen["auroc"], 0.980392156862745)

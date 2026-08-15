@@ -4,6 +4,26 @@ This is the canonical source for present-tense model reporting. Older MARLIN,
 web-QWK, Blendshape, Fusion, SSL, standard 110D, and video-held-out results are
 historical baselines rather than the current validation claim.
 
+## 2026-08-15 multi-protocol update
+
+The current research artifact is **Universal Clinical Router v4**. It does not
+replace the validated 110D PalsyNet branch; it contains that branch unchanged
+and adds evidence-gated experts for scripted bilateral weakness and externally
+timed action protocols. Routing consumes task names, timing authority and
+modality availability, never a dataset or institution name.
+
+| Current evidence profile | Participant-disjoint cohort | AUROC | Accuracy | Balanced accuracy |
+|---|---|---:|---:|---:|
+| Free-recording 110D asymmetry | PalsyNet development, 38 people | 0.980 | 0.947 | 0.952 |
+| Scripted Landmark + AU + MARLIN | NeuroFace, 36 people | 0.931 | 0.917 | 0.889 |
+| Cue-aligned Landmark sequence | MEEI, 56 people | 0.911 | 0.875 | 0.885 |
+
+All three development profiles exceed AUROC 0.90, but MEEI accuracy remains
+below 0.90 and NeuroFace/MEEI are exposed development cohorts. This is not an
+untouched cross-institutional validation or a clinical accuracy claim. The
+full method, negative architecture results and executable artifact are in
+[`results/universal_clinical_router_v4.md`](results/universal_clinical_router_v4.md).
+
 ## Canonical result
 
 The released model is the **mirror-invariant 110D Landmark trajectory

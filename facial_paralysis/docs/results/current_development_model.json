@@ -1,7 +1,7 @@
 {
-  "schema_version": "facial_paralysis_current_model_v7",
-  "status": "sealed_110d_with_separate_scripted_action_capacity_feasibility",
-  "recorded_on": "2026-08-14",
+  "schema_version": "facial_paralysis_current_model_v8",
+  "status": "sealed_110d_inside_universal_clinical_router_v4",
+  "recorded_on": "2026-08-15",
   "model": {
     "name": "landmark_mi_110d",
     "feature_dimension": 110,
@@ -295,6 +295,39 @@
     },
     "protected_outer_report_invocations": 1,
     "final_artifact_invocations": 1
+  },
+  "universal_clinical_router_v4": {
+    "status": "multi_protocol_development_candidate_not_clinically_validated",
+    "dataset_identity_input": false,
+    "routes": {
+      "free_asymmetry": "palsynet_landmark_mi_110d",
+      "scripted_multimechanism": "neuroface_clinical_marlin_median_gate",
+      "cue_aligned_upper": "meei_landmark_sequence_ensemble"
+    },
+    "primary_development_metrics": {
+      "palsynet": {
+        "participants": 38,
+        "auroc": 0.980392156862745,
+        "accuracy": 0.9473684210526315,
+        "balanced_accuracy": 0.9523809523809523
+      },
+      "neuroface": {
+        "participants": 36,
+        "auroc": 0.9309090909090909,
+        "accuracy": 0.9166666666666666,
+        "balanced_accuracy": 0.8890909090909092
+      },
+      "meei": {
+        "participants": 56,
+        "auroc": 0.9108695652173914,
+        "accuracy": 0.875,
+        "balanced_accuracy": 0.8847826086956522
+      }
+    },
+    "model_artifact_sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495",
+    "protected_palsynet_reads": 0,
+    "mayo_labels_used": false,
+    "clinical_validation": false
   },
   "auxiliary_and_external": {
     "mayo_positive_challenge": {
