@@ -1,2 +1,0 @@
-r6_decouple_128	0.6454	0.0030	0.477	0.814	41	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
-r6_decouple_64	0.6378	0.0030	0.452	0.824	37	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_geo": true, "pr_marlin": {"eyes": 64, "mouth": 768, "binary": 256}}

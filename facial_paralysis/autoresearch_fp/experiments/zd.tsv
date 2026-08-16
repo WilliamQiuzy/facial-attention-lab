@@ -1,2 +1,0 @@
-z_prt_ls15	0.6439	0.0053	0.465	0.823	53	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.15, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "per_region_trunk": true}
-z_mproj256_deep	0.6613	0.0054	0.489	0.833	60	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}

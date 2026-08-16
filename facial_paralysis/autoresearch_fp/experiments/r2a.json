@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r2_gate", "feat": "asym", "geo_encoder": "mlp", "fusion": "gate"},
-  {"name": "r2_mproj128", "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128}
-]}

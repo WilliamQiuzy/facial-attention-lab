@@ -1,2 +1,0 @@
-x_mn0.3	0.4855	0.42/0.70/0.27/0.55	32	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "marlin_noise": 0.3}
-x_mn0.5_geo0.05	0.4945	0.44/0.69/0.28/0.56	26	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "marlin_noise": 0.5, "geo_noise": 0.05}

@@ -1,13 +1,17 @@
 # Architecture Autoresearch v1
 
+> **Historical architecture screen:** The selected 110D model below is now one
+> expert inside Universal Clinical Router v4, not the repository's current
+> standalone model.
+
 ## Decision
 
-The frozen mirror-invariant Landmark 110D Logistic model remains the development
-champion. Nine model families were evaluated on exactly the same 39 PalsyNet
+The frozen mirror-invariant Landmark 110D Logistic model remained the
+development champion for this experiment. Nine model families were evaluated on exactly the same 39 PalsyNet
 development recordings / 38 reviewed person groups and four fixed group-
 disjoint folds. The 10-recording protected outer partition was neither loaded
 nor predicted. No neural, tree, hybrid, or adaptive ensemble simultaneously
-improved AUROC and balanced accuracy, so the current model was not replaced.
+improved AUROC and balanced accuracy, so that experiment retained 110D.
 
 ## Architecture screen
 

@@ -1,2 +1,0 @@
-w_bs96	0.6477	0.0088	0.482	0.813	54	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2, "batch_size": 96}
-w_mouth512	0.6489	0.0027	0.493	0.805	51	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 512, "binary": 256}, "trunk_layers": 2}

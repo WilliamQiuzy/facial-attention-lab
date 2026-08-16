@@ -1,5 +1,0 @@
-{"experiments": [
-  {"name": "r3_mp128_trunk2", "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "trunk_layers": 2, "trunk_hidden": 160},
-  {"name": "r3_mp128_reg",    "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "dropout": 0.25, "weight_decay": 6e-2},
-  {"name": "r3_mp96_ls",      "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 96, "ls": 0.1}
-]}

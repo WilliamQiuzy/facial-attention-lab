@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r7_mouth512_ls", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 512, "binary": 256}},
-  {"name": "r7_eyes128_lr7e4_ls", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "lr": 7e-4, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
-]}

@@ -1,2 +1,0 @@
-r7_reg_ls	0.6487	0.0030	0.472	0.826	41	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
-r7_t128_ls	0.6457	0.0246	0.469	0.822	42	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "trunk_hidden": 128, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}

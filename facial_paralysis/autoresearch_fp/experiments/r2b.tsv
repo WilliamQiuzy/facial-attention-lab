@@ -1,2 +1,0 @@
-r2_trunk2_160	0.5897	0.0147	0.372	0.807	65	{"feat": "asym", "geo_encoder": "mlp", "trunk_layers": 2, "trunk_hidden": 160}
-r2_ls10	0.5898	0.0119	0.395	0.784	44	{"feat": "asym", "geo_encoder": "mlp", "ls": 0.1}

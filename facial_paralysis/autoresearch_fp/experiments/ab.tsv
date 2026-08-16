@@ -1,2 +1,0 @@
-abl_shared_geo	0.6028	0.0113	0.443	0.762	44	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": false, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}
-abl_coral	0.6535	0.0139	0.499	0.808	44	{"feat": "asym", "geo_encoder": "mlp", "loss": "coral", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}

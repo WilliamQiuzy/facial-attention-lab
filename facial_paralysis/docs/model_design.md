@@ -1,17 +1,21 @@
 # Facial-Paralysis Model — Design and Architecture History
 
-_Current status updated: 2026-08-05._
+> **ARCHIVED DESIGN:** The neural and HB architectures below are historical and
+> are not default imports. Universal Clinical Router v4 is specified by
+> `CURRENT_MODEL.md` and `model_registry.json`.
 
-`CURRENT_MODEL.md` is the source of truth for the current champion and its
+_Historical status snapshot: 2026-08-05._
+
+`CURRENT_MODEL.md` is the source of truth for Universal Clinical Router v4 and its
 claim boundary. This document preserves the broader neural architecture and
 HB research design.
 
 ---
 
-## 0. Current model status
+## 0. Historical model status at the time
 
-The current development champion is not the MARLIN/GRU architecture described
-below. It is the 110D Landmark trajectory representation followed by a fixed
+The development champion at the time was not the MARLIN/GRU architecture
+described below. It was the 110D Landmark trajectory representation followed by a fixed
 standardized L2 logistic regression:
 
 - identity-reviewed, patient/group-disjoint PalsyNet development AUROC:
@@ -400,7 +404,8 @@ loop that must drive loss down and correlate `s` with the true grade.
 **Explored:**
 - **Temporal pooling of the GRU outputs is a tuned knob** (`FacialPalsyConfig.
   temporal_pool` ∈ `mean|max|attention`, + `marlin_window_pool` ∈ `mean|max`),
-  not a hard-coded mean. Run #9 (training_runs.md) found the optimum is
+  not a hard-coded mean. Historical Run #9
+  (`archive/experiments/training_runs_pre_v4.md`) found the optimum is
   **region-dependent**: attention for the dynamic eye head, max for the sustained
   mouth head. Mean-pooling diluted the eye signal (the Run #7 artifact).
 

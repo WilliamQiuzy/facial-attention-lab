@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r2_trunk2_160", "feat": "asym", "geo_encoder": "mlp", "trunk_layers": 2, "trunk_hidden": 160},
-  {"name": "r2_ls10", "feat": "asym", "geo_encoder": "mlp", "ls": 0.1}
-]}

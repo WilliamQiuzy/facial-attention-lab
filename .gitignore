@@ -105,3 +105,32 @@ facial_paralysis/data_acquisition/youtube/faces/
 # Private participant-level MEEI inventory; only closed aggregate reports may be published.
 facial_paralysis/outputs/meei_external_v1/participant_manifest.json
 .firecrawl/
+
+# ============================================================
+# Canonical-model hygiene — Universal Clinical Router v4
+# Keep only deidentified current aggregate evidence in Git. Historical model
+# products remain recoverable from Git history, not from the active tree.
+# ============================================================
+facial_paralysis/outputs/au_pretrain/
+facial_paralysis/outputs/autoresearch_fp/
+facial_paralysis/outputs/checkpoints/
+facial_paralysis/outputs/dedup_report.json
+facial_paralysis/outputs/depth/
+facial_paralysis/outputs/depth3d/
+facial_paralysis/outputs/embeddings/
+facial_paralysis/outputs/expanded_plan.json
+facial_paralysis/outputs/gcp_inventory.txt
+facial_paralysis/outputs/landmark_fusion/
+facial_paralysis/outputs/marlin_probe/
+facial_paralysis/outputs/mayo_*/
+facial_paralysis/outputs/mayo_*.json
+facial_paralysis/outputs/oo_mlp_mixer_embeddings.npz
+facial_paralysis/outputs/palsynet_bundles_norm/
+facial_paralysis/outputs/run*_results.json
+facial_paralysis/outputs/summary_figure.png
+facial_paralysis/outputs/train_manifest*.json
+facial_paralysis/outputs/viz/
+facial_paralysis/autoresearch_fp/experiments/
+facial_paralysis/autoresearch_fp/*.log
+facial_paralysis/autoresearch_fp/*_search.tsv
+facial_paralysis/autoresearch_fp/results.tsv

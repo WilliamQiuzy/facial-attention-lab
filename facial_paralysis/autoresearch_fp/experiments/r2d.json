@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r2_reg", "feat": "asym", "geo_encoder": "mlp", "dropout": 0.25, "weight_decay": 6e-2},
-  {"name": "r2_expected", "feat": "asym", "geo_encoder": "mlp", "decode": "expected"}
-]}

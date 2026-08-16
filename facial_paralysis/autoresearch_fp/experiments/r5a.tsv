@@ -1,2 +1,0 @@
-r5_pr128_768	0.5930	0.0124	0.429	0.757	40	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}
-r5_pr64_768	0.5974	0.0190	0.432	0.763	39	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "pr_marlin": {"eyes": 64, "mouth": 768, "binary": 256}}

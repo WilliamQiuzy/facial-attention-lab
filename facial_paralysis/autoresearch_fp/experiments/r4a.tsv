@@ -1,2 +1,0 @@
-r4_ln_corn	0.5768	0.0271	0.341	0.813	34	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_ln": true}
-r4_ln	0.5714	0.0133	0.342	0.801	34	{"feat": "asym", "geo_encoder": "mlp", "marlin_ln": true}

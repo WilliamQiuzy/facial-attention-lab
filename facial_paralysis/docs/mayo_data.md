@@ -87,7 +87,7 @@ against the protocol, and the input for per-action bundle extraction once labels
 ## Severity readout (Run #10 → #11) + GPU (RunPod A100)
 `scripts/run10_mayo_severity.py` scores the bundles with v1: latent `s` is
 **non-collapsed** (std 1.50), region severities differentiate takes, duplicate takes
-score identically. See `docs/training_runs.md` Run #10.
+score identically. See `docs/archive/experiments/training_runs_pre_v4.md` Run #10.
 
 **Update (2026-06-17, RunPod A100):** MediaPipe is unavailable locally but installs
 fine on the pod. We re-extracted all 15 takes with the **REAL MediaPipe FaceLandmarker

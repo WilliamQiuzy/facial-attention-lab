@@ -1,3 +1,0 @@
-r3_mp128_mouthw	0.5708	0.0153	0.465	0.677	34	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "lw_mouth": 0.5}
-r3_mp128_eyeswdown	0.5700	0.0045	0.466	0.674	35	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "lw_eyes": 0.2}
-r3_mp128_ls_corn	0.5967	0.0062	0.471	0.722	36	{"feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "ls": 0.1, "loss": "corn"}

@@ -1,8 +1,12 @@
 # Mayo Failure Analysis + Robust Inference v1
 
+> **Historical component study:** The 110D result below is now the free-recording
+> expert inside Universal Clinical Router v4, not a separate current model.
+
 ## Outcome
 
-The frozen `110D Landmark + mirror-mean Logistic` remains the current model.
+At the time of this experiment, the frozen `110D Landmark + mirror-mean
+Logistic` remained the selected standalone model.
 Three preregistered mirror-view aggregation rules were compared using only the
 identity-reviewed PalsyNet development folds.  All three produced the same
 group-level metrics to reported precision, so the tie-retention rule blocked
@@ -58,7 +62,7 @@ Changing how two mirrored scores are combined cannot recover information that
 is absent or noisy in both views.  The next fast, preregistered experiment
 should therefore operate before the classifier: a **scale-robust eye geometry
 v1** representation.  It should use the same small fixed Logistic model and
-the same PalsyNet identity-disjoint folds, while comparing the current 110D
+the same PalsyNet identity-disjoint folds, while comparing the frozen 110D
 features with landmark trajectories re-extracted from a deterministic enlarged
 face crop and with eye-region reliability summaries.  Promotion must be based
 only on PalsyNet development non-inferiority plus improved low-face-scale

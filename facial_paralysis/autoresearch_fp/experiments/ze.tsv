@@ -1,2 +1,0 @@
-z_gn0.03	0.6475	0.0068	0.472	0.823	81	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "geo_noise": 0.03}
-z_lr3e4_wd06	0.6546	0.0112	0.475	0.835	42	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.06, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "lr": 0.0003}

@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r6_prt_geo_ln", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_geo": true, "per_region_trunk": true, "marlin_ln": true},
-  {"name": "r6_prt_ln_ls",  "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "ls": 0.1}
-]}

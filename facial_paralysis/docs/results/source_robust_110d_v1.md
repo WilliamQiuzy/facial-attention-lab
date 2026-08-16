@@ -1,12 +1,16 @@
 # Source-Robust Landmark 110D v1
 
+> **Point-in-time component study:** “Current 110D” below means the baseline at
+> the date of this experiment. The 110D head is now a frozen internal expert of
+> Universal Clinical Router v4; see `../CURRENT_MODEL.md`.
+
 ## Decision
 
 Retain the frozen mirror-invariant Landmark 110D Logistic model. Removing all 23 static channel medians, or restoring only six direction-free clinical asymmetry medians, preserved PalsyNet development discrimination but did not strictly improve it under the preregistered acquisition-blocked stress test. Neither reduced representation is promoted.
 
 ## Representations
 
-- `landmark_mi_110d`: current 23 channel medians, IQRs, ranges, maximum velocities, and six bilateral correlation/amplitude/lag triplets.
+- `landmark_mi_110d`: 23 channel medians, IQRs, ranges, maximum velocities, and six bilateral correlation/amplitude/lag triplets.
 - `within_video_dynamics_87d`: removes every channel median and keeps only within-video dispersion, excursion, velocity, and bilateral dynamics.
 - `asymmetry_dynamics_93d`: adds back only the median absolute left/right differences for fissure height, fissure width, eye area, brow height, oral-corner height, and commissure position.
 

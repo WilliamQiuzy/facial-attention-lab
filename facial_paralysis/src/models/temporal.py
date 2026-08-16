@@ -17,8 +17,8 @@ not a hard-coded mean. This matters clinically: the diagnostic facial-palsy
 signal is often a *transient* event (a brief incomplete eye closure during a
 blink). A masked **mean** over a ~3 s clip dilutes exactly that peak; **max**
 ("peak") pooling keeps the most-asymmetric frame, and **attention** pooling
-learns which frames matter. See docs/model_design.md §5.0 / training_runs.md
-Run #7 (mean-pooling washed out YFP blink dynamics) and Run #9 (this ablation).
+learns which frames matter. See docs/model_design.md §5.0 and historical
+docs/archive/experiments/training_runs_pre_v4.md Runs #7 and #9.
 """
 from __future__ import annotations
 

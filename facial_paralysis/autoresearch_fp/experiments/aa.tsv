@@ -1,2 +1,0 @@
-champion_ref	0.6613	0.0054	0.489	0.833	46	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}
-abl_raw_feat	0.6186	0.0207	0.448	0.789	39	{"feat": "raw", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 256, "mouth": 768, "binary": 256}, "trunk_layers": 2}

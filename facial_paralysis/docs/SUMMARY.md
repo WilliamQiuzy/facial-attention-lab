@@ -1,16 +1,21 @@
 # Facial-palsy project — technical summary (as of 2026-08-05)
 
-One authoritative narrative over the scattered docs (`model_design.md`,
-`training_runs.md`, `autoresearch_fp/FINDINGS.md`, `mayo_faces_analysis.md`,
-`generalization.md`, `loop_findings.md`). Bottom line up front, evidence below.
+> **ARCHIVED SNAPSHOT:** This pre-v4 summary is retained for research history.
+> Universal Clinical Router v4 is the sole current model; see
+> `CURRENT_MODEL.md` and `model_registry.json`.
 
-> **Current-model authority:** `CURRENT_MODEL.md` and
+One historical narrative over the scattered docs (`model_design.md`,
+`archive/experiments/training_runs_pre_v4.md`, `autoresearch_fp/FINDINGS.md`,
+`mayo_faces_analysis.md`, `generalization.md`, and
+`archive/experiments/mayo_loop_findings_pre_v4.md`).
+
+> **Current-model authority:** `CURRENT_MODEL.md`, `model_registry.json`, and
 > `results/current_development_model.json` override older uses of “champion” or
 > “deployable” in historical experiment logs.
 
-## Current canonical result
+## Canonical result at the time of this snapshot
 
-- The current development champion is the **mirror-invariant 110D Landmark
+- The development champion at that time was the **mirror-invariant 110D Landmark
   trajectory model**: AUROC **0.980**, balanced accuracy **0.952**, sensitivity
   **0.905**, and specificity **1.000** on the identity-reviewed PalsyNet
   patient/group-disjoint development partition.

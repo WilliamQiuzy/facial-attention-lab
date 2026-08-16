@@ -1,5 +1,0 @@
-{"experiments": [
-  {"name": "r3_mp128_mouthw",    "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "lw_mouth": 0.5},
-  {"name": "r3_mp128_eyeswdown", "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "lw_eyes": 0.2},
-  {"name": "r3_mp128_ls_corn",   "feat": "asym", "geo_encoder": "mlp", "marlin_proj": 128, "ls": 0.1, "loss": "corn"}
-]}

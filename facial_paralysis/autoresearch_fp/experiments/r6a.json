@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r6_decouple_128", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}},
-  {"name": "r6_decouple_64",  "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_geo": true, "pr_marlin": {"eyes": 64, "mouth": 768, "binary": 256}}
-]}

@@ -1,9 +1,13 @@
 # NeuroFace Generalization and Representation Study v1
 
+> **Point-in-time component study:** “current” below records the decision made
+> in this experiment. The 110D head is now a frozen internal expert of Universal
+> Clinical Router v4; see `../CURRENT_MODEL.md`.
+
 ## Decision
 
-The current mirror-invariant Landmark 110D + standardized L2 Logistic model
-remains locked. NeuroFace provided a useful external failure test and two new
+The then-current mirror-invariant Landmark 110D + standardized L2 Logistic
+model remained locked. NeuroFace provided a useful external failure test and two new
 supervision sources—five-domain SLP ratings and 3,306 manually annotated
 68-point frames—but neither fixed successor improved the identity-reviewed
 PalsyNet development result. No further candidate is authorized on this now

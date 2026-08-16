@@ -1,2 +1,0 @@
-r4_ln_corn_reg	0.5794	0.0088	0.340	0.819	34	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_ln": true, "dropout": 0.2, "weight_decay": 0.05}
-r4_mp192_corn	0.5700	0.0199	0.459	0.682	38	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "marlin_proj": 192}

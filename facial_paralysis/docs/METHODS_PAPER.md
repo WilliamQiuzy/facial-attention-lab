@@ -1,11 +1,11 @@
 # When frozen foundation-model features hurt: appearance confounding and the case for relative-geometric representations in clinical face analysis
 
 > **Historical draft:** This manuscript analyzes the earlier representation
-> transfer study, not the current project champion. Use `CURRENT_MODEL.md` for
-> the 110D Landmark development result and its non-clinical claim boundary.
+> transfer study, not the current project model. Use `CURRENT_MODEL.md` for
+> Universal Clinical Router v4 and its non-clinical claim boundary.
 
 *Methods-paper draft (ML / domain-adaptation venue). Distinct from the clinical draft
-(`PAPER_DRAFT.md`); this one is about the representation-transfer finding and generalizes
+(`archive/manuscripts/web_model_transfer_draft_pre_v4.md`); this one is about the representation-transfer finding and generalizes
 beyond facial palsy. All results reproducible in `facial_paralysis/`.*
 
 ## Abstract

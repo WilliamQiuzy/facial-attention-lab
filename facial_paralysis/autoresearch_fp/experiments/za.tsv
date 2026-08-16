@@ -1,2 +1,0 @@
-z_warm8	0.6446	0.0012	0.472	0.817	53	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "warmup": 8}
-z_bs64	0.6595	0.0074	0.500	0.819	70	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "batch_size": 64}

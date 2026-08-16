@@ -1,8 +1,9 @@
 # Mayo data-collection plan (operationalizing the power analysis)
 
 > **Model-status note (2026-07-27):** This collection plan remains useful, but
-> its older model names are historical. The current development champion and
-> evaluation boundary are defined only in `CURRENT_MODEL.md`.
+> its older model names are historical. Universal Clinical Router v4 and its
+> evaluation boundary are defined only in `CURRENT_MODEL.md` and
+> `model_registry.json`.
 
 The current development screen is complete; the clinical bottleneck is data. This turns the power analysis
 (`scripts/power_analysis.py`) into a concrete, prioritized collection protocol so the
@@ -51,7 +52,8 @@ Current takes lose signal to avoidable issues (`docs/mayo_data.md`): 2 takes had
 - Per-action segmentation + FACES-labeled clips (`mayo_blendshapes/segments.json`).
 - Label-free scorecard + phenotype + 60fps EAR/synkinesis measures.
 - Historical geometry-only candidate (`autoresearch_fp/deploy_config.json`) and
-  the current 110D Landmark development pipeline; neither is deployment-authorized.
+  the frozen 110D free-recording expert inside Universal Clinical Router v4;
+  neither is deployment-authorized.
 - AU-dynamics pretraining pipeline (`scripts/au_pretrain.py`) for DISFA/BP4D.
 - Evaluation + power tooling to re-check CIs as n grows (`mayo_transfer_robust.py`,
   `power_analysis.py`).

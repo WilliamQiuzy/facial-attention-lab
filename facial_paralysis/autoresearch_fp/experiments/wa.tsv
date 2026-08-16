@@ -1,2 +1,0 @@
-w_eyes320	0.6525	0.0045	0.484	0.821	47	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 320, "mouth": 768, "binary": 256}, "trunk_layers": 2}
-w_eyes384	0.6556	0.0080	0.491	0.820	49	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 384, "mouth": 768, "binary": 256}, "trunk_layers": 2}

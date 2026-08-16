@@ -14,7 +14,7 @@ Autonomous model search on our own facial-palsy data, adapted from
 karpathy/autoresearch. Driven by Claude Opus 4.8. **61 model versions** trained
 and compared under one fixed, leak-safe, 3-seed metric. All numbers are on the
 public-web-stills holdout (method validation, NOT clinical accuracy — same honest
-framing as `docs/training_runs.md`).
+framing as `docs/archive/experiments/training_runs_pre_v4.md`).
 
 ## Metric
 `mean(eyes_QWK, mouth_QWK)`, quadratic-weighted kappa on the leak-safe val split

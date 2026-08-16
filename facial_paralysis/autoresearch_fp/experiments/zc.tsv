@@ -1,2 +1,0 @@
-z_mn0.15	0.6326	0.0043	0.451	0.814	59	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}, "marlin_noise": 0.15}
-z_ls0_corn	0.6526	0.0022	0.480	0.825	52	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.0, "dropout": 0.2, "weight_decay": 0.05, "per_region_geo": true, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}}

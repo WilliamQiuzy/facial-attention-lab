@@ -1,51 +1,37 @@
-"""Models for facial-paralysis severity grading.
+"""Default model imports resolve exclusively to Universal Clinical Router v4.
 
-See `docs/model_design.md` for the architecture. New work should use the
-multi-task severity model; `HBHead` is the legacy single-task head kept for the
-existing smoke test.
+Historical models remain available from their explicit modules for archived
+experiment reproduction; they are intentionally absent from this package API.
 """
-from src.models.ordinal import (
-    OrderedThresholds,
-    OrdinalThresholdHead,
-    class_probs,
-    cum_probs,
-    expected_grade,
-    ordinal_loss,
-    predict_grade,
+from src.models.current import (
+    CURRENT_MODEL_ARTIFACT_SHA256,
+    CURRENT_MODEL_NAME,
+    CURRENT_MODEL_SCHEMA_VERSION,
+    SCRIPTED_COMMON_TASKS,
+    TIMING_AUTHORITIES,
+    UPPER_PROMPT_TASKS,
+    cue_aligned_upper_probability,
+    evidence_profile,
+    linear_head_probability,
+    load_current_artifact,
+    median_low_confidence_gate,
+    scripted_multimechanism_probability,
+    serialized_head_probability,
 )
-from src.models.multitask import (
-    DEFAULT_TASKS,
-    MultiTaskSeverityModel,
-    SeverityTrunk,
-    TaskSpec,
-    TrunkConfig,
-    multitask_loss,
-)
-from src.models.temporal import TemporalLandmarkEncoder
-from src.models.facial_palsy_model import FacialPalsyModel, FacialPalsyConfig
-from src.models.hb_head import HBHead, HBHeadConfig
 
-__all__ = [
-    # full pipeline
-    "FacialPalsyModel",
-    "FacialPalsyConfig",
-    "TemporalLandmarkEncoder",
-    # ordinal primitives
-    "OrderedThresholds",
-    "OrdinalThresholdHead",
-    "ordinal_loss",
-    "class_probs",
-    "cum_probs",
-    "predict_grade",
-    "expected_grade",
-    # multi-task model
-    "MultiTaskSeverityModel",
-    "SeverityTrunk",
-    "TaskSpec",
-    "TrunkConfig",
-    "DEFAULT_TASKS",
-    "multitask_loss",
-    # legacy
-    "HBHead",
-    "HBHeadConfig",
-]
+
+__all__ = (
+    "CURRENT_MODEL_ARTIFACT_SHA256",
+    "CURRENT_MODEL_NAME",
+    "CURRENT_MODEL_SCHEMA_VERSION",
+    "SCRIPTED_COMMON_TASKS",
+    "TIMING_AUTHORITIES",
+    "UPPER_PROMPT_TASKS",
+    "cue_aligned_upper_probability",
+    "evidence_profile",
+    "linear_head_probability",
+    "load_current_artifact",
+    "median_low_confidence_gate",
+    "scripted_multimechanism_probability",
+    "serialized_head_probability",
+)

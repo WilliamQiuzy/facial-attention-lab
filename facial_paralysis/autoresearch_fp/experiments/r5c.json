@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r5_pr128_768_ls",  "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "ls": 0.1, "pr_marlin": {"eyes": 128, "mouth": 768, "binary": 256}},
-  {"name": "r5_pr64_768_reg",  "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "dropout": 0.2, "weight_decay": 5e-2, "pr_marlin": {"eyes": 64, "mouth": 768, "binary": 256}}
-]}

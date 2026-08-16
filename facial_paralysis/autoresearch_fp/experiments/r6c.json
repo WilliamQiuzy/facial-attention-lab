@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r6_prt_ln_reg", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "dropout": 0.2, "weight_decay": 5e-2},
-  {"name": "r6_prt_ln_warm", "feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "warmup": 5}
-]}

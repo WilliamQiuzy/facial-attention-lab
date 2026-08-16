@@ -1,2 +1,0 @@
-r6_prt_ln_reg	0.6305	0.0042	0.464	0.797	36	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "dropout": 0.2, "weight_decay": 0.05}
-r6_prt_ln_warm	0.6125	0.0047	0.444	0.781	36	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn", "per_region_trunk": true, "marlin_ln": true, "warmup": 5}

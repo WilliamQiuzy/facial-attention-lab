@@ -1,2 +1,0 @@
-r2_corn	0.5898	0.0159	0.360	0.819	50	{"feat": "asym", "geo_encoder": "mlp", "loss": "corn"}
-r2_eyesw	0.5857	0.0064	0.381	0.790	46	{"feat": "asym", "geo_encoder": "mlp", "lw_eyes": 0.6}

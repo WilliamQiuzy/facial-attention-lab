@@ -1,4 +1,0 @@
-{"experiments": [
-  {"name": "r1_default"},
-  {"name": "r1_asym", "feat": "asym"}
-]}

@@ -1,7 +1,10 @@
+> **历史快照：** 本文记录 Universal Clinical Router v4 之前的研究过程，不再
+> 代表当前模型。当前唯一主模型见 `CURRENT_MODEL.md` 和
+> `model_registry.json`。
 
-## 当前最新模型结论（2026-08-05）
+## 当时的模型结论（2026-08-05）
 
-当前唯一的开发集 champion 是 **110维 Landmark 轨迹模型**：在 PalsyNet
+当时唯一的开发集 champion 是 **110维 Landmark 轨迹模型**：在 PalsyNet
 身份盲审后的 patient/group-disjoint 四折开发评估上，AUROC 0.980、平衡
 准确率 0.952、敏感度 0.905、特异度 1.000。168维 Action proxy 和204维
 Action+Phase proxy 都没有通过预注册晋级门，因此继续锁定110维。模型使用
