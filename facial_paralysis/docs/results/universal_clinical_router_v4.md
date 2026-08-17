@@ -1,75 +1,54 @@
-# Universal Clinical Router v4
+<!-- 面向中国医生 -->
+# 通用临床路由器第四版
 
-## Outcome
+## 结论
 
-We froze one research artifact that selects a clinical expert from authenticated
-task and modality evidence, never from a dataset or institution name. It keeps
-the existing 110D asymmetry model for free recordings, uses Landmark + Py-Feat
-AU + frozen MARLIN phenotype heads for the three NeuroFace tasks, and uses the
-cue-aligned Landmark sequence ensemble for the seven-action MEEI/Mayo-style
-protocol. Missing required evidence fails closed.
+我们冻结了一个研究模型：它依据已经核验的动作类型、时间信息和可用信号选择分析分支，不依据数据集或医疗机构名称选择模型。自由录制视频使用百一十维面部关键点不对称分析；三个规定动作使用面部关键点、面部动作变化和冻结视频特征联合分析；有明确提示时间的七动作视频使用动作时间对齐的面部关键点序列分析。缺少必要证据时，模型拒绝强行给出结果。
 
-This is a stronger multi-protocol development model, but it is not a claim of
-clinical robustness. NeuroFace and MEEI were repeatedly exposed during model
-development; Mayo still lacks participant-level control labels and HB grades.
+这是目前更适合多种录制流程的开发模型，但不代表已经证明临床稳健性。神经面部多动作数据和耳鼻喉动作数据曾反复用于模型开发；梅奥数据仍缺少受试者级阴性对照和面神经功能分级标签。
 
-## Participant-disjoint results
+## 受试者分离结果
 
-Accuracy is the fraction classified correctly at the frozen decision rule.
-Balanced accuracy averages sensitivity and specificity so the majority class
-cannot dominate. AUROC measures affected-versus-unaffected ranking across all
-possible thresholds.
+正确率表示在冻结判断规则下分类正确的人数比例。类别平衡正确率分别计算受影响者检出率和未受影响者排除率后取平均。排序能力衡量模型在所有可能判断阈值下区分两类受试者的能力。
 
-| Evidence profile and cohort | People | AUROC | Accuracy | Balanced accuracy | Sensitivity | Specificity | Brier |
+| 数据与使用场景 | 人数 | 排序能力 | 正确率 | 类别平衡正确率 | 检出率 | 排除率 | 概率误差 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Free asymmetry — PalsyNet development | 38 | 0.980 | 0.947 | 0.952 | 0.905 | 1.000 | 0.117 |
-| Free asymmetry — sealed PalsyNet outer | 10 | 1.000 | 0.900 | 0.900 | 0.800 | 1.000 | 0.118 |
-| Scripted multimechanism — NeuroFace | 36 | 0.931 | 0.917 | 0.889 | 0.960 | 0.818 | 0.086 |
-| Cue-aligned upper/action geometry — MEEI | 56 | 0.911 | 0.875 | 0.885 | 0.870 | 0.900 | 0.191 |
+| 面瘫网络开发集，自由录制 | 38 | 0.980 | 0.947 | 0.952 | 0.905 | 1.000 | 0.117 |
+| 面瘫网络封存外层测试集，自由录制 | 10 | 1.000 | 0.900 | 0.900 | 0.800 | 1.000 | 0.118 |
+| 神经面部多动作数据集，三个规定动作 | 36 | 0.931 | 0.917 | 0.889 | 0.960 | 0.818 | 0.086 |
+| 耳鼻喉动作数据集，提示时间对齐动作 | 56 | 0.911 | 0.875 | 0.885 | 0.870 | 0.900 | 0.191 |
 
-The primary development routes therefore exceed 0.90 AUROC on all three data
-sources. They do **not** yet exceed 0.90 accuracy on MEEI, and the small cohort
-confidence intervals remain wide. The NeuroFace fixed-ensemble participant
-bootstrap 95% intervals are 0.811–1.000 for AUROC and 0.833–1.000 for accuracy.
+三个主要开发场景的排序能力都超过零点九。耳鼻喉动作数据的正确率尚未超过零点九，而且样本量较小，不确定范围仍然较宽。神经面部多动作结果的受试者重复抽样百分之九十五区间为：排序能力零点八一一至一点零零零，正确率零点八三三至一点零零零。
 
-## What the architecture search established
+## 架构比较得到的结论
 
-- A single shared 110D or Fusion-398 classifier did not transfer to NeuroFace;
-  it mainly learned unilateral palsy asymmetry and missed bilateral ALS weakness.
-- Small end-to-end residual, TCN, MIL and Set-Transformer models overfit the
-  38/36-person cohorts. The strongest durable change was to freeze the large
-  video encoder and train small phenotype-specific clinical heads.
-- On NeuroFace, two endpoint heads first detect post-stroke asymmetry and ALS
-  oromotor reduction. The maximum clinical score is retained when confident;
-  only scores from 0.2 to 0.8 are replaced by the median of 18 fixed MARLIN
-  phenotype heads. This fixed ensemble, not a fold-specific best model, produces
-  the reported 0.931 AUROC and 0.917 accuracy.
-- On MEEI, adding 36 cue-aligned MARLIN variants failed: MARLIN alone reached
-  only 0.589–0.648 AUROC, while nested fusion selection fell to 0.859 AUROC and
-  0.839 accuracy. MARLIN was therefore rejected for this route; the 110D-derived
-  action sequence ensemble remains frozen.
-- We also extracted Py-Feat action units at four authenticated cue times for all
-  56 usable MEEI participants. Across 32 AU-only candidates, the exploratory
-  best reached only 0.591 AUROC and 0.607 accuracy. A stricter nested comparison
-  of 145 Landmark/AU rules fell to 0.600 AUROC and 0.786 accuracy, so this large
-  representation change was rejected rather than being allowed to dilute the
-  stronger Landmark sequence expert.
+- 单一共享的百一十维模型或三百九十八维融合模型不能稳定迁移到神经面部多动作数据；它们更容易识别单侧不对称，却容易漏掉双侧肌力减弱。
+- 小型端到端残差网络、时间卷积网络、多实例学习和跨动作注意力模型在三十八人和三十六人的小样本中出现过拟合。更稳妥的方法是冻结大型视频编码器，只训练小型、与临床表现对应的分析头。
+- 在神经面部多动作数据上，两个分析头分别识别卒中后不对称和渐进性双侧口面运动减弱。当临床分支把握度不足时，使用十八个固定视频特征头的中位数辅助判断。该固定组合得到当前结果，而不是在每一折临时挑选最好模型。
+- 在耳鼻喉动作数据上，增加三十六种动作对齐视频特征组合后，排序能力只有零点五八九至零点六四八；嵌套选择后的融合结果也下降到排序能力零点八五九、正确率零点八三九，因此没有晋升。
+- 我们还在四个经过核验的提示时间提取了面部动作变化。三十二种仅使用动作变化的方案，探索性最好结果只有排序能力零点五九一、正确率零点六零七；更严格的百四十五种联合比较降至排序能力零点六零零、正确率零点七八六，因此没有用它们稀释更强的面部关键点序列分支。
 
-These negative results are part of the model decision. A larger network was not
-promoted merely because it had more capacity.
+这些失败结果也是模型决策的一部分。网络更大、参数更多，并不能成为晋升理由。
 
-## Model and evidence boundary
+## 证据边界
 
-- The release contains no participant identifiers, row probabilities, raw
-  media paths or credentials.
-- The universal work read 39 identity-reviewed PalsyNet development recordings;
-  protected PalsyNet reads, fits and predictions were all zero. The sealed outer
-  result above is inherited unchanged from its earlier one-shot release.
-- Mayo data and labels were not used for candidate selection. The current Mayo
-  positive-call rate is not accuracy because there is no negative/control class.
-- This artifact does not grade House-Brackmann severity and is not authorized
-  for diagnosis, deployment or a clinical performance claim.
+- 发布文件不包含受试者标识、逐人概率、原始媒体路径或凭证。
+- 通用模型研究读取了三十九段经过身份审核的面瘫网络开发视频；受保护分区的读取、拟合和预测均为零。表中的封存外层结果继承自更早的一次性发布，没有在本轮重新打开。
+- 梅奥数据和标签没有参与模型选择。当前梅奥阳性调用率不是正确率，因为缺少阴性对照。
+- 本模型不进行面神经功能分级，也没有获准用于诊断、部署或临床效果宣传。
 
-The executable model is
-`docs/results/artifacts/universal_clinical_router_v4/model.json`. The public
-runtime is `src/models/universal_clinical_router_v4.py`.
+## 名词说明
+
+- **排序能力：** 衡量模型能否把受影响者排在未受影响者之前；越接近一越好。
+- **类别平衡正确率：** 检出率和排除率的平均值，避免人数较多的一类掩盖错误。
+- **概率误差：** 预测概率与实际结果之间的偏差；越低越好。
+- **受试者分离：** 同一个人不能同时出现在训练和验证中。
+
+## 技术备注
+
+- 模型技术标识：`Universal Clinical Router v4`；机器标识：`universal_clinical_router_v4`。
+- 数据名称对照：`PalsyNet`、`NeuroFace`、`MEEI`。
+- 原始特征与模型名称对照：`Landmark 110D`、`Py-Feat AU`、`MARLIN`、`TCN`、`MIL`、`Set Transformer`。
+- “排序能力”对应机器报告字段 `AUROC`；“概率误差”对应 `Brier score`。
+- 可执行模型：`docs/results/artifacts/universal_clinical_router_v4/model.json`。
+- 公共运行实现：`src/models/universal_clinical_router_v4.py`。

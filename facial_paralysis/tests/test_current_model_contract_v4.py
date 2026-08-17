@@ -99,7 +99,8 @@ def test_active_docs_name_v4_and_do_not_restore_old_champion(c: Check):
     c.true("Universal Clinical Router v4" in readme[:1200])
     c.true("Universal Clinical Router v4" in script_readme[:1200])
     c.true("Universal Clinical Router v4" in results_readme[:1200])
-    c.true("Universal Clinical Router v4" in current[:1200])
+    c.true("通用临床路由器第四版" in current[:1200])
+    c.true("Universal Clinical Router v4" in current.split("## 技术备注", 1)[1])
     c.true("Universal Clinical Router v4" in pipeline[:1600])
     c.true("No raw-video production CLI" in script_readme)
     for stale in (

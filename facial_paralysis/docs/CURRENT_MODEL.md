@@ -1,62 +1,54 @@
-# Current Model: Universal Clinical Router v4
+<!-- 面向中国医生 -->
+# 当前主模型：通用临床路由器第四版
 
-Universal Clinical Router v4 is the sole canonical facial-paralysis research
-model as of 2026-08-16. New code must import `src.models.current`; new reports
-must bind the artifact registered in `docs/model_registry.json`.
+截至二〇二六年八月十六日，通用临床路由器第四版是本项目唯一的当前研究模型。新模型必须另建版本，不能直接覆盖本版本。
 
-## Architecture
+## 模型结构
 
-The artifact routes authenticated task, timing, and modality evidence to one of
-three frozen clinical experts. Dataset and institution identity are never model
-inputs.
+模型根据已经核验的动作类型、时间信息和可用信号，自动选择最适合当前视频的分析分支。数据集名称和医疗机构名称不会作为模型输入。
 
-| Evidence profile | Frozen expert |
+| 使用场景 | 处理方式 |
 |---|---|
-| Free recording | mirror-invariant 110D Landmark asymmetry head |
-| Three named scripted actions | Landmark + Py-Feat AU clinical heads, with an 18-head frozen MARLIN median gate for low-confidence cases |
-| Externally timed seven-action recording | two-head cue-aligned Landmark sequence ensemble |
+| 自由录制视频 | 使用左右翻转一致的百一十维面部关键点不对称分析 |
+| 三个规定动作 | 联合分析面部关键点和面部动作变化；对低把握度结果增加十八个冻结视频特征头辅助复核 |
+| 有外部提示时间的七动作视频 | 使用两个基于动作时间的面部关键点序列模型，并对结果取固定加权平均 |
 
-The 110D model is an internal v4 expert, not a separate current model. Historical
-MARLIN/GRU, HB, SSL, architecture-search, Universal Orofacial v1, and Universal
-Phenotype v3 code is retained only for explicit reproducibility work.
+百一十维模型只是第四版内部负责自由录制视频的一个分析分支，不是另一个当前主模型。旧版循环神经网络、自监督学习、架构搜索和通用表型模型仅保留用于复现实验。
 
-## Current development evidence
+## 当前开发证据
 
-All primary estimates are participant-disjoint. They are development evidence,
-not clinical validation.
+以下结果均按受试者分离，训练人员与验证人员不重叠。这些数字属于开发阶段证据，不等同于临床验证。
 
-| Cohort/profile | People | AUROC | Accuracy | Balanced accuracy |
+| 数据与使用场景 | 人数 | 排序能力 | 正确率 | 类别平衡正确率 |
 |---|---:|---:|---:|---:|
-| PalsyNet development / free recording | 38 | 0.980 | 0.947 | 0.952 |
-| PalsyNet sealed outer / free recording | 10 | 1.000 | 0.900 | 0.900 |
-| NeuroFace / scripted multimechanism | 36 | 0.931 | 0.917 | 0.889 |
-| MEEI / cue-aligned action geometry | 56 | 0.911 | 0.875 | 0.885 |
+| 面瘫网络开发集，自由录制 | 38 | 0.980 | 0.947 | 0.952 |
+| 面瘫网络封存外层测试集，自由录制 | 10 | 1.000 | 0.900 | 0.900 |
+| 神经面部多动作数据集，三个规定动作 | 36 | 0.931 | 0.917 | 0.889 |
+| 耳鼻喉动作数据集，提示时间对齐动作 | 56 | 0.911 | 0.875 | 0.885 |
 
-Mayo has no verified negative/control class or HB grades. The locked 110D
-expert called 45 of 47 quality-eligible assumed-positive videos positive
-(95.74% positive-call rate); this is not binary accuracy. The Mayo action timing
-gate is not eligible, so the action expert has made zero Mayo predictions.
+梅奥视频目前没有经过确认的阴性对照，也没有面神经功能分级标签。百一十维分支在四十七个符合质量要求、暂按阳性理解的视频中判为阳性四十五个，阳性调用率为百分之九十五点七四；这个数字不是二分类正确率。梅奥动作时间切分尚未通过使用门槛，因此动作分支目前没有生成梅奥预测。
 
-## Authoritative files
+## 维护与晋升原则
 
-- Registry: `docs/model_registry.json`
-- Runtime facade: `src/models/current.py`
-- Runtime implementation: `src/models/universal_clinical_router_v4.py`
-- Model artifact: `docs/results/artifacts/universal_clinical_router_v4/model.json`
-- Aggregate report: `docs/results/artifacts/universal_clinical_router_v4/report.json`
-- Full method/result: `docs/results/universal_clinical_router_v4.md`
+1. 不在原位置修改第四版的含义；后续模型必须使用新的版本号。
+2. 不使用数据集名称或医疗机构名称决定预测路径。
+3. 只在受试者分离的开发数据和预先登记的门槛下选择候选模型。
+4. 每个数据集分别报告，不把梅奥阳性调用率写成正确率，也不把开发指标写成临床结论。
+5. 新版本只有在目标任务上提高、其他使用场景不退步，并通过未参与开发的数据验证后，才可以替换第四版。
 
-## Maintenance and promotion policy
+## 名词说明
 
-1. Never change the meaning of v4 in place; a successor receives a new version.
-2. Keep dataset/institution identity out of routing and prediction.
-3. Select only with participant-disjoint development data and preregistered
-   gates; protected or external labels never tune a candidate.
-4. Report each cohort separately. Do not turn Mayo positive-call rate into
-   accuracy, or development metrics into a clinical claim.
-5. A successor replaces v4 only after it improves the intended endpoint without
-   degrading the other evidence profiles and passes an untouched validation
-   gate. Until then, v4 remains canonical.
+- **排序能力：** 衡量模型把受影响者排在未受影响者之前的能力；数值越接近一越好，但它不等于在某一个阈值下的正确率。
+- **类别平衡正确率：** 分别计算受影响者检出率和未受影响者排除率后取平均，避免人数较多的一类掩盖另一类错误。
+- **阳性调用率：** 在只有阳性或疑似阳性病例时，模型判为阳性的比例；没有阴性对照时不能据此计算二分类正确率。
 
-Historical model narratives are indexed under `docs/archive/` and must not be
-used for present-tense model reporting.
+## 技术备注
+
+- 模型技术标识：`Universal Clinical Router v4`；机器标识：`universal_clinical_router_v4`。
+- 数据名称对照：`PalsyNet`、`NeuroFace`、`MEEI`。
+- 当前注册表：`docs/model_registry.json`。
+- 默认程序入口：`src/models/current.py`。
+- 运行实现：`src/models/universal_clinical_router_v4.py`。
+- 模型文件：`docs/results/artifacts/universal_clinical_router_v4/model.json`。
+- 汇总报告：`docs/results/artifacts/universal_clinical_router_v4/report.json`。
+- 完整方法与结果：`docs/results/universal_clinical_router_v4.md`。

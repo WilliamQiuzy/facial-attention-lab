@@ -57,8 +57,8 @@ def test_v4_surfaces_remain_the_only_default(c: Check):
     c.eq(_sha(V4_MODEL), "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495")
     c.eq(_sha(V4_REPORT), "56379e252fd6c88d74a98a89241bdbf4a96b84080f18a6055a41f880c8b34d8a")
     text = SUMMARY.read_text()
-    c.true("rejected" in text.lower() and "UCR4 remains current" in text)
-    c.true("clinical accuracy" not in text.lower())
+    c.true("候选不晋升" in text and "第四版继续作为当前主模型" in text)
+    c.true("临床正确率" not in text and "临床准确率" not in text)
 
 
 def test_primary_gate_metrics_explain_the_rejection(c: Check):

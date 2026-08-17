@@ -51,6 +51,8 @@ Run from `facial_paralysis/` with the project Anaconda interpreter:
   report, tests, and artifact hash together when a successor is promoted.
 - Record failed or awaiting-confirmation work in `docs/model_candidates.json`;
   never point `src/models/current.py` at it.
+- All clinician-facing interfaces, summaries, reports, and presentation copy
+  must follow `docs/CLINICIAN_LANGUAGE_POLICY.md`.
 
 Historical architecture narratives and experiment logs are indexed in
 `docs/archive/`. Their scripts remain explicit research tools, not current

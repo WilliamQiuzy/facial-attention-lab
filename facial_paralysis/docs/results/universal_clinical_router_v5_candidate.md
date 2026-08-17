@@ -1,50 +1,43 @@
-# Universal Clinical Router v5 selective candidate — rejected
+<!-- 面向中国医生 -->
+# 通用临床路由器第五版选择性判断候选：未通过
 
-## Outcome
+## 结论
 
-We tested four fixed, source-blind confidence/consensus rules on top of the
-unchanged UCR4 probabilities. None met the preregistered requirement of at
-least 0.95 selective accuracy and 0.95 selective balanced accuracy on all three
-evidence profiles at at least 70% coverage. The candidate is therefore rejected
-and **UCR4 remains current**.
+我们在完全不改变第四版预测概率的前提下，比较了四种固定的把握度与多分支一致性规则。没有一种方案能够在至少覆盖百分之七十受试者时，让三套开发证据的正确率和类别平衡正确率同时达到百分之九十五。因此，本候选不晋升，第四版继续作为当前主模型。
 
-This is useful negative evidence: PalsyNet and NeuroFace errors are partly
-concentrated near the decision boundary, but MEEI errors remain among
-high-confidence cases. A confidence layer cannot repair a missing action-
-dynamics representation.
+这一失败结果仍有价值：面瘫网络开发集和神经面部多动作数据中的部分错误集中在判断边界附近，但耳鼻喉动作数据中仍存在把握度很高的错误。仅增加把握度筛选层，不能弥补动作动态表示不足。
 
-## Primary 70% coverage result
+## 百分之七十覆盖率附近的主要结果
 
-The closest fixed rule was absolute probability margin. Coverage is the
-fraction for which the model returned a decision; every other case abstained.
+表现最接近门槛的是“最终概率距离判断阈值的远近”。覆盖率表示模型实际给出阳性或阴性判断的受试者比例，其余受试者暂不判断。
 
-| Evidence profile | Retained / total | Coverage | Selective accuracy | Selective balanced accuracy |
+| 开发证据 | 保留人数 | 覆盖率 | 保留人群正确率 | 保留人群类别平衡正确率 |
 |---|---:|---:|---:|---:|
-| Free asymmetry — PalsyNet development | 27 / 38 | 0.711 | 0.963 | 0.964 |
-| Scripted multimechanism — NeuroFace | 26 / 36 | 0.722 | 0.962 | 0.929 |
-| Cue-aligned upper/action — MEEI | 40 / 56 | 0.714 | 0.875 | 0.924 |
+| 面瘫网络开发集，自由录制 | 27 / 38 | 0.711 | 0.963 | 0.964 |
+| 神经面部多动作数据集，三个规定动作 | 26 / 36 | 0.722 | 0.962 | 0.929 |
+| 耳鼻喉动作数据集，提示时间对齐动作 | 40 / 56 | 0.714 | 0.875 | 0.924 |
 
-The other three rules penalized expert range, required unanimous component
-agreement, or normalized margin by component dispersion. None passed the gate;
-on MEEI, expert disagreement was not a reliable marker of wrong predictions.
+另外三种规则分别惩罚分析分支之间的概率跨度、要求所有分支判断一致，或根据分支离散程度调整把握度。它们都没有通过晋升门槛；在耳鼻喉动作数据上，分析分支之间是否意见一致，并不能可靠识别错误结果。
 
-## Protocol and maintenance boundary
+## 实验与维护边界
 
-- UCR4 probabilities, heads, model JSON, current import and current registry
-  were not changed.
-- Evaluation remained participant/group-disjoint and used only the three
-  already-exposed development cohorts. The sealed PalsyNet outer partition and
-  Mayo were not read or scored.
-- MEEI development accuracy uses its original nested protocol: each held fold
-  is classified with a threshold learned from that fold's training participants
-  (range 0.493–0.538). The final UCR4 artifact stores a single aggregated
-  threshold, so the nested development result and final single-threshold
-  runtime are related but not identical estimands.
-- The H200 run reconstructed 38 PalsyNet, 36 NeuroFace and 56 MEEI anonymous
-  OOF profiles. A second isolated aggregate run reproduced the exact public
-  report SHA-256 `97555485fdfc14253ffc6deb782a0f6ca2cf443a339d79bad588f18876d3c33a`.
+- 第四版的预测概率、分析头、模型文件、默认程序入口和当前注册表均未改变。
+- 评估继续按受试者或受试者组分离，只使用三套已经参与开发的数据。面瘫网络封存外层分区和梅奥数据均未读取或评分。
+- 耳鼻喉动作数据继续使用原有嵌套开发流程：每个验证折使用从该折训练人员中确定的判断阈值，阈值范围为零点四九三至零点五三八。最终第四版模型文件保存的是一个汇总阈值，因此嵌套开发结果和单一阈值运行结果不是完全相同的统计对象。
+- 高性能计算服务器重建了三十八名面瘫网络开发受试者、三十六名神经面部多动作受试者和五十六名耳鼻喉动作受试者的匿名验证结果。第二次隔离汇总得到完全相同的公开报告。
 
-The next useful experiment must change the cue-aligned action representation
-itself—especially cross-action temporal capacity on MEEI—rather than rescore
-the same UCR4 probabilities. Any such work starts from UCR4 as a new candidate
-and still requires untouched external confirmation before promotion.
+下一步应直接改进提示时间对齐的动作动态表示，尤其是跨动作运动能力，而不是继续对相同预测概率重新排序。任何新方案都必须从第四版另建候选版本，并在未参与开发的数据上验证后才能晋升。
+
+## 名词说明
+
+- **覆盖率：** 模型能够给出阳性或阴性判断的人数比例；覆盖率降低意味着更多人被暂不判断。
+- **保留人群正确率：** 只在模型实际给出判断的人群中计算的正确率，不能冒充全体受试者正确率。
+- **类别平衡正确率：** 受影响者检出率和未受影响者排除率的平均值。
+- **高把握度错误：** 模型离判断阈值较远但仍然判断错误，通常不能只靠调整阈值或拒判规则解决。
+
+## 技术备注
+
+- 当前模型技术标识：`Universal Clinical Router v4`；本轮候选标识：`universal_clinical_router_v5_candidate`。
+- 数据名称对照：`PalsyNet`、`NeuroFace`、`MEEI`。
+- 四种规则标识：`probability_margin`、`range_penalized_margin`、`unanimous_min_margin`、`dispersion_normalized_margin`。
+- 公开报告校验值：`97555485fdfc14253ffc6deb782a0f6ca2cf443a339d79bad588f18876d3c33a`。
