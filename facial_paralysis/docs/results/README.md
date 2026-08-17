@@ -5,6 +5,12 @@ human-readable result is `universal_clinical_router_v4.md`; its exact model and
 aggregate report are under `artifacts/universal_clinical_router_v4/` and are
 bound by `../model_registry.json`.
 
+New candidates are recorded separately in `../model_candidates.json` so a
+failed experiment cannot silently change the default. The latest bounded
+experiment, `universal_clinical_router_v5_candidate.md`, tested a selective
+confidence layer and was rejected; its aggregate machine report remains under
+`artifacts/universal_clinical_router_v5_candidate/` as negative evidence.
+
 Other files in this directory are frozen point-in-time experiments, component
 evidence, external-cohort audits, or failed candidate studies. Terms such as
 “current,” “champion,” or “promoted” inside those files describe the decision at

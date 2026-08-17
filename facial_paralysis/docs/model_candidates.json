@@ -1,0 +1,18 @@
+{
+  "schema_version": "facial_paralysis_model_candidates_v1",
+  "current_model": "universal_clinical_router_v4",
+  "candidates": [
+    {
+      "name": "universal_clinical_router_v5_candidate",
+      "status": "rejected_not_promoted",
+      "base_model": "universal_clinical_router_v4",
+      "default_import": false,
+      "promotion_authorized": false,
+      "primary_gate": "all_profiles_accuracy_and_balanced_accuracy_at_least_0.95_at_0.70_coverage",
+      "decision": "no_registered_selective_score_passed_all_three_profiles",
+      "report_path": "docs/results/artifacts/universal_clinical_router_v5_candidate/report.json",
+      "report_sha256": "97555485fdfc14253ffc6deb782a0f6ca2cf443a339d79bad588f18876d3c33a",
+      "next_direction": "representation_level_cue_aligned_action_dynamics_not_confidence_rescoring"
+    }
+  ]
+}

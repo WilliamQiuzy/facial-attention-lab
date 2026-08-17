@@ -6,6 +6,7 @@ only default model; historical pipelines are explicit archive/research paths.
 ## Canonical model surface
 
 - `docs/model_registry.json` — machine-readable current/archived registry.
+- `docs/model_candidates.json` — non-current candidate and rejection registry.
 - `src/models/current.py` — only supported default Python import surface.
 - `src/models/universal_clinical_router_v4.py` — evidence routing and frozen
   head execution.
@@ -36,6 +37,7 @@ Run from `facial_paralysis/` with the project Anaconda interpreter:
 /Users/williamqiu/opt/anaconda3/bin/python3 tests/test_current_model_contract_v4.py
 /Users/williamqiu/opt/anaconda3/bin/python3 tests/test_universal_clinical_router_v4.py
 /Users/williamqiu/opt/anaconda3/bin/python3 tests/test_universal_clinical_router_release_v4.py
+/Users/williamqiu/opt/anaconda3/bin/python3 tests/test_selective_universal_router_v5_release.py
 ```
 
 ## Development rules
@@ -47,6 +49,8 @@ Run from `facial_paralysis/` with the project Anaconda interpreter:
   products outside Git.
 - Update `docs/model_registry.json`, `docs/CURRENT_MODEL.md`, the aggregate
   report, tests, and artifact hash together when a successor is promoted.
+- Record failed or awaiting-confirmation work in `docs/model_candidates.json`;
+  never point `src/models/current.py` at it.
 
 Historical architecture narratives and experiment logs are indexed in
 `docs/archive/`. Their scripts remain explicit research tools, not current

@@ -45,7 +45,7 @@ selection. The two results are descriptive only: the capacity branch was fitted
 and evaluated out of fold on NeuroFace, whereas 110D was transferred frozen.
 They are therefore not a causal or head-to-head representation comparison and
 do not isolate representation from endpoint- or domain-specific fitting. The
-new result does **not** by itself authorize replacement or fusion with the
+new result does **not** authorize replacement or fusion with the
 frozen 110D free-recording expert inside Universal Clinical Router v4.
 
 ## Reproducibility and audit
