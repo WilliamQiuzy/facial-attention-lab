@@ -1,7 +1,9 @@
 <!-- 面向中国医生 -->
 # 当前主模型：通用临床路由器第四版
 
-截至二〇二六年八月十六日，通用临床路由器第四版是本项目唯一的当前研究模型。新模型必须另建版本，不能直接覆盖本版本。
+截至二〇二六年八月十七日，通用临床路由器第四版是本项目唯一的当前研究模型。新模型必须另建版本，不能直接覆盖本版本。
+
+第六版密集动作几何候选已在三套受试者分离开发证据上通过正确率门槛，但这些数据已经参与模型选择；在未接触受试者或机构完成独立验证前，它不会替换第四版。
 
 ## 模型结构
 
@@ -52,3 +54,4 @@
 - 模型文件：`docs/results/artifacts/universal_clinical_router_v4/model.json`。
 - 汇总报告：`docs/results/artifacts/universal_clinical_router_v4/report.json`。
 - 完整方法与结果：`docs/results/universal_clinical_router_v4.md`。
+- 最新非当前候选：`docs/results/universal_clinical_router_v6_candidate.md`。

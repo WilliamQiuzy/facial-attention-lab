@@ -38,6 +38,7 @@ Run from `facial_paralysis/` with the project Anaconda interpreter:
 /Users/williamqiu/opt/anaconda3/bin/python3 tests/test_universal_clinical_router_v4.py
 /Users/williamqiu/opt/anaconda3/bin/python3 tests/test_universal_clinical_router_release_v4.py
 /Users/williamqiu/opt/anaconda3/bin/python3 tests/test_selective_universal_router_v5_release.py
+/Users/williamqiu/opt/anaconda3/bin/python3 tests/test_universal_clinical_router_v6_release.py
 ```
 
 ## Development rules
@@ -51,6 +52,10 @@ Run from `facial_paralysis/` with the project Anaconda interpreter:
   report, tests, and artifact hash together when a successor is promoted.
 - Record failed or awaiting-confirmation work in `docs/model_candidates.json`;
   never point `src/models/current.py` at it.
+- The v6 dense-action candidate is evaluated by
+  `scripts/run_dense_action_router_v6.py`; its private full-mesh caches and
+  participant-level arrays remain off Git, while only the aggregate report and
+  fixed profile registry are public.
 - All clinician-facing interfaces, summaries, reports, and presentation copy
   must follow `docs/CLINICIAN_LANGUAGE_POLICY.md`.
 

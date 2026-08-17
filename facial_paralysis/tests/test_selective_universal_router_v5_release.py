@@ -28,8 +28,12 @@ def test_rejected_candidate_is_registered_but_not_current(c: Check):
     registry = json.loads(CANDIDATES.read_bytes())
     c.eq(registry["schema_version"], "facial_paralysis_model_candidates_v1")
     c.eq(registry["current_model"], "universal_clinical_router_v4")
-    c.eq(len(registry["candidates"]), 1)
-    candidate = registry["candidates"][0]
+    matches = [
+        row for row in registry["candidates"]
+        if row["name"] == "universal_clinical_router_v5_candidate"
+    ]
+    c.eq(len(matches), 1)
+    candidate = matches[0]
     c.eq(candidate["name"], "universal_clinical_router_v5_candidate")
     c.eq(candidate["status"], "rejected_not_promoted")
     c.true(not candidate["default_import"] and not candidate["promotion_authorized"])
