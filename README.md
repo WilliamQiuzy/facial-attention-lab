@@ -47,6 +47,16 @@ representation, horizontal-mirror transform, paired-view standardized
 L2-logistic estimator, tests, model card, and deidentified aggregate result. It
 intentionally contains no fitted weights or patient-level artifacts.
 
+## Universal Clinical Router v6 development candidate
+
+The collaboration brief for the V6 dense-action development candidate is
+available in both [English](facial_paralysis/universal_clinical_router_v6/universal_clinical_router_v6_mayo_brief_en.md)
+and [Chinese](facial_paralysis/universal_clinical_router_v6/universal_clinical_router_v6_mayo_brief_zh.md).
+It documents the shared and profile-specific layers, cohort-separated
+development evidence, the current Mayo evidence boundary, and the proposed
+House–Brackmann training path. This public snapshot contains no participant
+records, derived features, fitted weights, or row-level predictions.
+
 ## Vitestro phlebotomy safety
 
 The public-source wearable-device evaluation for the Mayo–Vitestro automated
