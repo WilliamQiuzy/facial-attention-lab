@@ -10,6 +10,9 @@ This is a research model, not a clinically validated diagnostic device.
 ## Start here
 
 - Current architecture, evidence, and limitations: `docs/CURRENT_MODEL.md`
+- Universal Clinical Router v6 development-candidate brief:
+  [English](docs/results/universal_clinical_router_v6_mayo_brief_en.md) |
+  [中文](docs/results/universal_clinical_router_v6_mayo_brief_zh.md)
 - Machine-readable model registry: `docs/model_registry.json`
 - Active pipeline and verification commands: `docs/PIPELINE.md`
 - Supported Python import: `src.models.current`

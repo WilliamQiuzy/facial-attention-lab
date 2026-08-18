@@ -1,6 +1,8 @@
 <!-- 面向中国医生 -->
 # Universal Clinical Router v6：结构、数据与 Mayo/HB 计划
 
+[English](universal_clinical_router_v6_mayo_brief_en.md) | **中文**
+
 ## 一句话结论
 
 第六版（V6）是在冻结的 110D 基线上增加“完整 478 点、按动作建模”的轻量路由器：三套受试者分离开发数据的正确率均超过 94%，但三个分支目前**只共享冻结的 MediaPipe 权重和固定几何方法，不共享一个可训练神经网络主干**；Mayo 尚未参与 V6 训练，也没有可计算的二分类正确率。
