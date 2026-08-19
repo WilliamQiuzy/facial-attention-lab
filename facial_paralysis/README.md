@@ -13,6 +13,8 @@ This is a research model, not a clinically validated diagnostic device.
 - Universal Clinical Router v6 development-candidate brief:
   [English](docs/results/universal_clinical_router_v6_mayo_brief_en.md) |
   [中文](docs/results/universal_clinical_router_v6_mayo_brief_zh.md)
+- V8 shared-model structure (research candidate, not the current model):
+  [Model Architecture](docs/architecture/model-architecture.md)
 - Machine-readable model registry: `docs/model_registry.json`
 - Active pipeline and verification commands: `docs/PIPELINE.md`
 - Supported Python import: `src.models.current`

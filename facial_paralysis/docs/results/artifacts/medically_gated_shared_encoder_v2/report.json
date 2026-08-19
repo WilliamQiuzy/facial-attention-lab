@@ -1,0 +1,127 @@
+{
+  "schema_version": "medically_gated_shared_encoder_v2_release",
+  "status": "exposed_development_search_exhausted_not_clinically_validated",
+  "search": {
+    "total_shared_candidates_evaluated": 48,
+    "v2_full_mesh_candidates": 32,
+    "v2_seed0_screen_complete": true,
+    "v2_locked_top_four_three_seed_complete": true,
+    "v3_compact_regional_candidates": 16,
+    "v3_stopped_after_inferior_seed0_screen": true,
+    "participant_disjoint_folds": 6,
+    "selection_primary": "minimum_source_accuracy",
+    "selection_secondary": "minimum_source_auroc",
+    "selection_tertiary": "mean_source_accuracy"
+  },
+  "strongest_stable_shared_candidate": {
+    "candidate_id": "MSC2-022",
+    "architecture": {
+      "inputs": ["clinical_110d", "dense_mediapipe_478x3"],
+      "view": "bilateral_invariant",
+      "regional_evidence": "all_excursion",
+      "pooling": "cross_action_transformer",
+      "fusion": "masked_concat",
+      "shared_patient_embedding_dim": 64,
+      "source_specific_parameters": "final_binary_heads_only",
+      "source_identifier_input": false
+    },
+    "three_seed_metrics": {
+      "palsynet": {
+        "accuracy_values": [0.868421052631579, 0.8947368421052632, 0.868421052631579],
+        "accuracy_mean": 0.8771929824561404,
+        "accuracy_population_sd": 0.012405382126079768,
+        "balanced_accuracy_mean": 0.8739495798319328,
+        "auroc_mean": 0.9374416433239963,
+        "sensitivity_mean": 0.9047619047619048,
+        "specificity_mean": 0.8431372549019608,
+        "brier_mean": 0.09742213973381408
+      },
+      "neuroface": {
+        "accuracy_values": [0.7777777777777778, 0.8333333333333334, 0.8055555555555556],
+        "accuracy_mean": 0.8055555555555556,
+        "accuracy_population_sd": 0.022680460581325734,
+        "balanced_accuracy_mean": 0.7581818181818182,
+        "auroc_mean": 0.8472727272727273,
+        "sensitivity_mean": 0.88,
+        "specificity_mean": 0.6363636363636364,
+        "brier_mean": 0.14293344162530908
+      },
+      "meei": {
+        "accuracy_values": [0.875, 0.8392857142857143, 0.8392857142857143],
+        "accuracy_mean": 0.8511904761904762,
+        "accuracy_population_sd": 0.016835875742536838,
+        "balanced_accuracy_mean": 0.7789855072463768,
+        "auroc_mean": 0.8913043478260869,
+        "sensitivity_mean": 0.8913043478260869,
+        "specificity_mean": 0.6666666666666666,
+        "brier_mean": 0.10550985398406927
+      }
+    }
+  },
+  "locked_top_four_accuracy_means": {
+    "MSC2-022": {"palsynet": 0.8771929824561404, "neuroface": 0.8055555555555556, "meei": 0.8511904761904762},
+    "MSC2-010": {"palsynet": 0.9210526315789473, "neuroface": 0.7685185185185185, "meei": 0.8630952380952381},
+    "MSC2-006": {"palsynet": 0.9210526315789473, "neuroface": 0.7685185185185185, "meei": 0.8511904761904762},
+    "MSC2-018": {"palsynet": 0.8771929824561404, "neuroface": 0.7685185185185185, "meei": 0.8690476190476191}
+  },
+  "compact_v3_best_seed0": {
+    "candidate_id": "MSC3-000",
+    "palsynet_accuracy": 0.9473684210526315,
+    "neuroface_accuracy": 0.7777777777777778,
+    "meei_accuracy": 0.8571428571428571,
+    "interpretation": "regional_compression_preserved_palsynet_but_lost_neuroface_and_meei_detail"
+  },
+  "counts": {"palsynet": 38, "neuroface": 36, "meei": 56},
+  "medical_gate": {
+    "flip_scope": "binary_weakness_only_commutative_mean_and_absolute_difference",
+    "flip_forbidden_for": ["affected_side_prediction", "signed_regional_score", "laterality_specific_hb_interpretation"],
+    "random_crop": false,
+    "random_color_jitter": false,
+    "dataset_specific_trainable_encoder": false,
+    "compact_region_hypothesis_supported": false,
+    "raw_full_mesh_longer_training_supported": false
+  },
+  "runtime": {
+    "gpu": "NVIDIA H200",
+    "gpu_memory_mib": 143771,
+    "python": "3.12.3",
+    "numpy": "1.26.4",
+    "torch": "2.7.1+cu128",
+    "v2_screen_seconds": 105.18233123199934,
+    "v2_seed1_seconds": 26.41661669000041,
+    "v2_seed2_seconds": 26.365580237999893,
+    "v3_screen_seconds": 46.32880966300036
+  },
+  "commitments": {
+    "v2_implementation_sha256": "e8bf0e78e32aad9775ef04d31ea99dc6846fc0503f5ae559e28077d35bac16b2",
+    "v3_implementation_sha256": "4444c873817a1721df069a9bf90ef1229e4f8612bb94df792fec145d0c6df0e5",
+    "v2_screen_report_sha256": "f56ceeacf2aa638733ed21479dc7926a1cc2419532ebdfa6d0494da33ad7a966",
+    "v2_confirm_seed1_report_sha256": "10c4f3b6d7fd75b9aa0ad2871b44f0d93b0e7c95240cc47d72be5c6e0fbbfc48",
+    "v2_confirm_seed2_report_sha256": "108434a5f9536a9a7bd23792b3ffceea4f7501de10c77bfbcf05b5895ad15306",
+    "v3_screen_report_sha256": "11e744f9d5e320647c87c650ef7db8d9109e5e84089e43b6291008ec73730f2b",
+    "palsynet_collection_sha256": "56e49f2eff8584d590c4e9a5f4e344a6cd268b9e30e60e64e591682e724cd604",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
+    "neuroface_collection_sha256": "757d13e3a12fcde01c4575019766a84e24e25f561b5906a750948d786e7f397e",
+    "neuroface_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "meei_collection_sha256": "721b6f5d20ec92e5719cefe4719f422f30451ca1a7c973faffbcdb36066d93c0",
+    "meei_manifest_sha256": "7770473fe4479cf11e4c88474ee28105cef7db5fca026918fc89cd6dc023c5ed"
+  },
+  "audit": {
+    "palsynet_protected_reads": 0,
+    "mayo_reads": 0,
+    "mayo_predictions": 0,
+    "row_level_probabilities_public": false,
+    "participant_identifiers_public": false
+  },
+  "gate": {
+    "required_accuracy_each_source": 0.9,
+    "passed": false,
+    "failed_sources": ["palsynet", "neuroface", "meei"]
+  },
+  "decision": {
+    "promote_as_current_model": false,
+    "clinical_claim_authorized": false,
+    "reason": "48_medically_admissible_shared_candidates_exhausted_without_three_source_90_percent_gate"
+  }
+}
