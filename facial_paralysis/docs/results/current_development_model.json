@@ -1,0 +1,477 @@
+{
+  "schema_version": "facial_paralysis_current_model_v8",
+  "status": "sealed_110d_inside_universal_clinical_router_v4",
+  "recorded_on": "2026-08-15",
+  "model": {
+    "name": "landmark_mi_110d",
+    "feature_dimension": 110,
+    "input_contract": "clinical23_v2",
+    "feature_construction": {
+      "channel_summaries": 92,
+      "bilateral_dynamics": 18
+    },
+    "classifier": {
+      "type": "standardized_l2_logistic_regression",
+      "c": 0.01,
+      "penalty": "l2",
+      "solver": "liblinear",
+      "max_iter": 2000,
+      "random_state": 0,
+      "threshold": 0.5,
+      "group_balanced_sample_weights": true,
+      "hyperparameter_search": false
+    },
+    "mirror_invariance": {
+      "training": "original_plus_horizontal_mirror",
+      "inference": "mean_original_and_horizontal_mirror_probability"
+    }
+  },
+  "task": {
+    "dataset": "PalsyNet",
+    "target": "binary_affected_vs_unaffected_not_hb_grade",
+    "claim_unit": "person_held_out",
+    "identity_status": "reviewed",
+    "action_supervision": "geometry_proxy_only",
+    "phase_supervision": "recording_position_proxy_only"
+  },
+  "identity_and_split": {
+    "recordings_reviewed": 49,
+    "pair_decisions_reviewed": 1176,
+    "same_pair_decisions": 1,
+    "uncertainties": 0,
+    "reviewed_groups": 48,
+    "cross_label_groups": 0,
+    "eligible_recordings": 49,
+    "eligible_groups": 48,
+    "development_recordings": 39,
+    "development_groups": 38,
+    "development_affected_groups": 21,
+    "development_unaffected_groups": 17,
+    "inner_folds": 4,
+    "protected_outer_fold_number": 0,
+    "protected_recordings": 10,
+    "protected_groups": 10,
+    "protected_affected_groups": 5,
+    "protected_unaffected_groups": 5
+  },
+  "protocol": {
+    "bootstrap_repeats": 5000,
+    "bootstrap_seed": 20260805,
+    "bootstrap_unit": "reviewed_group",
+    "paired_class_stratified": true,
+    "candidate_lock": "hierarchical_unrounded_110d_to_168d_to_204d",
+    "candidate_specific_tuning": false,
+    "architecture_screen_candidates": 9,
+    "stability_group_cv_repeats": 50,
+    "group_label_permutations": 500
+  },
+  "candidates": {
+    "landmark_mi_110d": {
+      "feature_dimension": 110,
+      "auroc": 0.980392156862745,
+      "auroc_ci95": [
+        0.9327731092436975,
+        1.0
+      ],
+      "average_precision": 0.9871504157218447,
+      "balanced_accuracy": 0.9523809523809523,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0,
+      "brier": 0.11736712693119593
+    },
+    "landmark_mi_110d_action_proxy_168d": {
+      "feature_dimension": 168,
+      "auroc": 0.9747899159663865,
+      "auroc_ci95": [
+        0.9215686274509804,
+        1.0
+      ],
+      "average_precision": 0.983206809293766,
+      "balanced_accuracy": 0.9285714285714286,
+      "sensitivity": 0.8571428571428571,
+      "specificity": 1.0,
+      "brier": 0.10306895179592385
+    },
+    "landmark_mi_110d_action_phase_proxy_204d": {
+      "feature_dimension": 204,
+      "auroc": 0.969187675070028,
+      "auroc_ci95": [
+        0.9103641456582632,
+        1.0
+      ],
+      "average_precision": 0.9801587301587305,
+      "balanced_accuracy": 0.9285714285714286,
+      "sensitivity": 0.8571428571428571,
+      "specificity": 1.0,
+      "brier": 0.10359183539709031
+    }
+  },
+  "primary_deltas": {
+    "action_proxy_168d_minus_110d_auroc": {
+      "point": -0.0056022408963584125,
+      "ci95": [
+        -0.02801120448179284,
+        0.011204481792717047
+      ]
+    },
+    "action_phase_proxy_204d_minus_110d_auroc": {
+      "point": -0.011204481792716936,
+      "ci95": [
+        -0.04201680672268915,
+        0.0056022408963585235
+      ]
+    },
+    "action_phase_proxy_204d_minus_action_proxy_168d_auroc": {
+      "point": -0.0056022408963585235,
+      "ci95": [
+        -0.028011204481792618,
+        0.008403361344537785
+      ]
+    }
+  },
+  "protected_outer": {
+    "schema_version": "110d_generalization_protected_outer_v1",
+    "execution": "one_shot_sealed",
+    "candidate": "landmark_mi_110d",
+    "candidate_dimension": 110,
+    "training_recordings": 39,
+    "training_groups": 38,
+    "protected_recordings": 10,
+    "protected_groups": 10,
+    "protected_affected_groups": 5,
+    "protected_unaffected_groups": 5,
+    "metrics": {
+      "auroc": 1.0,
+      "auroc_descriptive_bootstrap_ci95": [
+        1.0,
+        1.0
+      ],
+      "average_precision": 1.0,
+      "balanced_accuracy": 0.9,
+      "balanced_accuracy_descriptive_bootstrap_ci95": [
+        0.7,
+        1.0
+      ],
+      "sensitivity": 0.8,
+      "sensitivity_descriptive_bootstrap_ci95": [
+        0.4,
+        1.0
+      ],
+      "specificity": 1.0,
+      "specificity_descriptive_bootstrap_ci95": [
+        1.0,
+        1.0
+      ],
+      "brier": 0.11762731663417376
+    },
+    "candidate_changed_after_result": false,
+    "threshold_changed_after_result": false,
+    "external_validation": false,
+    "clinical_validation": false
+  },
+  "final_artifact": {
+    "schema_version": "110d_generalization_final_artifact_v1",
+    "eligible_recordings": 49,
+    "eligible_groups": 48,
+    "affected_groups": 26,
+    "unaffected_groups": 22,
+    "scaler_fits": 1,
+    "model_fits": 1,
+    "contains_identifiers_paths_or_row_probabilities": false,
+    "sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9"
+  },
+  "architecture_autoresearch": {
+    "screening_winner": "logistic_110d",
+    "current_model_replaced": false,
+    "nearest_auroc_candidate": {
+      "name": "hybrid_110d_tcn",
+      "auroc": 0.9775910364145657,
+      "balanced_accuracy": 0.8991596638655461,
+      "brier": 0.05959993510250452
+    },
+    "repeated_group_cv": {
+      "repeats": 50,
+      "auroc_median": 0.9663865546218486,
+      "auroc_q05": 0.9564425770308123,
+      "auroc_q95": 0.980672268907563,
+      "auroc_minimum": 0.9411764705882353,
+      "auroc_maximum": 0.9859943977591036,
+      "fraction_auroc_at_least_0_95": 0.98,
+      "balanced_accuracy_median": 0.9166666666666667
+    },
+    "group_label_permutation": {
+      "permutations": 500,
+      "observed_auroc": 0.980392156862745,
+      "null_auroc_mean": 0.4885882352941176,
+      "null_auroc_q95": 0.6864145658263304,
+      "p_value": 0.001996007984031936
+    }
+  },
+  "decision": {
+    "locked_candidate": "landmark_mi_110d",
+    "action_proxy_advances": false,
+    "phase_proxy_advances_against_both_simpler_candidates": false,
+    "promotion_passed": false,
+    "outer_evaluation_completed_once": true,
+    "outer_result_sealed": true,
+    "hb_claim_authorized": false,
+    "clinical_validation": false,
+    "deployment_authorized": false,
+    "next_gate": "palsynet_only_source_robust_development_then_new_untouched_external_cohort"
+  },
+  "research_only_branches": {
+    "scripted_action_capacity_v1": {
+      "status": "cross_disease_orofacial_capacity_feasibility_passed",
+      "neuroface_endpoint": "als_or_post_stroke_vs_healthy_control",
+      "participants": 36,
+      "primary_task_recordings": 108,
+      "actions": [
+        "NSM_KISS",
+        "NSM_OPEN",
+        "NSM_SPREAD"
+      ],
+      "action_experts": 3,
+      "feature_dimension_per_expert": 18,
+      "classifier_per_expert": "standardized_l2_logistic_regression_c_0_01",
+      "neuroface_metrics": {
+        "auroc": 0.7527272727272728,
+        "auroc_ci95": [
+          0.5781818181818182,
+          0.9018181818181817
+        ],
+        "average_precision": 0.8913145805105009,
+        "balanced_accuracy": 0.7436363636363637,
+        "sensitivity": 0.76,
+        "specificity": 0.7272727272727273,
+        "brier": 0.23533808890364177,
+        "per_task_auroc": {
+          "NSM_KISS": 0.629090909090909,
+          "NSM_OPEN": 0.8218181818181818,
+          "NSM_SPREAD": 0.46545454545454545
+        }
+      },
+      "mayo_action_timing_feasibility": {
+        "source_files": 53,
+        "unique_contents": 52,
+        "exact_duplicate_files": 1,
+        "audio_bearing_source_files": 51,
+        "audio_free_source_files": 2,
+        "probe_failed_unique_contents": 0,
+        "locked_two_annotator_events": 0,
+        "timing_gate_eligible": false,
+        "action_expert_predictions": 0,
+        "accuracy_defined": false
+      },
+      "neuroface_public_report_sha256": "be246d848e78598c47d0470ff5c4175dbe1a4b6b012fadedbbf0f7494f34c290",
+      "mayo_timing_audit_public_report_sha256": "b59b1f5fc727858ac6c490ddf0b35f6092070cc45ee398de30faa35f0a8977e6",
+      "current_110d_replaced": false,
+      "bell_palsy_transfer_claim_authorized": false,
+      "fusion_authorized": false,
+      "clinical_use_authorized": false
+    }
+  },
+  "execution_audit": {
+    "gate_attempts": 1,
+    "gate_passes": 1,
+    "development_cache_records_loaded": 39,
+    "development_feature_extractions": 351,
+    "development_scaler_fits": 12,
+    "development_model_fits": 12,
+    "development_predictions": 117,
+    "protected_cache_records_loaded": 10,
+    "protected_feature_extractions": 10,
+    "protected_scaler_fits": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 10,
+    "outer_training_scaler_fits": 1,
+    "outer_training_model_fits": 1,
+    "final_artifact_scaler_fits": 1,
+    "final_artifact_model_fits": 1,
+    "outer_release_implementation_components_bound": 12,
+    "report_contains_identifiers_paths_or_row_probabilities": false,
+    "development_report_invocations": {
+      "created": 1,
+      "identical_repeat_rejected_no_overwrite": 1
+    },
+    "protected_outer_report_invocations": 1,
+    "final_artifact_invocations": 1
+  },
+  "universal_clinical_router_v4": {
+    "status": "multi_protocol_development_candidate_not_clinically_validated",
+    "dataset_identity_input": false,
+    "routes": {
+      "free_asymmetry": "palsynet_landmark_mi_110d",
+      "scripted_multimechanism": "neuroface_clinical_marlin_median_gate",
+      "cue_aligned_upper": "meei_landmark_sequence_ensemble"
+    },
+    "primary_development_metrics": {
+      "palsynet": {
+        "participants": 38,
+        "auroc": 0.980392156862745,
+        "accuracy": 0.9473684210526315,
+        "balanced_accuracy": 0.9523809523809523
+      },
+      "neuroface": {
+        "participants": 36,
+        "auroc": 0.9309090909090909,
+        "accuracy": 0.9166666666666666,
+        "balanced_accuracy": 0.8890909090909092
+      },
+      "meei": {
+        "participants": 56,
+        "auroc": 0.9108695652173914,
+        "accuracy": 0.875,
+        "balanced_accuracy": 0.8847826086956522
+      }
+    },
+    "model_artifact_sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495",
+    "protected_palsynet_reads": 0,
+    "mayo_labels_used": false,
+    "clinical_validation": false
+  },
+  "auxiliary_and_external": {
+    "mayo_positive_challenge": {
+      "sessions_in_source_folder": 65,
+      "source_video_files": 50,
+      "unique_video_contents": 49,
+      "exact_duplicate_files": 1,
+      "quality_excluded_unique_contents": 2,
+      "scored_assumed_positive_videos": 47,
+      "positive_calls_at_0_5": 45,
+      "positive_call_rate": 0.9574468085106383,
+      "positive_call_rate_wilson95": [
+        0.8575147232210055,
+        0.9882517240332106
+      ],
+      "confidence_mean": 0.6646102416924612,
+      "confidence_median": 0.6493885746913206,
+      "confidence_q25": 0.5981296258115187,
+      "confidence_q75": 0.715546015418507,
+      "extraction_coverage_median": 1.0,
+      "extraction_coverage_minimum": 0.921875,
+      "accuracy_defined": false,
+      "specificity_defined": false,
+      "auroc_defined": false,
+      "candidate_selection_eligible": false,
+      "raw_videos_uploaded": 0
+    },
+    "yfp": {
+      "task": "static_eye_and_mouth_regional_ordinal_audit",
+      "accepted_anchors": 10838,
+      "training_eligible": false,
+      "extractions": 0,
+      "fits": 0,
+      "predictions": 0
+    },
+    "meei": {
+      "local_acquisition_complete": true,
+      "videos": 60,
+      "participants": 60,
+      "affected_participants": 50,
+      "unaffected_participants": 10,
+      "candidate_selection_eligible": false,
+      "external_scoring_authorized": true,
+      "external_scoring_completed_once": true,
+      "all_participants_scored": true,
+      "photos_scored": 0,
+      "model_scaler_or_calibration_fits": 0,
+      "metrics": {
+        "auroc": 0.776,
+        "auroc_descriptive_bootstrap_ci95": [
+          0.62195,
+          0.902
+        ],
+        "average_precision": 0.9492225568570813,
+        "balanced_accuracy": 0.65,
+        "sensitivity": 0.9,
+        "specificity": 0.4,
+        "brier": 0.14306942317843108,
+        "ordinary_accuracy_derived_from_aggregate_counts": 0.8166666666666667,
+        "correct_participants_at_0_5": 49
+      },
+      "requested_95_percent_target_met": false,
+      "dominant_failure": "external_normal_false_positives_low_specificity",
+      "may_tune_successor_on_meei": false
+    },
+    "neuroface": {
+      "participants": 36,
+      "videos": 261,
+      "retained_videos_after_label_blind_qc": 231,
+      "manual_68_point_annotated_frames": 3306,
+      "frozen_110d_external_metrics": {
+        "auroc": 0.34909090909090906,
+        "balanced_accuracy": 0.4163636363636364,
+        "sensitivity": 0.56,
+        "specificity": 0.2727272727272727,
+        "brier": 0.2832172596186839
+      },
+      "manual_landmark_detection_rate": 1.0,
+      "manual68_measurement_gate_passed": false,
+      "slp_motion_pretraining_promoted": false,
+      "manual68_geometry_calibration_promoted": false,
+      "palsynet_protected_predictions": 0,
+      "may_reuse_as_untouched_external_validation": false,
+      "clinical_validation": false
+    },
+    "aflfp": {
+      "access_granted": false,
+      "eligible_faculty_or_employee_signature_required": true
+    }
+  },
+  "provenance": {
+    "source_branch": "codex/neuroface-external-validation-v1",
+    "generalization_lock_implementation_commit": "14a47f9",
+    "architecture_challenge_implementation_commit": "036e033",
+    "outer_release_implementation_commit": "ad5b670",
+    "reviewed_identity_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "person_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
+    "implementation_aggregate_sha256": "4f0c67c98c5ec6ea4c8d0746504caae407840f2aefee3668adf6d7c60fb15208",
+    "aggregate_source_report_sha256": "e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43",
+    "outer_authorization_sha256": "7aca8ddffeca5479a53ee28103b091acf1f1d64badd46d62ce8a601654b0881b",
+    "outer_release_implementation_sha256": "b5ac56315b161648662d7b3dcf0991b30413b1dffada11b697547ed7db2aff9d",
+    "protected_outer_report_sha256": "0e44cfaf2fe5bb3e8e9d9ea8629f8ef873a5af2d94a56025b3f6f32f35227df3",
+    "final_palsynet_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
+    "meei_external_implementation_commit": "81a83df",
+    "meei_authorization_sha256": "8bf70dd1b04381a35af2de99b530e744425384a060b90a48c56156ec6b3ae6af",
+    "meei_participant_manifest_sha256": "7770473fe4479cf11e4c88474ee28105cef7db5fca026918fc89cd6dc023c5ed",
+    "meei_cache_manifest_sha256": "4ae13f6a77ea2ba3095665df6cccc0753b54a49f8cd3d676dccddb73d12f1d0e",
+    "meei_cache_artifact_collection_sha256": "9f9ac765eb0ce0aff317c27099ed9c4e9828f9f4303b51c1a03372774a3c3f6f",
+    "meei_external_report_sha256": "445fa3c770addbeb70820a3395c13304e602b91445bb218d404cd1dff5f54baf",
+    "neuroface_external_protocol_commit": "f3a0505",
+    "neuroface_motion_pretraining_commit": "4a9ea89",
+    "neuroface_manual68_audit_commit": "cfb3a7c",
+    "neuroface_geometry_calibration_commit": "1468a0d",
+    "neuroface_frozen_external_report_sha256": "beda5bee5ed3736a90245e98c165777198aee6d6be2bbcd8a13f0fb2b1a11984",
+    "neuroface_slp_transfer_report_sha256": "bc269696eadcb1850ec819962b7d623703cb1856bbf59deefd1573e590de421d",
+    "neuroface_motion_pretraining_report_sha256": "7a5cfcd813e48f7e6b42b9687df3d243651f6d5af5d8a9811de0b4362e7f8e80",
+    "neuroface_manual68_audit_report_sha256": "a58e42be8101deabd6797bcab24e50485713cbfe3d65c55b65c78594b932dddf",
+    "neuroface_geometry_calibration_report_sha256": "9d54a58eede9b6b4c12f4635ca213726e1fff8005df424c346808cba88d8b5a8",
+    "neuroface_action_capacity_report_sha256": "be246d848e78598c47d0470ff5c4175dbe1a4b6b012fadedbbf0f7494f34c290",
+    "mayo_action_anchor_feasibility_report_sha256": "b59b1f5fc727858ac6c490ddf0b35f6092070cc45ee398de30faa35f0a8977e6",
+    "scripted_action_capacity_source_branch": "codex/script-aligned-action-experts-v1",
+    "meei_h200_release": "/home/ssh-ziyue/facial-paralysis-h200/releases/meei-external-v1-81a83df",
+    "architecture_report_sha256": "4f5d77c6c50b2f5d313f0d907416c6ac958837b677bf0b7ecf018fe5a949e8e7",
+    "mayo_positive_challenge_report_sha256": "bd05143e6221d3bf3c95a6014d2f67cf757848d340c1c52980e30a7b7a593060",
+    "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
+    "h200_release": "/home/ssh-ziyue/facial-paralysis-h200/releases/110d-outer-release-v1-ad5b670",
+    "h200_code_archive_sha256": "73ba31c664557a9b4efedd31653dc6a9d702871af8005670ed2cf94e3a959df3"
+  },
+  "claim_boundary": {
+    "not_directly_comparable_to_legacy_video_held_out_score": true,
+    "mayo_65_performance": false,
+    "mayo_positive_challenge_is_not_binary_accuracy": true,
+    "palsynet_protected_outer_completed": true,
+    "house_brackmann_accuracy": false,
+    "independent_public_cross_dataset_validation_completed": true,
+    "neuroface_frozen_external_validation_completed_once": true,
+    "neuroface_reuse_as_external_validation": false,
+    "requested_external_accuracy_target_met": false,
+    "scripted_action_capacity_feasibility_completed": true,
+    "scripted_action_capacity_is_bell_palsy_validation": false,
+    "mayo_action_timing_gate_eligible": false,
+    "mayo_action_expert_predictions": 0,
+    "prospective_cross_institutional_clinical_validation": false,
+    "clinical_use": false
+  }
+}

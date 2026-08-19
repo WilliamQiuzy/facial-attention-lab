@@ -1,0 +1,35 @@
+{
+  "schema_version": "facial_paralysis_model_registry_v1",
+  "current": {
+    "name": "universal_clinical_router_v4",
+    "schema_version": "universal_clinical_router_v4",
+    "status": "development_candidate_not_clinically_validated",
+    "python_module": "src.models.current",
+    "runtime_module": "src.models.universal_clinical_router_v4",
+    "artifact_path": "docs/results/artifacts/universal_clinical_router_v4/model.json",
+    "artifact_sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495",
+    "report_path": "docs/results/artifacts/universal_clinical_router_v4/report.json"
+  },
+  "archived": [
+    {
+      "name": "web_marlin_gru_ordinal",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "dynamic_landmark_ssl",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "universal_orofacial_v1",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "universal_phenotype_v3",
+      "status": "archived_not_current",
+      "default_import": false
+    }
+  ]
+}

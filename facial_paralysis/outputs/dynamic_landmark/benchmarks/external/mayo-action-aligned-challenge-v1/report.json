@@ -1,0 +1,119 @@
+{
+  "audit": {
+    "palsynet_protected_cache_records_loaded": 0,
+    "palsynet_protected_predictions": 0,
+    "per_record_probabilities_exported": 0,
+    "raw_mayo_videos_uploaded": 0
+  },
+  "claim_scope": {
+    "mayo": "assumed_positive_confidence_challenge_only",
+    "selection": "identity_reviewed_palsynet_development_oof_only"
+  },
+  "counts": {
+    "mayo_scored_contents": 47,
+    "mayo_verified_negative_records": 0,
+    "palsynet_development_groups": 38,
+    "palsynet_development_recordings": 39
+  },
+  "decision": {
+    "accuracy_defined": false,
+    "auroc_defined_on_mayo": false,
+    "clinical_validation": false,
+    "development_champion": "seven_action_window_110d",
+    "hb_claim_authorized": false,
+    "mayo_used_for_model_selection": false,
+    "outer_evaluation_authorized": false
+  },
+  "mayo_four_time_window_baseline": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.0851063829787234,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.0425531914893617,
+      "maximum": 0.9972299185551358,
+      "mean": 0.6646102416924612,
+      "median": 0.6493885746913206,
+      "minimum": 0.40228550148076947,
+      "q25": 0.5981296258115187,
+      "q75": 0.715546015418507
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "positive_call_rate": 0.9574468085106383,
+    "positive_call_rate_wilson95": [
+      0.8575147232210055,
+      0.9882517240332106
+    ],
+    "positive_calls": 45,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "mayo_seven_action_window_selected": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.10638297872340426,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.02127659574468085,
+      "maximum": 0.9970298733001342,
+      "mean": 0.6263667925539401,
+      "median": 0.6045531214551204,
+      "minimum": 0.371052269104671,
+      "q25": 0.5431480904197434,
+      "q75": 0.7087865702576562
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.8883928571428571
+    },
+    "positive_call_rate": 0.8297872340425532,
+    "positive_call_rate_wilson95": [
+      0.6986022402737561,
+      0.9111363612350974
+    ],
+    "positive_calls": 39,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "paired_transition": {
+    "baseline_negative_to_action_positive": 1,
+    "baseline_positive_to_action_negative": 7,
+    "both_negative": 1,
+    "both_positive": 38,
+    "score_delta": {
+      "maximum": 0.29299133016387746,
+      "mean": -0.03824344913852093,
+      "median": -0.04682106017773302,
+      "minimum": -0.33519717686475237,
+      "q25": -0.09004172790297404,
+      "q75": 0.029541779381419664
+    }
+  },
+  "protocol": {
+    "baseline": "four_time_window_landmark_110d",
+    "classifier": "standardized_l2_logistic_c_0_01",
+    "mayo_used_for_model_selection": false,
+    "selected": "seven_action_window_landmark_110d",
+    "threshold": 0.5,
+    "threshold_tuned_on_mayo": false
+  },
+  "provenance": {
+    "development_report_sha256": "6f6ee89bb4f1646354492ca4cef49d486db56fdc94bb5d30692fc447e157e3df",
+    "mayo_action_manifest_sha256": "527d89a67b63ab144c587cd6e2651ddd6076cd9a088cc6e560d6ca1ee4241cc4",
+    "mayo_baseline_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
+    "palsynet_review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "mayo_action_aligned_110d_v1_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}

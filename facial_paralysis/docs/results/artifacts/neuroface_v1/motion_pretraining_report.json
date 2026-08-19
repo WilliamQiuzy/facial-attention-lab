@@ -1,0 +1,113 @@
+{
+  "audit": {
+    "palsynet_protected_cache_records_loaded": 0,
+    "protected_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "claim_scope": "exploratory_neuroface_pretraining_palsynet_development_oof_only",
+  "counts": {
+    "neuroface_participants": 36,
+    "neuroface_retained_videos": 231,
+    "palsynet_development_groups": 38,
+    "palsynet_development_recordings": 39
+  },
+  "decision": {
+    "clinical_validation": false,
+    "current_model_replaced": false,
+    "mayo_used_for_selection": false,
+    "meei_used_for_selection": false,
+    "neuroface_is_external_validation_after_pretraining": false,
+    "outer_evaluation_authorized": false,
+    "promotion_criteria_met": false,
+    "selected_model": "landmark_110d"
+  },
+  "palsynet_development_metrics": {
+    "landmark_110d": {
+      "auroc": 0.980392156862745,
+      "average_precision": 0.9871504157218447,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119596,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    },
+    "landmark_110d_plus_motion_32d": {
+      "auroc": 0.9635854341736694,
+      "average_precision": 0.9793019480519483,
+      "balanced_accuracy": 0.9047619047619048,
+      "brier": 0.1235390941277799,
+      "sensitivity": 0.8095238095238095,
+      "specificity": 1.0
+    },
+    "motion_32d": {
+      "auroc": 0.5126050420168067,
+      "average_precision": 0.7029922049819777,
+      "balanced_accuracy": 0.6204481792717087,
+      "brier": 0.24451790892890357,
+      "sensitivity": 0.47619047619047616,
+      "specificity": 0.7647058823529411
+    }
+  },
+  "parameter_count": 7081,
+  "pretraining_diagnostics": {
+    "best_epochs": [
+      52,
+      59,
+      76,
+      80,
+      61,
+      77
+    ],
+    "domains": {
+      "fatigue": {
+        "mae": 0.3626440307407668,
+        "spearman": 0.17553587534505957
+      },
+      "rom": {
+        "mae": 0.550752715372936,
+        "spearman": 0.28827774333200645
+      },
+      "speed": {
+        "mae": 0.4913877717086247,
+        "spearman": 0.22080987378782319
+      },
+      "symmetry": {
+        "mae": 0.5619780759274702,
+        "spearman": 0.02374393932527592
+      },
+      "variability": {
+        "mae": 0.5233492130066926,
+        "spearman": 0.3125358596746666
+      }
+    },
+    "final_epochs": 68,
+    "participant_macro_mae": 0.5127864483221577
+  },
+  "protocol": {
+    "classifier": "standardized_l2_logistic_C_0.01",
+    "embedding_dimensions": 32,
+    "epochs_max": 80,
+    "palsynet_development_folds": 4,
+    "patience": 10,
+    "pretraining_folds": 6,
+    "seed": 20260813,
+    "threshold": 0.5
+  },
+  "provenance": {
+    "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
+    "implementation_sha256": "2bb592eae054bf31a14645804cadb2da6ce47a1cb4a96b834970aa6656b2abea",
+    "neuroface_cache_collection_sha256": "07527c33fe0e35d34a554f7baccd49e9e692c4588b76aa6392ccad71c122bb17",
+    "neuroface_private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "palsynet_cache_collection_sha256": "56e49f2eff8584d590c4e9a5f4e344a6cd268b9e30e60e64e591682e724cd604",
+    "palsynet_review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "runtime": {
+    "device": "cpu",
+    "host": "nebius-h200",
+    "seconds": 33.77403110591695
+  },
+  "schema_version": "neuroface_motion_quality_pretraining_v1_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}

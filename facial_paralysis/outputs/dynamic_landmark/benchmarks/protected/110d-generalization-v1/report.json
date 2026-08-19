@@ -1,0 +1,128 @@
+{
+  "audit": {
+    "authorization_attempts": 1,
+    "authorization_passes": 1,
+    "development_cache_records_loaded": 39,
+    "development_feature_extractions": 39,
+    "mirror_transforms": 98,
+    "model_fits": 1,
+    "protected_cache_records_loaded": 10,
+    "protected_feature_extractions": 10,
+    "protected_predictions": 10,
+    "scaler_fits": 1
+  },
+  "claim_scope": "reviewed_person_group_protected_outer_once",
+  "counts": {
+    "eligible_groups": 48,
+    "eligible_recordings": 49,
+    "protected_affected_groups": 5,
+    "protected_groups": 10,
+    "protected_recordings": 10,
+    "protected_unaffected_groups": 5,
+    "training_groups": 38,
+    "training_recordings": 39
+  },
+  "dataset": "PalsyNet",
+  "decision": {
+    "candidate": "landmark_mi_110d",
+    "candidate_changed_after_result": false,
+    "clinical_validation": false,
+    "external_validation": false,
+    "hb_claim_authorized": false,
+    "sealed": true,
+    "threshold_changed_after_result": false
+  },
+  "metrics": {
+    "auroc": {
+      "ci95": [
+        1.0,
+        1.0
+      ],
+      "point": 1.0
+    },
+    "average_precision": {
+      "ci95": [
+        1.0,
+        1.0
+      ],
+      "point": 1.0
+    },
+    "balanced_accuracy": {
+      "ci95": [
+        0.7,
+        1.0
+      ],
+      "point": 0.9
+    },
+    "brier": {
+      "ci95": [
+        0.06981209314355971,
+        0.17054178312089102
+      ],
+      "point": 0.11762731663417376
+    },
+    "sensitivity": {
+      "ci95": [
+        0.4,
+        1.0
+      ],
+      "point": 0.8
+    },
+    "specificity": {
+      "ci95": [
+        1.0,
+        1.0
+      ],
+      "point": 1.0
+    }
+  },
+  "protocol": {
+    "aggregation": "mean_recording_probability_once_per_reviewed_group",
+    "bootstrap": {
+      "class_stratified": true,
+      "interval": "percentile_95_descriptive",
+      "repeats": 5000,
+      "seed": 20260805,
+      "unit": "reviewed_group"
+    },
+    "candidate": "landmark_mi_110d",
+    "candidate_dimension": 110,
+    "model": {
+      "c": 0.01,
+      "max_iter": 2000,
+      "penalty": "l2",
+      "random_state": 0,
+      "sample_weight": "equal_total_weight_per_reviewed_group",
+      "solver": "liblinear",
+      "threshold": 0.5,
+      "training_augmentation": "original_plus_horizontal_mirror",
+      "type": "standardized_l2_logistic_regression"
+    },
+    "validation_inference": "mean_original_and_horizontal_mirror_probability"
+  },
+  "provenance": {
+    "authorization_sha256": "7aca8ddffeca5479a53ee28103b091acf1f1d64badd46d62ce8a601654b0881b",
+    "development_report_sha256": "e3f7eb6b9c91fbad74a514be8ba6f0c51418d7953155518033fedb1e228a1f43",
+    "person_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
+    "release_implementation_components_sha256": {
+      "artifact_freezer": "ecad3b907ab0ef938b390fe114f8d00f25d97fca7724f11846fbcf10083a1d6c",
+      "classical_group_evaluation": "71242a103ee5c8c1a576353a397ee36c3ba1cbf6c9ffdb816395dcd3d0e639c6",
+      "clinical_dynamics": "0cd057ae1e8a1d94a05ed534c78532dd1f88a84959d25823cedc70273937c8f8",
+      "dynamic_landmark_loader": "e2a1accfe01b7f5d366457b78a8710f29b46bb074ac9cb3b50c6078060ee821b",
+      "dynamic_landmark_model": "9c342baf37166cd87b8e069ad2a9fd401a37e2184ff5a829ef0e5e93ee41afd0",
+      "generalization_features": "ba02c9f416fa7e352e3c24b61debcb3500ec431d46c4325f89537f76f20b1ea3",
+      "mirror_runner": "ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12",
+      "outer_release": "5797e48df6058408d52fdf3dea7abe05ce4036c4c35e014cb53a33413f788a0f",
+      "outer_runner": "732caa91743f1fc84f659962d73ca2c8bbaa52099afc7f79abb977a90fa424bb",
+      "person_split_registry": "17feaa6a1824cb580e24964e938efce590cfaa06f320e5f3a86021cf838e17c1",
+      "runner": "776b572784ff4e0632ad446c1f81972a7896bde60dca30d6920971c4551c9033",
+      "trajectory_features": "2ac4c514885ec65bac1d0dcf257d91d9e8bac2a1019335489b74993d0f0425e7"
+    },
+    "release_implementation_sha256": "b5ac56315b161648662d7b3dcf0991b30413b1dffada11b697547ed7db2aff9d",
+    "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "reviewed_identity_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "source_collection_sha256": "30263bc3784a1ed9eeec196f1448b3b36234036e25282d2bed17dcee97aab3ae"
+  },
+  "schema_version": "110d_generalization_protected_outer_v1",
+  "target": "binary_affected_vs_unaffected"
+}

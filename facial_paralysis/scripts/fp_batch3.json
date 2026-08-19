@@ -1,0 +1,12 @@
+{"experiments": [
+  {"name": "WIN_lr1e3_s0", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "lr": 0.001, "epochs": 80, "batch_size": 64},
+  {"name": "WIN_lr1e3_s1", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "lr": 0.001, "epochs": 80, "batch_size": 64, "seed": 1},
+  {"name": "WIN_lr1e3_s2", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "lr": 0.001, "epochs": 80, "batch_size": 64, "seed": 2},
+  {"name": "WIN_lr5e4_s0", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "epochs": 80, "batch_size": 64},
+  {"name": "WIN_lr5e4_s1", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "epochs": 80, "batch_size": 64, "seed": 1},
+  {"name": "region_noreweight_s0", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "epochs": 80, "batch_size": 64},
+  {"name": "region_noreweight_s1", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "epochs": 80, "batch_size": 64, "seed": 1},
+  {"name": "v2ref_s0", "sources": ["palsy","fnp","yfp"], "tasks": ["binary","eyes","mouth"], "epochs": 80, "batch_size": 64},
+  {"name": "v2ref_s1", "sources": ["palsy","fnp","yfp"], "tasks": ["binary","eyes","mouth"], "epochs": 80, "batch_size": 64, "seed": 1},
+  {"name": "v2ref_s2", "sources": ["palsy","fnp","yfp"], "tasks": ["binary","eyes","mouth"], "epochs": 80, "batch_size": 64, "seed": 2}
+]}

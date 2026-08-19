@@ -1,0 +1,161 @@
+{
+  "audit": {
+    "protected_cache_records_loaded": 0,
+    "protected_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "claim_scope": {
+    "mayo": "assumed_positive_confidence_challenge_only",
+    "selection": "identity_reviewed_palsynet_development_oof_only"
+  },
+  "counts": {
+    "mayo_scored_contents": 47,
+    "palsynet_development_groups": 38,
+    "palsynet_development_recordings": 39,
+    "palsynet_low_scale_groups": 20
+  },
+  "decision": {
+    "baseline": "raw_110d",
+    "clinical_validation": false,
+    "current_model_replaced": false,
+    "eligibility": {
+      "all_landmark_median3_110d": false,
+      "eye_median3_110d": false,
+      "raw_110d": true
+    },
+    "mayo_used_for_model_selection": false,
+    "outer_evaluation_authorized": false,
+    "promoted": false,
+    "selected": "raw_110d",
+    "selection_source": "identity_reviewed_palsynet_development_oof_only",
+    "threshold_tuned_on_mayo": false
+  },
+  "mayo_current_raw_110d": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.0851063829787234,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.0425531914893617,
+      "maximum": 0.9972299185551358,
+      "mean": 0.6646102416924612,
+      "median": 0.6493885746913206,
+      "minimum": 0.40228550148076947,
+      "q25": 0.5981296258115187,
+      "q75": 0.715546015418507
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "positive_call_rate": 0.9574468085106383,
+    "positive_call_rate_wilson95": [
+      0.8575147232210055,
+      0.9882517240332106
+    ],
+    "positive_calls": 45,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "mayo_four_window_action_coverage": {
+    "action_recognition_accuracy_defined": false,
+    "action_segments_defined": false,
+    "eight_action_coverage_defined": false,
+    "frames_per_window": 32,
+    "frames_sampled_per_video": 128,
+    "sampled_frame_fraction": {
+      "maximum": 0.031832877393683165,
+      "median": 0.018996734936182844,
+      "minimum": 0.015007621057568296
+    },
+    "sampling": "four_time_spread_nonoverlapping_windows_not_action_aligned",
+    "videos": 47,
+    "window_start_gap_seconds": {
+      "maximum": 47.70223707351389,
+      "median": 36.80216438759006,
+      "minimum": 21.684411837851282
+    },
+    "windows_per_video": 4
+  },
+  "mayo_post_lock_selected": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.0851063829787234,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.0425531914893617,
+      "maximum": 0.9972299185551358,
+      "mean": 0.6646102416924612,
+      "median": 0.6493885746913206,
+      "minimum": 0.40228550148076947,
+      "q25": 0.5981296258115187,
+      "q75": 0.715546015418507
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "positive_call_rate": 0.9574468085106383,
+    "positive_call_rate_wilson95": [
+      0.8575147232210055,
+      0.9882517240332106
+    ],
+    "positive_calls": 45,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "palsynet_development_metrics": {
+    "all_landmark_median3_110d": {
+      "low_scale_auroc": 0.9595959595959596,
+      "low_scale_balanced_accuracy": 0.9090909090909092,
+      "low_scale_brier": 0.1286988709719087,
+      "overall_auroc": 0.9775910364145657,
+      "overall_balanced_accuracy": 0.9047619047619048,
+      "overall_brier": 0.11539284522483659
+    },
+    "eye_median3_110d": {
+      "low_scale_auroc": 0.9595959595959596,
+      "low_scale_balanced_accuracy": 0.9090909090909092,
+      "low_scale_brier": 0.13040494169096936,
+      "overall_auroc": 0.9775910364145657,
+      "overall_balanced_accuracy": 0.9047619047619048,
+      "overall_brier": 0.11703575139723943
+    },
+    "raw_110d": {
+      "low_scale_auroc": 0.9595959595959596,
+      "low_scale_balanced_accuracy": 0.9545454545454546,
+      "low_scale_brier": 0.13259735057504157,
+      "overall_auroc": 0.980392156862745,
+      "overall_balanced_accuracy": 0.9523809523809523,
+      "overall_brier": 0.11736712693119593
+    }
+  },
+  "protocol": {
+    "candidate_order": [
+      "raw_110d",
+      "eye_median3_110d",
+      "all_landmark_median3_110d"
+    ],
+    "classifier": "standardized_l2_logistic_c_0_01",
+    "filter": "window_local_complete_valid_triplet_median3",
+    "low_scale_stress": "lowest_mean_face_scale_half_within_each_label",
+    "threshold": 0.5
+  },
+  "provenance": {
+    "implementation_sha256": "62df23d9db02631d2d4ba9133f3edcad95724f37c5b2bf5f7bb204a3e28bdcfd",
+    "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
+    "palsynet_review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_source_collection_sha256": "30263bc3784a1ed9eeec196f1448b3b36234036e25282d2bed17dcee97aab3ae",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "scale_robust_eye_geometry_v1_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}

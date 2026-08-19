@@ -1,0 +1,64 @@
+{
+  "audit": {
+    "palsynet_protected_cache_records_loaded": 0,
+    "protected_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "calibration": {
+    "frames": 3306,
+    "mirror_equivariance_max_abs_error": 2.4424906541753444e-15,
+    "mirror_invariant_median_absolute_spearman_after": 0.2982475544019446,
+    "mirror_invariant_median_absolute_spearman_before": 0.3465837897789166,
+    "participant_disjoint_folds": 6,
+    "participants": 36,
+    "ridge_alpha": 1.0
+  },
+  "claim_scope": "label_free_measurement_transfer_palsynet_development_oof_only",
+  "counts": {
+    "neuroface_manual_frames": 3306,
+    "neuroface_participants": 36,
+    "palsynet_development_groups": 38,
+    "palsynet_development_recordings": 39
+  },
+  "decision": {
+    "clinical_validation": false,
+    "current_model_replaced": false,
+    "outer_evaluation_authorized": false,
+    "promotion_criteria_met": false,
+    "selected_model": "landmark_110d"
+  },
+  "palsynet_development_metrics": {
+    "landmark_110d": {
+      "auroc": 0.980392156862745,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119596,
+      "sensitivity": 0.9047619047619048,
+      "specificity": 1.0
+    },
+    "manual68_calibrated_110d": {
+      "auroc": 0.9663865546218486,
+      "balanced_accuracy": 0.9047619047619048,
+      "brier": 0.13671331265170727,
+      "sensitivity": 0.8095238095238095,
+      "specificity": 1.0
+    }
+  },
+  "provenance": {
+    "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
+    "implementation_sha256": "0ec8007ce10b52c04f3aab3d027b2c60807f6b9e1dc06749885991b94d7a9229",
+    "manual68_pairs_sha256": "08b0349afca01bfa2ac63396f6037667db4da54122bd79187f93099333bc0b78",
+    "mediapipe_model_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+    "palsynet_cache_collection_sha256": "56e49f2eff8584d590c4e9a5f4e344a6cd268b9e30e60e64e591682e724cd604",
+    "palsynet_review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0",
+    "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b"
+  },
+  "runtime": {
+    "host": "nebius-h200",
+    "seconds": 0.7814265179913491
+  },
+  "schema_version": "neuroface_geometry_calibration_v1_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}
