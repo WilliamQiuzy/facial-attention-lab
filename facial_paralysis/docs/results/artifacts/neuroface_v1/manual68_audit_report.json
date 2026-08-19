@@ -1,0 +1,262 @@
+{
+  "claim_scope": "measurement_audit_not_external_model_validation",
+  "comparison": "manual_68_point_to_mediapipe_semantic23_measure_compatibility",
+  "counts": {
+    "annotated_frames": 3306,
+    "detected_frames": 3306,
+    "participants": 36,
+    "recordings": 261
+  },
+  "dataset": "Toronto_NeuroFace_v1",
+  "decision": {
+    "clinical_validation": false,
+    "measurement_gate_passed": false,
+    "model_retraining_authorized": false,
+    "thresholds": {
+      "detection_rate_min": 0.95,
+      "median_absolute_spearman_min": 0.7,
+      "median_absolute_within_recording_pearson_min": 0.7
+    }
+  },
+  "detection": {
+    "by_cohort": {
+      "als": {
+        "annotated_frames": 920,
+        "detected_frames": 920,
+        "detection_rate": 1.0
+      },
+      "healthy_control": {
+        "annotated_frames": 1015,
+        "detected_frames": 1015,
+        "detection_rate": 1.0
+      },
+      "post_stroke": {
+        "annotated_frames": 1371,
+        "detected_frames": 1371,
+        "detection_rate": 1.0
+      }
+    },
+    "by_task": {
+      "BBP_NORMAL": {
+        "annotated_frames": 459,
+        "detected_frames": 459,
+        "detection_rate": 1.0
+      },
+      "DDK_PA": {
+        "annotated_frames": 458,
+        "detected_frames": 458,
+        "detection_rate": 1.0
+      },
+      "DDK_PATAKA": {
+        "annotated_frames": 438,
+        "detected_frames": 438,
+        "detection_rate": 1.0
+      },
+      "NSM_BIGSMILE": {
+        "annotated_frames": 90,
+        "detected_frames": 90,
+        "detection_rate": 1.0
+      },
+      "NSM_BLOW": {
+        "annotated_frames": 352,
+        "detected_frames": 352,
+        "detection_rate": 1.0
+      },
+      "NSM_BROW": {
+        "annotated_frames": 135,
+        "detected_frames": 135,
+        "detection_rate": 1.0
+      },
+      "NSM_KISS": {
+        "annotated_frames": 462,
+        "detected_frames": 462,
+        "detection_rate": 1.0
+      },
+      "NSM_OPEN": {
+        "annotated_frames": 454,
+        "detected_frames": 454,
+        "detection_rate": 1.0
+      },
+      "NSM_SPREAD": {
+        "annotated_frames": 458,
+        "detected_frames": 458,
+        "detection_rate": 1.0
+      }
+    },
+    "overall_rate": 1.0
+  },
+  "feature_metrics": {
+    "brow_h_absdiff": {
+      "absolute_spearman": 0.38422541745435324,
+      "detected_frames": 3306,
+      "spearman": 0.38422541745435324,
+      "within_recording_pearson": 0.07118618785491636
+    },
+    "brow_h_side_a": {
+      "absolute_spearman": 0.7764669228989958,
+      "detected_frames": 3306,
+      "spearman": 0.7764669228989958,
+      "within_recording_pearson": 0.2954551250685459
+    },
+    "brow_h_side_a_minus_side_b": {
+      "absolute_spearman": 0.5191776697205946,
+      "detected_frames": 3306,
+      "spearman": 0.5191776697205946,
+      "within_recording_pearson": 0.08117070949257049
+    },
+    "brow_h_side_b": {
+      "absolute_spearman": 0.7809798700753748,
+      "detected_frames": 3306,
+      "spearman": 0.7809798700753748,
+      "within_recording_pearson": 0.27450795839507885
+    },
+    "corner_x_absdiff": {
+      "absolute_spearman": 0.3138082964111717,
+      "detected_frames": 3306,
+      "spearman": 0.3138082964111717,
+      "within_recording_pearson": 0.12589874427011363
+    },
+    "corner_x_side_a": {
+      "absolute_spearman": 0.8429940581448018,
+      "detected_frames": 3306,
+      "spearman": 0.8429940581448018,
+      "within_recording_pearson": 0.6091126469608155
+    },
+    "corner_x_side_b": {
+      "absolute_spearman": 0.8238190916331534,
+      "detected_frames": 3306,
+      "spearman": 0.8238190916331534,
+      "within_recording_pearson": 0.5750474739844398
+    },
+    "corner_y_absdiff": {
+      "absolute_spearman": 0.37935928314666145,
+      "detected_frames": 3306,
+      "spearman": 0.37935928314666145,
+      "within_recording_pearson": 0.2129608841853316
+    },
+    "corner_y_side_a": {
+      "absolute_spearman": 0.9322277609285514,
+      "detected_frames": 3306,
+      "spearman": 0.9322277609285514,
+      "within_recording_pearson": 0.7452040933429214
+    },
+    "corner_y_side_a_minus_side_b": {
+      "absolute_spearman": 0.6558621996526675,
+      "detected_frames": 3306,
+      "spearman": 0.6558621996526675,
+      "within_recording_pearson": 0.31166167995968563
+    },
+    "corner_y_side_b": {
+      "absolute_spearman": 0.9321951865554503,
+      "detected_frames": 3306,
+      "spearman": 0.9321951865554503,
+      "within_recording_pearson": 0.7394761526864571
+    },
+    "eye_measure_absdiff": {
+      "absolute_spearman": 0.0254901857653323,
+      "detected_frames": 3306,
+      "spearman": 0.0254901857653323,
+      "within_recording_pearson": 0.030976859307373462
+    },
+    "eye_measure_side_a": {
+      "absolute_spearman": 0.8569341483937969,
+      "detected_frames": 3306,
+      "spearman": 0.8569341483937969,
+      "within_recording_pearson": 0.4702757805481173
+    },
+    "eye_measure_side_b": {
+      "absolute_spearman": 0.8295039241795195,
+      "detected_frames": 3306,
+      "spearman": 0.8295039241795195,
+      "within_recording_pearson": 0.4817198022434629
+    },
+    "fissure_h_absdiff": {
+      "absolute_spearman": 0.0485031429336026,
+      "detected_frames": 3306,
+      "spearman": 0.0485031429336026,
+      "within_recording_pearson": 0.04528296905023287
+    },
+    "fissure_h_side_a": {
+      "absolute_spearman": 0.8780574631777766,
+      "detected_frames": 3306,
+      "spearman": 0.8780574631777766,
+      "within_recording_pearson": 0.4774847195400122
+    },
+    "fissure_h_side_a_minus_side_b": {
+      "absolute_spearman": 0.3283238718717032,
+      "detected_frames": 3306,
+      "spearman": 0.3283238718717032,
+      "within_recording_pearson": 0.13261378214379638
+    },
+    "fissure_h_side_b": {
+      "absolute_spearman": 0.852095194199538,
+      "detected_frames": 3306,
+      "spearman": 0.852095194199538,
+      "within_recording_pearson": 0.48409596994574505
+    },
+    "fissure_w_absdiff": {
+      "absolute_spearman": 0.08912739758449993,
+      "detected_frames": 3306,
+      "spearman": 0.08912739758449993,
+      "within_recording_pearson": 0.020053871385966825
+    },
+    "fissure_w_side_a": {
+      "absolute_spearman": 0.4650776598522052,
+      "detected_frames": 3306,
+      "spearman": 0.4650776598522052,
+      "within_recording_pearson": 0.0992322907528563
+    },
+    "fissure_w_side_b": {
+      "absolute_spearman": 0.34064382078031896,
+      "detected_frames": 3306,
+      "spearman": 0.34064382078031896,
+      "within_recording_pearson": 0.10650363220701291
+    },
+    "mouth_open": {
+      "absolute_spearman": 0.8750390915838671,
+      "detected_frames": 3306,
+      "spearman": 0.8750390915838671,
+      "within_recording_pearson": 0.7540252682942957
+    },
+    "mouth_width": {
+      "absolute_spearman": 0.8709394563091137,
+      "detected_frames": 3306,
+      "spearman": 0.8709394563091137,
+      "within_recording_pearson": 0.6702788435108455
+    }
+  },
+  "mirror_invariant_summary": {
+    "feature_count": 8,
+    "median_absolute_spearman": 0.3465837897789166,
+    "median_absolute_within_recording_pearson": 0.09854246606251499
+  },
+  "numeric_boundary": "cross_topology_rank_and_within_recording_motion_agreement_not_raw_coordinate_interchangeability",
+  "provenance": {
+    "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
+    "implementation_sha256": "bdc1a8662512bef8bc334f9c65154882cc62876270ca46befb9827f92b895bfb",
+    "manual_landmark_collection_sha256": "3578d7f557ddff8aa13db7141ca89fe85d918e35654b09bb595941a92956587c",
+    "mediapipe_model_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+    "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "video_collection_sha256": "afb69ce5bde3127c94a80547fbece6a1f13d7dcf81923e1fd6c8e787d9d60ec7"
+  },
+  "region_summary": {
+    "brow": {
+      "median_absolute_spearman": 0.6478222963097953,
+      "median_absolute_within_recording_pearson": 0.17783933394382467
+    },
+    "eye": {
+      "median_absolute_spearman": 0.40286074031626207,
+      "median_absolute_within_recording_pearson": 0.11955870717540465
+    },
+    "mouth": {
+      "median_absolute_spearman": 0.8429940581448018,
+      "median_absolute_within_recording_pearson": 0.6091126469608155
+    }
+  },
+  "runtime": {
+    "device": "mediapipe_xnnpack_cpu",
+    "host": "nebius-h200",
+    "seconds": 111.31194039492402
+  },
+  "schema_version": "neuroface_manual68_mediapipe_audit_v1"
+}

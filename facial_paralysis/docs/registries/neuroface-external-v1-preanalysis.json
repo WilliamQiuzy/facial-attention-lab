@@ -1,0 +1,70 @@
+{
+  "claim_scope": "held_fixed_cross_disease_external_transfer_not_clinical_validation",
+  "dataset": "Toronto_NeuroFace_v1",
+  "expected": {
+    "affected": 25,
+    "annotated_frames": 3306,
+    "participants": 36,
+    "primary_complete_participants": 36,
+    "unaffected": 11,
+    "videos": 261
+  },
+  "exposure_statement": {
+    "cohort_identity_inherent_in_release": true,
+    "full_feature_extraction_completed_before_registration_revision": true,
+    "neuroface_predictions_generated_before_registration": false,
+    "slp_association_claim": "predeclared_exploratory",
+    "slp_workbooks_machine_parsed_during_inventory": true,
+    "three_recording_feature_only_smoke_completed": true
+  },
+  "locks": {
+    "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
+    "evaluation_components_sha256": {
+      "dynamic_loader": "e2a1accfe01b7f5d366457b78a8710f29b46bb074ac9cb3b50c6078060ee821b",
+      "external_core": "f5d3450b5c184106e314b5af8fa3db0577ac08b584b5989ed33c9b8d5395efc3",
+      "external_runner": "e4f88203c05d477a1b1763fc3b3f480ea682297a98535a9c7e3ad8b3c4bd8582",
+      "frozen_inference": "5797e48df6058408d52fdf3dea7abe05ce4036c4c35e014cb53a33413f788a0f",
+      "generalization_features": "ba02c9f416fa7e352e3c24b61debcb3500ec431d46c4325f89537f76f20b1ea3",
+      "mirror_runner": "ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12",
+      "trajectory_features": "0a0900c9df418ce2856175d4027dbedd7db99d4873985bf3d61e7fa8be6d5ff7"
+    },
+    "evaluation_implementation_sha256": "d02944f7960e1224d89adc9167126bc591180d0f5a777223747b95680ea20101",
+    "extraction_implementation_sha256": "183102d34e541f2f154ecab5b73ed163df6429b5203b97bc602c4149827b3d06",
+    "final_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
+    "mediapipe_model_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+    "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "protocol_plan_sha256": "170253937ce195f0e068bee7884b720b5fad4541e9c6440672f9e71c51c11da8"
+  },
+  "post_extraction_authorization_rule": "may_add_only_cache_manifest_sha256_cache_artifact_collection_sha256_and_qc_counts",
+  "protocol": {
+    "bootstrap": {
+      "confidence_level": 0.95,
+      "method": "als_post_stroke_healthy_control_stratified_participant_percentile",
+      "minimum_valid_draws": 4750,
+      "repeats": 5000,
+      "seed": 20260813
+    },
+    "calibration": false,
+    "candidate_selection": false,
+    "dimension": 110,
+    "mirror_inference": "mean_original_and_horizontal_mirror_score",
+    "missingness": "no_imputation",
+    "model_refit": false,
+    "participant_eligibility": "all_three_primary_tasks_pass_90_percent_video_coverage",
+    "primary_aggregation": "unweighted_mean_of_exact_three_task_scores",
+    "primary_tasks": [
+      "NSM_KISS",
+      "NSM_OPEN",
+      "NSM_SPREAD"
+    ],
+    "representation": "landmark_mi_110d",
+    "scaler_refit": false,
+    "score_direction": "higher_is_more_affected_like",
+    "secondary_aggregation": "unweighted_mean_of_all_available_eligible_tasks",
+    "threshold": 0.5,
+    "threshold_selection": false
+  },
+  "registered_date": "2026-08-13",
+  "schema_version": "neuroface_preanalysis_registration_v1",
+  "target": "neurological_orofacial_impairment_vs_healthy_control"
+}

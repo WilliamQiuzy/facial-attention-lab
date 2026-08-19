@@ -1,0 +1,93 @@
+{
+  "audit": {
+    "mayo_predictions": 0,
+    "mayo_reads": 0,
+    "palsynet_protected_reads": 0
+  },
+  "commitments": {
+    "implementation_sha256": "8ffee6aee5136dc5cc135a9c8c0bd41b4c20d11c6c4ed98db768353dc73ac790",
+    "meei_collection_sha256": "721b6f5d20ec92e5719cefe4719f422f30451ca1a7c973faffbcdb36066d93c0",
+    "meei_manifest_sha256": "7770473fe4479cf11e4c88474ee28105cef7db5fca026918fc89cd6dc023c5ed",
+    "neuroface_collection_sha256": "757d13e3a12fcde01c4575019766a84e24e25f561b5906a750948d786e7f397e",
+    "neuroface_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "palsynet_collection_sha256": "56e49f2eff8584d590c4e9a5f4e344a6cd268b9e30e60e64e591682e724cd604",
+    "seed_report_sha256": [
+      "e21cee6eab93ed29725f37993dc68a80898d160b6c1725792925df2a37331893",
+      "2ad53add5708d21257c19eacdd1ad79e67091509ea27149c739d9a0bea9c0634",
+      "519869fc69406c54954f8e4caa848b07e9edc8c5695b160e717ae9457f8b66ac"
+    ]
+  },
+  "comparators": {
+    "universal_clinical_router_v6": {
+      "meei": {"accuracy": 0.946429, "auroc": 0.945652, "balanced_accuracy": 0.967391},
+      "neuroface": {"accuracy": 0.944444, "auroc": 0.989091, "balanced_accuracy": 0.96},
+      "palsynet": {"accuracy": 0.947368, "auroc": 0.980392, "balanced_accuracy": 0.952381},
+      "shared_encoder": false
+    }
+  },
+  "counts": {"meei": 56, "neuroface": 36, "palsynet": 38},
+  "decision": {
+    "next_experiment": "action_statistic_adapters_to_shared_latent_with_new_mayo_head",
+    "promotion_authorized": false,
+    "reason": "three_seed_shared_candidate_remains_below_frozen_v6_and_has_no_leave_one_source_out_or_mayo_label_validation",
+    "v6_remains_primary": true
+  },
+  "evaluations": {
+    "110d_only": {
+      "meei": {
+        "accuracy": {"mean": 0.839286, "sd": 0.0, "values": [0.839286, 0.839286, 0.839286]},
+        "auroc": {"mean": 0.871014, "sd": 0.046133, "values": [0.819565, 0.908696, 0.884783]},
+        "balanced_accuracy": {"mean": 0.823913, "sd": 0.03913, "values": [0.823913, 0.863043, 0.784783]},
+        "brier": {"mean": 0.131068, "sd": 0.007742, "values": [0.136717, 0.122244, 0.134243]}
+      },
+      "neuroface": {
+        "accuracy": {"mean": 0.740741, "sd": 0.057824, "values": [0.694444, 0.805556, 0.722222]},
+        "auroc": {"mean": 0.741818, "sd": 0.060083, "values": [0.770909, 0.781818, 0.672727]},
+        "balanced_accuracy": {"mean": 0.72, "sd": 0.043447, "values": [0.729091, 0.758182, 0.672727]},
+        "brier": {"mean": 0.192172, "sd": 0.017923, "values": [0.199217, 0.171797, 0.205501]}
+      },
+      "palsynet": {
+        "accuracy": {"mean": 0.894737, "sd": 0.04558, "values": [0.868421, 0.947368, 0.868421]},
+        "auroc": {"mean": 0.944911, "sd": 0.023823, "values": [0.921569, 0.969188, 0.943978]},
+        "balanced_accuracy": {"mean": 0.895425, "sd": 0.044474, "values": [0.869748, 0.946779, 0.869748]},
+        "brier": {"mean": 0.086539, "sd": 0.019417, "values": [0.103899, 0.065571, 0.090146]}
+      }
+    },
+    "dense_clinical": {
+      "meei": {
+        "accuracy": {"mean": 0.839286, "sd": 0.017857, "values": [0.857143, 0.839286, 0.821429]},
+        "auroc": {"mean": 0.857246, "sd": 0.037296, "values": [0.817391, 0.863043, 0.891304]},
+        "balanced_accuracy": {"mean": 0.758696, "sd": 0.064158, "values": [0.756522, 0.823913, 0.695652]},
+        "brier": {"mean": 0.12309, "sd": 0.003491, "values": [0.127097, 0.120707, 0.121465]}
+      },
+      "neuroface": {
+        "accuracy": {"mean": 0.824074, "sd": 0.016038, "values": [0.833333, 0.833333, 0.805556]},
+        "auroc": {"mean": 0.854545, "sd": 0.034689, "values": [0.894545, 0.836364, 0.832727]},
+        "balanced_accuracy": {"mean": 0.771515, "sd": 0.035922, "values": [0.803636, 0.778182, 0.732727]},
+        "brier": {"mean": 0.139178, "sd": 0.012599, "values": [0.12468, 0.14747, 0.145383]}
+      },
+      "palsynet": {
+        "accuracy": {"mean": 0.894737, "sd": 0.04558, "values": [0.868421, 0.947368, 0.868421]},
+        "auroc": {"mean": 0.944911, "sd": 0.017115, "values": [0.929972, 0.963585, 0.941176]},
+        "balanced_accuracy": {"mean": 0.895425, "sd": 0.044474, "values": [0.869748, 0.946779, 0.869748]},
+        "brier": {"mean": 0.080729, "sd": 0.016625, "values": [0.094666, 0.062328, 0.085192]}
+      }
+    }
+  },
+  "model": {
+    "action_conditioned": true,
+    "dense_input": "baseline_centered_32x478x3_original_mirror_pair",
+    "name": "Dense-Clinical Shared Encoder v1",
+    "shared_patient_embedding_dim": 64,
+    "task_heads": ["palsynet_binary", "neuroface_binary", "meei_binary"],
+    "universal_auxiliary_head_weight": 0.25
+  },
+  "protocol": {
+    "epochs": 20,
+    "participant_disjoint_folds": 6,
+    "seeds": [0, 1, 2],
+    "source_class_balanced_training": true
+  },
+  "schema_version": "dense_clinical_shared_encoder_v1_three_seed",
+  "status": "exposed_development_negative_result_not_clinically_validated"
+}

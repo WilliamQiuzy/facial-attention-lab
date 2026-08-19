@@ -1,0 +1,189 @@
+{
+  "audit": {
+    "palsynet_cache_reads": 0,
+    "palsynet_path_accesses": 0,
+    "palsynet_predictions": 0
+  },
+  "bootstrap": {
+    "confidence_level": 0.95,
+    "draw_sizes": {
+      "als": 11,
+      "healthy_control": 11,
+      "post_stroke": 14
+    },
+    "invalid_draws": 0,
+    "method": "three_cohort_stratified_participant_percentile",
+    "minimum_valid_draws": 4750,
+    "repeats": 5000,
+    "seed": 20260814,
+    "valid_draws": 5000
+  },
+  "claim_scope": "exploratory_cross_disease_orofacial_capacity_only",
+  "dataset": {
+    "affected": 25,
+    "cohorts": {
+      "als": 11,
+      "healthy_control": 11,
+      "post_stroke": 14
+    },
+    "name": "Toronto_NeuroFace_v1",
+    "participants": 36,
+    "primary_task_recordings": 108,
+    "unaffected": 11
+  },
+  "decision": {
+    "bell_palsy_transfer_claim_authorized": false,
+    "capacity_feasibility_signal": true,
+    "clinical_use_authorized": false,
+    "criterion": "lower_95_percent_auroc_above_0_50",
+    "current_110d_replaced": false,
+    "fusion_authorized": false,
+    "mayo_accuracy_claim_authorized": false
+  },
+  "descriptive_comparator": {
+    "frozen_model_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
+    "metrics": {
+      "auroc": 0.34909090909090906,
+      "average_precision": 0.6083866568652084,
+      "balanced_accuracy": 0.4163636363636364,
+      "brier": 0.2832172596186839,
+      "sensitivity": 0.56,
+      "specificity": 0.2727272727272727
+    },
+    "name": "frozen_landmark_110d_neuroface_primary_three_task",
+    "public_report_sha256": "beda5bee5ed3736a90245e98c165777198aee6d6be2bbcd8a13f0fb2b1a11984",
+    "status": "previously_released_descriptive_comparator_not_rerun",
+    "used_for_selection": false
+  },
+  "mask_diagnostic": {
+    "complete_participants": 36,
+    "incomplete_participants": 0,
+    "mask_only_discrimination_possible": false,
+    "primary_task_mask": [
+      true,
+      true,
+      true
+    ],
+    "unique_masks": 1
+  },
+  "metrics": {
+    "auroc": {
+      "ci95": {
+        "lower": 0.5781818181818182,
+        "upper": 0.9018181818181817
+      },
+      "point": 0.7527272727272728
+    },
+    "average_precision": {
+      "ci95": {
+        "lower": 0.8026693540719095,
+        "upper": 0.9639562858262427
+      },
+      "point": 0.8913145805105009
+    },
+    "balanced_accuracy": {
+      "ci95": {
+        "lower": 0.5727272727272728,
+        "upper": 0.8945454545454545
+      },
+      "point": 0.7436363636363637
+    },
+    "brier": {
+      "ci95": {
+        "lower": 0.22789453544297741,
+        "upper": 0.24276218068215422
+      },
+      "point": 0.23533808890364177
+    },
+    "sensitivity": {
+      "ci95": {
+        "lower": 0.56,
+        "upper": 0.92
+      },
+      "point": 0.76
+    },
+    "specificity": {
+      "ci95": {
+        "lower": 0.45454545454545453,
+        "upper": 1.0
+      },
+      "point": 0.7272727272727273
+    }
+  },
+  "per_task": {
+    "NSM_KISS": {
+      "auroc": 0.629090909090909,
+      "coverage_fraction": 1.0,
+      "coverage_participants": 36
+    },
+    "NSM_OPEN": {
+      "auroc": 0.8218181818181818,
+      "coverage_fraction": 1.0,
+      "coverage_participants": 36
+    },
+    "NSM_SPREAD": {
+      "auroc": 0.46545454545454545,
+      "coverage_fraction": 1.0,
+      "coverage_participants": 36
+    }
+  },
+  "protocol": {
+    "bootstrap": {
+      "confidence_level": 0.95,
+      "draw_sizes": {
+        "als": 11,
+        "healthy_control": 11,
+        "post_stroke": 14
+      },
+      "method": "three_cohort_stratified_participant_percentile",
+      "minimum_valid_draws": 4750,
+      "repeats": 5000,
+      "seed": 20260814
+    },
+    "expert": {
+      "C": 0.01,
+      "max_iter": 2000,
+      "random_state": 0,
+      "solver": "liblinear",
+      "threshold": 0.5,
+      "type": "standardized_l2_logistic"
+    },
+    "folds": {
+      "count": 6,
+      "seed": 20260813
+    },
+    "missing_primary_task": "abstain_fail_closed",
+    "participant_score": "mean_of_three_task_scores_after_each_original_mirror_mean",
+    "target": {
+      "als": 1,
+      "healthy_control": 0,
+      "post_stroke": 1
+    },
+    "task_score": "mean_original_and_horizontal_mirror_probability",
+    "tasks": [
+      "NSM_KISS",
+      "NSM_OPEN",
+      "NSM_SPREAD"
+    ],
+    "training_mirror_weights": {
+      "horizontal_mirror": 0.5,
+      "original": 0.5,
+      "total_per_participant_per_task": 1.0
+    }
+  },
+  "provenance": {
+    "collection_manifest_sha256": "07527c33fe0e35d34a554f7baccd49e9e692c4588b76aa6392ccad71c122bb17",
+    "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
+    "implementation_sha256": "d75e865d6a701caca753dbb54f1e79c08845abb5c80300e7f4ea14e920e5904f",
+    "mount_attestation_sha256": "c23fcb6690993ebae75cc23afdf27cb3eccb29ec13e6d04fd7f0f3fa22869350",
+    "primary_cache_collection_sha256": "6a28a2ba9c082ffbe4ed844a773f616392d85a76fe6b6fa941ddb81506524605",
+    "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "private_oof_commitment_sha256": "245db33fcae711722212a76f037930f7a1d9cad0b9ea7694879612eb73e689da"
+  },
+  "runtime": {
+    "device_class": "cpu",
+    "host_class": "nebius_h200",
+    "seconds": 9.549723602016456
+  },
+  "schema_version": "neuroface_action_capacity_v1"
+}

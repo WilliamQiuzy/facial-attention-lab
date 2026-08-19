@@ -1,0 +1,18 @@
+{"experiments": [
+  {"name": "baseline"},
+  {"name": "data_v2recipe", "sources": ["palsy","fnp","yfp"], "tasks": ["binary","eyes","mouth"]},
+  {"name": "data_no_coarse3", "sources": ["palsy","fnp","yfp","kaggle"], "tasks": ["binary","eyes","mouth"]},
+  {"name": "data_region_only", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"]},
+  {"name": "data_add_anisa_only", "sources": ["palsy","fnp","yfp","anisa"], "tasks": ["binary","coarse3","eyes","mouth"]},
+  {"name": "pool_mean", "temporal_pool": "mean"},
+  {"name": "pool_max", "temporal_pool": "max"},
+  {"name": "reweight_proj128_ln", "marlin_proj_dim": 128, "stream_layernorm": true},
+  {"name": "trunk192", "trunk_hidden": 192},
+  {"name": "temporal128", "temporal_hidden": 128, "temporal_out": 128},
+  {"name": "dropout03", "dropout": 0.3},
+  {"name": "lr1e-3", "lr": 0.001},
+  {"name": "lr3e-4", "lr": 0.0003},
+  {"name": "wd1e-1", "weight_decay": 0.1},
+  {"name": "lw_region_up", "loss_weights": {"binary": 0.3, "coarse3": 0.3, "eyes": 1.0, "mouth": 1.0}},
+  {"name": "action_pool_attn", "action_pool": "attention"}
+]}

@@ -1,0 +1,55 @@
+{
+  "audit_registry": {
+    "registry_sha256": "dec22f49c996041231b896b65ed510e22a7af3e64f5e1ff256897b1b1b0e721b",
+    "row_level_registry_public": false,
+    "selected_recordings": 12,
+    "selection_rule": "12_smallest_audio_bearing_deduplicated_content_hashes_before_transcription"
+  },
+  "claim_boundary": {
+    "clinical_use_authorized": false,
+    "house_brackmann_claim_authorized": false,
+    "mayo_accuracy_claim_authorized": false
+  },
+  "discovered_sidecar_files": {
+    "audio_forced_alignment": 0,
+    "blinded_manual": 0,
+    "capture_event_log": 0
+  },
+  "media_inventory": {
+    "audio_bearing_source_files": 51,
+    "audio_bearing_unique_contents": 50,
+    "audio_free_source_files": 2,
+    "audio_free_unique_contents": 2,
+    "audio_unknown_source_files": 0,
+    "duration_seconds_unique_contents": {
+      "count": 52,
+      "maximum": 142.157479,
+      "median": 112.17,
+      "minimum": 1.133375,
+      "total": 5357.5490230000005
+    },
+    "exact_duplicate_files": 1,
+    "probe_failed_unique_contents": 0,
+    "source_files": 53,
+    "unique_contents": 52
+  },
+  "schema_version": "mayo_action_anchor_feasibility_v1",
+  "scope": "historical_mayo_action_timing_feasibility_only",
+  "scoring": {
+    "allowed": false,
+    "mayo_accuracy_defined": false,
+    "mayo_action_expert_predictions": 0,
+    "reason": "timing_gate_not_eligible"
+  },
+  "timing_gate": {
+    "eligible": false,
+    "matched_events": 0,
+    "median_temporal_iou": null,
+    "precision": null,
+    "predicted_events": 0,
+    "prompted_flat_attempts": 0,
+    "reason": "no_locked_two_annotator_72_event_timing_audit",
+    "recall": null,
+    "reference_events": 0
+  }
+}

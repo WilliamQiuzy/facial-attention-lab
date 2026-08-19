@@ -1,0 +1,518 @@
+{
+  "audit": {
+    "artifact_predictions": 231,
+    "authorization_attempts": 1,
+    "authorization_passes": 1,
+    "cache_artifacts_hashed": 231,
+    "cache_records_loaded": 231,
+    "calibration_fits": 0,
+    "feature_extractions": 231,
+    "mirror_transforms": 462,
+    "model_fits": 0,
+    "participant_aggregations": 36,
+    "scaler_fits": 0
+  },
+  "claim_scope": "held_fixed_cross_disease_external_transfer_not_clinical_validation",
+  "clinical_boundary": {
+    "bell_palsy_endpoint": false,
+    "house_brackmann_endpoint": false,
+    "mayo_accuracy_claim": false,
+    "slp_associations": "exploratory_and_reported_separately"
+  },
+  "counts": {
+    "affected_participants": 25,
+    "all_task_count_max": 8,
+    "all_task_count_min": 3,
+    "participants_scored": 36,
+    "primary_complete_participants": 36,
+    "unaffected_participants": 11,
+    "videos_scored": 231
+  },
+  "dataset": "Toronto_NeuroFace_v1",
+  "endpoints": {
+    "descriptive_task_nsm_kiss": {
+      "counts": {
+        "affected": 25,
+        "participants": 36,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.6111111111111112,
+          "ci95_low": 0.2777777777777778,
+          "point": 0.4444444444444444
+        },
+        "auroc": {
+          "ci95_high": 0.6290909090909091,
+          "ci95_low": 0.1962727272727273,
+          "point": 0.4072727272727273
+        },
+        "average_precision": {
+          "ci95_high": 0.7931082802268052,
+          "ci95_low": 0.5573897474463552,
+          "point": 0.6344587375321382
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.5927272727272728,
+          "ci95_low": 0.2509090909090909,
+          "point": 0.4218181818181818
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.32263837364785247,
+          "ci95_low": 0.2384585721108766,
+          "point": 0.28089754711191145
+        },
+        "sensitivity": {
+          "ci95_high": 0.68,
+          "ci95_low": 0.28,
+          "point": 0.48
+        },
+        "specificity": {
+          "ci95_high": 0.6363636363636364,
+          "ci95_low": 0.09090909090909091,
+          "point": 0.36363636363636365
+        }
+      },
+      "score_summary": {
+        "als": {
+          "mean": 0.4618244293867992,
+          "median": 0.43299361459184443
+        },
+        "healthy_control": {
+          "mean": 0.538614295793571,
+          "median": 0.5630208548071229
+        },
+        "post_stroke": {
+          "mean": 0.5269849122090166,
+          "median": 0.5589836113602955
+        }
+      }
+    },
+    "descriptive_task_nsm_open": {
+      "counts": {
+        "affected": 25,
+        "participants": 36,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.5833333333333334,
+          "ci95_low": 0.25,
+          "point": 0.4166666666666667
+        },
+        "auroc": {
+          "ci95_high": 0.589090909090909,
+          "ci95_low": 0.18545454545454548,
+          "point": 0.38181818181818183
+        },
+        "average_precision": {
+          "ci95_high": 0.7834796556803152,
+          "ci95_low": 0.5568942372397423,
+          "point": 0.6300312286181784
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.5781818181818181,
+          "ci95_low": 0.23636363636363636,
+          "point": 0.40181818181818185
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.36391213021026186,
+          "ci95_low": 0.26128049583463603,
+          "point": 0.3111279898019213
+        },
+        "sensitivity": {
+          "ci95_high": 0.64,
+          "ci95_low": 0.24,
+          "point": 0.44
+        },
+        "specificity": {
+          "ci95_high": 0.6363636363636364,
+          "ci95_low": 0.09090909090909091,
+          "point": 0.36363636363636365
+        }
+      },
+      "score_summary": {
+        "als": {
+          "mean": 0.4140158611781613,
+          "median": 0.37284648213540894
+        },
+        "healthy_control": {
+          "mean": 0.5158265052860151,
+          "median": 0.5143228864240933
+        },
+        "post_stroke": {
+          "mean": 0.48338458408633284,
+          "median": 0.5171601502872525
+        }
+      }
+    },
+    "descriptive_task_nsm_spread": {
+      "counts": {
+        "affected": 25,
+        "participants": 36,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.6388888888888888,
+          "ci95_low": 0.3611111111111111,
+          "point": 0.5
+        },
+        "auroc": {
+          "ci95_high": 0.5490909090909091,
+          "ci95_low": 0.19636363636363635,
+          "point": 0.3709090909090909
+        },
+        "average_precision": {
+          "ci95_high": 0.8008863813778735,
+          "ci95_low": 0.5877664915230909,
+          "point": 0.686543960956151
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.5163636363636364,
+          "ci95_low": 0.26545454545454544,
+          "point": 0.3854545454545455
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.3346075965271753,
+          "ci95_low": 0.23623861359819734,
+          "point": 0.28264360612792294
+        },
+        "sensitivity": {
+          "ci95_high": 0.84,
+          "ci95_low": 0.48,
+          "point": 0.68
+        },
+        "specificity": {
+          "ci95_high": 0.2727272727272727,
+          "ci95_low": 0.0,
+          "point": 0.09090909090909091
+        }
+      },
+      "score_summary": {
+        "als": {
+          "mean": 0.5098261642127183,
+          "median": 0.5205985013068796
+        },
+        "healthy_control": {
+          "mean": 0.6011968146428274,
+          "median": 0.5972796134265147
+        },
+        "post_stroke": {
+          "mean": 0.5535516353663874,
+          "median": 0.5765331867678993
+        }
+      }
+    },
+    "primary_three_task": {
+      "counts": {
+        "affected": 25,
+        "participants": 36,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.6388888888888888,
+          "ci95_low": 0.3055555555555556,
+          "point": 0.4722222222222222
+        },
+        "auroc": {
+          "ci95_high": 0.549181818181817,
+          "ci95_low": 0.15999999999999998,
+          "point": 0.34909090909090906
+        },
+        "average_precision": {
+          "ci95_high": 0.7580054414856531,
+          "ci95_low": 0.5449515345865489,
+          "point": 0.6083866568652084
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.5872727272727273,
+          "ci95_low": 0.26545454545454544,
+          "point": 0.4163636363636364
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.32472028770876776,
+          "ci95_low": 0.2463625599122347,
+          "point": 0.2832172596186839
+        },
+        "sensitivity": {
+          "ci95_high": 0.76,
+          "ci95_low": 0.36,
+          "point": 0.56
+        },
+        "specificity": {
+          "ci95_high": 0.5454545454545454,
+          "ci95_low": 0.0,
+          "point": 0.2727272727272727
+        }
+      },
+      "score_summary": {
+        "als": {
+          "mean": 0.4618888182592263,
+          "median": 0.44369431587061997
+        },
+        "healthy_control": {
+          "mean": 0.5518792052408045,
+          "median": 0.5623410825933112
+        },
+        "post_stroke": {
+          "mean": 0.5213070438872457,
+          "median": 0.541584483021202
+        }
+      }
+    },
+    "secondary_all_available_tasks": {
+      "counts": {
+        "affected": 25,
+        "participants": 36,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.6388888888888888,
+          "ci95_low": 0.3055555555555556,
+          "point": 0.4722222222222222
+        },
+        "auroc": {
+          "ci95_high": 0.5854545454545454,
+          "ci95_low": 0.16363636363636364,
+          "point": 0.36727272727272725
+        },
+        "average_precision": {
+          "ci95_high": 0.7686505707605835,
+          "ci95_low": 0.5473449760768553,
+          "point": 0.6156287509754186
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.6181818181818182,
+          "ci95_low": 0.2709090909090909,
+          "point": 0.44181818181818183
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.30795894784745476,
+          "ci95_low": 0.24441011332888726,
+          "point": 0.2747969240897473
+        },
+        "sensitivity": {
+          "ci95_high": 0.72,
+          "ci95_low": 0.32,
+          "point": 0.52
+        },
+        "specificity": {
+          "ci95_high": 0.6363636363636364,
+          "ci95_low": 0.09090909090909091,
+          "point": 0.36363636363636365
+        }
+      },
+      "score_summary": {
+        "als": {
+          "mean": 0.4677714075463069,
+          "median": 0.4841714903514681
+        },
+        "healthy_control": {
+          "mean": 0.5272073487829068,
+          "median": 0.5640598751565856
+        },
+        "post_stroke": {
+          "mean": 0.5064941979982506,
+          "median": 0.5111767352349295
+        }
+      }
+    },
+    "secondary_als_vs_healthy_control": {
+      "counts": {
+        "affected": 11,
+        "participants": 22,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.5454545454545454,
+          "ci95_low": 0.18181818181818182,
+          "point": 0.36363636363636365
+        },
+        "auroc": {
+          "ci95_high": 0.4793388429752066,
+          "ci95_low": 0.07438016528925619,
+          "point": 0.2644628099173554
+        },
+        "average_precision": {
+          "ci95_high": 0.5829784186401833,
+          "ci95_low": 0.3592866049928744,
+          "point": 0.4011517198753337
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.5454545454545454,
+          "ci95_low": 0.18181818181818182,
+          "point": 0.36363636363636365
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.36362773960692135,
+          "ci95_low": 0.26054471529971535,
+          "point": 0.31126486905423184
+        },
+        "sensitivity": {
+          "ci95_high": 0.7272727272727273,
+          "ci95_low": 0.18181818181818182,
+          "point": 0.45454545454545453
+        },
+        "specificity": {
+          "ci95_high": 0.5454545454545454,
+          "ci95_low": 0.0,
+          "point": 0.2727272727272727
+        }
+      },
+      "score_summary": {
+        "als": {
+          "mean": 0.4618888182592263,
+          "median": 0.44369431587061997
+        },
+        "healthy_control": {
+          "mean": 0.5518792052408045,
+          "median": 0.5623410825933112
+        }
+      }
+    },
+    "secondary_post_stroke_vs_healthy_control": {
+      "counts": {
+        "affected": 14,
+        "participants": 25,
+        "unaffected": 11
+      },
+      "metrics": {
+        "accuracy": {
+          "ci95_high": 0.64,
+          "ci95_low": 0.32,
+          "point": 0.48
+        },
+        "auroc": {
+          "ci95_high": 0.6558441558441558,
+          "ci95_low": 0.18831168831168832,
+          "point": 0.4155844155844156
+        },
+        "average_precision": {
+          "ci95_high": 0.7086079587025157,
+          "ci95_low": 0.43495465533051164,
+          "point": 0.5083026720927178
+        },
+        "balanced_accuracy": {
+          "ci95_high": 0.6300324675324652,
+          "ci95_low": 0.2857142857142857,
+          "point": 0.4577922077922078
+        },
+        "bootstrap_draws": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "brier": {
+          "ci95_high": 0.32103706412127836,
+          "ci95_low": 0.23038206744893286,
+          "point": 0.2741635214446418
+        },
+        "sensitivity": {
+          "ci95_high": 0.8571428571428571,
+          "ci95_low": 0.42857142857142855,
+          "point": 0.6428571428571429
+        },
+        "specificity": {
+          "ci95_high": 0.5454545454545454,
+          "ci95_low": 0.0,
+          "point": 0.2727272727272727
+        }
+      },
+      "score_summary": {
+        "healthy_control": {
+          "mean": 0.5518792052408045,
+          "median": 0.5623410825933112
+        },
+        "post_stroke": {
+          "mean": 0.5213070438872457,
+          "median": 0.541584483021202
+        }
+      }
+    }
+  },
+  "model": "frozen_palsynet_landmark_mi_110d",
+  "protocol": {
+    "bootstrap": {
+      "confidence_level": 0.95,
+      "method": "als_post_stroke_healthy_control_stratified_participant_percentile",
+      "minimum_valid_draws": 4750,
+      "repeats": 5000,
+      "seed": 20260813
+    },
+    "calibration": false,
+    "candidate_selection": false,
+    "dimension": 110,
+    "mirror_inference": "mean_original_and_horizontal_mirror_score",
+    "missingness": "no_imputation",
+    "model_refit": false,
+    "participant_eligibility": "all_three_primary_tasks_pass_90_percent_video_coverage",
+    "primary_aggregation": "unweighted_mean_of_exact_three_task_scores",
+    "primary_tasks": [
+      "NSM_KISS",
+      "NSM_OPEN",
+      "NSM_SPREAD"
+    ],
+    "representation": "landmark_mi_110d",
+    "scaler_refit": false,
+    "score_direction": "higher_is_more_affected_like",
+    "secondary_aggregation": "unweighted_mean_of_all_available_eligible_tasks",
+    "threshold": 0.5,
+    "threshold_selection": false
+  },
+  "provenance": {
+    "authorization_sha256": "ba9a526cf696ca2fdb7e505f257ca6dbac408f147c87c688541edf927d12fdf1",
+    "cache_artifact_collection_sha256": "cab6bedaf269e5924145851e30e55b2c166178de70287a0d2985f598d4a42fb5",
+    "cache_manifest_sha256": "07527c33fe0e35d34a554f7baccd49e9e692c4588b76aa6392ccad71c122bb17",
+    "dependency_lock_sha256": "f71f528af621e4eff83bb6a05c1fff09b0918ecda2cd9ac67979582b67767a6a",
+    "final_artifact_sha256": "cbc49d0aa54b504915bebd00fdbe005458378e5675b57461ce83d3385f9b60f9",
+    "implementation_components_sha256": {
+      "dynamic_loader": "e2a1accfe01b7f5d366457b78a8710f29b46bb074ac9cb3b50c6078060ee821b",
+      "external_core": "f5d3450b5c184106e314b5af8fa3db0577ac08b584b5989ed33c9b8d5395efc3",
+      "external_runner": "e4f88203c05d477a1b1763fc3b3f480ea682297a98535a9c7e3ad8b3c4bd8582",
+      "frozen_inference": "5797e48df6058408d52fdf3dea7abe05ce4036c4c35e014cb53a33413f788a0f",
+      "generalization_features": "ba02c9f416fa7e352e3c24b61debcb3500ec431d46c4325f89537f76f20b1ea3",
+      "mirror_runner": "ea41d076230665b55bcd9f2b0b9e047c3d67558ddd48d3271cb20d06e4f03c12",
+      "trajectory_features": "0a0900c9df418ce2856175d4027dbedd7db99d4873985bf3d61e7fa8be6d5ff7"
+    },
+    "implementation_sha256": "d02944f7960e1224d89adc9167126bc591180d0f5a777223747b95680ea20101",
+    "mediapipe_model_sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+    "preanalysis_registration_sha256": "4b549758ba7e9ac7a4b1266083c57edf94bd99453fb9551acc2d18a9019dd32a",
+    "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b"
+  },
+  "schema_version": "neuroface_external_110d_v1",
+  "target": "neurological_orofacial_impairment_vs_healthy_control"
+}

@@ -1,0 +1,18 @@
+# Closed runtime allowlist. The formal H200 build additionally receives a
+# committed `git archive HEAD:facial_paralysis` context, never a dirty worktree.
+**
+!.dockerignore
+!src/
+!src/**
+!scripts/
+!scripts/run_neuroface_action_capacity_v1.py
+!scripts/run_mirror_invariant_110d.py
+!scripts/launch_neuroface_action_capacity_v1.py
+!environment/
+!environment/neuroface_h200_v1.lock
+!environment/neuroface_action_capacity_host_audit_ed25519_public.pem
+!environment/neuroface_action_capacity_v1.Dockerfile
+
+**/__pycache__/
+**/*.pyc
+**/*.pyo

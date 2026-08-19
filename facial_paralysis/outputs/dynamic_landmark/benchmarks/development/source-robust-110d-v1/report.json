@@ -1,0 +1,553 @@
+{
+  "audit": {
+    "development_cache_records_loaded": 39,
+    "development_feature_extractions": 78,
+    "development_mirror_transforms": 39,
+    "development_model_fits": 24,
+    "development_predictions": 234,
+    "development_scaler_fits": 24,
+    "mayo_reads": 0,
+    "meei_reads": 0,
+    "protected_cache_records_loaded": 0,
+    "protected_feature_reads": 0,
+    "protected_fits": 0,
+    "protected_predictions": 0
+  },
+  "claim_scope": "identity_reviewed_palsynet_development_only",
+  "counts": {
+    "development_affected_groups": 21,
+    "development_groups": 38,
+    "development_recordings": 39,
+    "development_unaffected_groups": 17,
+    "protected_groups": 10,
+    "protected_recordings": 10
+  },
+  "decision": {
+    "candidate_gates": {
+      "asymmetry_dynamics_93d": {
+        "blocked_auroc_improved": false,
+        "blocked_balanced_accuracy_improved": false,
+        "passed": false,
+        "registered_auroc_noninferior": true,
+        "registered_balanced_accuracy_noninferior": true,
+        "registered_specificity_one": true
+      },
+      "within_video_dynamics_87d": {
+        "blocked_auroc_improved": false,
+        "blocked_balanced_accuracy_improved": false,
+        "passed": false,
+        "registered_auroc_noninferior": true,
+        "registered_balanced_accuracy_noninferior": true,
+        "registered_specificity_one": true
+      }
+    },
+    "clinical_validation": false,
+    "current_model_replaced": false,
+    "hb_claim_authorized": false,
+    "locked_candidate": "landmark_mi_110d",
+    "mayo_used_for_selection": false,
+    "meei_rescore_authorized": false,
+    "outer_evaluation_authorized": false
+  },
+  "metrics": {
+    "acquisition_blocked": {
+      "asymmetry_dynamics_93d": {
+        "auroc": 0.9663865546218487,
+        "average_precision": 0.9813633786848075,
+        "balanced_accuracy": 0.9285714285714286,
+        "brier": 0.11631448205629423,
+        "sensitivity": 0.8571428571428571,
+        "specificity": 1.0
+      },
+      "landmark_mi_110d": {
+        "auroc": 0.9663865546218487,
+        "average_precision": 0.982683982683983,
+        "balanced_accuracy": 0.9285714285714286,
+        "brier": 0.11950571772283893,
+        "sensitivity": 0.8571428571428571,
+        "specificity": 1.0
+      },
+      "within_video_dynamics_87d": {
+        "auroc": 0.9663865546218487,
+        "average_precision": 0.9813633786848075,
+        "balanced_accuracy": 0.9285714285714286,
+        "brier": 0.11925083889944971,
+        "sensitivity": 0.8571428571428571,
+        "specificity": 1.0
+      }
+    },
+    "registered": {
+      "asymmetry_dynamics_93d": {
+        "auroc": 0.980392156862745,
+        "average_precision": 0.9871504157218447,
+        "balanced_accuracy": 0.9523809523809523,
+        "brier": 0.11689890611508827,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0
+      },
+      "landmark_mi_110d": {
+        "auroc": 0.980392156862745,
+        "average_precision": 0.9871504157218447,
+        "balanced_accuracy": 0.9523809523809523,
+        "brier": 0.11736712693119593,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0
+      },
+      "within_video_dynamics_87d": {
+        "auroc": 0.980392156862745,
+        "average_precision": 0.9871504157218447,
+        "balanced_accuracy": 0.9523809523809523,
+        "brier": 0.11958078336779687,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0
+      }
+    }
+  },
+  "paired_candidate_minus_baseline": {
+    "acquisition_blocked": {
+      "asymmetry_dynamics_93d": {
+        "auroc": {
+          "ci95": [
+            -0.01680672268907557,
+            0.01400560224089642
+          ],
+          "point": 0.0
+        },
+        "balanced_accuracy": {
+          "ci95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "brier": {
+          "ci95": [
+            -0.006128147384773331,
+            -0.0004501558588892263
+          ],
+          "point": -0.003191235666544695
+        }
+      },
+      "within_video_dynamics_87d": {
+        "auroc": {
+          "ci95": [
+            -0.01680672268907557,
+            0.01400560224089642
+          ],
+          "point": 0.0
+        },
+        "balanced_accuracy": {
+          "ci95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "brier": {
+          "ci95": [
+            -0.0036529512460546473,
+            0.0030679531621533355
+          ],
+          "point": -0.00025487882338921797
+        }
+      }
+    },
+    "registered": {
+      "asymmetry_dynamics_93d": {
+        "auroc": {
+          "ci95": [
+            -0.011204481792717047,
+            0.011204481792717047
+          ],
+          "point": 0.0
+        },
+        "balanced_accuracy": {
+          "ci95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "brier": {
+          "ci95": [
+            -0.002466349182425204,
+            0.0014456792817188926
+          ],
+          "point": -0.000468220816107659
+        }
+      },
+      "within_video_dynamics_87d": {
+        "auroc": {
+          "ci95": [
+            -0.011204481792717158,
+            0.011204481792717047
+          ],
+          "point": 0.0
+        },
+        "balanced_accuracy": {
+          "ci95": [
+            0.0,
+            0.0
+          ],
+          "point": 0.0
+        },
+        "brier": {
+          "ci95": [
+            -0.001361849551850728,
+            0.005890085007013208
+          ],
+          "point": 0.0022136564366009442
+        }
+      }
+    }
+  },
+  "protocol": {
+    "acquisition_blocking": "development_group_mean_standardize_pca1_label_stratified_contiguous_quartiles",
+    "acquisition_nuisance_indices": [
+      1,
+      2,
+      3,
+      5,
+      6,
+      7,
+      8
+    ],
+    "bootstrap": {
+      "repeats": 5000,
+      "seed": 20260812
+    },
+    "candidate_dimensions": {
+      "asymmetry_dynamics_93d": 93,
+      "landmark_mi_110d": 110,
+      "within_video_dynamics_87d": 87
+    },
+    "candidate_feature_names": {
+      "asymmetry_dynamics_93d": [
+        "fissure_h_absdiff__median",
+        "fissure_w_absdiff__median",
+        "eye_area_absdiff__median",
+        "brow_h_absdiff__median",
+        "corner_y_absdiff__median",
+        "commissure_x_absdiff__median",
+        "fissure_h_mesh33__iqr",
+        "fissure_h_mesh33__range",
+        "fissure_h_mesh33__max_abs_velocity_per_second",
+        "fissure_h_mesh263__iqr",
+        "fissure_h_mesh263__range",
+        "fissure_h_mesh263__max_abs_velocity_per_second",
+        "fissure_h_absdiff__iqr",
+        "fissure_h_absdiff__range",
+        "fissure_h_absdiff__max_abs_velocity_per_second",
+        "fissure_h_mesh33_minus_mesh263__iqr",
+        "fissure_h_mesh33_minus_mesh263__range",
+        "fissure_h_mesh33_minus_mesh263__max_abs_velocity_per_second",
+        "fissure_w_mesh33__iqr",
+        "fissure_w_mesh33__range",
+        "fissure_w_mesh33__max_abs_velocity_per_second",
+        "fissure_w_mesh263__iqr",
+        "fissure_w_mesh263__range",
+        "fissure_w_mesh263__max_abs_velocity_per_second",
+        "fissure_w_absdiff__iqr",
+        "fissure_w_absdiff__range",
+        "fissure_w_absdiff__max_abs_velocity_per_second",
+        "eye_area_mesh33__iqr",
+        "eye_area_mesh33__range",
+        "eye_area_mesh33__max_abs_velocity_per_second",
+        "eye_area_mesh263__iqr",
+        "eye_area_mesh263__range",
+        "eye_area_mesh263__max_abs_velocity_per_second",
+        "eye_area_absdiff__iqr",
+        "eye_area_absdiff__range",
+        "eye_area_absdiff__max_abs_velocity_per_second",
+        "brow_h_mesh33__iqr",
+        "brow_h_mesh33__range",
+        "brow_h_mesh33__max_abs_velocity_per_second",
+        "brow_h_mesh263__iqr",
+        "brow_h_mesh263__range",
+        "brow_h_mesh263__max_abs_velocity_per_second",
+        "brow_h_absdiff__iqr",
+        "brow_h_absdiff__range",
+        "brow_h_absdiff__max_abs_velocity_per_second",
+        "brow_h_mesh33_minus_mesh263__iqr",
+        "brow_h_mesh33_minus_mesh263__range",
+        "brow_h_mesh33_minus_mesh263__max_abs_velocity_per_second",
+        "corner_y_mesh61__iqr",
+        "corner_y_mesh61__range",
+        "corner_y_mesh61__max_abs_velocity_per_second",
+        "corner_y_mesh291__iqr",
+        "corner_y_mesh291__range",
+        "corner_y_mesh291__max_abs_velocity_per_second",
+        "corner_y_absdiff__iqr",
+        "corner_y_absdiff__range",
+        "corner_y_absdiff__max_abs_velocity_per_second",
+        "corner_y_mesh61_minus_mesh291__iqr",
+        "corner_y_mesh61_minus_mesh291__range",
+        "corner_y_mesh61_minus_mesh291__max_abs_velocity_per_second",
+        "corner_x_mesh61__iqr",
+        "corner_x_mesh61__range",
+        "corner_x_mesh61__max_abs_velocity_per_second",
+        "corner_x_mesh291__iqr",
+        "corner_x_mesh291__range",
+        "corner_x_mesh291__max_abs_velocity_per_second",
+        "commissure_x_absdiff__iqr",
+        "commissure_x_absdiff__range",
+        "commissure_x_absdiff__max_abs_velocity_per_second",
+        "mouth_width__iqr",
+        "mouth_width__range",
+        "mouth_width__max_abs_velocity_per_second",
+        "mouth_open__iqr",
+        "mouth_open__range",
+        "mouth_open__max_abs_velocity_per_second",
+        "fissure_h_mesh33_vs_mesh263__correlation",
+        "fissure_h_mesh33_vs_mesh263__amplitude_ratio",
+        "fissure_h_mesh33_vs_mesh263__lag_seconds",
+        "fissure_w_mesh33_vs_mesh263__correlation",
+        "fissure_w_mesh33_vs_mesh263__amplitude_ratio",
+        "fissure_w_mesh33_vs_mesh263__lag_seconds",
+        "eye_area_mesh33_vs_mesh263__correlation",
+        "eye_area_mesh33_vs_mesh263__amplitude_ratio",
+        "eye_area_mesh33_vs_mesh263__lag_seconds",
+        "brow_h_mesh33_vs_mesh263__correlation",
+        "brow_h_mesh33_vs_mesh263__amplitude_ratio",
+        "brow_h_mesh33_vs_mesh263__lag_seconds",
+        "corner_y_mesh61_vs_mesh291__correlation",
+        "corner_y_mesh61_vs_mesh291__amplitude_ratio",
+        "corner_y_mesh61_vs_mesh291__lag_seconds",
+        "corner_x_mesh61_vs_mesh291__correlation",
+        "corner_x_mesh61_vs_mesh291__amplitude_ratio",
+        "corner_x_mesh61_vs_mesh291__lag_seconds"
+      ],
+      "landmark_mi_110d": [
+        "fissure_h_mesh33__median",
+        "fissure_h_mesh33__iqr",
+        "fissure_h_mesh33__range",
+        "fissure_h_mesh33__max_abs_velocity_per_second",
+        "fissure_h_mesh263__median",
+        "fissure_h_mesh263__iqr",
+        "fissure_h_mesh263__range",
+        "fissure_h_mesh263__max_abs_velocity_per_second",
+        "fissure_h_absdiff__median",
+        "fissure_h_absdiff__iqr",
+        "fissure_h_absdiff__range",
+        "fissure_h_absdiff__max_abs_velocity_per_second",
+        "fissure_h_mesh33_minus_mesh263__median",
+        "fissure_h_mesh33_minus_mesh263__iqr",
+        "fissure_h_mesh33_minus_mesh263__range",
+        "fissure_h_mesh33_minus_mesh263__max_abs_velocity_per_second",
+        "fissure_w_mesh33__median",
+        "fissure_w_mesh33__iqr",
+        "fissure_w_mesh33__range",
+        "fissure_w_mesh33__max_abs_velocity_per_second",
+        "fissure_w_mesh263__median",
+        "fissure_w_mesh263__iqr",
+        "fissure_w_mesh263__range",
+        "fissure_w_mesh263__max_abs_velocity_per_second",
+        "fissure_w_absdiff__median",
+        "fissure_w_absdiff__iqr",
+        "fissure_w_absdiff__range",
+        "fissure_w_absdiff__max_abs_velocity_per_second",
+        "eye_area_mesh33__median",
+        "eye_area_mesh33__iqr",
+        "eye_area_mesh33__range",
+        "eye_area_mesh33__max_abs_velocity_per_second",
+        "eye_area_mesh263__median",
+        "eye_area_mesh263__iqr",
+        "eye_area_mesh263__range",
+        "eye_area_mesh263__max_abs_velocity_per_second",
+        "eye_area_absdiff__median",
+        "eye_area_absdiff__iqr",
+        "eye_area_absdiff__range",
+        "eye_area_absdiff__max_abs_velocity_per_second",
+        "brow_h_mesh33__median",
+        "brow_h_mesh33__iqr",
+        "brow_h_mesh33__range",
+        "brow_h_mesh33__max_abs_velocity_per_second",
+        "brow_h_mesh263__median",
+        "brow_h_mesh263__iqr",
+        "brow_h_mesh263__range",
+        "brow_h_mesh263__max_abs_velocity_per_second",
+        "brow_h_absdiff__median",
+        "brow_h_absdiff__iqr",
+        "brow_h_absdiff__range",
+        "brow_h_absdiff__max_abs_velocity_per_second",
+        "brow_h_mesh33_minus_mesh263__median",
+        "brow_h_mesh33_minus_mesh263__iqr",
+        "brow_h_mesh33_minus_mesh263__range",
+        "brow_h_mesh33_minus_mesh263__max_abs_velocity_per_second",
+        "corner_y_mesh61__median",
+        "corner_y_mesh61__iqr",
+        "corner_y_mesh61__range",
+        "corner_y_mesh61__max_abs_velocity_per_second",
+        "corner_y_mesh291__median",
+        "corner_y_mesh291__iqr",
+        "corner_y_mesh291__range",
+        "corner_y_mesh291__max_abs_velocity_per_second",
+        "corner_y_absdiff__median",
+        "corner_y_absdiff__iqr",
+        "corner_y_absdiff__range",
+        "corner_y_absdiff__max_abs_velocity_per_second",
+        "corner_y_mesh61_minus_mesh291__median",
+        "corner_y_mesh61_minus_mesh291__iqr",
+        "corner_y_mesh61_minus_mesh291__range",
+        "corner_y_mesh61_minus_mesh291__max_abs_velocity_per_second",
+        "corner_x_mesh61__median",
+        "corner_x_mesh61__iqr",
+        "corner_x_mesh61__range",
+        "corner_x_mesh61__max_abs_velocity_per_second",
+        "corner_x_mesh291__median",
+        "corner_x_mesh291__iqr",
+        "corner_x_mesh291__range",
+        "corner_x_mesh291__max_abs_velocity_per_second",
+        "commissure_x_absdiff__median",
+        "commissure_x_absdiff__iqr",
+        "commissure_x_absdiff__range",
+        "commissure_x_absdiff__max_abs_velocity_per_second",
+        "mouth_width__median",
+        "mouth_width__iqr",
+        "mouth_width__range",
+        "mouth_width__max_abs_velocity_per_second",
+        "mouth_open__median",
+        "mouth_open__iqr",
+        "mouth_open__range",
+        "mouth_open__max_abs_velocity_per_second",
+        "fissure_h_mesh33_vs_mesh263__correlation",
+        "fissure_h_mesh33_vs_mesh263__amplitude_ratio",
+        "fissure_h_mesh33_vs_mesh263__lag_seconds",
+        "fissure_w_mesh33_vs_mesh263__correlation",
+        "fissure_w_mesh33_vs_mesh263__amplitude_ratio",
+        "fissure_w_mesh33_vs_mesh263__lag_seconds",
+        "eye_area_mesh33_vs_mesh263__correlation",
+        "eye_area_mesh33_vs_mesh263__amplitude_ratio",
+        "eye_area_mesh33_vs_mesh263__lag_seconds",
+        "brow_h_mesh33_vs_mesh263__correlation",
+        "brow_h_mesh33_vs_mesh263__amplitude_ratio",
+        "brow_h_mesh33_vs_mesh263__lag_seconds",
+        "corner_y_mesh61_vs_mesh291__correlation",
+        "corner_y_mesh61_vs_mesh291__amplitude_ratio",
+        "corner_y_mesh61_vs_mesh291__lag_seconds",
+        "corner_x_mesh61_vs_mesh291__correlation",
+        "corner_x_mesh61_vs_mesh291__amplitude_ratio",
+        "corner_x_mesh61_vs_mesh291__lag_seconds"
+      ],
+      "within_video_dynamics_87d": [
+        "fissure_h_mesh33__iqr",
+        "fissure_h_mesh33__range",
+        "fissure_h_mesh33__max_abs_velocity_per_second",
+        "fissure_h_mesh263__iqr",
+        "fissure_h_mesh263__range",
+        "fissure_h_mesh263__max_abs_velocity_per_second",
+        "fissure_h_absdiff__iqr",
+        "fissure_h_absdiff__range",
+        "fissure_h_absdiff__max_abs_velocity_per_second",
+        "fissure_h_mesh33_minus_mesh263__iqr",
+        "fissure_h_mesh33_minus_mesh263__range",
+        "fissure_h_mesh33_minus_mesh263__max_abs_velocity_per_second",
+        "fissure_w_mesh33__iqr",
+        "fissure_w_mesh33__range",
+        "fissure_w_mesh33__max_abs_velocity_per_second",
+        "fissure_w_mesh263__iqr",
+        "fissure_w_mesh263__range",
+        "fissure_w_mesh263__max_abs_velocity_per_second",
+        "fissure_w_absdiff__iqr",
+        "fissure_w_absdiff__range",
+        "fissure_w_absdiff__max_abs_velocity_per_second",
+        "eye_area_mesh33__iqr",
+        "eye_area_mesh33__range",
+        "eye_area_mesh33__max_abs_velocity_per_second",
+        "eye_area_mesh263__iqr",
+        "eye_area_mesh263__range",
+        "eye_area_mesh263__max_abs_velocity_per_second",
+        "eye_area_absdiff__iqr",
+        "eye_area_absdiff__range",
+        "eye_area_absdiff__max_abs_velocity_per_second",
+        "brow_h_mesh33__iqr",
+        "brow_h_mesh33__range",
+        "brow_h_mesh33__max_abs_velocity_per_second",
+        "brow_h_mesh263__iqr",
+        "brow_h_mesh263__range",
+        "brow_h_mesh263__max_abs_velocity_per_second",
+        "brow_h_absdiff__iqr",
+        "brow_h_absdiff__range",
+        "brow_h_absdiff__max_abs_velocity_per_second",
+        "brow_h_mesh33_minus_mesh263__iqr",
+        "brow_h_mesh33_minus_mesh263__range",
+        "brow_h_mesh33_minus_mesh263__max_abs_velocity_per_second",
+        "corner_y_mesh61__iqr",
+        "corner_y_mesh61__range",
+        "corner_y_mesh61__max_abs_velocity_per_second",
+        "corner_y_mesh291__iqr",
+        "corner_y_mesh291__range",
+        "corner_y_mesh291__max_abs_velocity_per_second",
+        "corner_y_absdiff__iqr",
+        "corner_y_absdiff__range",
+        "corner_y_absdiff__max_abs_velocity_per_second",
+        "corner_y_mesh61_minus_mesh291__iqr",
+        "corner_y_mesh61_minus_mesh291__range",
+        "corner_y_mesh61_minus_mesh291__max_abs_velocity_per_second",
+        "corner_x_mesh61__iqr",
+        "corner_x_mesh61__range",
+        "corner_x_mesh61__max_abs_velocity_per_second",
+        "corner_x_mesh291__iqr",
+        "corner_x_mesh291__range",
+        "corner_x_mesh291__max_abs_velocity_per_second",
+        "commissure_x_absdiff__iqr",
+        "commissure_x_absdiff__range",
+        "commissure_x_absdiff__max_abs_velocity_per_second",
+        "mouth_width__iqr",
+        "mouth_width__range",
+        "mouth_width__max_abs_velocity_per_second",
+        "mouth_open__iqr",
+        "mouth_open__range",
+        "mouth_open__max_abs_velocity_per_second",
+        "fissure_h_mesh33_vs_mesh263__correlation",
+        "fissure_h_mesh33_vs_mesh263__amplitude_ratio",
+        "fissure_h_mesh33_vs_mesh263__lag_seconds",
+        "fissure_w_mesh33_vs_mesh263__correlation",
+        "fissure_w_mesh33_vs_mesh263__amplitude_ratio",
+        "fissure_w_mesh33_vs_mesh263__lag_seconds",
+        "eye_area_mesh33_vs_mesh263__correlation",
+        "eye_area_mesh33_vs_mesh263__amplitude_ratio",
+        "eye_area_mesh33_vs_mesh263__lag_seconds",
+        "brow_h_mesh33_vs_mesh263__correlation",
+        "brow_h_mesh33_vs_mesh263__amplitude_ratio",
+        "brow_h_mesh33_vs_mesh263__lag_seconds",
+        "corner_y_mesh61_vs_mesh291__correlation",
+        "corner_y_mesh61_vs_mesh291__amplitude_ratio",
+        "corner_y_mesh61_vs_mesh291__lag_seconds",
+        "corner_x_mesh61_vs_mesh291__correlation",
+        "corner_x_mesh61_vs_mesh291__amplitude_ratio",
+        "corner_x_mesh61_vs_mesh291__lag_seconds"
+      ]
+    },
+    "candidates": [
+      "landmark_mi_110d",
+      "within_video_dynamics_87d",
+      "asymmetry_dynamics_93d"
+    ],
+    "model": {
+      "c": 0.01,
+      "hyperparameter_search": false,
+      "inference": "mean_original_and_horizontal_mirror_probability",
+      "threshold": 0.5,
+      "training": "original_plus_horizontal_mirror",
+      "type": "standardized_l2_logistic_regression"
+    },
+    "promotion_tolerances": {
+      "registered_auroc": 0.02,
+      "registered_balanced_accuracy": 0.023809523809523808
+    },
+    "split_families": [
+      "registered",
+      "acquisition_blocked"
+    ]
+  },
+  "provenance": {
+    "implementation_sha256": "551c8383214460f189bea854f10ed07285239246a96d63504c94f441b16be662",
+    "review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "source_collection_sha256": "30263bc3784a1ed9eeec196f1448b3b36234036e25282d2bed17dcee97aab3ae",
+    "split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "source_robust_110d_v1_development_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}
