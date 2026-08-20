@@ -39,9 +39,15 @@ describe('workspace application shell', () => {
 
     const primary = screen.getByRole('navigation', { name: 'Primary navigation' })
     const primaryLinks = within(primary).getAllByRole('link')
-    expect(primaryLinks.map((link) => link.textContent)).toEqual(['Patients', 'Reviews', 'Help'])
+    expect(primaryLinks.map((link) => link.textContent)).toEqual([
+      'Patients',
+      'Demo',
+      'Reviews',
+      'Help',
+    ])
     expect(primaryLinks.map((link) => link.getAttribute('href'))).toEqual([
       '/patients',
+      '/demo',
       '/reviews',
       '/about',
     ])
@@ -231,6 +237,7 @@ describe('workspace application shell', () => {
     ['/', 'Patients'],
     ['/patients', 'Patients'],
     ['/patients/new', 'New patient'],
+    ['/demo', 'Before and after, at a glance'],
     ['/cases', 'Cases'],
     ['/runs', 'Recent simulations'],
     ['/jobs', 'Run several cases'],

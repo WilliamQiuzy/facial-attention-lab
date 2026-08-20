@@ -48,7 +48,7 @@ describe('clinician entry route', () => {
       within(screen.getByRole('navigation', { name: 'Primary navigation' }))
         .getAllByRole('link')
         .map((link) => link.textContent),
-    ).toEqual(['Patients', 'Reviews', 'Help'])
+    ).toEqual(['Patients', 'Demo', 'Reviews', 'Help'])
   })
 
   it('does not fetch or read/write browser storage in the default mock session', () => {

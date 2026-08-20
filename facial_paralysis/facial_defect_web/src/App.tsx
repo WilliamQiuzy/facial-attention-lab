@@ -25,6 +25,7 @@ import { PatientDetailPage } from './pages/PatientDetailPage'
 import { PatientReportPage } from './pages/PatientReportPage'
 import { PatientVisitPage } from './pages/PatientVisitPage'
 import { PatientsPage } from './pages/PatientsPage'
+import { PresentationDemoPage } from './pages/PresentationDemoPage'
 import { ResultReviewPage } from './pages/ResultReviewPage'
 import { ReviewQueuePage } from './pages/ReviewQueuePage'
 import { RunDetailPage } from './pages/RunDetailPage'
@@ -47,6 +48,7 @@ import './styles/pages.css'
 import './styles/workbench.css'
 import './styles/task6.css'
 import './styles/patient-workflow.css'
+import './styles/presentation.css'
 
 const defaultWorkbenchGateway = createWorkbenchGateway()
 
@@ -119,6 +121,7 @@ function RoutedWorkspace() {
         <Routes>
           <Route path="/" element={<Navigate to="/patients" replace />} />
           <Route path="/patients" element={<PatientsPage />} />
+          <Route path="/demo" element={<PresentationDemoPage />} />
           <Route path="/patients/new" element={<NewPatientPage />} />
           <Route
             path="/patients/:patientId"

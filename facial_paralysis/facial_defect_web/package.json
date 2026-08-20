@@ -11,6 +11,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
+    "build:presentation": "tsc --noEmit && vite build --config vite.presentation.config.ts && node scripts/verify-presentation-build.mjs",
+    "capture:presentation": "pnpm build:presentation && node scripts/capture-presentation-assets.mjs",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest",
     "test:run": "vitest run",
@@ -32,8 +34,10 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "jsdom": "^29.1.1",
+    "playwright": "1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.5",
+    "vite-plugin-singlefile": "2.3.3",
     "vitest": "^4.1.10"
   }
 }

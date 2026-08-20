@@ -9,6 +9,11 @@ simple clinician decision. Legacy case, batch, model-comparison, and research
 review tools remain available from Help. No trained facial-defect spatial
 attention model or real patient backend exists in this repository yet.
 
+An isolated presentation demo at `/demo` uses one explicitly derived pair of
+AI-generated images to rehearse a pre-operative-like lesion and a
+post-operative-like small scar. Its attention layers are hand-authored display
+signals, not human gaze, a model output, or a predicted surgical outcome.
+
 The interface uses a restrained Mayo-inspired visual system, but it is an independent research prototype. It does not use Mayo Clinic logos or proprietary fonts and is not an official clinical product.
 
 ## Current capability boundary
@@ -16,6 +21,7 @@ The interface uses a restrained Mayo-inspired visual system, but it is an indepe
 | Surface | Current state |
 | --- | --- |
 | Clinician workflow | Patient record → photo visit → frontal capture → four quality checks → local simulation → image-first result → review |
+| Presentation demo | Photo or de-identified outline; pre-operative, post-operative, or side-by-side synthetic comparison with optional hand-authored attention layer |
 | Patient records | Synthetic/test records in React memory only; no authentication, persistence, server record, or real-PHI support |
 | Camera and upload | Native camera/file input; validated JPEG/PNG/WebP bytes remain in an in-memory session vault |
 | Patient result | Original, simulated overlay, density field with a photo-matched face contour, and face-relative AOI summary on one scrolling page |
@@ -100,12 +106,43 @@ carousel, crop control, or display-mode choice is required in the clinician resu
 flow. The compact patient explanation keeps its shorter Summary/Separate/Overlay
 choice.
 
+## Presentation demo and shareable package
+
+The `/demo` route is intentionally simpler than the operational workflow. It
+starts with both photographs side by side and offers only three decisions:
+time point (`Pre-operative`, `Post-operative`, or `Both`), display (`Photo` or
+`Outline`), and whether to show the simulated attention layer. The
+post-operative-like image is an AI-derived edit that replaces the cheek lesion
+with a small, flat scar-like mark. The same display geometry is used for both
+attention layers; the cheek signal remains non-zero after the edit but is
+deliberately lower than in the lesion example.
+
+Each outline is a stored snapshot of 13 paths across six MediaPipe feature
+groups—face oval, left/right eyes, left/right eyebrows, and lips—extracted from
+the exact displayed image and bound to its SHA-256. The shareable package does
+not include or run MediaPipe, a camera, WASM, or any model at viewing time.
+
+Build the one-file offline demo and regenerate the slide-ready screenshots:
+
+```bash
+pnpm capture:presentation
+```
+
+The command writes
+[`presentation-assets/facial-attention-presentation-demo.html`](./presentation-assets/facial-attention-presentation-demo.html),
+four PNG screenshots under [`presentation-assets/screenshots/`](./presentation-assets/screenshots/),
+and a SHA-256 manifest. The HTML can be opened by double-clicking it; it embeds
+both exact synthetic PNG payloads and makes no network request. Every mode and
+every screenshot retains the exact disclosure:
+`HAND-AUTHORED SIMULATION — NOT HUMAN GAZE — NOT A PREDICTED SURGICAL OUTCOME — CLINICAL USE BLOCKED`.
+
 ## Operational routes
 
 | Route | Purpose |
 | --- | --- |
 | `/` | Redirects to the clinician patient list |
 | `/patients` | Search session-only synthetic/test patient records |
+| `/demo` | Presentation-ready synthetic lesion/small-scar comparison in Photo or Outline mode |
 | `/patients/new` | Create one session-only synthetic/test record and initial photo visit |
 | `/patients/:patientId` | Patient identity and chronological photo-visit timeline |
 | `/patients/:patientId/visits/new` | Add a dated preoperative, postoperative, or follow-up photo visit |
@@ -175,9 +212,15 @@ the current in-memory session.
 pnpm typecheck
 pnpm test:run
 pnpm build
+pnpm build:presentation
 ```
 
-Vite verifies the source bytes of the exact 10 approved assets when configuration loads and again before production build. Missing, changed, non-synthetic, or unapproved assets fail the build. The final bundle must contain exactly those 10 PNG byte hashes and no real-image or `facial_paralysis` research asset.
+Vite verifies the source bytes of the exact 10 approved workbench assets and
+the isolated two-image presentation manifest when configuration loads and
+again before production build. Because the presentation source is one of the
+10 workbench assets, the normal bundle contains 11 unique verified synthetic
+PNG byte hashes. Missing, changed, non-synthetic, or unapproved assets fail the
+build; no real-image or `facial_paralysis` research asset is allowed.
 
 ## Future model gateway
 
@@ -248,8 +291,14 @@ The downloadable `application/json` manifest uses an explicit whitelist. It incl
 
 ## Safety and asset scope
 
-- All 10 images are separate AI-generated identities and standalone, unpaired demonstrations.
-- The UI must never describe them as before/after, the same patient, postoperative change, treatment outcome, or a scientific cross-case comparison.
+- The research workbench's 10 images are separate AI-generated identities and
+  remain standalone, unpaired demonstrations. The workbench must never describe
+  them as before/after, the same patient, postoperative change, treatment
+  outcome, or a scientific cross-case comparison.
+- The presentation demo is an isolated exception with its own two-image
+  manifest: one AI-generated source and one explicitly AI-derived edit. It may
+  be described only as a paired synthetic presentation example, never as a
+  real patient, measured treatment effect, or predicted surgical outcome.
 - No source under `output/real`, no facial-paralysis research image, no
   patient-derived feature, no clinical label, and no trained clinical or
   observer-attention model weight is imported. The only checked-in model bundle

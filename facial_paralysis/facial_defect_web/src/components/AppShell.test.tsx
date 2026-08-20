@@ -86,6 +86,7 @@ describe('application frame', () => {
     const primary = screen.getByRole('navigation', { name: /primary navigation/i })
     expect(within(primary).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Patients',
+      'Demo',
       'Reviews',
       'Help',
     ])

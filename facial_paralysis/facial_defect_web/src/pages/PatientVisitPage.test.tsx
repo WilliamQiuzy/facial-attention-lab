@@ -441,7 +441,7 @@ describe('PatientVisitPage', () => {
 
   it('blocks analysis until all four capture-consistency checks pass and announces four processing phases', async () => {
     const user = userEvent.setup()
-    renderVisit({ queueDelayMs: 30, analysisDelayMs: 60 })
+    renderVisit({ queueDelayMs: 250, analysisDelayMs: 60 })
     await attachUpload(user)
 
     const run = screen.getByRole('button', {
