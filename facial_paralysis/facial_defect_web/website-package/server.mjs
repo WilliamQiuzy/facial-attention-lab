@@ -1,4 +1,4 @@
-import { createReadStream } from 'node:fs'
+import { createReadStream, realpathSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
@@ -132,8 +132,16 @@ function readArgument(name) {
   return index >= 0 ? process.argv[index + 1] : undefined
 }
 
-const launchedDirectly = process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+function isDirectExecution(argumentPath) {
+  if (!argumentPath) return false
+  try {
+    return realpathSync(argumentPath) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+const launchedDirectly = isDirectExecution(process.argv[1])
 
 if (launchedDirectly) {
   const packageRoot = path.dirname(fileURLToPath(import.meta.url))
