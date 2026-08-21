@@ -8,6 +8,20 @@
 
 **Tech Stack:** Python 3.10, NumPy, PyTorch 2.7/CUDA, scikit-learn metrics, repository direct-test harness, NVIDIA H200.
 
+## Execution record
+
+The initial 24-candidate healthy-reference screen completed and failed the
+promotion gate, so no top-three confirmation was scientifically warranted. The
+investigation then executed four preregistered follow-up families: 16 equal
+deep ensembles, 13 nested OOF-distillation candidates, 16 low-dimensional
+mechanism encoders, and 25 full-mesh action-phenotype heads. Across all 94
+candidates, none passed the locked gate. Repeated pre-determinism V8 evaluations
+also differed by one held-out participant; all subsequent screens therefore
+enforced deterministic CUDA and reproduced the same comparator twice. The
+final decision and exact machine artifacts are recorded in
+`docs/results/shared_v9_specificity_first.md`. V8 registry and deployment files
+remain unchanged.
+
 ---
 
 ## Locked scientific boundary
