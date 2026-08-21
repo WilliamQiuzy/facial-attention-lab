@@ -44,8 +44,8 @@ CURRENT_EXPORTS = {
 
 def test_registry_and_default_package_bind_only_v4(c: Check):
     registry = json.loads(REGISTRY.read_bytes())
-    c.eq(set(registry), {"schema_version", "current", "archived"})
-    c.eq(registry["schema_version"], "facial_paralysis_model_registry_v1")
+    c.eq(set(registry), {"schema_version", "current", "deployment", "archived"})
+    c.eq(registry["schema_version"], "facial_paralysis_model_registry_v2")
     current = registry["current"]
     c.eq(set(current), {
         "name", "schema_version", "status", "python_module",
