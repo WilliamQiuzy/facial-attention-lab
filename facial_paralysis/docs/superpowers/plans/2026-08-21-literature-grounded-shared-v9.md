@@ -27,7 +27,7 @@
   CAGrad only when a negative shared-gradient pair is reproduced.
 - [x] Freeze the diagnostic observation time at five ERM epochs (one quarter
   of the unchanged 20-epoch V8 schedule) before reading any diagnostic value.
-- [ ] Commit the diagnostic and frozen authorization record.  The frozen result
+- [x] Commit the diagnostic and frozen authorization record.  The frozen result
   authorizes neither GradNorm nor CAGrad, so Task 4 is skipped rather than
   counted as an experiment.
 
@@ -93,12 +93,12 @@ created and this skip is not counted as a scientific attempt.
 - Create: `scripts/run_literature_grounded_shared_search_v9.py`
 - Create: `tests/test_run_literature_grounded_shared_search_v9.py`
 
-- [ ] Write RED tests for the exact authorized registry, six participant-
+- [x] Write RED tests for the exact authorized registry, six participant-
   disjoint folds, deterministic seeds, fold-local scaling, per-source metrics,
   universal-head leave-one-source-out evaluation, and zero protected/Mayo
   reads.
-- [ ] Verify RED.
-- [ ] Implement comparator, each individually justified mechanism, and only
+- [x] Verify RED.
+- [x] Implement comparator, each individually justified mechanism, and only
   non-degrading combinations.  Do not add arbitrary widths, dropout values,
   thresholds, or epoch counts.
 - [ ] Run smoke locally, then the complete frozen screen on H200.

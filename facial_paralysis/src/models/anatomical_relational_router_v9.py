@@ -210,6 +210,14 @@ class AnatomicalRelationalRouterV9(nn.Module):
         universal = self.base.base.universal_head(universal_embedding).squeeze(-1)
         return 0.75 * task + 0.25 * universal, universal
 
+    def universal_logits(
+        self,
+        tokens: torch.Tensor,
+        action_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        universal_embedding = self.base.base.universal_embedding(tokens, action_mask)
+        return self.base.base.universal_head(universal_embedding).squeeze(-1)
+
 
 __all__ = [
     "AnatomicalRelationalCandidateV9",
