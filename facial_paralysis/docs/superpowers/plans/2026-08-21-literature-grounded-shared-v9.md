@@ -101,11 +101,11 @@ created and this skip is not counted as a scientific attempt.
 - [x] Implement comparator, each individually justified mechanism, and only
   non-degrading combinations.  Do not add arbitrary widths, dropout values,
   thresholds, or epoch counts.
-- [ ] Run smoke locally, then the complete frozen screen on H200.
-- [ ] Confirm the top candidate across seeds `0,1,2`; reject any candidate that
+- [x] Run smoke locally, then the complete frozen screen on H200.
+- [x] Confirm the top candidate across seeds `0,1,2`; reject any candidate that
   loses more than `0.01` AUROC or accuracy on a source, has sensitivity below
   `0.85`, or fails to improve worst-source specificity.
-- [ ] Commit.
+- [x] Commit.
 
 ### Task 6: Release the decision, not just the best run
 
@@ -116,12 +116,12 @@ created and this skip is not counted as a scientific attempt.
 - Modify: `docs/model_registry.json` only if every promotion gate passes.
 - Modify: `docs/CURRENT_DEPLOYMENT_MODEL.md` only if every promotion gate passes.
 
-- [ ] Write RED release tests for exact artifact hashes, aggregate-only output,
+- [x] Write RED release tests for exact artifact hashes, aggregate-only output,
   no patient/source paths, no Mayo claim, and byte-identical V8 registry files
   when no candidate passes.
-- [ ] Verify RED.
-- [ ] Publish the complete candidate table, authorization diagnostics,
+- [x] Verify RED.
+- [x] Publish the complete candidate table, authorization diagnostics,
   deterministic multi-seed metrics, LOSO stress test, and explicit decision.
-- [ ] Run all relevant direct tests, `py_compile`, secret/path scan, and
+- [x] Run all relevant direct tests, `py_compile`, secret/path scan, and
   `git diff --check`.
-- [ ] Commit the evidence release.
+- [x] Commit the evidence release.
