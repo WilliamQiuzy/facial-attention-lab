@@ -1,0 +1,121 @@
+{
+  "as_of": "2026-08-11",
+  "datasets": {
+    "aflfp": {
+      "access_evidence": {
+        "access_grant_evidence": "absent",
+        "application_sent_on": "2026-06-18",
+        "reply_received_on": "2026-06-20"
+      },
+      "access_status": "not_established",
+      "application": {
+        "draft_status": "prepared_not_sent",
+        "eligible_signer": "non_student_eligible_full_time_faculty_or_organization_employee",
+        "eula_sha256": "15b4cf3beb1d9ea4da519b267d31deeb9aa9c22db8beca1ee33e4fdced8fcca3",
+        "institutional_email_required": true,
+        "software_may_send_or_sign": false
+      },
+      "eula_restrictions": {
+        "distributing_any_database_part": "prohibited",
+        "further_copying_of_any_database_part": "prohibited",
+        "publication_or_presentation_images": {
+          "allowed_subject_count": 22,
+          "scope": "eula_listed_subjects_only"
+        },
+        "publishable_material": "academic_analysis_and_results_only",
+        "publishing_any_database_part": "prohibited",
+        "recipient_must_be": "eligible_full_time_faculty_or_organization_employee",
+        "recipient_must_not_be_student": true
+      },
+      "official_sources": {
+        "dataset_page": "https://researchportal.port.ac.uk/en/datasets/aflfp-database/",
+        "eula": "https://github.com/Yifan313/AFLFP/blob/main/End_User_License_Agreement.pdf",
+        "readme": "https://github.com/Yifan313/AFLFP/blob/main/README.md"
+      },
+      "permitted_use": "noncommercial_academic_research",
+      "status": "application_sent_reply_received_no_grant_evidence"
+    },
+    "meei": {
+      "access": {
+        "application_required": false,
+        "local_acquisition": "complete_ignored_quarantine",
+        "publisher_linked_public_download": true,
+        "redistribution_license_status": "not_established"
+      },
+      "cohort": {
+        "flaccid": 25,
+        "normal": 10,
+        "participants": 60,
+        "synkinetic": 25
+      },
+      "dynamic_binary_endpoint": {
+        "eligible_media_type": "video",
+        "eligible_mp4_files": 60,
+        "nonmedia_or_supporting_files_excluded": 5,
+        "participant_unit": true,
+        "photo_files_excluded": 482,
+        "primary_target": "normal_vs_facial_palsy",
+        "secondary_descriptive_strata": [
+          "House-Brackmann",
+          "Sunnybrook",
+          "eFACE"
+        ]
+      },
+      "inventory": {
+        "aggregate_member_manifest_sha256": "098ab51327be335ae08ddd16268cdfbd899a1c581cec95b951af3fd9bff93546",
+        "file_counts": {
+          "extensionless": 3,
+          "jpg": 480,
+          "mp4": 60,
+          "pdf": 1,
+          "tif": 2,
+          "xlsx": 1
+        },
+        "files": 547,
+        "metadata_xlsx_sha256": "52f60e8fc73d00bdbb0888ee9b2dc592b2172a234de9049480f66f4e28cfbbd6",
+        "paper_pdf_sha256": "57e483f2c44b74d75f4fa033f1e5721dc804b6f404cb15863ee90b0c1a23d243",
+        "total_bytes": 1316600371
+      },
+      "metadata_reconciliation": {
+        "spreadsheet_keys_without_video": [],
+        "spreadsheet_participant_rows": 51,
+        "video_participants": 60,
+        "video_without_spreadsheet_metadata": {
+          "count": 9,
+          "metadata": null,
+          "policy": "do_not_invent_or_impute"
+        }
+      },
+      "official_sources": {
+        "doi": "10.1002/lary.27986",
+        "paper": "https://pubmed.ncbi.nlm.nih.gov/31021433/",
+        "public_drive": "https://drive.google.com/drive/folders/1fSWluSuOJ5_SwiLfOr1yK63NSzy-95uZ",
+        "resources_page": "https://www.hadlockfacialplasticsurgery.com/resources/"
+      },
+      "scoring": {
+        "final_palsynet_artifact_status": "frozen",
+        "meei_outcomes_exposed": true,
+        "one_shot_authorization_status": "consumed",
+        "participants_scored": 60,
+        "model_scaler_or_calibration_fits": 0,
+        "auroc": 0.776,
+        "balanced_accuracy": 0.65,
+        "sensitivity": 0.9,
+        "specificity": 0.4,
+        "brier": 0.14306942317843108,
+        "ordinary_accuracy_derived_from_aggregate_counts": 0.8166666666666667,
+        "report_sha256": "445fa3c770addbeb70820a3395c13304e602b91445bb218d404cd1dff5f54baf",
+        "status": "completed_once_no_tuning"
+      },
+      "status": "acquired_audited_extracted_and_scored_once"
+    }
+  },
+  "lane": {
+    "meei_data_may_select_palsynet_candidate": false,
+    "model_selection_isolation": "strict",
+    "palsynet_final_artifact_required_before_meei_scoring": true,
+    "status": "independent_non_model_selection_lane"
+  },
+  "protocol": "110d-generalization-v1",
+  "schema_version": "external_dataset_status_v1"
+}

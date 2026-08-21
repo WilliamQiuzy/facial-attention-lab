@@ -1,0 +1,11 @@
+services:
+  shared-v9:
+    environment:
+      SHARED_V9_DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

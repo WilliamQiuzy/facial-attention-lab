@@ -1,0 +1,16 @@
+{"experiments": [
+  {"name": "r_only_s0", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"]},
+  {"name": "r_only_s1", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "seed": 1},
+  {"name": "r_only_s2", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "seed": 2},
+  {"name": "r_reweight_s0", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true},
+  {"name": "r_reweight_s1", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "seed": 1},
+  {"name": "r_reweight_s2", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "seed": 2},
+  {"name": "r_reweight_lr1e3", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "lr": 0.001},
+  {"name": "r_reweight_mean", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "temporal_pool": "mean"},
+  {"name": "r_eyesup", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "loss_weights": {"eyes": 1.0, "mouth": 0.5}},
+  {"name": "r_reweight_eyesup", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "loss_weights": {"eyes": 1.0, "mouth": 0.5}},
+  {"name": "r_drop015", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "dropout": 0.15},
+  {"name": "r_proj64", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 64, "stream_layernorm": true},
+  {"name": "r_temporal128", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "temporal_hidden": 128, "temporal_out": 128},
+  {"name": "r_reweight_lr1e3_s1", "sources": ["fnp","yfp"], "tasks": ["eyes","mouth"], "marlin_proj_dim": 128, "stream_layernorm": true, "lr": 0.001, "seed": 1}
+]}

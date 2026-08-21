@@ -1,0 +1,13 @@
+fastapi==0.116.1
+uvicorn==0.35.0
+starlette==0.47.2
+pydantic==2.11.7
+pydantic-core==2.33.2
+typing-extensions==4.14.1
+click==8.1.8
+h11==0.14.0
+annotated-types==0.7.0
+typing-inspection==0.4.1
+anyio==4.9.0
+sniffio==1.2.0
+idna==3.7

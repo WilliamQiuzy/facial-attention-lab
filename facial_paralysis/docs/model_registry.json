@@ -1,0 +1,80 @@
+{
+  "schema_version": "facial_paralysis_model_registry_v3",
+  "current": {
+    "name": "broad_literature_shared_v9_blv9_009_ensemble",
+    "version": "shared-v9-research-v1",
+    "candidate_id": "BLV9-009",
+    "mechanism": "masked_clinical_reconstruction",
+    "status": "locked_research_model_not_clinically_validated",
+    "loader_module": "src.deployment.shared_v9_research_release",
+    "release_manifest_path": "releases/shared-v9-research-v1/manifest.json",
+    "release_manifest_sha256": "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f",
+    "acceptance_path": "releases/shared-v9-research-v1/acceptance_summary.json",
+    "acceptance_sha256": "9bac7cbfc9d780cf5dc346ab89210217cf3259d1d8f9b6dce9ec2eac74aa098c",
+    "weight_files": [
+      {
+        "path": "releases/shared-v9-research-v1/weights-seed0.npz",
+        "sha256": "7befb2853b89a11ebf904483b027098d042e36d12891d65d93ffc4766ad3fc96"
+      },
+      {
+        "path": "releases/shared-v9-research-v1/weights-seed1.npz",
+        "sha256": "9f27e5d3535a472c09cb9cfd94cadd432d8373242b73a67e6d533e287d76760f"
+      },
+      {
+        "path": "releases/shared-v9-research-v1/weights-seed2.npz",
+        "sha256": "b97ef723ee8a2fdb6c90d04c1f5c1adb0b090292a76313feddc46f3b9a68fdf7"
+      }
+    ],
+    "selection_report_path": "docs/results/artifacts/broad_literature_shared_v9/report.json",
+    "selection_report_sha256": "27762fafb4923f043483bfc481d70948b3aaff12141f0a5fe2dbfeb1756c7ac4"
+  },
+  "deployment": {
+    "name": "broad_literature_shared_v9_blv9_009_ensemble",
+    "version": "shared-v9-public-oci-v1",
+    "status": "locked_public_research_deployment_not_clinically_validated",
+    "api_module": "src.deployment.shared_v9_service",
+    "release_manifest_path": "releases/shared-v9-research-v1/manifest.json",
+    "weights_distribution": "embedded_public_three_member_ensemble",
+    "registry": "ghcr.io/williamqiuzy/facial-attention-lab-shared-v9",
+    "image_id": "sha256:86f6018e1049c6c599d15f31ff52059667a4cecbfe2d041c7b78499fc421a79b",
+    "image_digest": "sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95",
+    "oci_manifest_path": "releases/shared-v9-research-v1/oci_manifest.json",
+    "oci_manifest_sha256": "a13d3d2abc3365c5cb7b6afd23a4e64962a0ad7d4400f7eb366aadb073650ddd",
+    "compose_path": "deploy/shared-v9/compose.yaml"
+  },
+  "benchmark": {
+    "name": "universal_clinical_router_v4",
+    "status": "historical_scientific_comparator_not_current",
+    "python_module": "src.models.current",
+    "runtime_module": "src.models.universal_clinical_router_v4",
+    "artifact_path": "docs/results/artifacts/universal_clinical_router_v4/model.json",
+    "artifact_sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495"
+  },
+  "archived": [
+    {
+      "name": "residual_shared_router_v8_rsr8_001",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "web_marlin_gru_ordinal",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "dynamic_landmark_ssl",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "universal_orofacial_v1",
+      "status": "archived_not_current",
+      "default_import": false
+    },
+    {
+      "name": "universal_phenotype_v3",
+      "status": "archived_not_current",
+      "default_import": false
+    }
+  ]
+}

@@ -1,0 +1,229 @@
+{
+  "audit": {
+    "protected_cache_records_loaded": 0,
+    "protected_feature_extractions": 0,
+    "protected_model_fits": 0,
+    "protected_predictions": 0
+  },
+  "claim_scope": {
+    "mayo": "assumed_positive_confidence_challenge_only",
+    "selection": "identity_reviewed_palsynet_development_oof_only"
+  },
+  "counts": {
+    "mayo_scored_contents": 47,
+    "palsynet_development_groups": 38,
+    "palsynet_development_recordings": 39
+  },
+  "decision": {
+    "baseline": "mirror_mean",
+    "clinical_validation": false,
+    "eligibility": {
+      "mirror_conservative_max": false,
+      "mirror_logit_mean": false,
+      "mirror_mean": true
+    },
+    "mayo_used_for_model_selection": false,
+    "outer_evaluation_authorized": false,
+    "promoted": false,
+    "selected": "mirror_mean",
+    "selection_source": "identity_reviewed_palsynet_development_oof_only",
+    "threshold_tuned_on_mayo": false
+  },
+  "mayo_current_mirror_mean": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.0851063829787234,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.0425531914893617,
+      "maximum": 0.9972299185551358,
+      "mean": 0.6646102416924612,
+      "median": 0.6493885746913206,
+      "minimum": 0.40228550148076947,
+      "q25": 0.5981296258115187,
+      "q75": 0.715546015418507
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "positive_call_rate": 0.9574468085106383,
+    "positive_call_rate_wilson95": [
+      0.8575147232210055,
+      0.9882517240332106
+    ],
+    "positive_calls": 45,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "mayo_failure_analysis": {
+    "accuracy_defined": false,
+    "below_threshold_confidence": {
+      "maximum": 0.42622490428589427,
+      "mean": 0.41425520288333184,
+      "median": 0.41425520288333184,
+      "minimum": 0.40228550148076947
+    },
+    "below_threshold_coverage": {
+      "maximum": 1.0,
+      "mean": 0.9921875,
+      "median": 0.9921875,
+      "minimum": 0.984375
+    },
+    "claim_scope": "mayo_assumed_positive_aggregate_diagnostic",
+    "counts": {
+      "below_threshold": 2,
+      "positive_calls": 45,
+      "scored": 47
+    },
+    "mayo_used_for_model_selection": false,
+    "nuisance_standardized_shift": {
+      "bitrate_proxy_bytes_per_second": {
+        "below_threshold_mean": 8526566.825530687,
+        "positive_call_mean": 9134710.799876194,
+        "standardized_mean_shift": -0.3271434095594656
+      },
+      "detection_rate": {
+        "below_threshold_mean": 0.9921875,
+        "positive_call_mean": 0.9946180555555556,
+        "standardized_mean_shift": -0.1679577129186812
+      },
+      "duration_seconds": {
+        "below_threshold_mean": 118.91499999999999,
+        "positive_call_mean": 104.51907407407408,
+        "standardized_mean_shift": 0.8247430272954308
+      },
+      "eye_line_roll_degrees_mean": {
+        "below_threshold_mean": 1.0989347191151226,
+        "positive_call_mean": 1.0073076055763621,
+        "standardized_mean_shift": 0.02974128160671575
+      },
+      "eye_line_roll_degrees_std": {
+        "below_threshold_mean": 2.0868561278270095,
+        "positive_call_mean": 2.3183698405703055,
+        "standardized_mean_shift": -0.12450269059468361
+      },
+      "face_scale_mean": {
+        "below_threshold_mean": 0.07438518757404819,
+        "positive_call_mean": 0.08769481308437735,
+        "standardized_mean_shift": -1.0218453091499167
+      },
+      "face_scale_std": {
+        "below_threshold_mean": 0.005965748877816824,
+        "positive_call_mean": 0.006678204651211258,
+        "standardized_mean_shift": -0.1052105214797027
+      },
+      "frame_difference_mean": {
+        "below_threshold_mean": 2.059091240167618,
+        "positive_call_mean": 2.128016583381161,
+        "standardized_mean_shift": -0.07009292114587615
+      },
+      "luminance_mean": {
+        "below_threshold_mean": 131.87956662919785,
+        "positive_call_mean": 136.62615331673328,
+        "standardized_mean_shift": -0.38170056173854094
+      }
+    },
+    "positive_call_confidence": {
+      "maximum": 0.9972299185551358,
+      "mean": 0.6757371323062002,
+      "median": 0.6593821488181413,
+      "minimum": 0.5309362777404797
+    },
+    "positive_call_coverage": {
+      "maximum": 1.0,
+      "mean": 0.9946180555555556,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "region_logit_contribution_shift": {
+      "brow": {
+        "below_threshold_mean": 0.0017593454288463428,
+        "mean_shift": -0.35042889915746356,
+        "positive_call_mean": 0.35218824458630993
+      },
+      "eye": {
+        "below_threshold_mean": -0.5727402075354093,
+        "mean_shift": -0.6961760565575691,
+        "positive_call_mean": 0.12343584902215979
+      },
+      "mouth": {
+        "below_threshold_mean": 0.2034406640832824,
+        "mean_shift": -0.18857960838152762,
+        "positive_call_mean": 0.39202027246481
+      }
+    },
+    "schema_version": "mayo_failure_analysis_v1_aggregate",
+    "threshold": 0.5
+  },
+  "mayo_post_lock_selected": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.0851063829787234,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.0425531914893617,
+      "maximum": 0.9972299185551358,
+      "mean": 0.6646102416924612,
+      "median": 0.6493885746913206,
+      "minimum": 0.40228550148076947,
+      "q25": 0.5981296258115187,
+      "q75": 0.715546015418507
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "positive_call_rate": 0.9574468085106383,
+    "positive_call_rate_wilson95": [
+      0.8575147232210055,
+      0.9882517240332106
+    ],
+    "positive_calls": 45,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "palsynet_development_metrics": {
+    "mirror_conservative_max": {
+      "auroc": 0.980392156862745,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119593
+    },
+    "mirror_logit_mean": {
+      "auroc": 0.980392156862745,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119593
+    },
+    "mirror_mean": {
+      "auroc": 0.980392156862745,
+      "balanced_accuracy": 0.9523809523809523,
+      "brier": 0.11736712693119593
+    }
+  },
+  "protocol": {
+    "aggregator_order": [
+      "mirror_mean",
+      "mirror_logit_mean",
+      "mirror_conservative_max"
+    ],
+    "logistic_c": 0.01,
+    "promotion_rule": "no_lower_auroc_or_balanced_accuracy_and_brier_increase_at_most_0.01_with_balanced_accuracy_or_brier_improvement",
+    "threshold": 0.5
+  },
+  "provenance": {
+    "implementation_sha256": "5b2e2f019d0f4b4ed1199b0ebb2403bcaf9ac5aadd96140996a1921f86b1d29b",
+    "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
+    "palsynet_review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_source_collection_sha256": "30263bc3784a1ed9eeec196f1448b3b36234036e25282d2bed17dcee97aab3ae",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "mayo_failure_analysis_robust_inference_v1_report",
+  "target": "binary_affected_vs_unaffected_not_hb_grade"
+}

@@ -1,0 +1,150 @@
+{
+  "schema_version": "neuroface_als_architecture_release_v1",
+  "run_date": "2026-08-14",
+  "decision": {
+    "neuroface_locked_candidate": "spread_nested_pyfeat_statistic_selector_logistic",
+    "strict_auroc_above_0_90": true,
+    "strict_accuracy_above_0_90": false,
+    "beats_published_0_91_accuracy": false,
+    "beats_published_0_97_auroc": false,
+    "frozen_bells_palsy_110d_replaced": false,
+    "stop_additional_neuroface_candidate_mining": true
+  },
+  "frozen_bells_palsy_reference": {
+    "representation": "landmark_mi_110d",
+    "endpoint": "palsynet_development_bells_palsy_binary",
+    "auroc": 0.9804,
+    "balanced_accuracy": 0.9524,
+    "source": "docs/results/source_robust_110d_v1.md",
+    "interpretation": "development_reference_not_neuroface_or_external_accuracy"
+  },
+  "neuroface_endpoint": {
+    "positive": "als",
+    "negative": "healthy_control",
+    "participants": 22,
+    "positive_participants": 11,
+    "negative_participants": 11,
+    "recordings": 66,
+    "tasks": {
+      "NSM_KISS": 22,
+      "NSM_OPEN": 22,
+      "NSM_SPREAD": 22
+    },
+    "au_cache_coverage": {
+      "minimum": 1.0,
+      "median": 1.0,
+      "maximum": 1.0
+    }
+  },
+  "published_descriptive_comparator": {
+    "paper_accuracy": 0.91,
+    "paper_auroc": 0.97,
+    "paper_endpoint": "als_vs_healthy_spread_minimum_pyfeat_au",
+    "our_paper_like_same_oof_search": {
+      "selected_representation": "paper_pyfeat_std_au_20d",
+      "accuracy": 0.9090909090909091,
+      "auroc": 0.9669421487603306,
+      "balanced_accuracy": 0.9090909090909091,
+      "sensitivity": 0.9090909090909091,
+      "specificity": 0.9090909090909091
+    },
+    "interpretation": "near_exact_reproduction_but_not_nested_or_external_superiority"
+  },
+  "strict_best": {
+    "pipeline": "spread_nested_pyfeat_statistic_selector_logistic",
+    "protocol": "nested_participant_loso",
+    "accuracy": 0.8636363636363636,
+    "auroc": 0.9504132231404958,
+    "balanced_accuracy": 0.8636363636363636,
+    "sensitivity": 0.8181818181818182,
+    "specificity": 0.9090909090909091,
+    "bootstrap": {
+      "method": "participant_stratified_percentile_bootstrap",
+      "replicates": 5000,
+      "seed": 20260814,
+      "interval_95": {
+        "accuracy": [0.6818181818181818, 1.0],
+        "auroc": [0.8429752066115702, 1.0],
+        "balanced_accuracy": [0.6818181818181819, 1.0],
+        "sensitivity": [0.5454545454545454, 1.0],
+        "specificity": [0.7272727272727273, 1.0]
+      }
+    }
+  },
+    "strict_ablations": {
+    "paper_pyfeat_min_au_20d": {
+      "accuracy": 0.7727272727272727,
+      "auroc": 0.768595041322314
+    },
+    "paper_pyfeat_all_stats_100d": {
+      "accuracy": 0.8181818181818182,
+      "auroc": 0.8595041322314049
+    },
+    "landmark_110d_als_transfer": {
+      "accuracy": 0.5,
+      "auroc": 0.4958677685950413
+    },
+    "min_au_plus_110d_130d": {
+      "accuracy": 0.8181818181818182,
+      "auroc": 0.834710743801653
+    },
+    "all_stats_au_plus_110d_210d": {
+      "accuracy": 0.7727272727272727,
+      "auroc": 0.884297520661157
+    },
+    "three_task_tcn": {
+      "accuracy": 0.5,
+      "auroc": 0.4628099173553719
+    },
+    "three_task_all_stats_logistic_300d": {
+      "accuracy": 0.8181818181818182,
+      "auroc": 0.884297520661157
+    },
+    "three_task_shrinkage_lda": {
+      "accuracy": 0.7727272727272727,
+      "auroc": 0.7355371900826446
+    },
+        "outcome_informed_balanced_logistic": {
+            "accuracy": 0.8181818181818182,
+            "auroc": 0.9090909090909092,
+            "research_process_status": "final_outcome_informed_ablation_not_promoted"
+        }
+    },
+    "broader_robustness_context": {
+        "endpoint": "als_or_post_stroke_vs_healthy_orofacial_capacity",
+        "participants": 36,
+        "auroc": 0.753,
+        "balanced_accuracy": 0.744,
+        "source": "docs/results/neuroface_action_capacity_v1.md",
+        "interpretation": "separate_preregistered_cross_disease_endpoint_not_pooled_with_als"
+    },
+    "provenance": {
+    "private_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "dynamic_collection_sha256": "07527c33fe0e35d34a554f7baccd49e9e692c4588b76aa6392ccad71c122bb17",
+    "au_collection_sha256": "6910d02efb9d161b4909408b15b63636f904e6ce3aff5f91b12536ae6e798cc5",
+    "spread_au_cache_set_sha256": "0948224f9f93932344971a3aaea940411f13271626bbacde40fe849a2c474933",
+    "environment_implementation_sha256": "3993675dcc28a644c69c5b4c2d01367753e15a7c0f349e010882158fa0507d5d",
+    "final_spread_implementation_sha256": "62f5f9d379d24310763002056667774101702d74a7d774cbbe6866b409c8327a",
+    "multitask_implementation_sha256": "b5dc39f2b83eba5636a54c168421f40f8a92001ee59d4a97d63c5ae709687848",
+    "tcn_implementation_sha256": "7d9e79af40fa93c53971571e0110b3e917201c05f4a86ac4e30d9a75676d0754",
+    "final_spread_report_sha256": "931aa9dfa6c4aa7648bc6a47ca6035485960463c4c0fea41b8f84fa59e1d64b5",
+    "multitask_report_sha256": "cd5c8174c765254371411e10ff4f7a0348467c54d52bdce5f8ee7213b887c4f7",
+    "tcn_report_sha256": "ab64e5a92e59e720c611c8b8a99c39d972d4dfe0b49a9a96ee7afb9bcaac07bd"
+  },
+  "runtime": {
+    "host": "nebius_h200",
+    "gpu": "NVIDIA H200",
+    "gpu_memory_mib": 143771,
+    "network_during_scoring": false,
+    "palsynet_reads": 0,
+    "mayo_reads": 0,
+    "meei_reads": 0
+  },
+  "claim_boundary": {
+    "internal_development_only": true,
+    "same_neuroface_outcomes_previously_explored": true,
+    "external_validation": false,
+    "clinical_deployment_claim": false,
+    "published_superiority_claim": false
+  }
+}

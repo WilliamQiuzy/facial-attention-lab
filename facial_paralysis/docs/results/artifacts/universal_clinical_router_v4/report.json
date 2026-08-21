@@ -1,0 +1,118 @@
+{
+  "schema_version": "universal_clinical_router_v4_aggregate_report",
+  "status": "multi_protocol_development_candidate_not_clinically_validated",
+  "model_artifact": {
+    "path": "docs/results/artifacts/universal_clinical_router_v4/model.json",
+    "sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495"
+  },
+  "routing": {
+    "dataset_identity_input": false,
+    "free_asymmetry": "palsynet_landmark_mi_110d",
+    "scripted_multimechanism": "neuroface_clinical_marlin_median_gate",
+    "cue_aligned_upper": "meei_landmark_sequence_ensemble"
+  },
+  "evaluations": {
+    "palsynet_development": {
+      "participants": 38,
+      "affected": 21,
+      "unaffected": 17,
+      "protocol": "registered_participant_disjoint_development",
+      "metrics": {
+        "auroc": 0.980392156862745,
+        "accuracy": 0.9473684210526315,
+        "balanced_accuracy": 0.9523809523809523,
+        "sensitivity": 0.9047619047619048,
+        "specificity": 1.0,
+        "brier": 0.11736712693119593
+      },
+      "report_sha256": "eb7b0dd5264d3047a9610796c2f50f862d74be4df4f8bc2aefa272e3a65930ec"
+    },
+    "palsynet_sealed_outer": {
+      "participants": 10,
+      "affected": 5,
+      "unaffected": 5,
+      "protocol": "inherited_unchanged_one_shot_sealed_outer",
+      "metrics": {
+        "auroc": 1.0,
+        "accuracy": 0.9,
+        "balanced_accuracy": 0.9,
+        "sensitivity": 0.8,
+        "specificity": 1.0,
+        "brier": 0.11762731663417376
+      }
+    },
+    "neuroface_development": {
+      "participants": 36,
+      "affected": 25,
+      "unaffected": 11,
+      "protocol": "sixfold_participant_phenotype_disjoint_fixed_18_head_median",
+      "metrics": {
+        "auroc": 0.9309090909090909,
+        "accuracy": 0.9166666666666666,
+        "balanced_accuracy": 0.8890909090909092,
+        "sensitivity": 0.96,
+        "specificity": 0.8181818181818182,
+        "brier": 0.0860191311911996
+      },
+      "participant_stratified_bootstrap_ci95": {
+        "auroc": [0.8109090909090909, 1.0],
+        "accuracy": [0.8333333333333334, 1.0],
+        "balanced_accuracy": [0.7527272727272727, 1.0]
+      },
+      "report_sha256": "2f547761a9e7df4104e37b9964b4c78f3afacb2ff74f9089930198662f380af4"
+    },
+    "meei_development": {
+      "participants": 56,
+      "affected": 46,
+      "unaffected": 10,
+      "protocol": "post_selection_nested_6x5_participant_disjoint_landmark_sequence",
+      "metrics": {
+        "auroc": 0.9108695652173914,
+        "accuracy": 0.875,
+        "balanced_accuracy": 0.8847826086956522,
+        "sensitivity": 0.8695652173913043,
+        "specificity": 0.9,
+        "brier": 0.1913399215006383
+      },
+      "report_sha256": "648becbfa357610b6a9d2100f823627252df8349b2bda460b933e565c7ee4967"
+    }
+  },
+  "rejected_large_adjustments": {
+    "single_shared_head": "failed_cross_source_transfer",
+    "small_end_to_end_neural_models": "failed_participant_disjoint_generalization",
+    "meei_cue_marlin": {
+      "decision": "rejected",
+      "exploratory_best_auroc": 0.9065217391304348,
+      "nested_selected_auroc": 0.858695652173913,
+      "nested_selected_accuracy": 0.8392857142857143,
+      "exploratory_report_sha256": "de7a8ac834447d61a24d390e4106198ec8118226bcc3b5720ce190b015b00978",
+      "nested_report_sha256": "37d9f51faec4fa1b65394a8bcd281d8b90719537df457c4359dfe3671c2cecc3"
+    },
+    "meei_cue_pyfeat_au": {
+      "decision": "rejected",
+      "participants": 56,
+      "exploratory_candidates": 32,
+      "exploratory_best_auroc": 0.5913043478260869,
+      "exploratory_best_accuracy": 0.6071428571428571,
+      "nested_landmark_au_candidates": 145,
+      "nested_selected_auroc": 0.6,
+      "nested_selected_accuracy": 0.7857142857142857,
+      "exploratory_report_sha256": "1227550be92b9a2f5632ac36ce1ea3cd775dab5ba331febd2f5af43dc923e584",
+      "nested_report_sha256": "f85e4194b8b6fc797d4a9b9d3d64a218639a640dbcc7bab1478bc8fdbcd0142c"
+    }
+  },
+  "audit": {
+    "protected_palsynet_cache_reads": 0,
+    "protected_palsynet_fits": 0,
+    "protected_palsynet_predictions": 0,
+    "mayo_labels_used": false,
+    "contains_identifiers_paths_or_row_probabilities": false
+  },
+  "claim_boundary": {
+    "development_only": true,
+    "untouched_external_validation": false,
+    "clinical_accuracy": false,
+    "house_brackmann_grading": false,
+    "deployment_authorized": false
+  }
+}

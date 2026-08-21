@@ -1,0 +1,36 @@
+{
+  "cagrad_authorized": false,
+  "fold_count": 6,
+  "gradient_norm_ratio": 1.1140612606418705,
+  "gradnorm_authorized": false,
+  "pairwise_gradient_cosines": [
+    {"median_cosine": 0.185147725045681, "pair": "palsynet__neuroface"},
+    {"median_cosine": 0.31942251324653625, "pair": "palsynet__meei"},
+    {"median_cosine": 0.5445828288793564, "pair": "neuroface__meei"}
+  ],
+  "relative_training_rate_ratio": 1.087702854843223,
+  "schema_version": "literature_grounded_shared_v9_diagnostic_v1",
+  "source_summaries": [
+    {
+      "final_loss": 0.8917706112066904,
+      "initial_gradient_norm": 1.9177555044492085,
+      "initial_loss": 1.0864055554072063,
+      "relative_remaining_loss": 0.8208450396522845,
+      "source": "palsynet"
+    },
+    {
+      "final_loss": 0.9539708495140076,
+      "initial_gradient_norm": 1.7219960292180378,
+      "initial_loss": 1.068473259607951,
+      "relative_remaining_loss": 0.8928354930136885,
+      "source": "neuroface"
+    },
+    {
+      "final_loss": 0.9457553327083588,
+      "initial_gradient_norm": 1.7214093804359436,
+      "initial_loss": 1.0755029519399006,
+      "relative_remaining_loss": 0.8793609826941765,
+      "source": "meei"
+    }
+  ]
+}

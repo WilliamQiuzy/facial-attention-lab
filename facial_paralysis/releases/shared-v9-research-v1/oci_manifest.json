@@ -1,0 +1,30 @@
+{
+  "schema_version": "shared_v9_public_oci_v1",
+  "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+  "candidate_id": "BLV9-009",
+  "registry": "ghcr.io/williamqiuzy/facial-attention-lab-shared-v9",
+  "tag": "v9-public-v1-452cb9b",
+  "visibility": "public",
+  "architecture": "linux/amd64",
+  "image_id": "sha256:86f6018e1049c6c599d15f31ff52059667a4cecbfe2d041c7b78499fc421a79b",
+  "image_digest": "sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95",
+  "source_commit": "452cb9be173ec472743acc1c617368f89b3cd97c",
+  "acceptance": {
+    "host_gpu": "NVIDIA H200",
+    "cpu": true,
+    "gpu_h200": true,
+    "cpu_probability": 0.5421362121899923,
+    "gpu_probability": 0.5421306987603506,
+    "cpu_gpu_maximum_absolute_difference": 0.0000055134296417,
+    "anonymous_registry_pull": true
+  },
+  "clinical_validation": false,
+  "intended_use": "research inference from validated preprocessed clinical-action tensors",
+  "excluded_claims": [
+    "raw-video inference",
+    "Mayo binary accuracy",
+    "House-Brackmann grading",
+    "clinical diagnosis",
+    "production clinical deployment"
+  ]
+}

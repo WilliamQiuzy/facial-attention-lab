@@ -1,0 +1,435 @@
+{
+  "aggregation": "participant_mean_over_nsm_kiss_open_spread",
+  "associations": {
+    "affected_diagnosis_adjusted": {
+      "fatigue": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.38364233778367773,
+        "ci95_low": -0.3521577221751716,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.8808974460676284,
+        "rho": 0.031575484884113075
+      },
+      "rom": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.27488113060019237,
+        "ci95_low": -0.5909958907660159,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.5073857643058426,
+        "rho": -0.1390554033155148
+      },
+      "speed": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.4441110497728206,
+        "ci95_low": -0.4121118981405265,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.8324757780155272,
+        "rho": 0.044566152074226234
+      },
+      "symmetry": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.7561324431461723,
+        "ci95_low": 0.0015245675727050662,
+        "n": 25,
+        "p_holm": 0.13632203596628217,
+        "p_raw": 0.022720339327713696,
+        "rho": 0.45372277271178796
+      },
+      "total": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.4373546418579083,
+        "ci95_low": -0.4926675421170555,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.9314168548289959,
+        "rho": -0.018139800862649883
+      },
+      "variability": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.3233975914965649,
+        "ci95_low": -0.587290701110062,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.4980838544978272,
+        "rho": -0.14208579992729212
+      }
+    },
+    "affected_only_pooled": {
+      "fatigue": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.2678388822789989,
+        "ci95_low": -0.48938858005031066,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.5325724653519979,
+        "rho": -0.1309830313195758
+      },
+      "rom": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.47555606251686816,
+        "ci95_low": -0.3491793168497223,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.7251678607289744,
+        "rho": 0.07400432991044041
+      },
+      "speed": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.525530612339803,
+        "ci95_low": -0.27601012308428025,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.49602661831949746,
+        "rho": 0.14275978216602034
+      },
+      "symmetry": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.813556395487156,
+        "ci95_low": 0.16212129708106082,
+        "n": 25,
+        "p_holm": 0.03005950080177222,
+        "p_raw": 0.0050099168002953704,
+        "rho": 0.5432483071658983
+      },
+      "total": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.6170983802733406,
+        "ci95_low": -0.23556329385343402,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.34084312185310417,
+        "rho": 0.1987661547391729
+      },
+      "variability": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.4930084335912799,
+        "ci95_low": -0.39644392296715375,
+        "n": 25,
+        "p_holm": 1.0,
+        "p_raw": 0.9063762897743557,
+        "rho": 0.024787589172468538
+      }
+    },
+    "all_participants_spectrum": {
+      "fatigue": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.07044142384692811,
+        "ci95_low": -0.5480931255221961,
+        "n": 36,
+        "p_holm": 0.8119107521568311,
+        "p_raw": 0.13531845869280518,
+        "rho": -0.2537698207845476
+      },
+      "rom": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.21856050780955924,
+        "ci95_low": -0.44872058572645585,
+        "n": 36,
+        "p_holm": 1.0,
+        "p_raw": 0.4823231215237965,
+        "rho": -0.1209322343097953
+      },
+      "speed": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.33840349007964216,
+        "ci95_low": -0.344690576828397,
+        "n": 36,
+        "p_holm": 1.0,
+        "p_raw": 0.9981762677637571,
+        "rho": -0.0003948887831917038
+      },
+      "symmetry": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.4938980429881245,
+        "ci95_low": -0.1194527437379871,
+        "n": 36,
+        "p_holm": 1.0,
+        "p_raw": 0.2328519674699679,
+        "rho": 0.20394007077966303
+      },
+      "total": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.3215591008797648,
+        "ci95_low": -0.36895576468368735,
+        "n": 36,
+        "p_holm": 1.0,
+        "p_raw": 0.883112647269344,
+        "rho": -0.025396451805280718
+      },
+      "variability": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.3300115790602504,
+        "ci95_low": -0.402807828517981,
+        "n": 36,
+        "p_holm": 1.0,
+        "p_raw": 0.8172906873554562,
+        "rho": -0.039897931504047066
+      }
+    },
+    "als_only": {
+      "fatigue": {
+        "bootstrap": {
+          "invalid": 1,
+          "requested": 5000,
+          "valid": 4999
+        },
+        "ci95_high": 0.6864307010064263,
+        "ci95_low": -0.4114343910556883,
+        "n": 11,
+        "p_holm": 1.0,
+        "p_raw": 0.5684893501836081,
+        "rho": 0.19356688595237104
+      },
+      "rom": {
+        "bootstrap": {
+          "invalid": 1,
+          "requested": 5000,
+          "valid": 4999
+        },
+        "ci95_high": 0.1818226276309493,
+        "ci95_low": -0.9377726366324186,
+        "n": 11,
+        "p_holm": 0.5574079265714087,
+        "p_raw": 0.11148158531428173,
+        "rho": -0.5069608917800194
+      },
+      "speed": {
+        "bootstrap": {
+          "invalid": 1,
+          "requested": 5000,
+          "valid": 4999
+        },
+        "ci95_high": 0.5129057181573101,
+        "ci95_low": -0.8279028371446763,
+        "n": 11,
+        "p_holm": 1.0,
+        "p_raw": 0.47013317380312936,
+        "rho": -0.24374308156889268
+      },
+      "symmetry": {
+        "bootstrap": {
+          "invalid": 1,
+          "requested": 5000,
+          "valid": 4999
+        },
+        "ci95_high": 0.9832162563982481,
+        "ci95_low": 0.20823563662298444,
+        "n": 11,
+        "p_holm": 0.10210536000504301,
+        "p_raw": 0.017017560000840502,
+        "rho": 0.6975507422299032
+      },
+      "total": {
+        "bootstrap": {
+          "invalid": 1,
+          "requested": 5000,
+          "valid": 4999
+        },
+        "ci95_high": 0.7683504780117074,
+        "ci95_low": -0.6479930838408193,
+        "n": 11,
+        "p_holm": 1.0,
+        "p_raw": 0.8932124414296368,
+        "rho": 0.045980048987170286
+      },
+      "variability": {
+        "bootstrap": {
+          "invalid": 1,
+          "requested": 5000,
+          "valid": 4999
+        },
+        "ci95_high": 0.8642121755309742,
+        "ci95_low": -0.5438008144425455,
+        "n": 11,
+        "p_holm": 1.0,
+        "p_raw": 0.6637130685382354,
+        "rho": 0.14817355731532722
+      }
+    },
+    "post_stroke_only": {
+      "fatigue": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.3887811144018126,
+        "ci95_low": -0.6017749138480387,
+        "n": 14,
+        "p_holm": 1.0,
+        "p_raw": 0.6580483806771746,
+        "rho": -0.12989991899615347
+      },
+      "rom": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.6268014356285846,
+        "ci95_low": -0.5479498634659226,
+        "n": 14,
+        "p_holm": 1.0,
+        "p_raw": 0.7289050826914021,
+        "rho": 0.10188567484113553
+      },
+      "speed": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.6945151170104533,
+        "ci95_low": -0.4134718555226744,
+        "n": 14,
+        "p_holm": 1.0,
+        "p_raw": 0.5148821852581541,
+        "rho": 0.19018706101013808
+      },
+      "symmetry": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.7323549524385654,
+        "ci95_low": -0.40639238422645574,
+        "n": 14,
+        "p_holm": 1.0,
+        "p_raw": 0.4338288534571725,
+        "rho": 0.22762778348524987
+      },
+      "total": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.5097972985629198,
+        "ci95_low": -0.69004912824189,
+        "n": 14,
+        "p_holm": 1.0,
+        "p_raw": 0.716327655697021,
+        "rho": -0.1067933116108467
+      },
+      "variability": {
+        "bootstrap": {
+          "invalid": 0,
+          "requested": 5000,
+          "valid": 5000
+        },
+        "ci95_high": 0.2394005029621898,
+        "ci95_low": -0.8780379257490097,
+        "n": 14,
+        "p_holm": 0.9385297654361606,
+        "p_raw": 0.15642162757269343,
+        "rho": -0.4000246936444968
+      }
+    }
+  },
+  "claim_scope": "post_external_evaluation_exploratory_clinical_association",
+  "clinical_reference_discrimination": {
+    "interpretation": "descriptive_check_of_released_slp_ratings_not_model_performance",
+    "total_auroc": 0.9054545454545454
+  },
+  "counts": {
+    "affected": 25,
+    "participants": 36,
+    "unaffected": 11
+  },
+  "dataset": "Toronto_NeuroFace_v1",
+  "multiplicity": "holm_within_each_six_domain_family",
+  "provenance": {
+    "external_report_sha256": "beda5bee5ed3736a90245e98c165777198aee6d6be2bbcd8a13f0fb2b1a11984"
+  },
+  "scale_direction": "higher_is_more_severe_dysfunction",
+  "schema_version": "neuroface_slp_transfer_v1",
+  "scoring_audit": {
+    "artifact_predictions": 231,
+    "authorization_attempts": 1,
+    "authorization_passes": 1,
+    "cache_artifacts_hashed": 231,
+    "cache_records_loaded": 231,
+    "calibration_fits": 0,
+    "feature_extractions": 231,
+    "mirror_transforms": 462,
+    "model_fits": 0,
+    "participant_aggregations": 0,
+    "scaler_fits": 0
+  }
+}

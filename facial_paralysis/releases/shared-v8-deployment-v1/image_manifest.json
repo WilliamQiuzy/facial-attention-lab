@@ -1,0 +1,17 @@
+{
+  "schema_version": "shared_v8_deployment_image_v1",
+  "image_id": "sha256:d5f1de3c57ab5b080ab30907f114b764b67bc3acc897ff29ceda426cb44296ea",
+  "image_tag": "facial-paralysis-shared-v8:1.0.0",
+  "base_image_digest": "pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2",
+  "build_commit": "586779e266fd69ca6b60c4bd3df19472b889a2a0",
+  "dockerfile_sha256": "e0162bdb5c296e1738b3d0b48fea7a389d75fb65264af6914e68fa32d0ad1210",
+  "runtime_lock_sha256": "320b6e5b9d4e300cbc024e14683829c12a580bb13c6ac8316940903b8bd11608",
+  "runtime": {
+    "user": "1001:1001",
+    "gpu": "NVIDIA H200",
+    "torch": "2.7.1+cu128",
+    "cuda": "12.8",
+    "python": "3.11.13"
+  },
+  "weights_in_image": false
+}

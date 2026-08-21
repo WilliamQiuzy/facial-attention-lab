@@ -12,11 +12,15 @@
 *.pfx
 **/__pycache__/
 **/.pytest_cache/
+**/.firecrawl/
 **/.venv/
 **/*.egg-info/
 *.py[cod]
 *.npy
 *.npz
+!facial_paralysis/releases/shared-v9-research-v1/weights-seed0.npz
+!facial_paralysis/releases/shared-v9-research-v1/weights-seed1.npz
+!facial_paralysis/releases/shared-v9-research-v1/weights-seed2.npz
 *.pt
 *.pth
 *.joblib

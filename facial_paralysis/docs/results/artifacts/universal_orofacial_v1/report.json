@@ -1,0 +1,113 @@
+{
+  "schema_version": "universal_orofacial_research_summary_v1",
+  "endpoint": "affected_vs_unaffected_across_heterogeneous_orofacial_disorders",
+  "counts": {
+    "development_participants": 74,
+    "neuroface_participants": 36,
+    "palsynet_development_participants": 38,
+    "meei_diagnostic_participants": 60
+  },
+  "universal_110d_v1": {
+    "locked_candidate": "source_balanced_logistic_110d",
+    "development_gate_passed": false,
+    "metrics": {
+      "palsynet": {
+        "auroc": 0.9635854341736694,
+        "balanced_accuracy": 0.9761904761904762
+      },
+      "neuroface": {
+        "auroc": 0.5636363636363637,
+        "balanced_accuracy": 0.49818181818181817
+      },
+      "palsynet_to_neuroface": {
+        "auroc": 0.4290909090909091,
+        "balanced_accuracy": 0.4218181818181818
+      },
+      "neuroface_to_palsynet": {
+        "auroc": 0.7731092436974789,
+        "balanced_accuracy": 0.5
+      }
+    },
+    "architecture_comparators": {
+      "groupdro_lowrank_110d": {
+        "palsynet_auroc": 0.8935574229691877,
+        "neuroface_auroc": 0.5127272727272727
+      },
+      "multitask_lowrank_110d": {
+        "palsynet_auroc": 0.8991596638655462,
+        "neuroface_auroc": 0.509090909090909
+      }
+    },
+    "h200_report_sha256": "2ff4d1d24ef5ca83b4c65b5d48e6076ac16e122a655365d08a259a629a3dbb98",
+    "implementation_sha256": "c5b774cea7303d55508df21774575a4e4a28a3d89bfa39c18792845daf5ea890",
+    "locked_artifact_sha256": "d7bd8f63011cb1f9ab2a1b08427216706577c4ee01ae7dfbdd2c32443d645c97"
+  },
+  "multisignal_v2": {
+    "locked_representation": "fusion_398",
+    "development_gate_passed": false,
+    "metrics": {
+      "palsynet": {
+        "auroc": 0.957983193277311,
+        "balanced_accuracy": 0.9467787114845938
+      },
+      "neuroface": {
+        "auroc": 0.68,
+        "balanced_accuracy": 0.5981818181818181
+      },
+      "palsynet_to_neuroface": {
+        "auroc": 0.4218181818181818,
+        "balanced_accuracy": 0.49636363636363634
+      },
+      "neuroface_to_palsynet": {
+        "auroc": 0.7142857142857143,
+        "balanced_accuracy": 0.5
+      }
+    },
+    "representation_comparators": {
+      "landmark_110": {
+        "palsynet_auroc": 0.9635854341736694,
+        "neuroface_auroc": 0.5636363636363637
+      },
+      "blendshape_288": {
+        "palsynet_auroc": 0.9215686274509803,
+        "neuroface_auroc": 0.6545454545454545
+      },
+      "fusion_398": {
+        "palsynet_auroc": 0.957983193277311,
+        "neuroface_auroc": 0.68
+      }
+    },
+    "h200_report_sha256": "4c011aaa4833e3db2d44bb2d204ff94e8bbfc36baaeeac3655de29a1e1964241",
+    "implementation_sha256": "527d5320fabdf3aa04926431c7fa75754c98a55d68eaa8b3cbb52f6841ab1b36",
+    "locked_artifact_sha256": "9d50626f7a72b13aea20ed4521d73f9688ab656f19a1cccd9073f0d4e2ed364e"
+  },
+  "meei_locked_diagnostic": {
+    "candidate": "source_balanced_logistic_110d",
+    "selection_performed": false,
+    "model_refit": false,
+    "metrics": {
+      "accuracy": 0.6166666666666667,
+      "auroc": 0.82,
+      "balanced_accuracy": 0.77,
+      "brier": 0.22410968701135447,
+      "sensitivity": 0.54,
+      "specificity": 1.0
+    },
+    "h200_report_sha256": "1bef47a3879b03b87cb4c86be26271ba0f2261863b60e745ca30e3d479d3a99f",
+    "implementation_sha256": "c5b774cea7303d55508df21774575a4e4a28a3d89bfa39c18792845daf5ea890"
+  },
+  "audit": {
+    "mayo_reads": 0,
+    "meei_reads_during_candidate_selection": 0,
+    "palsynet_development_cache_records_loaded": 39,
+    "palsynet_protected_cache_records_loaded": 0,
+    "palsynet_protected_predictions": 0,
+    "yfp_reads": 0
+  },
+  "decision": {
+    "criterion": "same_locked_model_auroc_and_balanced_accuracy_at_least_0_90_per_development_source_plus_both_source_heldout_auroc_at_least_0_90_then_meei_auroc_and_balanced_accuracy_at_least_0_90",
+    "universal_model_promoted": false,
+    "current_endpoint_models_replaced": false,
+    "clinical_validation": false
+  }
+}

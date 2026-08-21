@@ -1,0 +1,55 @@
+{
+  "schema_version": "shared_v9_research_release_acceptance_v1",
+  "status": "pass",
+  "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+  "candidate_id": "BLV9-009",
+  "release_manifest_sha256": "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f",
+  "weights": {
+    "members": 3,
+    "total_bytes": 4014133,
+    "all_manifest_hashes_verified": true,
+    "all_members_loaded": true
+  },
+  "training": {
+    "device": "NVIDIA H200",
+    "epochs_per_member": 20,
+    "seeds": [0, 1, 2],
+    "source_counts": {
+      "palsynet": 38,
+      "neuroface": 36,
+      "meei": 56
+    },
+    "palsynet_protected_reads": 0,
+    "mayo_reads": 0,
+    "mayo_predictions": 0
+  },
+  "cross_device_smoke": {
+    "cpu": "macos",
+    "gpu": "NVIDIA H200",
+    "protocols": [
+      "free_motion_four_window",
+      "scripted_three_action",
+      "cue_aligned_action"
+    ],
+    "maximum_absolute_probability_difference": 0.0000054935,
+    "tolerance": 0.00001,
+    "passed": true
+  },
+  "targeted_tests": {
+    "passed": 39,
+    "failed": 0
+  },
+  "public_safety": {
+    "raw_media_included": false,
+    "subject_identifiers_included": false,
+    "labels_included": false,
+    "subject_features_or_predictions_included": false,
+    "private_paths_or_manifests_included": false
+  },
+  "claims": {
+    "clinical_validation": false,
+    "hb_grade": false,
+    "mayo_accuracy": false,
+    "production_authorized": false
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "audit": {
+    "palsynet_protected_cache_records_loaded": 0,
+    "palsynet_protected_predictions": 0,
+    "per_record_probabilities_exported": 0,
+    "raw_mayo_videos_uploaded": 0
+  },
+  "claim_scope": "known_positive_recording_cohort_challenge_only",
+  "decision": {
+    "accuracy_claimed": false,
+    "clinical_validation": false,
+    "current_model_replaced": false,
+    "mayo_used_for_model_selection": false
+  },
+  "inventory": {
+    "exact_duplicate_files": 1,
+    "quality_excluded_unique_contents": 2,
+    "source_video_files": 50,
+    "unique_video_contents": 49
+  },
+  "protocol": {
+    "challenge_source": "mayo_known_positive_local_video_cohort",
+    "deduplication": "exact_file_sha256",
+    "model": "frozen_mirror_invariant_landmark_110d_logistic_c_0_01",
+    "threshold": 0.5,
+    "training_source": "identity_reviewed_palsynet_development_only"
+  },
+  "provenance": {
+    "implementation_sha256": "06a18ae88414e2ae7eac4c818e029babfb1f221487b1830f84beab7235cb3866",
+    "mayo_cache_manifest_sha256": "873c2439ced56957b1f7c7dade13b5a40f9485117b066513790e5bd9ee2b3c76",
+    "palsynet_review_ledger_sha256": "865fe78137d3d97b11da3bf37c6db105e387174b9f115c01824afea6a5368afd",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_source_collection_sha256": "30263bc3784a1ed9eeec196f1448b3b36234036e25282d2bed17dcee97aab3ae",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "schema_version": "mayo_positive_challenge_v1_report",
+  "summary": {
+    "accuracy_defined": false,
+    "assumed_positive_records": 47,
+    "auroc_defined": false,
+    "confidence": {
+      "at_least_0_80": 0.0851063829787234,
+      "at_least_0_90": 0.0425531914893617,
+      "at_least_0_95": 0.0425531914893617,
+      "maximum": 0.9972299185551358,
+      "mean": 0.6646102416924612,
+      "median": 0.6493885746913206,
+      "minimum": 0.40228550148076947,
+      "q25": 0.5981296258115187,
+      "q75": 0.715546015418507
+    },
+    "extraction_coverage": {
+      "maximum": 1.0,
+      "median": 1.0,
+      "minimum": 0.921875
+    },
+    "positive_call_rate": 0.9574468085106383,
+    "positive_call_rate_wilson95": [
+      0.8575147232210055,
+      0.9882517240332106
+    ],
+    "positive_calls": 45,
+    "records": 47,
+    "specificity_defined": false,
+    "verified_negative_records": 0
+  },
+  "target": "binary_affected_probability_not_hb_grade"
+}
