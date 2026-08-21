@@ -1,0 +1,24 @@
+{
+  "schema_version": "shared_v8_oci_distribution_v1",
+  "runtime_image": "ghcr.io/williamqiuzy/facial-attention-lab-shared-v8-runtime",
+  "runtime_version": "1.0.0",
+  "runtime_digest": "sha256:59c25d4c8cdd56e7468a099b16772880a5a5bc7f9fb16c0cd315392154861c55",
+  "runtime_visibility": "private",
+  "bundle_image": "ghcr.io/williamqiuzy/facial-attention-lab-shared-v8-bundle",
+  "bundle_version": "1.0.0",
+  "bundle_digest": "sha256:c1bd32815a5b1f92e1f52b08d1ecf52190266a21e1d740bc4d5fca70362c26af",
+  "bundle_visibility": "private",
+  "bundle_local_image_id": "sha256:5b7459104bbe3bba9cf4ef4d3e4e2db94031e5b558214f66e97eab569ac228b8",
+  "weights_sha256": "72e40ea7b127b6768e931665df622550f06cc5a1bbad20070a42614c5b9901ab",
+  "remote_repull_acceptance": {
+    "status": "pass",
+    "sequential_requests": 1000,
+    "concurrent_requests": 200,
+    "workers": 8,
+    "report_sha256": "53068347bce1789ee5921249c7c98c916229a67d27ce76cfe7e41892fb6572bf",
+    "sequential_p95_ms": 28.474583999923198,
+    "concurrent_p95_ms": 250.9437749999961
+  },
+  "distribution": "authorized_collaborators_with_read_packages_only",
+  "clinical_validation": false
+}

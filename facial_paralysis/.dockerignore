@@ -12,6 +12,9 @@
 !environment/neuroface_h200_v1.lock
 !environment/neuroface_action_capacity_host_audit_ed25519_public.pem
 !environment/neuroface_action_capacity_v1.Dockerfile
+!environment/shared_v8_runtime_v1.lock
+!environment/shared_v8_deployment_v1.Dockerfile
+!scripts/serve_shared_v8.py
 
 **/__pycache__/
 **/*.pyc

@@ -1,5 +1,5 @@
 {
-  "schema_version": "facial_paralysis_model_registry_v1",
+  "schema_version": "facial_paralysis_model_registry_v2",
   "current": {
     "name": "universal_clinical_router_v4",
     "schema_version": "universal_clinical_router_v4",
@@ -9,6 +9,20 @@
     "artifact_path": "docs/results/artifacts/universal_clinical_router_v4/model.json",
     "artifact_sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495",
     "report_path": "docs/results/artifacts/universal_clinical_router_v4/report.json"
+  },
+  "deployment": {
+    "name": "residual_shared_router_v8_rsr8_001",
+    "version": "shared-v8-deployment-v1",
+    "status": "locked_research_deployment_not_clinically_validated",
+    "api_module": "src.deployment.shared_v8_service",
+    "release_manifest_path": "releases/shared-v8-deployment-v1/model_manifest.json",
+    "weights_sha256": "72e40ea7b127b6768e931665df622550f06cc5a1bbad20070a42614c5b9901ab",
+    "weights_distribution": "restricted_release_not_in_public_git",
+    "image_id": "sha256:d5f1de3c57ab5b080ab30907f114b764b67bc3acc897ff29ceda426cb44296ea",
+    "acceptance_path": "releases/shared-v8-deployment-v1/acceptance_summary.json",
+    "oci_manifest_path": "releases/shared-v8-deployment-v1/oci_manifest.json",
+    "bundle_digest": "sha256:c1bd32815a5b1f92e1f52b08d1ecf52190266a21e1d740bc4d5fca70362c26af",
+    "compose_path": "deploy/shared-v8/compose.yaml"
   },
   "archived": [
     {
