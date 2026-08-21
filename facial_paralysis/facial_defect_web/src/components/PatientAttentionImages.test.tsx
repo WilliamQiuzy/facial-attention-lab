@@ -124,7 +124,7 @@ describe('PatientAttentionImages', () => {
     ).toBeVisible()
     expect(
       screen.getByRole('img', {
-        name: "Simulated attention density aligned to this photograph's estimated face contour",
+        name: "Illustrative attention density aligned to this photograph's estimated face contour",
       }),
     ).toHaveAccessibleDescription(
       'Automatically estimated from this photograph for spatial reference. It is not a defect boundary, clinical segmentation, or attention prediction.',

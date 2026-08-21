@@ -10,6 +10,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { approvedAssets } from '../data/approvedAssetManifest'
 import { DEMO_PATIENT_RECORDS } from '../data/demoPatientRecords'
 import {
+  patientSamplePhotoPairs,
+  type PatientSamplePhotoAsset,
+} from '../data/patientSamplePhotoPair'
+import {
   PatientWorkflowProvider,
   type PatientWorkflowProviderProps,
   type PatientWorkflowRuntime,
@@ -38,13 +42,15 @@ import {
 import { PatientVisitPage } from './PatientVisitPage'
 
 const patient = DEMO_PATIENT_RECORDS[0]!
+const activePatientSamplePhotoAssets =
+  patientSamplePhotoPairs['patient-demo-001']
 const visitId = createPatientVisitId('visit-task-5-primary')
 const DEFAULT_SHA = 'a'.repeat(64)
 const qualityLabels = [
   'Full face is visible and centered',
   'Focus, lighting, and occlusion are acceptable',
   'Patient left/right orientation is confirmed and the image is not mirrored',
-  'Photography and research authorization is documented for this demo workflow',
+  'Photography authorization is documented for this visit',
 ] as const
 
 type TaggedMedia = Blob & {
@@ -107,12 +113,15 @@ function prepareCapture(
   })
 }
 
-function loadSyntheticMedia() {
+function loadSyntheticMedia(
+  asset: Pick<PatientSamplePhotoAsset, 'sha256'> =
+    activePatientSamplePhotoAssets.preoperative,
+) {
   const media = new Blob(['approved synthetic'], {
     type: 'image/png',
   }) as TaggedMedia
   Object.defineProperty(media, 'testSha256', {
-    value: approvedAssets[0]!.sha256,
+    value: asset.sha256,
   })
   return Promise.resolve(media)
 }
@@ -269,6 +278,67 @@ function stateWithSyntheticCaptureOnAnotherVisit(): PatientWorkflowState {
   return state
 }
 
+function stateWithPairedPreoperativeSampleAndPostoperativeVisit(): PatientWorkflowState {
+  const preoperativeVisitId = createPatientVisitId(
+    'visit-task-5-paired-preoperative',
+  )
+  let state = createInitialPatientWorkflowState(
+    [patient],
+    '2026-07-27',
+  )
+  state = patientWorkflowReducer(state, {
+    type: 'visit/create',
+    visit: {
+      id: preoperativeVisitId,
+      patientId: patient.id,
+      timepoint: 'preoperative',
+      visitDate: '2026-07-20',
+      createdAt: '2026-07-20T13:00:00.000Z',
+    },
+    trustedToday: '2026-07-27',
+  })
+  state = patientWorkflowReducer(state, {
+    type: 'visit/create',
+    visit: {
+      id: visitId,
+      patientId: patient.id,
+      timepoint: 'postoperative',
+      visitDate: '2026-07-27',
+      createdAt: '2026-07-27T13:00:00.000Z',
+    },
+    trustedToday: '2026-07-27',
+  })
+  return patientWorkflowReducer(state, {
+    type: 'capture/add',
+    capture: {
+      id: createCaptureAssetId('capture-task-5-paired-preoperative'),
+      patientId: patient.id,
+      visitId: preoperativeVisitId,
+      version: 1,
+      status: 'current',
+      source: 'synthetic_demo',
+      mediaHandle: createSessionMediaHandle(
+        'paired_preoperative_media_001',
+      ),
+      sha256: activePatientSamplePhotoAssets.preoperative.sha256,
+      mimeType: 'image/png',
+      sizeBytes: 1_024,
+      width: 1_024,
+      height: 1_024,
+      captureProtocol: 'frontal_relaxed_non_mirrored_v1',
+      qualityChecks: {
+        faceVisibleAndCentered: false,
+        focusLightingAndOcclusionAcceptable: false,
+        orientationConfirmed: false,
+        authorizationDocumented: false,
+      },
+      capturedAt: '2026-07-20T13:01:00.000Z',
+      syntheticSourceAssetId:
+        activePatientSamplePhotoAssets.preoperative.id,
+    },
+  })
+}
+
 function testFile(name = 'test-photo.png') {
   return new File(['test photo'], name, { type: 'image/png' })
 }
@@ -292,7 +362,7 @@ async function confirmQuality(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe('PatientVisitPage', () => {
-  it('shows patient identity and camera, upload, and standalone synthetic capture choices', async () => {
+  it('shows patient identity and Camera, Upload photo, and Sample photo choices', async () => {
     const user = userEvent.setup()
     const loadSynthetic = vi.fn(loadSyntheticMedia)
     renderVisit({ loadSyntheticMedia: loadSynthetic })
@@ -308,14 +378,7 @@ describe('PatientVisitPage', () => {
     ).toBeVisible()
     expect(within(identity).getByText(patient.recordNumber)).toBeVisible()
 
-    expect(screen.getByLabelText('Take photo')).toHaveAttribute(
-      'accept',
-      'image/*',
-    )
-    expect(screen.getByLabelText('Take photo')).toHaveAttribute(
-      'capture',
-      'user',
-    )
+    expect(screen.getByRole('button', { name: 'Camera' })).toBeVisible()
     expect(screen.getByLabelText('Upload photo')).toHaveAttribute(
       'accept',
       'image/jpeg,image/png,image/webp',
@@ -323,11 +386,13 @@ describe('PatientVisitPage', () => {
 
     await user.click(
       screen.getByRole('button', {
-        name: 'Use synthetic demo photo',
+        name: 'Sample photo',
       }),
     )
 
-    expect(loadSynthetic).toHaveBeenCalledWith(approvedAssets[0])
+    expect(loadSynthetic).toHaveBeenCalledWith(
+      activePatientSamplePhotoAssets.preoperative,
+    )
     const qualityHeading = await screen.findByRole('heading', {
       name: 'Photo quality confirmation',
     })
@@ -337,13 +402,18 @@ describe('PatientVisitPage', () => {
       screen.getByRole('img', { name: 'Current frontal photograph' }),
     ).toHaveAttribute('src', 'blob:patient-visit-1')
     expect(
+      screen.getByText(
+        activePatientSamplePhotoAssets.preoperative.disclosure,
+      ),
+    ).toBeVisible()
+    expect(
       screen.queryByRole('button', {
-        name: 'Use synthetic demo photo',
+        name: 'Sample photo',
       }),
     ).not.toBeInTheDocument()
     expect(
       screen.getByText(
-        'This visit already uses the standalone catalog demo. Take or upload a different test image to replace it.',
+        'This visit already uses a sample photo. Use Camera or Upload photo to replace it.',
       ),
     ).toBeVisible()
   })
@@ -355,13 +425,37 @@ describe('PatientVisitPage', () => {
 
     expect(
       screen.queryByRole('button', {
-        name: 'Use synthetic demo photo',
+        name: 'Sample photo',
       }),
     ).not.toBeInTheDocument()
     expect(
       screen.getByText(
-        'A standalone catalog demo is already used by another visit in this record. Upload a separate test image; catalog demos cannot establish longitudinal identity.',
+        'This record already uses a different sample photo. Use Camera or Upload photo to keep the same patient across visits.',
       ),
+    ).toBeVisible()
+  })
+
+  it('offers the matching postoperative sample after the paired preoperative sample is used', async () => {
+    const user = userEvent.setup()
+    const loadSynthetic = vi.fn(loadSyntheticMedia)
+    renderVisit({
+      initialState: stateWithPairedPreoperativeSampleAndPostoperativeVisit(),
+      loadSyntheticMedia: loadSynthetic,
+    })
+
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Sample photo',
+      }),
+    )
+
+    expect(loadSynthetic).toHaveBeenCalledWith(
+      activePatientSamplePhotoAssets.postoperative,
+    )
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Photo quality confirmation',
+      }),
     ).toBeVisible()
   })
 
@@ -377,7 +471,7 @@ describe('PatientVisitPage', () => {
 
     await user.click(
       screen.getByRole('button', {
-        name: 'Use synthetic demo photo',
+        name: 'Sample photo',
       }),
     )
 
@@ -395,11 +489,13 @@ describe('PatientVisitPage', () => {
         'Checking the image before it is added to this visit.',
       ),
     ).toBeVisible()
-    expect(within(captureRegion).getByLabelText('Take photo')).toBeDisabled()
+    expect(
+      within(captureRegion).getByRole('button', { name: 'Camera' }),
+    ).toBeDisabled()
     expect(within(captureRegion).getByLabelText('Upload photo')).toBeDisabled()
     expect(
       within(captureRegion).getByRole('button', {
-        name: 'Use synthetic demo photo',
+        name: 'Sample photo',
       }),
     ).toBeDisabled()
 
@@ -441,11 +537,11 @@ describe('PatientVisitPage', () => {
 
   it('blocks analysis until all four capture-consistency checks pass and announces four processing phases', async () => {
     const user = userEvent.setup()
-    renderVisit({ queueDelayMs: 30, analysisDelayMs: 60 })
+    renderVisit({ queueDelayMs: 250, analysisDelayMs: 60 })
     await attachUpload(user)
 
     const run = screen.getByRole('button', {
-      name: 'Run simulated analysis',
+      name: 'Run analysis',
     })
     expect(run).toBeDisabled()
     expect(screen.getAllByRole('checkbox')).toHaveLength(4)
@@ -453,12 +549,12 @@ describe('PatientVisitPage', () => {
     await confirmQuality(user)
     expect(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     ).toBeEnabled()
     await user.click(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     )
 
@@ -530,7 +626,7 @@ describe('PatientVisitPage', () => {
     await confirmQuality(user)
     await user.click(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     )
     await screen.findByRole('heading', { name: 'Review result' })
@@ -539,7 +635,7 @@ describe('PatientVisitPage', () => {
       name: 'Original photograph',
     })
     const overlay = screen.getByRole('heading', {
-      name: 'Simulated overlay',
+      name: 'Attention overlay',
     })
     const density = screen.getByRole('heading', {
       name: 'Attention density + matched face contour',
@@ -547,6 +643,7 @@ describe('PatientVisitPage', () => {
     const aoi = screen.getByRole('heading', {
       name: 'Attention by facial area',
     })
+    const reviewDecision = screen.getByText('Review decision')
 
     expect(
       original.compareDocumentPosition(overlay) &
@@ -557,11 +654,15 @@ describe('PatientVisitPage', () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      density.compareDocumentPosition(aoi) &
+      density.compareDocumentPosition(reviewDecision) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      reviewDecision.compareDocumentPosition(aoi) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     const densityGraphic = screen.getByRole('img', {
-      name: "Simulated attention density aligned to this photograph's estimated face contour",
+      name: "Illustrative attention density aligned to this photograph's estimated face contour",
     })
     expect(densityGraphic).toHaveStyle({ aspectRatio: '1024 / 900' })
     expect(densityGraphic).toHaveAccessibleDescription(
@@ -585,7 +686,7 @@ describe('PatientVisitPage', () => {
     ).toBeVisible()
     expect(
       screen.getByText(
-        'Face-relative areas summarize this simulated density. They do not change the analysis.',
+        'Face-relative areas summarize this attention density. They do not change the analysis.',
       ),
     ).toBeVisible()
     expect(
@@ -610,16 +711,16 @@ describe('PatientVisitPage', () => {
     ).not.toBeVisible()
     expect(
       screen.getByText(
-        'Simulated estimate of where observers may attend. Not eye-tracking, diagnosis, severity, treatment guidance, or evidence of surgical outcome.',
+        'Illustrative estimate of where observers may attend. Not measured eye-tracking, diagnosis, treatment guidance, or evidence of surgical outcome.',
       ),
     ).toBeVisible()
     expect(
       screen.getByText(
-        'Demo engine only: this illustrative field is seeded by the capture hash and positioned using on-device face landmarks. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
+        'Illustrative engine only: this field is seeded by the capture hash and positioned using on-device face landmarks. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
       ),
     ).not.toBeVisible()
     const engineBoundary = screen.getByText(
-      'Demo engine only: this illustrative field is seeded by the capture hash and positioned using on-device face landmarks. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
+      'Illustrative engine only: this field is seeded by the capture hash and positioned using on-device face landmarks. It does not detect this person’s scar and was not produced by the checked-in facial-paralysis model.',
     )
     expect(
       density.compareDocumentPosition(engineBoundary) &
@@ -642,50 +743,50 @@ describe('PatientVisitPage', () => {
     await confirmQuality(user)
     await user.click(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     )
     await screen.findByRole('heading', { name: 'Review result' })
 
     await user.click(
-      screen.getByRole('button', { name: 'Complete review' }),
+      screen.getByRole('button', { name: 'Save decision' }),
     )
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Choose Reviewed or Repeat photo.',
+      'Choose Accept photo for comparison or Request a new photo.',
     )
     expect(
-      screen.getByRole('radio', { name: 'Reviewed' }),
+      screen.getByRole('radio', { name: 'Accept photo for comparison' }),
     ).toHaveFocus()
 
     await user.click(
-      screen.getByRole('radio', { name: 'Repeat photo' }),
+      screen.getByRole('radio', { name: 'Request a new photo' }),
     )
     await user.click(
-      screen.getByRole('button', { name: 'Complete review' }),
+      screen.getByRole('button', { name: 'Save decision' }),
     )
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Enter a reason for the repeat photo.',
+      'Enter a reason for requesting a new photo.',
     )
     expect(
-      screen.getByLabelText('Reason for repeat photo'),
+      screen.getByLabelText('Reason for requesting a new photo'),
     ).toHaveFocus()
     expect(
-      screen.getByLabelText('Reason for repeat photo'),
+      screen.getByLabelText('Reason for requesting a new photo'),
     ).toHaveAttribute('name', 'reviewNote')
     expect(
-      screen.getByLabelText('Reason for repeat photo'),
+      screen.getByLabelText('Reason for requesting a new photo'),
     ).toHaveAttribute('autocomplete', 'off')
 
     await user.type(
-      screen.getByLabelText('Reason for repeat photo'),
+      screen.getByLabelText('Reason for requesting a new photo'),
       'Lighting was uneven.',
     )
     await user.click(
-      screen.getByRole('button', { name: 'Complete review' }),
+      screen.getByRole('button', { name: 'Save decision' }),
     )
 
     expect(
-      screen.getByRole('heading', { name: 'Repeat photo' }),
+      screen.getByRole('heading', { name: 'Add replacement photo' }),
     ).toBeVisible()
     expect(
       screen.queryByRole('img', { name: 'Current frontal photograph' }),
@@ -711,29 +812,76 @@ describe('PatientVisitPage', () => {
     }
   })
 
-  it('offers a direct return to the review queue after completing a review', async () => {
+  it('reopens a completed visit as a read-only single-visit image record', async () => {
     const user = userEvent.setup()
     renderVisit()
     await attachUpload(user)
     await confirmQuality(user)
     await user.click(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     )
     await screen.findByRole('heading', { name: 'Review result' })
 
-    await user.click(screen.getByRole('radio', { name: 'Reviewed' }))
     await user.click(
-      screen.getByRole('button', { name: 'Complete review' }),
+      screen.getByRole('radio', {
+        name: 'Accept photo for comparison',
+      }),
+    )
+    await user.type(
+      screen.getByLabelText('Review note (optional)'),
+      'Photo accepted for the longitudinal comparison.',
+    )
+    await user.click(
+      screen.getByRole('button', { name: 'Save decision' }),
     )
 
     expect(
-      screen.getByRole('heading', { name: 'Review complete' }),
+      screen.getByRole('heading', {
+        name: 'Preoperative visit record',
+      }),
     ).toHaveFocus()
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Decision saved',
+    )
+    const savedReview = screen.getByRole('region', {
+      name: 'Saved review',
+    })
     expect(
-      screen.getByRole('link', { name: 'Back to reviews' }),
-    ).toHaveAttribute('href', '/reviews')
+      within(savedReview).getByText('Accepted for comparison'),
+    ).toBeVisible()
+    expect(
+      within(savedReview).getByText(
+        'Photo accepted for the longitudinal comparison.',
+      ),
+    ).toBeVisible()
+    const visitImages = screen.getByRole('region', {
+      name: 'Visit photo and result',
+    })
+    expect(
+      within(visitImages).getByRole('img', {
+        name: 'Original frontal photograph',
+      }),
+    ).toBeVisible()
+    expect(
+      within(visitImages).getByRole('img', {
+        name: 'Frontal photograph with illustrative attention overlay',
+      }),
+    ).toBeVisible()
+    const additionalDetails = screen
+      .getByText('Additional details')
+      .closest('details')
+    expect(additionalDetails).not.toBeNull()
+    expect(additionalDetails).not.toHaveAttribute('open')
+    expect(
+      screen.getByRole('img', {
+        name: "Illustrative attention density aligned to this photograph's estimated face contour",
+      }),
+    ).not.toBeVisible()
+    expect(
+      screen.queryByRole('link', { name: 'Back to reviews' }),
+    ).not.toBeInTheDocument()
     expect(
       screen.getByRole('link', { name: 'Return to patient record' }),
     ).toHaveAttribute('href', `/patients/${patient.id}`)
@@ -750,7 +898,7 @@ describe('PatientVisitPage', () => {
     await confirmQuality(user)
     await user.click(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     )
 
@@ -792,7 +940,7 @@ describe('PatientVisitPage', () => {
     await confirmQuality(user)
     await user.click(
       screen.getByRole('button', {
-        name: 'Run simulated analysis',
+        name: 'Run analysis',
       }),
     )
 

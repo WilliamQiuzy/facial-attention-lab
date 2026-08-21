@@ -401,14 +401,14 @@ describe('AttentionResultView clinical AOI story', () => {
     ) as HTMLElement | null
 
     expect(densityPeak?.style.getPropertyValue('--attention-color-rgb')).toBe(
-      '207 16 32',
+      '255 0 0',
     )
     expect(overlayPeak?.style.getPropertyValue('--attention-color-rgb')).toBe(
-      '207 16 32',
+      '255 0 0',
     )
     expect(
       screen.getAllByRole('group', {
-        name: 'Relative density color scale: blue low, cyan, yellow, orange, red peak',
+        name: 'Attention scale: blue indicates less attention and red indicates more attention',
       }),
     ).toHaveLength(2)
   })

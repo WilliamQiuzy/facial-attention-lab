@@ -206,7 +206,7 @@ export function NewPatientVisitPage() {
 
           <p className="patient-form-note">
             The next screen adds one frontal, relaxed-expression
-            synthetic or test photograph.
+            patient or sample photograph.
           </p>
 
           <div className="patient-form-actions">

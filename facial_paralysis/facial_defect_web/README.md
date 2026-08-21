@@ -1,4 +1,4 @@
-# Facial Reconstruction Imaging
+# FaceAI
 
 A clinician-facing, session-only frontend prototype for a facial
 reconstruction photo workflow. The primary path lets the team rehearse
@@ -16,10 +16,11 @@ The interface uses a restrained Mayo-inspired visual system, but it is an indepe
 | Surface | Current state |
 | --- | --- |
 | Clinician workflow | Patient record → photo visit → frontal capture → four quality checks → local simulation → image-first result → review |
+| Longitudinal comparison | Same-patient pre-operative and post-operative photo, outline, and attention views after both visits have completed results |
 | Patient records | Synthetic/test records in React memory only; no authentication, persistence, server record, or real-PHI support |
 | Camera and upload | Native camera/file input; validated JPEG/PNG/WebP bytes remain in an in-memory session vault |
 | Patient result | Original, simulated overlay, density field with a photo-matched face contour, and face-relative AOI summary on one scrolling page |
-| Clinician review | `Reviewed` or `Repeat photo`; the current simulated result remains exact-bound to its capture |
+| Clinician review | `Accept photo for comparison` or `Request a new photo`; the current simulated result remains exact-bound to its capture |
 | Case catalog | 10 hash-locked AI-generated synthetic identities |
 | Legacy research workbench | Case-to-Run, batch, model comparison, structured research review, and gated patient-explanation rehearsal |
 | Source image binding | Verified full-image identity retained only for provenance and fail-closed validation; one-click recovery if malformed |
@@ -107,7 +108,7 @@ choice.
 | `/` | Redirects to the clinician patient list |
 | `/patients` | Search session-only synthetic/test patient records |
 | `/patients/new` | Create one session-only synthetic/test record and initial photo visit |
-| `/patients/:patientId` | Patient identity and chronological photo-visit timeline |
+| `/patients/:patientId` | Patient identity, chronological visits, state-gated pre/post readiness, and same-patient comparison only after both current results exist |
 | `/patients/:patientId/visits/new` | Add a dated preoperative, postoperative, or follow-up photo visit |
 | `/patients/:patientId/visits/:visitId` | Capture, quality confirmation, processing, image result, and simple review |
 | `/reviews` | Simulated patient results awaiting a clinician decision |
@@ -154,7 +155,7 @@ awaiting_review -> approved_for_research -> revoked
 
 Retries create new immutable attempts with parent lineage; they never overwrite a failed or cancelled attempt. Every single-run, retry, and batch launch revalidates the current verified full-image source binding immediately before gateway work; a changed binding blocks the attempt without a request. Restoring a source binding never starts inference. It increments the binding version when recovery is needed, preserves prior run history, and marks incompatible current results stale. Review approval means approval for this synthetic research demonstration only—not clinical approval.
 
-## Run locally
+## Run the complete FaceAI website
 
 Requirements: Node.js 22.12–24.x and pnpm 11.x. The lockfile records `pnpm@11.9.0`.
 
@@ -164,10 +165,27 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open [http://127.0.0.1:5173/](http://127.0.0.1:5173/). The default mode is
+Open [http://localhost:5173/](http://localhost:5173/). The default mode is
 deterministic and local. It performs no external model inference, writes
 nothing to browser persistence, and keeps selected test-image bytes inside
-the current in-memory session.
+the current in-memory session. `localhost` is the browser address of the local
+development server; a branded address and remote doctor access require an HTTPS
+deployment.
+
+### Build the full website ZIP
+
+The doctor-facing ZIP is a multi-file production website, not a standalone HTML
+demo. Build it with:
+
+```bash
+pnpm package:website
+```
+
+The command writes `release/FaceAI-Website.zip`. The archive contains the full
+compiled site, a small localhost server, Mac and Windows launchers, and concise
+opening instructions. Node.js 22 LTS or newer is required on the receiving
+computer. The launcher opens the site on `localhost`, which preserves browser
+camera permission; a branded remote address still requires HTTPS deployment.
 
 ## Verification
 
@@ -177,7 +195,10 @@ pnpm test:run
 pnpm build
 ```
 
-Vite verifies the source bytes of the exact 10 approved assets when configuration loads and again before production build. Missing, changed, non-synthetic, or unapproved assets fail the build. The final bundle must contain exactly those 10 PNG byte hashes and no real-image or `facial_paralysis` research asset.
+Vite verifies the source bytes of the exact 10 approved workbench assets when
+configuration loads and again before production build. Missing, changed,
+non-synthetic, or unapproved assets fail the build; no real-image or
+`facial_paralysis` research asset is allowed.
 
 ## Future model gateway
 
@@ -248,8 +269,10 @@ The downloadable `application/json` manifest uses an explicit whitelist. It incl
 
 ## Safety and asset scope
 
-- All 10 images are separate AI-generated identities and standalone, unpaired demonstrations.
-- The UI must never describe them as before/after, the same patient, postoperative change, treatment outcome, or a scientific cross-case comparison.
+- The research workbench's 10 images are separate AI-generated identities and
+  remain standalone, unpaired demonstrations. The workbench must never describe
+  them as before/after, the same patient, postoperative change, treatment
+  outcome, or a scientific cross-case comparison.
 - No source under `output/real`, no facial-paralysis research image, no
   patient-derived feature, no clinical label, and no trained clinical or
   observer-attention model weight is imported. The only checked-in model bundle

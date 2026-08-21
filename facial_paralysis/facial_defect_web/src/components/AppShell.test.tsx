@@ -32,23 +32,10 @@ function renderShell(path: string, gateway?: WorkbenchGateway) {
   )
 }
 
-function expectPermanentBoundaries() {
-  const environmentNotices = screen.getAllByRole('status', {
-    name: 'Workspace environment',
-  })
-  expect(environmentNotices).toHaveLength(1)
-
-  const environment = environmentNotices[0]
+function expectNoEnvironmentBar() {
   expect(
-    within(environment).getByText(
-      'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
-    ),
-  ).toBeVisible()
-  expect(
-    within(environment).getByText(
-      'Research prototype · synthetic/test only · clinical use blocked',
-    ),
-  ).toBeInTheDocument()
+    screen.queryByRole('status', { name: 'Workspace environment' }),
+  ).not.toBeInTheDocument()
   expect(screen.queryByRole('status', { name: /research use status/i })).not.toBeInTheDocument()
 }
 
@@ -65,18 +52,18 @@ describe('application frame', () => {
     '/patients',
     `/analysis?case=${approvedCaseId}`,
     '/research/reviews/review-from-old-session',
-  ])('keeps one compact mock environment notice on %s', (path) => {
+  ])('does not show an environment bar on %s', (path) => {
     renderShell(path)
 
-    expectPermanentBoundaries()
+    expectNoEnvironmentBar()
   })
 
   it.each(['/runs', '/models', '/reviews'])(
-    'keeps one compact connected environment notice on %s',
+    'does not show an environment bar in connected mode on %s',
     (path) => {
       renderShell(path, connectedGateway)
 
-      expectPermanentBoundaries()
+      expectNoEnvironmentBar()
     },
   )
 
@@ -86,7 +73,7 @@ describe('application frame', () => {
     const primary = screen.getByRole('navigation', { name: /primary navigation/i })
     expect(within(primary).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Patients',
-      'Reviews',
+      'Review',
       'Help',
     ])
     expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content')
@@ -102,8 +89,8 @@ describe('application frame', () => {
     expect(container.querySelector('img[alt*="Mayo" i]')).not.toBeInTheDocument()
     expect(screen.queryByText(/Mayo-inspired research operations/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/affiliation or endorsement/i)).not.toBeInTheDocument()
-    expect(screen.getByText('FR')).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Facial Reconstruction Imaging' })).toHaveAttribute(
+    expect(screen.getByText('FA')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'FaceAI' })).toHaveAttribute(
       'href',
       '/patients',
     )
@@ -178,12 +165,12 @@ describe('application frame', () => {
     const footer = screen.getByRole('contentinfo')
     expect(
       within(footer).getByText(
-        'Facial Reconstruction Imaging · Research prototype',
+        'FaceAI · Research prototype',
       ),
     ).toBeVisible()
     expect(
       within(footer).getByText(
-        'Synthetic/test records only · Session resets on refresh',
+        'Sample data only · Session resets on refresh',
       ),
     ).toBeVisible()
 
@@ -197,9 +184,7 @@ describe('application frame', () => {
   })
 
   it('keeps permanent shell text at a clinician-readable minimum size', () => {
-    expect(getCssRule(workbenchCss, '.environment-strip')).toMatch(
-      /font-size:\s*(?:0\.875rem|14px)/,
-    )
+    expect(workbenchCss).not.toContain('.environment-strip')
     expect(getCssRule(globalCss, '.site-footer a')).toMatch(
       /font-size:\s*(?:0\.875rem|14px)/,
     )
@@ -250,23 +235,11 @@ describe('application frame', () => {
     expect(getCssRule(narrowMobileCss, '.brand__name--compact')).toMatch(
       /display:\s*block/,
     )
-    expect(getCssRule(workbenchMobileCss, '.environment-strip__copy--full')).toMatch(
-      /display:\s*none/,
-    )
-    expect(getCssRule(workbenchMobileCss, '.environment-strip__copy--compact')).toMatch(
-      /display:\s*inline/,
-    )
   })
 
-  it('removes the obsolete notice CSS and prints the environment strip intentionally', () => {
+  it('removes obsolete notice and environment-strip CSS', () => {
     expect(globalCss).not.toContain('.research-notice')
-
-    const printStart = workbenchCss.lastIndexOf('@media print')
-    const printCss = workbenchCss.slice(printStart)
-    const printedEnvironment = getCssRule(printCss, '.environment-strip')
-
-    expect(printedEnvironment).toMatch(/background:\s*#fff/)
-    expect(printedEnvironment).toMatch(/border-(?:top|bottom):/)
+    expect(workbenchCss).not.toContain('.environment-strip')
   })
 
   it('uses a plain header and removes the unused marketing decoration', () => {

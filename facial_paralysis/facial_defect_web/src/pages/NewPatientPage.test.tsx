@@ -88,7 +88,7 @@ describe('NewPatientPage', () => {
     renderPage()
 
     const dataBoundary = screen.getByText(
-      'Only synthetic or test information may be entered. Do not enter real patient information.',
+      'Public prototype: use fictional sample data only. Do not enter identifiable patient information.',
     )
     const firstField = screen.getByRole('textbox', { name: 'Display name' })
     expect(dataBoundary).toBeVisible()
@@ -118,12 +118,22 @@ describe('NewPatientPage', () => {
 
     expect(
       screen.getByText(
-        'Only synthetic or test information may be entered. Do not enter real patient information.',
+        'Public prototype: use fictional sample data only. Do not enter identifiable patient information.',
+      ),
+    ).toBeVisible()
+    expect(
+      screen.getByRole('heading', {
+        name: 'Prototype data restriction',
+      }),
+    ).toBeVisible()
+    expect(
+      screen.getByText(
+        'This acknowledgement is a prototype data-use restriction. It is not patient consent, photography authorization, or clinical approval.',
       ),
     ).toBeVisible()
     await user.click(
       screen.getByRole('checkbox', {
-        name: /I confirm this record contains synthetic\/test information only/i,
+        name: /I will use fictional sample data only and will not enter a patient name, medical record number, date of birth, or identifiable photograph/i,
       }),
     )
     await user.click(
@@ -156,7 +166,7 @@ describe('NewPatientPage', () => {
     const recordNumber = screen.getByRole('textbox', {
       name: 'Record or study ID',
     })
-    await user.type(recordNumber, 'demo 1001')
+    await user.type(recordNumber, 'sample 1001')
     await user.type(screen.getByLabelText('Date of birth'), '2099-01-01')
     await user.selectOptions(
       screen.getByRole('combobox', { name: 'Care pathway' }),
@@ -180,7 +190,7 @@ describe('NewPatientPage', () => {
     expect(screen.getByText('Timepoint is required.')).toBeVisible()
     expect(
       screen.getByText(
-        'Confirm that only synthetic/test information is being entered.',
+        'Acknowledge the prototype data restriction before continuing.',
       ),
     ).toBeVisible()
     expect(recordNumber).toHaveFocus()

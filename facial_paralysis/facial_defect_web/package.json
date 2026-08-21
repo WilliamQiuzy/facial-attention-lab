@@ -1,5 +1,5 @@
 {
-  "name": "facial-attention-lab",
+  "name": "faceai",
   "private": true,
   "version": "0.1.0",
   "packageManager": "pnpm@11.9.0",
@@ -9,12 +9,13 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
+    "dev": "vite --host localhost",
     "build": "tsc --noEmit && vite build",
+    "package:website": "pnpm build && node scripts/package-website.mjs",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest",
     "test:run": "vitest run",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host localhost"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.0.0",
@@ -32,6 +33,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "jsdom": "^29.1.1",
+    "playwright": "1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.5",
     "vitest": "^4.1.10"

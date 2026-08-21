@@ -32,14 +32,18 @@ describe('workspace application shell', () => {
     renderApp()
 
     expect(screen.getByRole('heading', { name: 'Patients', level: 1 })).toBeVisible()
-    expect(screen.getByRole('link', { name: /facial reconstruction imaging/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'FaceAI' })).toHaveAttribute(
       'href',
       '/patients',
     )
 
     const primary = screen.getByRole('navigation', { name: 'Primary navigation' })
     const primaryLinks = within(primary).getAllByRole('link')
-    expect(primaryLinks.map((link) => link.textContent)).toEqual(['Patients', 'Reviews', 'Help'])
+    expect(primaryLinks.map((link) => link.textContent)).toEqual([
+      'Patients',
+      'Review',
+      'Help',
+    ])
     expect(primaryLinks.map((link) => link.getAttribute('href'))).toEqual([
       '/patients',
       '/reviews',
@@ -88,19 +92,12 @@ describe('workspace application shell', () => {
     expect(researchTools).toBeVisible()
   })
 
-  it('keeps the compact prototype boundary visible', () => {
+  it('does not show a persistent prototype environment bar', () => {
     renderApp('/patients')
 
-    const environments = screen.getAllByRole('status', {
-      name: 'Workspace environment',
-    })
-    expect(environments).toHaveLength(1)
-    const environment = environments[0]
     expect(
-      within(environment).getByText(
-        'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
-      ),
-    ).toBeVisible()
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByRole('status', { name: 'Research use status' }),
     ).not.toBeInTheDocument()
@@ -108,6 +105,13 @@ describe('workspace application shell', () => {
       'href',
       '#main-content',
     )
+  })
+
+  it('does not expose the retired Demo route', () => {
+    renderApp('/demo')
+
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/demo')
+    expect(screen.getByRole('heading', { name: 'Page not found' })).toBeVisible()
   })
 
   it('keeps the default mock loading state visible long enough to be understood', async () => {
@@ -176,7 +180,7 @@ describe('workspace application shell', () => {
     }
   })
 
-  it('does not weaken the prototype boundary when research tools use a connected gateway', () => {
+  it('does not reintroduce an environment bar for a connected gateway', () => {
     const gateway = {
       mode: 'connected',
       runInference: async () => {
@@ -190,14 +194,9 @@ describe('workspace application shell', () => {
       </MemoryRouter>,
     )
 
-    const environment = screen.getByRole('status', {
-      name: 'Workspace environment',
-    })
     expect(
-      within(environment).getByText(
-        'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
-      ),
-    ).toBeVisible()
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
   })
 
   it('keeps legacy research-review deep links compatible but redirects them out of the clinical namespace', () => {

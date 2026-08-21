@@ -26,4 +26,19 @@ describe('PatientJobProgress', () => {
       }),
     ).toHaveTextContent('Analysis queued')
   })
+
+  it('exposes a stable visual state for every numbered step', () => {
+    const { container } = render(<PatientJobProgress status="running" />)
+    const markers = container.querySelectorAll(
+      '.patient-job-progress__marker',
+    )
+
+    expect(markers).toHaveLength(4)
+    expect(
+      [...markers].map((marker) => marker.getAttribute('data-step')),
+    ).toEqual(['1', '2', '3', '4'])
+    expect(
+      [...markers].map((marker) => marker.getAttribute('data-state')),
+    ).toEqual(['complete', 'complete', 'current', 'pending'])
+  })
 })

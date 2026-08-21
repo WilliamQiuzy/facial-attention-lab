@@ -98,6 +98,22 @@ describe('patient workflow visual safeguards', () => {
     )
   })
 
+  it('keeps all four loading markers large, centered, and on one visual axis', () => {
+    const phase = rule('.patient-job-progress__phase {')
+    const marker = rule('.patient-job-progress__marker {')
+    const current = rule('.patient-job-progress__phase--current {')
+
+    expect(phase).toMatch(/grid-template-columns:\s*36px/)
+    expect(marker).toMatch(/display:\s*inline-flex/)
+    expect(marker).toMatch(/width:\s*36px/)
+    expect(marker).toMatch(/height:\s*36px/)
+    expect(marker).toMatch(/align-items:\s*center/)
+    expect(marker).toMatch(/justify-content:\s*center/)
+    expect(marker).toMatch(/line-height:\s*1/)
+    expect(current).not.toMatch(/padding-left:/)
+    expect(phase).toMatch(/padding:\s*9px 12px/)
+  })
+
   it('places photograph and quality checks side by side only when space allows', () => {
     expect(rule('.patient-capture-quality-step')).toMatch(
       /grid-template-columns:\s*minmax\(0,\s*1\.15fr\)\s+minmax\(320px,\s*0\.85fr\)/,

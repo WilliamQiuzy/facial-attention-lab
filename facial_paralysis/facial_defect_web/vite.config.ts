@@ -19,7 +19,11 @@ export default defineConfig({
     fs: {
       allow: [
         path.resolve(process.cwd()),
-        ...new Set(approvedAssetPaths.map((filePath) => path.dirname(filePath))),
+        ...new Set(
+          approvedAssetPaths.map(
+            (filePath) => path.dirname(filePath),
+          ),
+        ),
       ],
     },
   },

@@ -9,7 +9,7 @@ const STATUS_LABELS: Readonly<Record<PatientNextAction, string>> = {
   retry_analysis: 'Analysis needs attention',
   review_result: 'Review needed',
   visit_complete: 'Complete',
-  retake: 'Repeat photo needed',
+  retake: 'New photo needed',
 }
 
 type PatientStatusProps = {

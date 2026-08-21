@@ -645,7 +645,7 @@ svg {
     rgb(var(--attention-color-rgb) / 38%) 58%,
     transparent 78%
   );
-  opacity: calc(0.36 + (0.64 * var(--point-intensity)));
+  opacity: calc(0.14 + (0.86 * var(--point-intensity)));
   filter: blur(5px) saturate(1.18);
 }
 

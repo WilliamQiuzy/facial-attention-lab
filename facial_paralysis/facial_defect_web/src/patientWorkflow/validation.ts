@@ -241,7 +241,7 @@ export function validatePatientDraft(
   }
   if (draft.syntheticTestAttestation !== true) {
     errors.syntheticTestAttestation =
-      'Confirm that only synthetic/test information is being entered.'
+      'Acknowledge the prototype data restriction before continuing.'
   }
 
   if (value.recordNumber) {

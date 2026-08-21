@@ -1,53 +1,3 @@
-.environment-strip {
-  position: relative;
-  z-index: 42;
-  border-bottom: 1px solid #c4d9e8;
-  color: #294b68;
-  background: #eef6fc;
-  font-size: 0.875rem;
-  font-weight: 650;
-  letter-spacing: 0.005em;
-}
-
-.environment-strip__inner {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 16px;
-  width: min(calc(100% - 64px), var(--research-content-max));
-  min-height: 36px;
-  margin: 0 auto;
-  padding-block: 4px;
-}
-
-.environment-strip__item {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 28px;
-  align-items: center;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-}
-
-.environment-strip__item:not(:last-child)::after {
-  margin-left: 16px;
-  color: #84a6c1;
-  content: '•';
-}
-
-.environment-strip__item--data {
-  color: var(--research-blue-deep);
-}
-
-.environment-strip__item--blocked {
-  color: var(--research-blue-deep);
-  font-weight: 800;
-}
-
-.environment-strip__copy--compact {
-  display: none;
-}
-
 .workspace-page {
   min-height: 56vh;
   color: var(--research-ink);
@@ -1040,10 +990,6 @@
 }
 
 @media (max-width: 904px) {
-  .environment-strip__inner {
-    width: min(calc(100% - 48px), var(--research-content-max));
-  }
-
   .workspace-page__header {
     align-items: flex-start;
     gap: 24px;
@@ -1126,27 +1072,6 @@
 }
 
 @media (max-width: 599px) {
-  .environment-strip__copy--full {
-    display: none;
-  }
-
-  .environment-strip__copy--compact {
-    display: inline;
-  }
-
-  .environment-strip__inner {
-    gap: 0 12px;
-    width: calc(100% - 32px);
-  }
-
-  .environment-strip__item {
-    min-height: 24px;
-  }
-
-  .environment-strip__item:not(:last-child)::after {
-    display: none;
-  }
-
   .workspace-page__header {
     display: grid;
     padding-block: 30px 22px;
@@ -2141,26 +2066,6 @@
   }
 }
 
-@media print {
-  .environment-strip {
-    border-top: 1px solid var(--research-ink);
-    border-bottom: 1px solid var(--research-ink);
-    color: var(--research-ink);
-    background: #fff;
-  }
-
-  .environment-strip__inner {
-    width: 100%;
-    min-height: auto;
-    padding-block: 6px;
-  }
-
-  .environment-strip__item--data,
-  .environment-strip__item--blocked {
-    color: var(--research-ink);
-  }
-}
-
 /* Calm Cases and Runs surfaces: readable primary flow, technical evidence on demand. */
 .worklist-page .workspace-page__header,
 .runs-page .workspace-page__header,
@@ -3065,11 +2970,11 @@
   border-radius: 3px;
   background: linear-gradient(
     90deg,
-    #194694 0%,
-    #00aec1 25%,
-    #ffd73a 50%,
-    #ff761f 75%,
-    #cf1020 100%
+    #0000ff 0%,
+    #00ffff 25%,
+    #00ff00 50%,
+    #ffff00 75%,
+    #ff0000 100%
   );
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 28%);
 }

@@ -1,4 +1,5 @@
 import type { WorkbenchAssetId } from '../data/workbenchAssetDefinitions'
+import type { PatientSamplePhotoAssetId } from '../data/patientSamplePhotoPair'
 
 declare const patientIdBrand: unique symbol
 declare const patientVisitIdBrand: unique symbol
@@ -61,6 +62,16 @@ export type PatientVisit = {
   readonly createdAt: string
 }
 
+export type PatientComparisonTimepoint = Extract<
+  PatientTimepoint,
+  'preoperative' | 'postoperative'
+>
+
+export type MissingRequiredTimepoints =
+  | readonly ['preoperative']
+  | readonly ['postoperative']
+  | readonly ['preoperative', 'postoperative']
+
 export type AuthorizationStatus = 'documented' | 'withdrawn'
 
 export type AuthorizationSnapshot = {
@@ -104,7 +115,9 @@ export type CaptureAsset = {
   readonly qualityChecks: Readonly<CaptureQualityChecks>
   readonly capturedAt: string
   readonly qualityConfirmedAt?: string
-  readonly syntheticSourceAssetId?: WorkbenchAssetId
+  readonly syntheticSourceAssetId?:
+    | WorkbenchAssetId
+    | PatientSamplePhotoAssetId
   readonly supersededByCaptureId?: CaptureAssetId
 }
 
@@ -226,6 +239,53 @@ export type PatientResult = {
   readonly faceRegistration: Readonly<PatientFaceRegistration>
   readonly output: Readonly<PatientSimulationOutput>
 }
+
+export type PatientComparisonVisitPair = Readonly<{
+  preoperative: PatientVisit
+  postoperative: PatientVisit
+}>
+
+export type PatientComparisonCaptureEntry = Readonly<{
+  visit: PatientVisit
+  capture: CaptureAsset
+}>
+
+export type PatientComparisonCapturePair = Readonly<{
+  preoperative: PatientComparisonCaptureEntry
+  postoperative: PatientComparisonCaptureEntry
+}>
+
+export type PatientComparisonResultEntry = Readonly<{
+  visit: PatientVisit
+  capture: CaptureAsset
+  result: PatientResult
+}>
+
+export type PatientComparisonResultPair = Readonly<{
+  preoperative: PatientComparisonResultEntry
+  postoperative: PatientComparisonResultEntry
+}>
+
+export type PatientComparisonState =
+  | Readonly<{ phase: 'no_visits' }>
+  | Readonly<{
+      phase: 'missing_timepoint'
+      missing: MissingRequiredTimepoints
+    }>
+  | Readonly<{
+      phase: 'needs_photos'
+      pair: PatientComparisonVisitPair
+      missingPhotos: MissingRequiredTimepoints
+    }>
+  | Readonly<{
+      phase: 'needs_results'
+      pair: PatientComparisonCapturePair
+      missingResults: MissingRequiredTimepoints
+    }>
+  | Readonly<{
+      phase: 'ready'
+      pair: PatientComparisonResultPair
+    }>
 
 export type PatientReviewDecision = 'reviewed' | 'repeat_photo'
 
