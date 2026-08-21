@@ -1081,7 +1081,7 @@ describe('synthetic demo patient seeds', () => {
 
     for (const record of DEMO_PATIENT_RECORDS) {
       expect(record.recordKind).toBe('synthetic_demo')
-      expect(record.displayName).toMatch(/Synthetic Demo/)
+      expect(record.displayName).toMatch(/Sample/)
       expect(record).not.toHaveProperty('assetId')
       expect(record).not.toHaveProperty('pairedPatientId')
       expect(record).not.toHaveProperty('visits')
@@ -1251,7 +1251,7 @@ describe('trusted date and synthetic/test attestation', () => {
       ok: false,
       errors: {
         syntheticTestAttestation:
-          'Confirm that only synthetic/test information is being entered.',
+          'Acknowledge the prototype data restriction before continuing.',
       },
     })
 

@@ -43,14 +43,14 @@ export function PatientAoiSummary({
       <header className="patient-aoi-summary__header">
         <h3 id={titleId}>Attention by facial area</h3>
         <p>
-          Face-relative areas summarize this simulated density. They do
+          Face-relative areas summarize this attention density. They do
           not change the analysis.
         </p>
       </header>
 
       {!presentation.ok ? (
         <p className="patient-aoi-summary__unavailable" role="status">
-          A facial-area summary is unavailable for this simulated result.
+          A facial-area summary is unavailable for this result.
         </p>
       ) : (
         <>

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
-  presentationAttentionByTimepoint,
+  presentationAttentionBySubject,
   presentationAttentionSummary,
 } from './presentationAttention'
+import { presentationSubjectIds } from '../data/presentationDemoAssets'
 
 function integratedSignal(
   points: readonly {
@@ -23,9 +24,9 @@ function integratedSignal(
 }
 
 describe('presentation attention story', () => {
-  it('uses the same finite normalized sampling geometry for both timepoints', () => {
-    const before = presentationAttentionByTimepoint.preoperative
-    const after = presentationAttentionByTimepoint.postoperative
+  it.each(presentationSubjectIds)('uses finite aligned sampling geometry for %s', (subjectId) => {
+    const before = presentationAttentionBySubject[subjectId].preoperative
+    const after = presentationAttentionBySubject[subjectId].postoperative
 
     expect(after).toHaveLength(before.length)
     expect(
@@ -48,15 +49,15 @@ describe('presentation attention story', () => {
     }
   })
 
-  it('reduces integrated cheek signal by at least 45 percent while keeping a small signal', () => {
+  it.each(presentationSubjectIds)('reduces %s cheek signal by at least 45 percent while keeping a small signal', (subjectId) => {
     const isTargetCheek = ({ x, y }: { x: number; y: number }) =>
       x >= 0.58 && x <= 0.72 && y >= 0.56 && y <= 0.69
     const before = integratedSignal(
-      presentationAttentionByTimepoint.preoperative,
+      presentationAttentionBySubject[subjectId].preoperative,
       isTargetCheek,
     )
     const after = integratedSignal(
-      presentationAttentionByTimepoint.postoperative,
+      presentationAttentionBySubject[subjectId].postoperative,
       isTargetCheek,
     )
 
@@ -64,16 +65,16 @@ describe('presentation attention story', () => {
     expect(after / before).toBeLessThanOrEqual(0.55)
   })
 
-  it('keeps eye and mouth reference-region signal within ten percent', () => {
+  it.each(presentationSubjectIds)('keeps %s eye and mouth reference-region signal within ten percent', (subjectId) => {
     const isReference = ({ x, y }: { x: number; y: number }) =>
       (y >= 0.4 && y <= 0.51) ||
       (y >= 0.68 && y <= 0.77 && x >= 0.38 && x <= 0.62)
     const before = integratedSignal(
-      presentationAttentionByTimepoint.preoperative,
+      presentationAttentionBySubject[subjectId].preoperative,
       isReference,
     )
     const after = integratedSignal(
-      presentationAttentionByTimepoint.postoperative,
+      presentationAttentionBySubject[subjectId].postoperative,
       isReference,
     )
 

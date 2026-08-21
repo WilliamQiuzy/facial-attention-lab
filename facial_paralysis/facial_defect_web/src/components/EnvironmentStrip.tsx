@@ -4,11 +4,10 @@ export function EnvironmentStrip() {
       <div className="environment-strip__inner">
         <span className="environment-strip__item environment-strip__item--data">
           <span className="environment-strip__copy--full">
-            Research prototype · synthetic/test records only · session data resets on
-            refresh · clinical use blocked
+            Research prototype · sample data only · session data resets on refresh
           </span>
           <span className="environment-strip__copy--compact">
-            Research prototype · synthetic/test only · clinical use blocked
+            Research prototype · sample data only
           </span>
         </span>
       </div>

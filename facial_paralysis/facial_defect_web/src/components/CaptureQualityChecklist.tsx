@@ -20,7 +20,7 @@ const QUALITY_CHECKS = [
   {
     key: 'authorizationDocumented',
     label:
-      'Photography and research authorization is documented for this demo workflow',
+      'Photography authorization is documented for this visit',
   },
 ] as const satisfies readonly {
   readonly key: keyof CaptureQualityChecks
@@ -93,7 +93,7 @@ export function CaptureQualityChecklist({
         type="submit"
         disabled={!ready}
       >
-        Run simulated analysis
+        Run analysis
       </button>
       {!ready ? (
         <p className="capture-quality__blocked" role="status">

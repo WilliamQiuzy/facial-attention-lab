@@ -48,7 +48,7 @@ describe('clinician entry route', () => {
       within(screen.getByRole('navigation', { name: 'Primary navigation' }))
         .getAllByRole('link')
         .map((link) => link.textContent),
-    ).toEqual(['Patients', 'Demo', 'Reviews', 'Help'])
+    ).toEqual(['Patients', 'Review', 'Help'])
   })
 
   it('does not fetch or read/write browser storage in the default mock session', () => {
@@ -65,7 +65,7 @@ describe('clinician entry route', () => {
     expect(
       screen.getByRole('status', { name: 'Workspace environment' }),
     ).toHaveTextContent(
-      'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
+      'Research prototype · sample data only · session data resets on refresh',
     )
   })
 })

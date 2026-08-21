@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { presentationDemoAssets } from '../data/presentationDemoAssets'
-import { registrationByTimepoint } from './presentationFaceRegistration'
+import {
+  presentationDemoAssets,
+  presentationSubjectIds,
+} from '../data/presentationDemoAssets'
+import { registrationBySubject } from './presentationFaceRegistration'
 
 const expectedFeatures = [
   'face_oval',
@@ -12,11 +15,17 @@ const expectedFeatures = [
 ] as const
 
 describe('presentation face registration snapshots', () => {
-  it.each(['preoperative', 'postoperative'] as const)(
-    'binds the %s contour to its exact image and MediaPipe provenance',
-    (timepoint) => {
-      const registration = registrationByTimepoint[timepoint]
-      const asset = presentationDemoAssets[timepoint]
+  it.each(
+    presentationSubjectIds.flatMap((subjectId) =>
+      (['preoperative', 'postoperative'] as const).map(
+        (timepoint) => [subjectId, timepoint] as const,
+      ),
+    ),
+  )(
+    'binds %s %s contour to its exact image and MediaPipe provenance',
+    (subjectId, timepoint) => {
+      const registration = registrationBySubject[subjectId][timepoint]
+      const asset = presentationDemoAssets[subjectId][timepoint]
 
       expect(registration.captureSha256).toBe(asset.sha256)
       expect(registration.sourceWidth).toBe(asset.width)
@@ -45,12 +54,13 @@ describe('presentation face registration snapshots', () => {
     },
   )
 
-  it('stores separate registrations for the two exact image byte streams', () => {
-    expect(registrationByTimepoint.preoperative.captureSha256).not.toBe(
-      registrationByTimepoint.postoperative.captureSha256,
-    )
-    expect(registrationByTimepoint.preoperative).not.toBe(
-      registrationByTimepoint.postoperative,
-    )
+  it('stores four separate registrations for four exact image byte streams', () => {
+    const registrations = presentationSubjectIds.flatMap((subjectId) => [
+      registrationBySubject[subjectId].preoperative,
+      registrationBySubject[subjectId].postoperative,
+    ])
+
+    expect(new Set(registrations.map((item) => item.captureSha256))).toHaveLength(4)
+    expect(new Set(registrations)).toHaveLength(4)
   })
 })

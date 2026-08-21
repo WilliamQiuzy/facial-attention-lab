@@ -1080,7 +1080,7 @@ describe('single-case simulated inference', () => {
     const environment = screen.getByRole('status', { name: 'Workspace environment' })
     expect(
       within(environment).getByText(
-        'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
+        'Research prototype · sample data only · session data resets on refresh',
       ),
     ).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Start a new run' })).not.toBeInTheDocument()

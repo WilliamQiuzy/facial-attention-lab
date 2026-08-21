@@ -79,7 +79,7 @@ export function PatientsPage() {
         <div>
           <h1>Patients</h1>
           <p>
-            Session-only synthetic and test records for the photo workflow.
+            Open a patient record or create a new photo visit.
           </p>
         </div>
         <Link
@@ -137,8 +137,8 @@ export function PatientsPage() {
                     <p>{patient.recordNumber}</p>
                     <span className="patient-record-kind">
                       {patient.recordKind === 'synthetic_demo'
-                        ? 'Synthetic demo'
-                        : 'Session test'}
+                        ? 'Sample record'
+                        : 'Session record'}
                     </span>
                   </div>
                   <div className="patient-list__visit">
@@ -168,7 +168,7 @@ export function PatientsPage() {
             </h3>
             <p>
               {patients.length === 0
-                ? 'Create a synthetic or test record to begin.'
+                ? 'Create a sample or de-identified record to begin.'
                 : 'Try a different name or record ID.'}
             </p>
             {patients.length > 0 ? (

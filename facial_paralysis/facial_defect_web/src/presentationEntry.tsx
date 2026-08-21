@@ -1,6 +1,5 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { EnvironmentStrip } from './components/EnvironmentStrip'
 import { PresentationDemoPage } from './pages/PresentationDemoPage'
 import './styles/tokens.css'
 import './styles/global.css'
@@ -13,17 +12,16 @@ function PresentationStandaloneApp() {
       <a className="skip-link" href="#main-content">
         Skip to main content
       </a>
-      <EnvironmentStrip />
       <header className="site-header presentation-standalone-header">
         <div className="site-header__inner">
           <span className="brand">
             <span className="brand__mark" aria-hidden="true">
-              FR
+              FA
             </span>
-            <span className="brand__name">Facial Reconstruction Imaging</span>
+            <span className="brand__name">FaceAI</span>
           </span>
           <span className="presentation-standalone-header__label">
-            Offline demo
+            Offline sample
           </span>
         </div>
       </header>
@@ -33,10 +31,10 @@ function PresentationStandaloneApp() {
       <footer className="site-footer presentation-standalone-footer">
         <div className="site-footer__grid">
           <p className="site-footer__brand">
-            Facial Reconstruction Imaging · Research prototype
+            FaceAI · Research prototype
           </p>
           <p className="site-footer__boundary">
-            Synthetic presentation only · Clinical use blocked
+            Sample images · illustrative attention only
           </p>
         </div>
       </footer>

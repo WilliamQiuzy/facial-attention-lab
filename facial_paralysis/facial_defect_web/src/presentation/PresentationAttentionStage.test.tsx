@@ -1,13 +1,13 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
-import { PRESENTATION_BOUNDARY } from '../data/presentationDemoAssets'
-import { presentationAttentionByTimepoint } from './presentationAttention'
+import { presentationAttentionBySubject } from './presentationAttention'
 import { PresentationAttentionStage } from './PresentationAttentionStage'
 
 describe('PresentationAttentionStage', () => {
-  it('shows the exact synthetic pre-operative photo with its simulated signal', () => {
+  it('shows the exact sample pre-operative photo with its illustrative signal', () => {
     const { container } = render(
       <PresentationAttentionStage
+        subjectId="subject-a"
         timepoint="preoperative"
         viewMode="photo"
         showAttention
@@ -16,18 +16,19 @@ describe('PresentationAttentionStage', () => {
 
     expect(
       screen.getByRole('img', {
-        name: /synthetic pre-operative facial photograph/i,
+        name: /sample pre-operative facial photograph/i,
       }),
     ).toBeVisible()
     expect(container.querySelectorAll('.presentation-signal-point')).toHaveLength(
-      presentationAttentionByTimepoint.preoperative.length,
+      presentationAttentionBySubject['subject-a'].preoperative.length,
     )
-    expect(screen.getByText(PRESENTATION_BOUNDARY)).toBeVisible()
+    expect(screen.queryByText(/clinical use blocked/i)).not.toBeInTheDocument()
   })
 
   it('replaces the photo with a hash-bound MediaPipe contour in outline mode', () => {
     const { container } = render(
       <PresentationAttentionStage
+        subjectId="subject-a"
         timepoint="postoperative"
         viewMode="outline"
         showAttention
@@ -37,7 +38,7 @@ describe('PresentationAttentionStage', () => {
     expect(screen.queryByRole('img', { name: /photograph/i })).not.toBeInTheDocument()
     expect(
       screen.getByRole('img', {
-        name: /abstract facial outline with simulated post-operative attention/i,
+        name: /abstract facial outline with illustrative post-operative attention/i,
       }),
     ).toBeVisible()
     expect(container.querySelectorAll('.patient-face-contour__path')).toHaveLength(13)
@@ -46,9 +47,29 @@ describe('PresentationAttentionStage', () => {
     ).toHaveAttribute('data-geometry-source', 'on_device_face_landmarks')
   })
 
+  it('can combine the exact photo and its own outline in one uncluttered view', () => {
+    const { container } = render(
+      <PresentationAttentionStage
+        subjectId="subject-b"
+        timepoint="postoperative"
+        viewMode="composite"
+        showAttention
+      />,
+    )
+
+    expect(
+      screen.getByRole('img', {
+        name: /subject b sample post-operative facial photograph/i,
+      }),
+    ).toBeVisible()
+    expect(container.querySelectorAll('.patient-face-contour__path')).toHaveLength(13)
+    expect(screen.getByText('Photo + outline')).toBeVisible()
+  })
+
   it('keeps a smaller but non-zero post-operative cheek signal', () => {
     const pre = render(
       <PresentationAttentionStage
+        subjectId="subject-a"
         timepoint="preoperative"
         viewMode="photo"
         showAttention
@@ -56,6 +77,7 @@ describe('PresentationAttentionStage', () => {
     ).container.querySelector('[data-total-signal]')
     const post = render(
       <PresentationAttentionStage
+        subjectId="subject-a"
         timepoint="postoperative"
         viewMode="photo"
         showAttention
@@ -71,6 +93,7 @@ describe('PresentationAttentionStage', () => {
   it('can show either source image without a simulated signal layer', () => {
     const { container } = render(
       <PresentationAttentionStage
+        subjectId="subject-b"
         timepoint="postoperative"
         viewMode="photo"
         showAttention={false}
@@ -78,6 +101,7 @@ describe('PresentationAttentionStage', () => {
     )
 
     expect(container.querySelectorAll('.presentation-signal-point')).toHaveLength(0)
-    expect(screen.getByText('Attention layer hidden')).toBeVisible()
+    expect(screen.getByText('Attention off')).toBeVisible()
+    expect(screen.getByText('Healing surgical incision')).toBeVisible()
   })
 })

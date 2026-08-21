@@ -48,7 +48,7 @@ export function ClinicalReviewQueuePage() {
       <header className="patient-page-header page-shell">
         <h1>Reviews</h1>
         <p>
-          Current simulated results waiting for a clinician decision.
+          Current results waiting for a clinician decision.
         </p>
       </header>
 
@@ -64,8 +64,7 @@ export function ClinicalReviewQueuePage() {
           >
             <h2>No results are waiting for review.</h2>
             <p>
-              A visit appears here only after its current simulated result
-              is prepared.
+              A visit appears here after its current result is prepared.
             </p>
             <Link className="patient-primary-action" to="/patients">
               View patients

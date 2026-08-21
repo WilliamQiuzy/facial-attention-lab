@@ -1,5 +1,8 @@
 import type { PatientAttentionPoint } from '../patientWorkflow/types'
-import type { PresentationTimepoint } from '../data/presentationDemoAssets'
+import type {
+  PresentationSubjectId,
+  PresentationTimepoint,
+} from '../data/presentationDemoAssets'
 
 type PresentationAttentionSummary = Readonly<{
   provenance: 'hand_authored_simulation'
@@ -7,7 +10,7 @@ type PresentationAttentionSummary = Readonly<{
   copy: string
 }>
 
-const geometry = [
+const subjectAGeometry = [
   { x: 0.37, y: 0.39, radius: 0.04 },
   { x: 0.63, y: 0.39, radius: 0.04 },
   { x: 0.36, y: 0.46, radius: 0.055 },
@@ -28,6 +31,14 @@ const geometry = [
   { x: 0.5, y: 0.8, radius: 0.04 },
 ] as const
 
+const subjectBGeometry = subjectAGeometry.map((point, index) =>
+  Object.freeze(
+    index >= 10 && index <= 13
+      ? { ...point, y: point.y - 0.045 }
+      : { ...point },
+  ),
+)
+
 const referenceIntensity = [
   0.32, 0.32, 0.7, 0.48, 0.48, 0.7, 0.3, 0.25, 0.24,
   0.2,
@@ -37,6 +48,7 @@ const postoperativeCheekIntensity = [0.32, 0.34, 0.25, 0.2] as const
 const mouthAndChinIntensity = [0.44, 0.42, 0.44, 0.18] as const
 
 function field(
+  geometry: readonly Readonly<{ x: number; y: number; radius: number }>[],
   cheekIntensity: readonly number[],
 ): readonly PatientAttentionPoint[] {
   const intensity = [
@@ -55,11 +67,23 @@ function field(
   )
 }
 
-export const presentationAttentionByTimepoint: Readonly<
-  Record<PresentationTimepoint, readonly PatientAttentionPoint[]>
+function attentionPair(
+  geometry: readonly Readonly<{ x: number; y: number; radius: number }>[],
+): Readonly<Record<PresentationTimepoint, readonly PatientAttentionPoint[]>> {
+  return Object.freeze({
+    preoperative: field(geometry, preoperativeCheekIntensity),
+    postoperative: field(geometry, postoperativeCheekIntensity),
+  })
+}
+
+export const presentationAttentionBySubject: Readonly<
+  Record<
+    PresentationSubjectId,
+    Readonly<Record<PresentationTimepoint, readonly PatientAttentionPoint[]>>
+  >
 > = Object.freeze({
-  preoperative: field(preoperativeCheekIntensity),
-  postoperative: field(postoperativeCheekIntensity),
+  'subject-a': attentionPair(subjectAGeometry),
+  'subject-b': attentionPair(subjectBGeometry),
 })
 
 export const presentationAttentionSummary: Readonly<

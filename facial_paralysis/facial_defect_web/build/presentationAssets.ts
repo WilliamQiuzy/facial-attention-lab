@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 import {
   presentationDemoManifest,
+  presentationSubjectIds,
   type PresentationDemoAssetMetadata,
 } from '../src/data/presentationDemoManifest'
 
@@ -14,37 +15,46 @@ export type PresentationSourceAsset = Omit<
 }
 
 export const PRESENTATION_SOURCE_ASSETS: readonly PresentationSourceAsset[] =
-  Object.values(presentationDemoManifest).map(
-    ({ sourcePath, ...asset }) => ({
-      ...asset,
-      sourcePath: `../../${sourcePath}`,
-    }),
+  presentationSubjectIds.flatMap((subjectId) =>
+    Object.values(presentationDemoManifest[subjectId]).map(
+      ({ sourcePath, ...asset }) => ({
+        ...asset,
+        sourcePath: `../../${sourcePath}`,
+      }),
+    ),
   )
 
 export function assertPresentationSourceAssetBoundary(
   assets: readonly PresentationSourceAsset[],
   appRoot = process.cwd(),
 ): void {
-  if (assets.length !== 2) {
+  if (assets.length !== 4) {
     throw new Error(
-      'The presentation manifest must contain one two-image synthetic pair.',
+      'The presentation manifest must contain two complete synthetic pairs.',
     )
   }
 
-  const expectedAssets = Object.values(presentationDemoManifest)
-  const timepoints = new Set(assets.map((asset) => asset.timepoint))
-  const identityIds = new Set(
-    assets.map((asset) => asset.derivedSyntheticIdentityId),
+  const expectedAssets = presentationSubjectIds.flatMap((subjectId) =>
+    Object.values(presentationDemoManifest[subjectId]),
   )
-  if (
-    !timepoints.has('preoperative') ||
-    !timepoints.has('postoperative') ||
-    timepoints.size !== 2 ||
-    identityIds.size !== 1
-  ) {
-    throw new Error(
-      'The presentation manifest must contain one derived synthetic identity at both timepoints.',
-    )
+  const identityIds = new Set(assets.map((asset) => asset.derivedSyntheticIdentityId))
+  if (identityIds.size !== 2) {
+    throw new Error('The presentation manifest must contain two synthetic identities.')
+  }
+  for (const subjectId of presentationSubjectIds) {
+    const subjectAssets = assets.filter((asset) => asset.subjectId === subjectId)
+    const timepoints = new Set(subjectAssets.map((asset) => asset.timepoint))
+    if (
+      subjectAssets.length !== 2 ||
+      timepoints.size !== 2 ||
+      !timepoints.has('preoperative') ||
+      !timepoints.has('postoperative') ||
+      new Set(subjectAssets.map((asset) => asset.derivedSyntheticIdentityId)).size !== 1
+    ) {
+      throw new Error(
+        `${subjectId} must contain one derived synthetic identity at both timepoints.`,
+      )
+    }
   }
 
   for (const [index, asset] of assets.entries()) {
@@ -85,6 +95,7 @@ export function assertPresentationSourceAssetBoundary(
     if (
       !expected ||
       asset.id !== expected.id ||
+      asset.subjectId !== expected.subjectId ||
       asset.timepoint !== expected.timepoint ||
       asset.sha256 !== expected.sha256 ||
       asset.sourcePath !== `../../${expected.sourcePath}` ||

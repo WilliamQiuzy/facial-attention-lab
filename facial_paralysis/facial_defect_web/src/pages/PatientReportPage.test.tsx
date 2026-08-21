@@ -181,7 +181,7 @@ describe('gated patient explanation and export', () => {
       within(
         screen.getByRole('status', { name: 'Workspace environment' }),
       ).getByText(
-        'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
+        'Research prototype · sample data only · session data resets on refresh',
       ),
     ).toBeVisible()
     expect(

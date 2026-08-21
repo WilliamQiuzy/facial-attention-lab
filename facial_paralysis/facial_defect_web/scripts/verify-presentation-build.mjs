@@ -4,11 +4,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const EXACT_BOUNDARY =
-  'HAND-AUTHORED SIMULATION — NOT HUMAN GAZE — NOT A PREDICTED SURGICAL OUTCOME — CLINICAL USE BLOCKED'
+  'SYNTHETIC DEMO — ILLUSTRATIVE ATTENTION, NOT MEASURED GAZE'
 
 export const EXACT_IMAGE_HASHES = [
   '1c43951ed068dc7b88a28e1a0e68d724f1f8b649067b81323ceb30fe2cc5eb30',
-  '72d0ee02fa6313b9ddb3c6b4ccf3c1f8c277c98b51a3b4453152948f21e7a58b',
+  '4e62df4478f6852d788adf58a77056e208a72f5936b0960af8d6ed17af6d95e5',
+  '14909f75c0ba2ae4ab5e4ac1cf976f261d6d61eff09ae5804d865e2e6229d374',
+  'ecbb751e8c13b37465f899fd912a4dc4f713088388ca7a3ae94e925e55743b8b',
 ]
 
 const forbiddenRuntimePatterns = [
@@ -45,8 +47,16 @@ export function verifyPresentationHtml({
       'The offline package must contain the single presentation.html file only.',
     )
   }
-  if (!html.includes(boundary)) {
-    throw new Error('The exact presentation disclosure is missing.')
+  const disclosureCount = html.split(boundary).length - 1
+  if (disclosureCount !== 1) {
+    throw new Error(
+      'The exact presentation disclosure must appear once and only once.',
+    )
+  }
+  if (/clinical use blocked/i.test(html)) {
+    throw new Error(
+      'The presentation contains duplicated clinical-boundary copy.',
+    )
   }
 
   for (const { pattern, label } of forbiddenRuntimePatterns) {
@@ -61,12 +71,12 @@ export function verifyPresentationHtml({
   const uniqueHashes = new Set(embeddedPngHashes)
 
   if (
-    expectedImageHashes.length !== 2 ||
-    uniqueHashes.size !== 2 ||
+    expectedImageHashes.length !== 4 ||
+    uniqueHashes.size !== 4 ||
     expectedImageHashes.some((expected) => !uniqueHashes.has(expected))
   ) {
     throw new Error(
-      'The offline presentation does not contain both exact SHA-bound image payloads.',
+      'The offline presentation does not contain all four exact SHA-bound image payloads.',
     )
   }
 }

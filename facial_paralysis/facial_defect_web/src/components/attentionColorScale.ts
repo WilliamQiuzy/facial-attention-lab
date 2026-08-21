@@ -6,15 +6,15 @@ type AttentionColorStop = {
 }
 
 const ATTENTION_COLOR_STOPS = [
-  { intensity: 0, rgb: [25, 70, 148] },
-  { intensity: 0.25, rgb: [0, 174, 193] },
-  { intensity: 0.5, rgb: [255, 215, 58] },
-  { intensity: 0.75, rgb: [255, 118, 31] },
-  { intensity: 1, rgb: [207, 16, 32] },
+  { intensity: 0, rgb: [0, 0, 255] },
+  { intensity: 0.25, rgb: [0, 255, 255] },
+  { intensity: 0.5, rgb: [0, 255, 0] },
+  { intensity: 0.75, rgb: [255, 255, 0] },
+  { intensity: 1, rgb: [255, 0, 0] },
 ] as const satisfies readonly AttentionColorStop[]
 
 export const ATTENTION_COLOR_SCALE_LABEL =
-  'Relative density color scale: blue low, cyan, yellow, orange, red peak'
+  'Attention scale: blue indicates less attention and red indicates more attention'
 
 function clampIntensity(intensity: number): number {
   if (!Number.isFinite(intensity)) return 0

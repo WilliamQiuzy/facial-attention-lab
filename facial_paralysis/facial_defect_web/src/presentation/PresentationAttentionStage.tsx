@@ -2,16 +2,18 @@ import type { CSSProperties } from 'react'
 import { PatientFaceContour } from '../components/PatientFaceContour'
 import { attentionColorRgb } from '../components/attentionColorScale'
 import {
-  PRESENTATION_BOUNDARY,
   presentationDemoAssets,
+  presentationSubjectOptions,
+  type PresentationSubjectId,
   type PresentationTimepoint,
 } from '../data/presentationDemoAssets'
-import { presentationAttentionByTimepoint } from './presentationAttention'
-import { registrationByTimepoint } from './presentationFaceRegistration'
+import { presentationAttentionBySubject } from './presentationAttention'
+import { registrationBySubject } from './presentationFaceRegistration'
 
-export type PresentationViewMode = 'photo' | 'outline'
+export type PresentationViewMode = 'photo' | 'outline' | 'composite'
 
 type PresentationAttentionStageProps = {
+  readonly subjectId: PresentationSubjectId
   readonly timepoint: PresentationTimepoint
   readonly viewMode: PresentationViewMode
   readonly showAttention: boolean
@@ -21,21 +23,28 @@ const timepointCopy = {
   preoperative: {
     eyebrow: 'Pre-operative',
     title: 'Visible cheek lesion',
-    imageAlt: 'AI-generated synthetic pre-operative facial photograph',
+    imageAlt: 'Sample pre-operative facial photograph',
   },
   postoperative: {
     eyebrow: 'Post-operative',
-    title: 'Small cheek scar',
-    imageAlt: 'AI-generated synthetic post-operative facial photograph',
+    title: 'Healing surgical incision',
   },
 } as const
 
+const viewModeLabels: Readonly<Record<PresentationViewMode, string>> = {
+  photo: 'Photo',
+  outline: 'Outline',
+  composite: 'Photo + outline',
+}
+
 function PresentationSignalLayer({
+  subjectId,
   timepoint,
 }: {
+  readonly subjectId: PresentationSubjectId
   readonly timepoint: PresentationTimepoint
 }) {
-  const points = presentationAttentionByTimepoint[timepoint]
+  const points = presentationAttentionBySubject[subjectId][timepoint]
   const totalSignal = points.reduce(
     (total, point) => total + point.intensity,
     0,
@@ -66,14 +75,56 @@ function PresentationSignalLayer({
   )
 }
 
-export function PresentationAttentionStage({
+export function PresentationMedia({
+  subjectId,
   timepoint,
   viewMode,
   showAttention,
 }: PresentationAttentionStageProps) {
-  const asset = presentationDemoAssets[timepoint]
+  const asset = presentationDemoAssets[subjectId][timepoint]
   const copy = timepointCopy[timepoint]
-  const outlineLabel = `Abstract facial outline with simulated ${copy.eyebrow.toLowerCase()} attention`
+  const subjectLabel = presentationSubjectOptions.find(
+    (subject) => subject.id === subjectId,
+  )?.label
+  const outlineLabel = `Abstract facial outline with illustrative ${copy.eyebrow.toLowerCase()} attention`
+  const showPhoto = viewMode !== 'outline'
+  const showOutline = viewMode !== 'photo'
+
+  return (
+    <div
+      className={`presentation-stage__media presentation-stage__media--${viewMode}`}
+      role={viewMode === 'outline' ? 'img' : undefined}
+      aria-label={viewMode === 'outline' ? outlineLabel : undefined}
+    >
+      {showPhoto ? (
+        <img
+          src={asset.url}
+          alt={`${subjectLabel} sample ${copy.eyebrow.toLowerCase()} facial photograph`}
+          width={asset.width}
+          height={asset.height}
+          loading="eager"
+          decoding="async"
+        />
+      ) : null}
+      {showOutline ? (
+        <PatientFaceContour registration={registrationBySubject[subjectId][timepoint]} />
+      ) : null}
+      {showAttention ? (
+        <PresentationSignalLayer subjectId={subjectId} timepoint={timepoint} />
+      ) : (
+        <span className="presentation-stage__layer-status">Attention off</span>
+      )}
+    </div>
+  )
+}
+
+export function PresentationAttentionStage({
+  subjectId,
+  timepoint,
+  viewMode,
+  showAttention,
+}: PresentationAttentionStageProps) {
+  const copy = timepointCopy[timepoint]
 
   return (
     <figure className="presentation-stage">
@@ -82,46 +133,15 @@ export function PresentationAttentionStage({
           <p>{copy.eyebrow}</p>
           <h2>{copy.title}</h2>
         </div>
-        <span>{viewMode === 'photo' ? 'Photo' : 'De-identified outline'}</span>
+        <span>{viewModeLabels[viewMode]}</span>
       </header>
 
-      <div
-        className={`presentation-stage__media presentation-stage__media--${viewMode}`}
-        role={viewMode === 'outline' ? 'img' : undefined}
-        aria-label={viewMode === 'outline' ? outlineLabel : undefined}
-      >
-        {viewMode === 'photo' ? (
-          <img
-            src={asset.url}
-            alt={copy.imageAlt}
-            width={asset.width}
-            height={asset.height}
-            loading="eager"
-            decoding="async"
-          />
-        ) : (
-          <PatientFaceContour
-            registration={registrationByTimepoint[timepoint]}
-          />
-        )}
-        {showAttention ? (
-          <PresentationSignalLayer timepoint={timepoint} />
-        ) : (
-          <span className="presentation-stage__layer-status">
-            Attention layer hidden
-          </span>
-        )}
-        <span className="presentation-stage__watermark">
-          Hand-authored simulation
-        </span>
-      </div>
-
-      <figcaption>
-        <span>{PRESENTATION_BOUNDARY}</span>
-        <small>
-          Frontal, non-mirrored synthetic display. Patient left is viewer right.
-        </small>
-      </figcaption>
+      <PresentationMedia
+        subjectId={subjectId}
+        timepoint={timepoint}
+        viewMode={viewMode}
+        showAttention={showAttention}
+      />
     </figure>
   )
 }

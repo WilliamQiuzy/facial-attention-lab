@@ -1,8 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import presentationAudit from '../audits/presentation-synthetic-pair.json'
+import packageManifest from '../presentation-assets/manifest.json'
 import { approvedAssets } from '../src/data/approvedAssetManifest'
-import { presentationDemoAssets } from '../src/data/presentationDemoAssets'
+import {
+  presentationDemoAssets,
+  presentationSubjectIds,
+  type PresentationSubjectId,
+} from '../src/data/presentationDemoAssets'
 import { workbenchCatalog } from '../src/workbench/catalog'
 import {
   PRESENTATION_SOURCE_ASSETS,
@@ -11,71 +16,80 @@ import {
   type PresentationSourceAsset,
 } from './presentationAssets'
 
-const POSTOPERATIVE_HASH =
-  '72d0ee02fa6313b9ddb3c6b4ccf3c1f8c277c98b51a3b4453152948f21e7a58b'
-
 describe('paired synthetic presentation assets', () => {
-  it('binds exactly one derived synthetic pair to the provenance audit', () => {
-    expect(PRESENTATION_SOURCE_ASSETS).toHaveLength(2)
-    expect(Object.keys(presentationDemoAssets)).toEqual([
-      'preoperative',
-      'postoperative',
-    ])
+  it('publishes the standalone Teams file with the FaceAI name', () => {
+    expect(packageManifest.offlineHtml.path).toBe('FaceAI-Demo.html')
+  })
+
+  it('binds two complete synthetic pairs to the provenance audit', () => {
+    expect(PRESENTATION_SOURCE_ASSETS).toHaveLength(4)
+    expect(Object.keys(presentationDemoAssets)).toEqual(presentationSubjectIds)
     expect(
       new Set(
         PRESENTATION_SOURCE_ASSETS.map(
           (asset) => asset.derivedSyntheticIdentityId,
         ),
       ),
-    ).toEqual(new Set([presentationAudit.derivedSyntheticIdentityId]))
-    expect(presentationDemoAssets.preoperative.sha256).toBe(
-      presentationAudit.source.sha256,
+    ).toEqual(
+      new Set(
+        presentationAudit.subjects.map(
+          (subject) => subject.derivedSyntheticIdentityId,
+        ),
+      ),
     )
-    expect(presentationDemoAssets.preoperative.sourceAssetId).toBe(
-      presentationAudit.source.approvedAssetId,
-    )
-    expect(presentationDemoAssets.postoperative.sha256).toBe(
-      presentationAudit.derivedEdit.sha256,
-    )
-    expect(presentationDemoAssets.postoperative.sha256).toBe(
-      POSTOPERATIVE_HASH,
-    )
-    expect(presentationDemoAssets.preoperative.relationship).toBe(
-      presentationAudit.relationship,
-    )
-    expect(presentationDemoAssets.postoperative.allowedUse).toBe(
-      presentationAudit.allowedUse,
-    )
-    expect(presentationDemoAssets.postoperative.disclosure).toBe(
-      presentationAudit.boundary,
-    )
+
+    for (const auditedSubject of presentationAudit.subjects) {
+      const pair = presentationDemoAssets[
+        auditedSubject.subjectId as PresentationSubjectId
+      ]
+      expect(pair.preoperative.sha256).toBe(auditedSubject.source.sha256)
+      expect(pair.preoperative.sourceAssetId).toBe(
+        auditedSubject.source.approvedAssetId,
+      )
+      expect(pair.postoperative.sha256).toBe(
+        auditedSubject.derivedEdit.sha256,
+      )
+      expect(pair.preoperative.relationship).toBe(
+        presentationAudit.relationship,
+      )
+      expect(pair.postoperative.allowedUse).toBe(
+        presentationAudit.allowedUse,
+      )
+      expect(pair.postoperative.disclosure).toBe(
+        presentationAudit.boundary,
+      )
+    }
   })
 
-  it('verifies both exact synthetic image files by SHA-256', () => {
-    expect(verifyPresentationAssetFiles()).toHaveLength(2)
+  it('verifies all four exact synthetic image files by SHA-256', () => {
+    expect(verifyPresentationAssetFiles()).toHaveLength(4)
   })
 
-  it('keeps the derived edit outside every ten-asset workbench path', () => {
-    const derivedEdit = presentationDemoAssets.postoperative
+  it('keeps both derived edits outside every ten-asset workbench path', () => {
+    const derivedEdits = presentationSubjectIds.map(
+      (subjectId) => presentationDemoAssets[subjectId].postoperative,
+    )
 
     expect(approvedAssets).toHaveLength(10)
     expect(workbenchCatalog).toHaveLength(10)
-    expect(
-      approvedAssets.some(
-        (asset) =>
-          asset.id === derivedEdit.id ||
-          asset.sourcePath === derivedEdit.sourcePath,
-      ),
-    ).toBe(false)
-    expect(
-      workbenchCatalog.some((asset) => asset.id === derivedEdit.id),
-    ).toBe(false)
+    for (const derivedEdit of derivedEdits) {
+      expect(
+        approvedAssets.some(
+          (asset) =>
+            asset.id === derivedEdit.id ||
+            asset.sourcePath === derivedEdit.sourcePath,
+        ),
+      ).toBe(false)
+      expect(
+        workbenchCatalog.some((asset) => asset.id === derivedEdit.id),
+      ).toBe(false)
+    }
     expect(
       new Set([
         ...approvedAssets.map((asset) => asset.sourcePath),
-        presentationDemoAssets.postoperative.sourcePath,
+        ...derivedEdits.map((asset) => asset.sourcePath),
       ]).size,
-    ).toBe(11)
+    ).toBe(12)
   })
 
   it.each([

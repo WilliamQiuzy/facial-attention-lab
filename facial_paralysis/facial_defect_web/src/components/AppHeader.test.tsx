@@ -19,17 +19,17 @@ function NavigationControls() {
 }
 
 describe('AppHeader', () => {
-  it('keeps the presentation demo directly available to clinicians', () => {
+  it('keeps only Patients, Review, and Help in clinician navigation', () => {
     render(
       <MemoryRouter initialEntries={['/patients']}>
         <AppHeader />
       </MemoryRouter>,
     )
 
-    expect(screen.getByRole('link', { name: 'Demo' })).toHaveAttribute(
-      'href',
-      '/demo',
-    )
+    expect(screen.queryByRole('link', { name: 'Demo' })).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('navigation', { name: 'Primary navigation' }),
+    ).toHaveTextContent('PatientsReviewHelp')
   })
 
   it('keeps the mobile menu closed after pathname changes, including back navigation', () => {

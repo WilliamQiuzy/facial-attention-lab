@@ -3,6 +3,8 @@ import {
   copyFile,
   mkdir,
   readFile,
+  readdir,
+  unlink,
   writeFile,
 } from 'node:fs/promises'
 import path from 'node:path'
@@ -19,10 +21,15 @@ const screenshotRoot = path.join(outputRoot, 'screenshots')
 const builtHtmlPath = path.resolve('presentation-dist/presentation.html')
 const shareableHtmlPath = path.join(
   outputRoot,
-  'facial-attention-presentation-demo.html',
+  'FaceAI-Demo.html',
 )
 
 await mkdir(screenshotRoot, { recursive: true })
+await Promise.all(
+  (await readdir(screenshotRoot))
+    .filter((entry) => entry.endsWith('.png'))
+    .map((entry) => unlink(path.join(screenshotRoot, entry))),
+)
 await copyFile(builtHtmlPath, shareableHtmlPath)
 
 const html = await readFile(shareableHtmlPath, 'utf8')
@@ -72,21 +79,82 @@ try {
 
   await capture(
     page.locator('.presentation-comparison'),
-    'before-after-photo-attention.png',
+    'subject-a-before-after-photo-attention.png',
   )
 
-  await page.getByRole('radio', { name: 'Outline' }).click()
+  await page.getByRole('checkbox', { name: 'Show attention layer' }).uncheck()
   await capture(
     page.locator('.presentation-comparison'),
-    'before-after-outline-attention.png',
+    'subject-a-before-after-photo-clean.png',
+  )
+  await page.getByRole('checkbox', { name: 'Show attention layer' }).check()
+
+  await page.getByRole('radio', { name: 'Outline', exact: true }).click()
+  await capture(
+    page.locator('.presentation-comparison'),
+    'subject-a-before-after-outline-attention.png',
   )
 
-  await page.getByRole('radio', { name: 'Post-operative' }).click()
-  await page.getByRole('radio', { name: 'Photo' }).click()
+  await page.getByRole('radio', { name: 'Photo + outline', exact: true }).click()
+  await capture(
+    page.locator('.presentation-comparison'),
+    'subject-a-before-after-photo-outline-attention.png',
+  )
+
+  await page.getByRole('radio', { name: 'Drag slider', exact: true }).click()
+  await capture(
+    page.locator('.presentation-wipe'),
+    'subject-a-before-after-drag-comparison.png',
+  )
+
+  await page.getByRole('radio', { name: 'Post-operative', exact: true }).click()
+  await page.getByRole('radio', { name: 'Photo', exact: true }).click()
   await page.getByRole('checkbox', { name: 'Show attention layer' }).uncheck()
   await capture(
     page.locator('.presentation-stage'),
-    'postoperative-scar-clean.png',
+    'subject-a-postoperative-wound-clean.png',
+  )
+
+  await page.getByRole('radio', { name: 'Subject B', exact: true }).click()
+  await page.getByRole('radio', { name: 'Both', exact: true }).click()
+  await page.getByRole('radio', { name: 'Side by side', exact: true }).click()
+  await page.getByRole('checkbox', { name: 'Show attention layer' }).check()
+  await capture(
+    page.locator('.presentation-comparison'),
+    'subject-b-before-after-photo-attention.png',
+  )
+
+  await page.getByRole('checkbox', { name: 'Show attention layer' }).uncheck()
+  await capture(
+    page.locator('.presentation-comparison'),
+    'subject-b-before-after-photo-clean.png',
+  )
+  await page.getByRole('checkbox', { name: 'Show attention layer' }).check()
+
+  await page.getByRole('radio', { name: 'Outline', exact: true }).click()
+  await capture(
+    page.locator('.presentation-comparison'),
+    'subject-b-before-after-outline-attention.png',
+  )
+
+  await page.getByRole('radio', { name: 'Photo + outline', exact: true }).click()
+  await capture(
+    page.locator('.presentation-comparison'),
+    'subject-b-before-after-photo-outline-attention.png',
+  )
+
+  await page.getByRole('radio', { name: 'Drag slider', exact: true }).click()
+  await capture(
+    page.locator('.presentation-wipe'),
+    'subject-b-before-after-drag-comparison.png',
+  )
+
+  await page.getByRole('radio', { name: 'Post-operative', exact: true }).click()
+  await page.getByRole('radio', { name: 'Photo', exact: true }).click()
+  await page.getByRole('checkbox', { name: 'Show attention layer' }).uncheck()
+  await capture(
+    page.locator('.presentation-stage'),
+    'subject-b-postoperative-wound-clean.png',
   )
 
   await context.close()
@@ -105,9 +173,14 @@ try {
     [...document.images].every((image) => image.complete),
   )
   await mobilePage.screenshot({
-    path: path.join(screenshotRoot, 'demo-mobile.png'),
+    path: path.join(screenshotRoot, 'subject-a-demo-mobile.png'),
   })
-  capturedFiles.push(path.join(screenshotRoot, 'demo-mobile.png'))
+  capturedFiles.push(path.join(screenshotRoot, 'subject-a-demo-mobile.png'))
+  await mobilePage.getByRole('radio', { name: 'Subject B', exact: true }).click()
+  await mobilePage.screenshot({
+    path: path.join(screenshotRoot, 'subject-b-demo-mobile.png'),
+  })
+  capturedFiles.push(path.join(screenshotRoot, 'subject-b-demo-mobile.png'))
   if (errors.length > 0) {
     throw new Error(`Browser errors: ${errors.join(' | ')}`)
   }

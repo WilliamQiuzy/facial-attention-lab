@@ -41,12 +41,12 @@ function expectPermanentBoundaries() {
   const environment = environmentNotices[0]
   expect(
     within(environment).getByText(
-      'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
+      'Research prototype · sample data only · session data resets on refresh',
     ),
   ).toBeVisible()
   expect(
     within(environment).getByText(
-      'Research prototype · synthetic/test only · clinical use blocked',
+      'Research prototype · sample data only',
     ),
   ).toBeInTheDocument()
   expect(screen.queryByRole('status', { name: /research use status/i })).not.toBeInTheDocument()
@@ -86,8 +86,7 @@ describe('application frame', () => {
     const primary = screen.getByRole('navigation', { name: /primary navigation/i })
     expect(within(primary).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Patients',
-      'Demo',
-      'Reviews',
+      'Review',
       'Help',
     ])
     expect(screen.getByRole('main')).toHaveAttribute('id', 'main-content')
@@ -103,8 +102,8 @@ describe('application frame', () => {
     expect(container.querySelector('img[alt*="Mayo" i]')).not.toBeInTheDocument()
     expect(screen.queryByText(/Mayo-inspired research operations/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/affiliation or endorsement/i)).not.toBeInTheDocument()
-    expect(screen.getByText('FR')).toBeVisible()
-    expect(screen.getByRole('link', { name: 'Facial Reconstruction Imaging' })).toHaveAttribute(
+    expect(screen.getByText('FA')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'FaceAI' })).toHaveAttribute(
       'href',
       '/patients',
     )
@@ -179,12 +178,12 @@ describe('application frame', () => {
     const footer = screen.getByRole('contentinfo')
     expect(
       within(footer).getByText(
-        'Facial Reconstruction Imaging · Research prototype',
+        'FaceAI · Research prototype',
       ),
     ).toBeVisible()
     expect(
       within(footer).getByText(
-        'Synthetic/test records only · Session resets on refresh',
+        'Sample data only · Session resets on refresh',
       ),
     ).toBeVisible()
 

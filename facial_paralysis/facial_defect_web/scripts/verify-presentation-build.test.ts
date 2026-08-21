@@ -7,12 +7,14 @@ import { verifyPresentationHtml } from './verify-presentation-build.mjs'
 
 const pre = Buffer.from('pre-image')
 const post = Buffer.from('post-image')
-const expectedImageHashes = [pre, post].map((bytes) =>
+const preB = Buffer.from('pre-image-subject-b')
+const postB = Buffer.from('post-image-subject-b')
+const expectedImageHashes = [pre, post, preB, postB].map((bytes) =>
   createHash('sha256').update(bytes).digest('hex'),
 )
 
 function fixture(extra = '') {
-  return `<!doctype html><html><body>${PRESENTATION_BOUNDARY}<img src="data:image/png;base64,${pre.toString('base64')}"><img src="data:image/png;base64,${post.toString('base64')}">${extra}</body></html>`
+  return `<!doctype html><html><body>${PRESENTATION_BOUNDARY}<img src="data:image/png;base64,${pre.toString('base64')}"><img src="data:image/png;base64,${post.toString('base64')}"><img src="data:image/png;base64,${preB.toString('base64')}"><img src="data:image/png;base64,${postB.toString('base64')}">${extra}</body></html>`
 }
 
 describe('offline presentation build verifier', () => {
@@ -64,5 +66,25 @@ describe('offline presentation build verifier', () => {
         boundary: PRESENTATION_BOUNDARY,
       }),
     ).toThrow(/single|disclosure/i)
+  })
+
+  it('rejects repeated or presentation-cluttering boundary copy', () => {
+    expect(() =>
+      verifyPresentationHtml({
+        html: fixture(PRESENTATION_BOUNDARY),
+        directoryEntries: ['presentation.html'],
+        expectedImageHashes,
+        boundary: PRESENTATION_BOUNDARY,
+      }),
+    ).toThrow(/single|disclosure/i)
+
+    expect(() =>
+      verifyPresentationHtml({
+        html: fixture('Clinical use blocked'),
+        directoryEntries: ['presentation.html'],
+        expectedImageHashes,
+        boundary: PRESENTATION_BOUNDARY,
+      }),
+    ).toThrow(/presentation|copy|clinical/i)
   })
 })

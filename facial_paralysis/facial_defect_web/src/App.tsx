@@ -25,7 +25,6 @@ import { PatientDetailPage } from './pages/PatientDetailPage'
 import { PatientReportPage } from './pages/PatientReportPage'
 import { PatientVisitPage } from './pages/PatientVisitPage'
 import { PatientsPage } from './pages/PatientsPage'
-import { PresentationDemoPage } from './pages/PresentationDemoPage'
 import { ResultReviewPage } from './pages/ResultReviewPage'
 import { ReviewQueuePage } from './pages/ReviewQueuePage'
 import { RunDetailPage } from './pages/RunDetailPage'
@@ -121,7 +120,7 @@ function RoutedWorkspace() {
         <Routes>
           <Route path="/" element={<Navigate to="/patients" replace />} />
           <Route path="/patients" element={<PatientsPage />} />
-          <Route path="/demo" element={<PresentationDemoPage />} />
+          <Route path="/demo" element={<Navigate to="/patients" replace />} />
           <Route path="/patients/new" element={<NewPatientPage />} />
           <Route
             path="/patients/:patientId"

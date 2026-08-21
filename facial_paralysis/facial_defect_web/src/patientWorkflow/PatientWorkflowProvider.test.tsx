@@ -9,6 +9,7 @@ import {
   vi,
 } from 'vitest'
 import { approvedAssets } from '../data/approvedAssetManifest'
+import { patientSamplePhotoAssets } from '../data/patientSamplePhotoPair'
 import { SessionMediaVault } from './SessionMediaVault'
 import {
   CaptureFileValidationError,
@@ -803,6 +804,74 @@ describe('capture preparation, vault ownership, and retakes', () => {
     expect(latest.state.captureOrder).toHaveLength(1)
   })
 
+  it('allows the declared same-subject sample pair across preoperative and postoperative visits', async () => {
+    const loadSyntheticMedia = vi.fn(
+      async (asset: { readonly sha256: string }) =>
+        makeMedia('paired synthetic', asset.sha256),
+    )
+    renderProvider({
+      runtime: createRuntime(),
+      prepareCapture: createCapturePreparer(),
+      loadSyntheticMedia,
+    })
+    const { patientId, visitId: preoperativeVisitId } =
+      createPatientAndVisit()
+    let postoperativeVisitId = ''
+    act(() => {
+      postoperativeVisitId = latest.actions.createVisit(patientId, {
+        timepoint: 'postoperative',
+        visitDate: '2026-07-27',
+      })
+    })
+
+    await act(async () => {
+      await latest.actions.attachSyntheticCapture(
+        preoperativeVisitId,
+        patientSamplePhotoAssets.preoperative.id,
+      )
+      await latest.actions.attachSyntheticCapture(
+        postoperativeVisitId,
+        patientSamplePhotoAssets.postoperative.id,
+      )
+    })
+
+    expect(loadSyntheticMedia).toHaveBeenNthCalledWith(
+      1,
+      patientSamplePhotoAssets.preoperative,
+    )
+    expect(loadSyntheticMedia).toHaveBeenNthCalledWith(
+      2,
+      patientSamplePhotoAssets.postoperative,
+    )
+    expect(latest.state.captureOrder).toHaveLength(2)
+  })
+
+  it('rejects a paired sample when its declared timepoint does not match the visit', async () => {
+    const loadSyntheticMedia = vi.fn(
+      async (asset: { readonly sha256: string }) =>
+        makeMedia('paired synthetic', asset.sha256),
+    )
+    renderProvider({
+      runtime: createRuntime(),
+      prepareCapture: createCapturePreparer(),
+      loadSyntheticMedia,
+    })
+    const { visitId } = createPatientAndVisit()
+
+    const failure = await expectProviderFailureAsync(
+      () =>
+        latest.actions.attachSyntheticCapture(
+          visitId,
+          patientSamplePhotoAssets.postoperative.id,
+        ),
+      'INVALID_CAPTURE',
+    )
+
+    expect(failure.message).toMatch(/postoperative.+preoperative/i)
+    expect(loadSyntheticMedia).not.toHaveBeenCalled()
+    expect(latest.state.captureOrder).toHaveLength(0)
+  })
+
   it('rejects a synthetic loader blob whose actual hash differs from the canonical asset', async () => {
     const objectUrls = createObjectUrlApi()
     const vault = new SessionMediaVault(objectUrls)
@@ -1117,6 +1186,7 @@ describe('quality authorization and background simulation', () => {
     expect(onDeviceModuleMocks.evaluationCount).toBe(1)
     await act(async () => {
       await vi.dynamicImportSettled()
+      await vi.runAllTimersAsync()
     })
     expect(latest.state.runsById[runId]?.status).toBe('succeeded')
     expect(createBitmap).toHaveBeenCalledOnce()
@@ -1475,7 +1545,7 @@ describe('review, reset, and lifecycle cleanup', () => {
     return visitId
   }
 
-  it('records Reviewed or Repeat photo and requires a repeat reason', async () => {
+  it('records accepted or replacement-photo decisions and requires a reason', async () => {
     renderProvider({
       runtime: createRuntime(),
       prepareCapture: createCapturePreparer(),

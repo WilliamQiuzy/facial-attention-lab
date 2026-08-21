@@ -32,7 +32,7 @@ describe('workspace application shell', () => {
     renderApp()
 
     expect(screen.getByRole('heading', { name: 'Patients', level: 1 })).toBeVisible()
-    expect(screen.getByRole('link', { name: /facial reconstruction imaging/i })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'FaceAI' })).toHaveAttribute(
       'href',
       '/patients',
     )
@@ -41,13 +41,11 @@ describe('workspace application shell', () => {
     const primaryLinks = within(primary).getAllByRole('link')
     expect(primaryLinks.map((link) => link.textContent)).toEqual([
       'Patients',
-      'Demo',
-      'Reviews',
+      'Review',
       'Help',
     ])
     expect(primaryLinks.map((link) => link.getAttribute('href'))).toEqual([
       '/patients',
-      '/demo',
       '/reviews',
       '/about',
     ])
@@ -104,7 +102,7 @@ describe('workspace application shell', () => {
     const environment = environments[0]
     expect(
       within(environment).getByText(
-        'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
+        'Research prototype · sample data only · session data resets on refresh',
       ),
     ).toBeVisible()
     expect(
@@ -114,6 +112,13 @@ describe('workspace application shell', () => {
       'href',
       '#main-content',
     )
+  })
+
+  it('redirects the retired Demo route into Patients', () => {
+    renderApp('/demo')
+
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/patients')
+    expect(screen.getByRole('heading', { name: 'Patients', level: 1 })).toBeVisible()
   })
 
   it('keeps the default mock loading state visible long enough to be understood', async () => {
@@ -201,7 +206,7 @@ describe('workspace application shell', () => {
     })
     expect(
       within(environment).getByText(
-        'Research prototype · synthetic/test records only · session data resets on refresh · clinical use blocked',
+        'Research prototype · sample data only · session data resets on refresh',
       ),
     ).toBeVisible()
   })
@@ -237,7 +242,7 @@ describe('workspace application shell', () => {
     ['/', 'Patients'],
     ['/patients', 'Patients'],
     ['/patients/new', 'New patient'],
-    ['/demo', 'Before and after, at a glance'],
+    ['/demo', 'Patients'],
     ['/cases', 'Cases'],
     ['/runs', 'Recent simulations'],
     ['/jobs', 'Run several cases'],

@@ -1,35 +1,35 @@
-import { presentationDemoAssets } from './data/presentationDemoAssets'
+import {
+  presentationDemoAssets,
+  presentationSubjectIds,
+  type PresentationSubjectId,
+  type PresentationTimepoint,
+} from './data/presentationDemoAssets'
 import { validateCaptureFile } from './patientWorkflow/captureFile'
 import { detectPatientFaceRegistration } from './patientWorkflow/onDeviceFaceRegistration'
-import type {
-  PatientFaceRegistration,
-  PatientTimepoint,
-} from './patientWorkflow/types'
+import type { PatientFaceRegistration } from './patientWorkflow/types'
 
 const output = document.querySelector<HTMLPreElement>(
   '[data-testid="presentation-registrations"]',
 )
 
 async function registrationFor(
-  timepoint: Extract<
-    PatientTimepoint,
-    'preoperative' | 'postoperative'
-  >,
+  subjectId: PresentationSubjectId,
+  timepoint: PresentationTimepoint,
 ): Promise<PatientFaceRegistration> {
-  const asset = presentationDemoAssets[timepoint]
+  const asset = presentationDemoAssets[subjectId][timepoint]
   const response = await fetch(asset.url)
   if (!response.ok) {
-    throw new Error(`IMAGE_LOAD_FAILED:${timepoint}`)
+    throw new Error(`IMAGE_LOAD_FAILED:${subjectId}:${timepoint}`)
   }
   const media = await response.blob()
   const prepared = await validateCaptureFile(media)
   if (!prepared.ok) {
     throw new Error(
-      `IMAGE_VALIDATION_FAILED:${timepoint}:${prepared.error.code}`,
+      `IMAGE_VALIDATION_FAILED:${subjectId}:${timepoint}:${prepared.error.code}`,
     )
   }
   if (prepared.value.metadata.sha256 !== asset.sha256) {
-    throw new Error(`IMAGE_HASH_MISMATCH:${timepoint}`)
+    throw new Error(`IMAGE_HASH_MISMATCH:${subjectId}:${timepoint}`)
   }
 
   return detectPatientFaceRegistration({
@@ -44,12 +44,17 @@ async function registrationFor(
 async function extract() {
   if (!output) throw new Error('OUTPUT_UNAVAILABLE')
   try {
-    const [preoperative, postoperative] = await Promise.all([
-      registrationFor('preoperative'),
-      registrationFor('postoperative'),
-    ])
+    const pairs = await Promise.all(
+      presentationSubjectIds.map(async (subjectId) => {
+        const [preoperative, postoperative] = await Promise.all([
+          registrationFor(subjectId, 'preoperative'),
+          registrationFor(subjectId, 'postoperative'),
+        ])
+        return [subjectId, { preoperative, postoperative }] as const
+      }),
+    )
     output.textContent = JSON.stringify(
-      { preoperative, postoperative },
+      Object.fromEntries(pairs),
       null,
       2,
     )

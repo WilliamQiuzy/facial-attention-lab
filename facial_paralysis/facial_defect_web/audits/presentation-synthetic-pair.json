@@ -1,35 +1,71 @@
 {
-  "schemaVersion": "presentation-synthetic-pair/1",
-  "pairId": "SYN-PRESENTATION-MOHS-CHEEK-001",
-  "derivedSyntheticIdentityId": "SYNTHETIC-IDENTITY-MOHS-CHEEK-001",
+  "schemaVersion": "presentation-synthetic-cohort/2",
+  "cohortId": "SYN-PRESENTATION-HEALING-INCISION-001",
   "relationship": "paired_synthetic_presentation",
   "allowedUse": "simulated_presentation_demo",
-  "createdAt": "2026-08-20",
-  "source": {
-    "approvedAssetId": "SYN-MOHS-SCC-CHEEK",
-    "timepoint": "preoperative",
-    "path": "facial_defect_synthesis/output/synthetic/mohs/mohs_preop_scc-cheek_middle-aged-black-female_a905e7.png",
-    "sha256": "1c43951ed068dc7b88a28e1a0e68d724f1f8b649067b81323ceb30fe2cc5eb30",
-    "width": 1024,
-    "height": 1024,
-    "sourceClass": "synthetic_ai_generated"
-  },
-  "derivedEdit": {
-    "timepoint": "postoperative",
-    "path": "facial_defect_synthesis/output/synthetic/presentation/mohs_postop_small-cheek-scar_middle-aged-black-female.png",
-    "sha256": "72d0ee02fa6313b9ddb3c6b4ccf3c1f8c277c98b51a3b4453152948f21e7a58b",
-    "width": 1024,
-    "height": 1024,
-    "sourceClass": "synthetic_ai_generated_edit",
-    "generator": "OpenAI built-in image generation tool",
-    "selectedGeneratedArtifactSha256BeforeResize": "2dc117aac67abbd89f71203011487a9e83ea2ad429a61f957ed9e544bde08752",
-    "postprocess": "Mechanically resized from 1254 x 1254 to 1024 x 1024 with macOS sips to match the source dimensions.",
-    "prompt": "Perform a strictly local edit of the synthetic subject's left-cheek lesion area: replace the raised ulcerated lesion with a small, flat, closed, postoperative-like linear scar at the same center; preserve facial appearance, pose, expression, crop, lighting, background, skin texture, clothing, camera perspective, orientation, and dimensions; add no heatmap, text, labels, watermark, or objects."
-  },
-  "review": {
-    "visualContinuity": "Reviewed for presentation-level continuity of facial appearance, pose, crop, background, and lesion location. This is not biometric identity verification.",
-    "knownLimitation": "The derived edit was generatively resynthesized and is not a pixel-identical local inpainting outside the lesion region.",
-    "realPersonSource": false
-  },
-  "boundary": "HAND-AUTHORED SIMULATION — NOT HUMAN GAZE — NOT A PREDICTED SURGICAL OUTCOME — CLINICAL USE BLOCKED"
+  "createdAt": "2026-08-21",
+  "updatedAt": "2026-08-21",
+  "subjects": [
+    {
+      "subjectId": "subject-a",
+      "derivedSyntheticIdentityId": "SYNTHETIC-IDENTITY-MOHS-CHEEK-001",
+      "source": {
+        "approvedAssetId": "SYN-MOHS-SCC-CHEEK",
+        "timepoint": "preoperative",
+        "path": "facial_defect_synthesis/output/synthetic/mohs/mohs_preop_scc-cheek_middle-aged-black-female_a905e7.png",
+        "sha256": "1c43951ed068dc7b88a28e1a0e68d724f1f8b649067b81323ceb30fe2cc5eb30",
+        "width": 1024,
+        "height": 1024,
+        "sourceClass": "synthetic_ai_generated"
+      },
+      "derivedEdit": {
+        "timepoint": "postoperative",
+        "path": "facial_defect_synthesis/output/synthetic/presentation/mohs_postop_healing-cheek-incision_middle-aged-black-female.png",
+        "sha256": "4e62df4478f6852d788adf58a77056e208a72f5936b0960af8d6ed17af6d95e5",
+        "width": 1024,
+        "height": 1024,
+        "sourceClass": "synthetic_ai_generated_edit",
+        "generator": "OpenAI built-in image generation tool with a localized ImageMagick feathered composite",
+        "selectedGeneratedArtifactSha256BeforeResize": "27bd361d6f562f761f1213617b6ab9950996b85d737290b65f8bd67d4f88671d",
+        "postprocess": "The selected 1254 x 1254 generated reference was mechanically resized to 1024 x 1024. A tightly masked 250 x 240 cheek patch was feathered and composited onto the exact 1024 x 1024 source with ImageMagick. Pixel comparison found 43,232 changed pixels out of 1,048,576 (4.12%); normalized RMSE was 0.00993382.",
+        "prompt": "Use case: precise-object-edit. Asset type: photorealistic synthetic postoperative clinical-photography demo. Input images: Image 1 is the sole edit target and identity/composition source, an AI-generated synthetic pre-operative frontal portrait. Primary request: Remove only the raised crusted lesion on the subject's left cheek (viewer right) and replace it with a clearly visible early postoperative excision wound at approximately 7–10 days after surgery. Show a fully closed, gently curved linear incision centered at the lesion site, approximately 3.5–4 cm long, with a few small, evenly spaced fine dark sutures, restrained pink-red wound margins, very mild local swelling, and realistic irregular skin texture. It must look like a clean healing surgical wound, not a mature scar. Style/medium: unretouched high-resolution clinical photography with natural pores, fine lines, and real skin microtexture; medically plausible but non-graphic. Composition/framing: preserve the exact frontal pose, head size, face silhouette, crop, camera distance, gaze, expression, anatomy, image orientation, and facial landmark positions. Lighting/mood: preserve the exact neutral clinical lighting, exposure, shadows, white balance, and blue background. Constraints: change only a tight region around the cheek lesion. Keep the eyes, eyelids, eyebrows, forehead, nose, nostrils, lips, chin, ears, hairline, hair texture, neck, clothing, background, facial proportions, and all skin outside the local cheek edit unchanged. No open gap, active bleeding, drainage, pus, crusted tumor, severe bruising, infection, keloid, mature pale scar, purple painted line, beauty retouching, waxy skin, heatmap, dots unrelated to sutures, contour lines, text, label, watermark, or medical device."
+      },
+      "review": {
+        "visualContinuity": "The exact pre-operative source is retained outside a small feathered cheek patch; 95.88% of image pixels are unchanged.",
+        "knownLimitation": "The healing incision and replacement cheek patch remain synthetic presentation material and have not been clinically validated as a predicted surgical outcome.",
+        "realPersonSource": false
+      }
+    },
+    {
+      "subjectId": "subject-b",
+      "derivedSyntheticIdentityId": "SYNTHETIC-IDENTITY-NEVUS-CHEEK-002",
+      "source": {
+        "approvedAssetId": "SYN-NEVUS-CHEEK",
+        "timepoint": "preoperative",
+        "path": "facial_defect_synthesis/output/synthetic/nevus/nevus_preop_cheek-patch_young-adult-white-female_3fa4d7.png",
+        "sha256": "14909f75c0ba2ae4ab5e4ac1cf976f261d6d61eff09ae5804d865e2e6229d374",
+        "width": 1024,
+        "height": 1024,
+        "sourceClass": "synthetic_ai_generated"
+      },
+      "derivedEdit": {
+        "timepoint": "postoperative",
+        "path": "facial_defect_synthesis/output/synthetic/presentation/nevus_postop_healing-cheek-incision_young-adult-white-female.png",
+        "sha256": "ecbb751e8c13b37465f899fd912a4dc4f713088388ca7a3ae94e925e55743b8b",
+        "width": 1024,
+        "height": 1024,
+        "sourceClass": "synthetic_ai_generated_edit",
+        "generator": "OpenAI built-in image generation tool with a localized ImageMagick feathered composite",
+        "selectedGeneratedArtifactSha256BeforeResize": "2062a81cb6c88b240efb8063a7744a555c2da8f2ae60dcc249ed95d23041b772",
+        "postprocess": "The selected 1254 x 1254 generated reference was mechanically resized to 1024 x 1024. A tightly masked 260 x 220 cheek patch was feathered and composited onto the exact 1024 x 1024 source with ImageMagick. Pixel comparison found 42,131 changed pixels out of 1,048,576 (4.02%); normalized RMSE was 0.0164768.",
+        "prompt": "Use case: precise-object-edit. Asset type: photorealistic synthetic postoperative clinical-photography demo. Input images: Image 1 is the sole edit target and identity/composition source, an AI-generated synthetic pre-operative frontal portrait of a young adult white woman with a dark cheek lesion. Primary request: Remove only the dark cheek lesion on the subject's left cheek (viewer right) and replace it with a clearly visible early postoperative excision wound at approximately 7–10 days after surgery. Show a fully closed, gently curved linear incision centered across the former lesion site, approximately 4–4.5 cm long, with a few small evenly spaced fine dark sutures, restrained pink-red wound margins, very mild local swelling, and realistic irregular skin texture. It must look like a clean healing surgical wound, not a mature scar. Style/medium: unretouched high-resolution clinical photography with natural pores, fine lines, and realistic skin microtexture; medically plausible but non-graphic. Composition/framing: preserve the exact frontal pose, head size, face silhouette, crop, camera distance, gaze, expression, anatomy, image orientation, and facial landmark positions. Lighting/mood: preserve the exact neutral clinical lighting, exposure, shadows, white balance, and blue background. Constraints: change only a tight region around the cheek lesion. Preserve the subject's exact facial identity, green-hazel eyes, eyelids, eyebrows, forehead, nose, lips, jawline, ears, hair part, hair color and texture, earrings, necklace, white shirt, background, and all skin outside the local cheek edit. No open gap, active bleeding, drainage, pus, remaining dark lesion, severe bruising, infection, keloid, mature pale scar, purple painted line, beauty retouching, waxy skin, heatmap, dots unrelated to sutures, contour lines, text, label, watermark, or medical device."
+      },
+      "review": {
+        "visualContinuity": "The exact pre-operative source is retained outside a small feathered cheek patch; 95.98% of image pixels are unchanged.",
+        "knownLimitation": "The healing incision and replacement cheek patch remain synthetic presentation material and have not been clinically validated as a predicted surgical outcome.",
+        "realPersonSource": false
+      }
+    }
+  ],
+  "boundary": "SYNTHETIC DEMO — ILLUSTRATIVE ATTENTION, NOT MEASURED GAZE"
 }
