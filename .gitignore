@@ -12,6 +12,7 @@
 *.pfx
 **/__pycache__/
 **/.pytest_cache/
+**/.firecrawl/
 **/.venv/
 **/*.egg-info/
 *.py[cod]
