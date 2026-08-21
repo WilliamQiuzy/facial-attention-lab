@@ -1,0 +1,17 @@
+services:
+  shared-v9:
+    image: ghcr.io/williamqiuzy/facial-attention-lab-shared-v9:v9-public-v1-build
+    restart: unless-stopped
+    user: "1001:1001"
+    read_only: true
+    environment:
+      SHARED_V9_DEVICE: cpu
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+    ports:
+      - "127.0.0.1:18090:8080"

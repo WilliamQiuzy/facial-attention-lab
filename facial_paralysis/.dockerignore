@@ -15,6 +15,14 @@
 !environment/shared_v8_runtime_v1.lock
 !environment/shared_v8_deployment_v1.Dockerfile
 !scripts/serve_shared_v8.py
+!environment/shared_v9_public_v1.Dockerfile
+!scripts/serve_shared_v9.py
+!releases/
+!releases/shared-v9-research-v1/
+!releases/shared-v9-research-v1/manifest.json
+!releases/shared-v9-research-v1/weights-seed0.npz
+!releases/shared-v9-research-v1/weights-seed1.npz
+!releases/shared-v9-research-v1/weights-seed2.npz
 
 **/__pycache__/
 **/*.pyc
