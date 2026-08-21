@@ -32,23 +32,10 @@ function renderShell(path: string, gateway?: WorkbenchGateway) {
   )
 }
 
-function expectPermanentBoundaries() {
-  const environmentNotices = screen.getAllByRole('status', {
-    name: 'Workspace environment',
-  })
-  expect(environmentNotices).toHaveLength(1)
-
-  const environment = environmentNotices[0]
+function expectNoEnvironmentBar() {
   expect(
-    within(environment).getByText(
-      'Research prototype · sample data only · session data resets on refresh',
-    ),
-  ).toBeVisible()
-  expect(
-    within(environment).getByText(
-      'Research prototype · sample data only',
-    ),
-  ).toBeInTheDocument()
+    screen.queryByRole('status', { name: 'Workspace environment' }),
+  ).not.toBeInTheDocument()
   expect(screen.queryByRole('status', { name: /research use status/i })).not.toBeInTheDocument()
 }
 
@@ -65,18 +52,18 @@ describe('application frame', () => {
     '/patients',
     `/analysis?case=${approvedCaseId}`,
     '/research/reviews/review-from-old-session',
-  ])('keeps one compact mock environment notice on %s', (path) => {
+  ])('does not show an environment bar on %s', (path) => {
     renderShell(path)
 
-    expectPermanentBoundaries()
+    expectNoEnvironmentBar()
   })
 
   it.each(['/runs', '/models', '/reviews'])(
-    'keeps one compact connected environment notice on %s',
+    'does not show an environment bar in connected mode on %s',
     (path) => {
       renderShell(path, connectedGateway)
 
-      expectPermanentBoundaries()
+      expectNoEnvironmentBar()
     },
   )
 
@@ -197,9 +184,7 @@ describe('application frame', () => {
   })
 
   it('keeps permanent shell text at a clinician-readable minimum size', () => {
-    expect(getCssRule(workbenchCss, '.environment-strip')).toMatch(
-      /font-size:\s*(?:0\.875rem|14px)/,
-    )
+    expect(workbenchCss).not.toContain('.environment-strip')
     expect(getCssRule(globalCss, '.site-footer a')).toMatch(
       /font-size:\s*(?:0\.875rem|14px)/,
     )
@@ -250,23 +235,11 @@ describe('application frame', () => {
     expect(getCssRule(narrowMobileCss, '.brand__name--compact')).toMatch(
       /display:\s*block/,
     )
-    expect(getCssRule(workbenchMobileCss, '.environment-strip__copy--full')).toMatch(
-      /display:\s*none/,
-    )
-    expect(getCssRule(workbenchMobileCss, '.environment-strip__copy--compact')).toMatch(
-      /display:\s*inline/,
-    )
   })
 
-  it('removes the obsolete notice CSS and prints the environment strip intentionally', () => {
+  it('removes obsolete notice and environment-strip CSS', () => {
     expect(globalCss).not.toContain('.research-notice')
-
-    const printStart = workbenchCss.lastIndexOf('@media print')
-    const printCss = workbenchCss.slice(printStart)
-    const printedEnvironment = getCssRule(printCss, '.environment-strip')
-
-    expect(printedEnvironment).toMatch(/background:\s*#fff/)
-    expect(printedEnvironment).toMatch(/border-(?:top|bottom):/)
+    expect(workbenchCss).not.toContain('.environment-strip')
   })
 
   it('uses a plain header and removes the unused marketing decoration', () => {

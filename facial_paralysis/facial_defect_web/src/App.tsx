@@ -8,7 +8,6 @@ import {
 } from 'react-router-dom'
 import { AppFooter } from './components/AppFooter'
 import { AppHeader } from './components/AppHeader'
-import { EnvironmentStrip } from './components/EnvironmentStrip'
 import { ScrollToTop } from './components/ScrollToTop'
 import { DEMO_PATIENT_RECORDS } from './data/demoPatientRecords'
 import { AnalysisPage } from './pages/AnalysisPage'
@@ -47,7 +46,6 @@ import './styles/pages.css'
 import './styles/workbench.css'
 import './styles/task6.css'
 import './styles/patient-workflow.css'
-import './styles/presentation.css'
 
 const defaultWorkbenchGateway = createWorkbenchGateway()
 
@@ -114,13 +112,11 @@ function RoutedWorkspace() {
     <div className="app-root">
       <ScrollToTop />
       <a className="skip-link" href="#main-content">Skip to main content</a>
-      <EnvironmentStrip />
       <AppHeader />
       <main id="main-content" tabIndex={-1}>
         <Routes>
           <Route path="/" element={<Navigate to="/patients" replace />} />
           <Route path="/patients" element={<PatientsPage />} />
-          <Route path="/demo" element={<Navigate to="/patients" replace />} />
           <Route path="/patients/new" element={<NewPatientPage />} />
           <Route
             path="/patients/:patientId"

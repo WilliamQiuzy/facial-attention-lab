@@ -9,11 +9,6 @@ simple clinician decision. Legacy case, batch, model-comparison, and research
 review tools remain available from Help. No trained facial-defect spatial
 attention model or real patient backend exists in this repository yet.
 
-An isolated presentation demo at `/demo` uses two explicitly derived pairs of
-AI-generated images to rehearse pre-operative-like lesions and closed,
-healing postoperative-like incisions. Its attention layers are illustrative
-display signals, not measured human gaze or a model output.
-
 The interface uses a restrained Mayo-inspired visual system, but it is an independent research prototype. It does not use Mayo Clinic logos or proprietary fonts and is not an official clinical product.
 
 ## Current capability boundary
@@ -21,7 +16,7 @@ The interface uses a restrained Mayo-inspired visual system, but it is an indepe
 | Surface | Current state |
 | --- | --- |
 | Clinician workflow | Patient record → photo visit → frontal capture → four quality checks → local simulation → image-first result → review |
-| Presentation demo | Photo, patient-matched outline, or combined view; pre-operative, post-operative, side-by-side, or same-frame drag comparison with an optional classic heatmap layer |
+| Longitudinal comparison | Same-patient pre-operative and post-operative photo, outline, and attention views after both visits have completed results |
 | Patient records | Synthetic/test records in React memory only; no authentication, persistence, server record, or real-PHI support |
 | Camera and upload | Native camera/file input; validated JPEG/PNG/WebP bytes remain in an in-memory session vault |
 | Patient result | Original, simulated overlay, density field with a photo-matched face contour, and face-relative AOI summary on one scrolling page |
@@ -106,56 +101,12 @@ carousel, crop control, or display-mode choice is required in the clinician resu
 flow. The compact patient explanation keeps its shorter Summary/Separate/Overlay
 choice.
 
-## Presentation demo and shareable package
-
-The `/demo` route is intentionally simpler than the operational workflow. It
-starts with one selected synthetic subject shown before and after in one row.
-The doctor can switch between Subject A and Subject B, choose a time point,
-switch among `Photo`, `Outline`, and
-`Photo + outline`, keep or hide the attention layer, and compare `Side by side`
-or with a same-frame `Drag slider`. The post-operative-like image is an
-AI-derived edit with a visible, closed healing incision and fine sutures. All
-displays use a
-classic blue-cyan-green-yellow-red heatmap scale. The cheek signal remains
-non-zero after the edit but is deliberately lower than in the lesion example.
-To keep the before/after comparison visually credible, the exact source image
-is retained outside a small feathered cheek patch; 95.88% of pixels remain
-unchanged in Subject A and 95.98% in Subject B. The incisions are still
-synthetic presentation material, not predicted surgical outcomes.
-
-Each outline is a stored snapshot of 13 paths across six MediaPipe feature
-groups—face oval, left/right eyes, left/right eyebrows, and lips—extracted from
-the exact displayed image and bound to its SHA-256. The shareable package does
-not include or run MediaPipe, a camera, WASM, or any model at viewing time.
-
-Build the one-file offline demo and regenerate the slide-ready screenshots:
-
-```bash
-pnpm capture:presentation
-```
-
-The command writes
-[`presentation-assets/FaceAI-Demo.html`](./presentation-assets/FaceAI-Demo.html),
-14 PNG screenshots under [`presentation-assets/screenshots/`](./presentation-assets/screenshots/),
-and a SHA-256 manifest. The HTML can be opened by double-clicking it; it embeds
-both exact synthetic PNG payloads and makes no network request. Every mode and
-every screenshot retains the exact disclosure:
-`SYNTHETIC DEMO — ILLUSTRATIVE ATTENTION, NOT MEASURED GAZE`.
-
-For Teams, package this one file in `FaceAI-Teams-Demo.zip` so Teams does not
-preview or rewrite the HTML attachment. Recipients unzip it and double-click
-`FaceAI-Demo.html`. This standalone file contains the presentation comparison,
-not the full Patients workflow. Live Camera requires a secure browser origin
-(`https://` or localhost), so the full workflow should be shared as an HTTPS
-deployment link rather than as raw HTML or a static ZIP.
-
 ## Operational routes
 
 | Route | Purpose |
 | --- | --- |
 | `/` | Redirects to the clinician patient list |
 | `/patients` | Search session-only synthetic/test patient records |
-| `/demo` | Presentation-ready same-subject synthetic before/after comparison in Photo, Outline, or combined mode |
 | `/patients/new` | Create one session-only synthetic/test record and initial photo visit |
 | `/patients/:patientId` | Patient identity, chronological visits, state-gated pre/post readiness, and same-patient comparison only after both current results exist |
 | `/patients/:patientId/visits/new` | Add a dated preoperative, postoperative, or follow-up photo visit |
@@ -204,7 +155,7 @@ awaiting_review -> approved_for_research -> revoked
 
 Retries create new immutable attempts with parent lineage; they never overwrite a failed or cancelled attempt. Every single-run, retry, and batch launch revalidates the current verified full-image source binding immediately before gateway work; a changed binding blocks the attempt without a request. Restoring a source binding never starts inference. It increments the binding version when recovery is needed, preserves prior run history, and marks incompatible current results stale. Review approval means approval for this synthetic research demonstration only—not clinical approval.
 
-## Run locally
+## Run the complete FaceAI website
 
 Requirements: Node.js 22.12–24.x and pnpm 11.x. The lockfile records `pnpm@11.9.0`.
 
@@ -214,10 +165,12 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Open [http://127.0.0.1:5173/](http://127.0.0.1:5173/). The default mode is
+Open [http://localhost:5173/](http://localhost:5173/). The default mode is
 deterministic and local. It performs no external model inference, writes
 nothing to browser persistence, and keeps selected test-image bytes inside
-the current in-memory session.
+the current in-memory session. `localhost` is the browser address of the local
+development server; a branded address and remote doctor access require an HTTPS
+deployment.
 
 ## Verification
 
@@ -225,15 +178,12 @@ the current in-memory session.
 pnpm typecheck
 pnpm test:run
 pnpm build
-pnpm build:presentation
 ```
 
-Vite verifies the source bytes of the exact 10 approved workbench assets and
-the isolated four-image presentation manifest when configuration loads and
-again before production build. Because the presentation source is one of the
-10 workbench assets, the normal bundle contains 12 unique verified synthetic
-PNG byte hashes. Missing, changed, non-synthetic, or unapproved assets fail the
-build; no real-image or `facial_paralysis` research asset is allowed.
+Vite verifies the source bytes of the exact 10 approved workbench assets when
+configuration loads and again before production build. Missing, changed,
+non-synthetic, or unapproved assets fail the build; no real-image or
+`facial_paralysis` research asset is allowed.
 
 ## Future model gateway
 
@@ -308,10 +258,6 @@ The downloadable `application/json` manifest uses an explicit whitelist. It incl
   remain standalone, unpaired demonstrations. The workbench must never describe
   them as before/after, the same patient, postoperative change, treatment
   outcome, or a scientific cross-case comparison.
-- The presentation demo is an isolated exception with its own four-image
-  manifest: two AI-generated sources and two explicitly AI-derived edits. It may
-  be described only as a paired synthetic presentation example, never as a
-  real patient, measured treatment effect, or predicted surgical outcome.
 - No source under `output/real`, no facial-paralysis research image, no
   patient-derived feature, no clinical label, and no trained clinical or
   observer-attention model weight is imported. The only checked-in model bundle

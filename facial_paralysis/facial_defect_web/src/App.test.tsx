@@ -92,19 +92,12 @@ describe('workspace application shell', () => {
     expect(researchTools).toBeVisible()
   })
 
-  it('keeps the compact prototype boundary visible', () => {
+  it('does not show a persistent prototype environment bar', () => {
     renderApp('/patients')
 
-    const environments = screen.getAllByRole('status', {
-      name: 'Workspace environment',
-    })
-    expect(environments).toHaveLength(1)
-    const environment = environments[0]
     expect(
-      within(environment).getByText(
-        'Research prototype · sample data only · session data resets on refresh',
-      ),
-    ).toBeVisible()
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByRole('status', { name: 'Research use status' }),
     ).not.toBeInTheDocument()
@@ -114,11 +107,11 @@ describe('workspace application shell', () => {
     )
   })
 
-  it('redirects the retired Demo route into Patients', () => {
+  it('does not expose the retired Demo route', () => {
     renderApp('/demo')
 
-    expect(screen.getByTestId('current-location')).toHaveTextContent('/patients')
-    expect(screen.getByRole('heading', { name: 'Patients', level: 1 })).toBeVisible()
+    expect(screen.getByTestId('current-location')).toHaveTextContent('/demo')
+    expect(screen.getByRole('heading', { name: 'Page not found' })).toBeVisible()
   })
 
   it('keeps the default mock loading state visible long enough to be understood', async () => {
@@ -187,7 +180,7 @@ describe('workspace application shell', () => {
     }
   })
 
-  it('does not weaken the prototype boundary when research tools use a connected gateway', () => {
+  it('does not reintroduce an environment bar for a connected gateway', () => {
     const gateway = {
       mode: 'connected',
       runInference: async () => {
@@ -201,14 +194,9 @@ describe('workspace application shell', () => {
       </MemoryRouter>,
     )
 
-    const environment = screen.getByRole('status', {
-      name: 'Workspace environment',
-    })
     expect(
-      within(environment).getByText(
-        'Research prototype · sample data only · session data resets on refresh',
-      ),
-    ).toBeVisible()
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
   })
 
   it('keeps legacy research-review deep links compatible but redirects them out of the clinical namespace', () => {
@@ -242,7 +230,6 @@ describe('workspace application shell', () => {
     ['/', 'Patients'],
     ['/patients', 'Patients'],
     ['/patients/new', 'New patient'],
-    ['/demo', 'Patients'],
     ['/cases', 'Cases'],
     ['/runs', 'Recent simulations'],
     ['/jobs', 'Run several cases'],

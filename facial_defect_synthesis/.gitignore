@@ -1,12 +1,6 @@
 __pycache__/
 *.pyc
 .env
-output/*
-!output/synthetic/
-output/synthetic/*
-!output/synthetic/presentation/
-output/synthetic/presentation/*
-!output/synthetic/presentation/mohs_postop_healing-cheek-incision_middle-aged-black-female.png
-!output/synthetic/presentation/nevus_postop_healing-cheek-incision_young-adult-white-female.png
+output/
 metadata/
 .DS_Store

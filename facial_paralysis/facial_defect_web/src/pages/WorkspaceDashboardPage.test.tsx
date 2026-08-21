@@ -63,9 +63,7 @@ describe('clinician entry route', () => {
     expect(storageReadSpy).not.toHaveBeenCalled()
     expect(storageWriteSpy).not.toHaveBeenCalled()
     expect(
-      screen.getByRole('status', { name: 'Workspace environment' }),
-    ).toHaveTextContent(
-      'Research prototype · sample data only · session data resets on refresh',
-    )
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
   })
 })

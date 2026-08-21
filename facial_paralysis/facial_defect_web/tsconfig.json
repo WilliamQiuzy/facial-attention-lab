@@ -17,5 +17,5 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src", "build", "vite.config.ts", "vite.presentation.config.ts"]
+  "include": ["src", "build", "vite.config.ts"]
 }

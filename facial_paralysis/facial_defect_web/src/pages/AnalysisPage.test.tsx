@@ -1077,12 +1077,9 @@ describe('single-case simulated inference', () => {
       expect(screen.queryByText(genericMetric)).not.toBeInTheDocument()
     }
 
-    const environment = screen.getByRole('status', { name: 'Workspace environment' })
     expect(
-      within(environment).getByText(
-        'Research prototype · sample data only · session data resets on refresh',
-      ),
-    ).toBeVisible()
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start a new run' })).not.toBeInTheDocument()
     expect(
       container.querySelectorAll(

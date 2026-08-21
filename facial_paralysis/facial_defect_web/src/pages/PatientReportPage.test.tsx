@@ -178,12 +178,8 @@ describe('gated patient explanation and export', () => {
     expect(within(preview).getAllByRole('img')).toHaveLength(1)
     expect(within(preview).getByText('SIMULATED — NOT HUMAN GAZE')).toBeVisible()
     expect(
-      within(
-        screen.getByRole('status', { name: 'Workspace environment' }),
-      ).getByText(
-        'Research prototype · sample data only · session data resets on refresh',
-      ),
-    ).toBeVisible()
+      screen.queryByRole('status', { name: 'Workspace environment' }),
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByText(/one independent, unpaired synthetic image/i),
     ).not.toBeInTheDocument()
