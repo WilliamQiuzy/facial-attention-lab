@@ -58,6 +58,10 @@ def test_report_is_multiseed_aggregate_only_and_specificity_first(c):
     }
     report = runner.build_report(
         evaluations=evaluations,
+        ensemble_metrics={
+            candidate_id: _source_metrics(specificity=0.90)
+            for candidate_id in evaluations
+        },
         counts={"palsynet": 38, "neuroface": 36, "meei": 56},
         runtime={"gpu": "NVIDIA H200", "epochs": 20, "folds": 6},
         commitments={"implementation_sha256": "a" * 64},
@@ -65,6 +69,15 @@ def test_report_is_multiseed_aggregate_only_and_specificity_first(c):
     c.eq(report["schema_version"], "literature_grounded_shared_v9_search")
     c.eq(report["selection"]["primary_metric"], "minimum_source_specificity")
     c.eq(report["selection"]["seeds"], [0, 1, 2])
+    c.eq(
+        report["selection"]["promotion_estimator"],
+        "mean_probability_deep_ensemble",
+    )
+    c.eq(
+        report["summaries"]["LGS9-001"]["three_seed_probability_ensemble"]
+        ["neuroface"]["specificity"],
+        0.90,
+    )
     c.true(report["combination_authorized"])
     c.eq(report["audit"], {
         "palsynet_protected_reads": 0,

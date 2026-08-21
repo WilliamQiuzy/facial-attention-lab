@@ -26,6 +26,7 @@ from src.evaluation.literature_grounded_shared_search_v9 import (  # noqa: E402
     evaluate_literature_grounded_candidate,
 )
 from src.evaluation.shared_clinical_encoder_v1 import SOURCES  # noqa: E402
+from src.evaluation.universal_orofacial_v1 import binary_metrics  # noqa: E402
 from src.models.literature_grounded_candidate_registry_v9 import (  # noqa: E402
     candidate_registry_v9,
 )
@@ -133,11 +134,16 @@ def _passes_promotion(
 def build_report(
     *,
     evaluations: Mapping[str, Mapping[str, Mapping[str, object]]],
+    ensemble_metrics: Mapping[str, Mapping[str, Mapping[str, float]]],
     counts: Mapping[str, int],
     runtime: Mapping[str, object],
     commitments: Mapping[str, str],
 ) -> dict[str, object]:
     _validate_evaluations(evaluations)
+    if type(ensemble_metrics) is not dict or tuple(ensemble_metrics) != tuple(evaluations):
+        raise ValueError("V9 ensembles must match the evaluated candidates")
+    for metrics in ensemble_metrics.values():
+        _validate_source_metrics(metrics)
     authorized = combination_is_authorized({
         candidate_id: evaluations[candidate_id] for candidate_id in _BASE_IDS
     })
@@ -159,18 +165,19 @@ def build_report(
             "leave_one_source_out_three_seed_mean": _mean_source_metrics(
                 seed_rows, "leave_one_source_out"
             ),
+            "three_seed_probability_ensemble": dict(ensemble_metrics[candidate_id]),
         }
-    comparator = summaries["LGS9-000"]["within_source_three_seed_mean"]
+    comparator = summaries["LGS9-000"]["three_seed_probability_ensemble"]
     for candidate_id in summaries:
         summaries[candidate_id]["promotion_gate_passed"] = (
             candidate_id != "LGS9-000"
             and _passes_promotion(
-                summaries[candidate_id]["within_source_three_seed_mean"], comparator
+                summaries[candidate_id]["three_seed_probability_ensemble"], comparator
             )
         )
 
     def ranking_key(candidate_id: str):
-        metrics = summaries[candidate_id]["within_source_three_seed_mean"]
+        metrics = summaries[candidate_id]["three_seed_probability_ensemble"]
         return (
             not summaries[candidate_id]["promotion_gate_passed"],
             -min(float(metrics[source]["specificity"]) for source in SOURCES),
@@ -209,6 +216,7 @@ def build_report(
             "minimum_sensitivity": 0.85,
             "maximum_source_accuracy_or_auroc_regression": 0.01,
             "seeds": list(SEEDS),
+            "promotion_estimator": "mean_probability_deep_ensemble",
             "ranking": list(ranking),
             "leave_one_source_out_role": "descriptive_transfer_stress_test_only",
         },
@@ -326,25 +334,46 @@ def main() -> None:
 
     lookup = {row.candidate_id: row for row in candidate_registry_v9()}
     evaluations: dict[str, dict[str, object]] = {}
+    raw_probabilities: dict[str, list[np.ndarray]] = {}
     for candidate_id in _BASE_IDS:
-        evaluations[candidate_id] = {
-            str(seed): _serialize(evaluate_literature_grounded_candidate(
+        evaluations[candidate_id] = {}
+        raw_probabilities[candidate_id] = []
+        for seed in SEEDS:
+            result = evaluate_literature_grounded_candidate(
                 dataset, lookup[candidate_id], epochs=args.epochs,
                 n_splits=args.folds, seed=seed, device="cuda",
-            ))
-            for seed in SEEDS
-        }
+            )
+            evaluations[candidate_id][str(seed)] = _serialize(result)
+            raw_probabilities[candidate_id].append(result.probabilities)
     if combination_is_authorized(evaluations):
-        evaluations[_COMBINED_ID] = {
-            str(seed): _serialize(evaluate_literature_grounded_candidate(
+        evaluations[_COMBINED_ID] = {}
+        raw_probabilities[_COMBINED_ID] = []
+        for seed in SEEDS:
+            result = evaluate_literature_grounded_candidate(
                 dataset, lookup[_COMBINED_ID], epochs=args.epochs,
                 n_splits=args.folds, seed=seed, device="cuda",
-            ))
-            for seed in SEEDS
+            )
+            evaluations[_COMBINED_ID][str(seed)] = _serialize(result)
+            raw_probabilities[_COMBINED_ID].append(result.probabilities)
+
+    ensemble_metrics = {}
+    for candidate_id, rows in raw_probabilities.items():
+        probabilities = np.mean(np.stack(rows, axis=0), axis=0)
+        ensemble_metrics[candidate_id] = {
+            source: binary_metrics(
+                dataset.base.labels[np.asarray([
+                    observed == source for observed in dataset.base.sources
+                ])],
+                probabilities[np.asarray([
+                    observed == source for observed in dataset.base.sources
+                ])],
+            )
+            for source in SOURCES
         }
 
     report = build_report(
         evaluations=evaluations,
+        ensemble_metrics=ensemble_metrics,
         counts=counts,
         runtime={
             "gpu": torch.cuda.get_device_name(0),
