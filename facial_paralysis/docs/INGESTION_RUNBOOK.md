@@ -1,7 +1,7 @@
 # New-data ingestion runbook (turnkey)
 
 > **Model-status note (2026-07-27):** This runbook predates the 110D Landmark
-> development champion. Use `CURRENT_MODEL.md` as the model authority, and
+> development champion. Use `CURRENT_MODEL.md` for Shared V9 as the model authority, and
 > freeze a new evaluation protocol before fitting any newly labeled Mayo data.
 
 Everything is built to consume new data. This is the exact "when X arrives, run Y" recipe.

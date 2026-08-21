@@ -76,7 +76,9 @@ def test_report_binds_implementation_and_excludes_private_rows(c: Check):
 
 
 def test_ucr4_remains_byte_exact_only_default(c: Check):
-    current = json.loads((ROOT / "docs/model_registry.json").read_bytes())
+    current = json.loads((
+        ROOT / "docs/archive/models/model_registry_v2_ucr4.json"
+    ).read_bytes())
     c.eq(current["current"]["name"], "universal_clinical_router_v4")
     c.eq(_sha(V4_MODEL), "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495")
     c.eq(_sha(V4_REPORT), "56379e252fd6c88d74a98a89241bdbf4a96b84080f18a6055a41f880c8b34d8a")

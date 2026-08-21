@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import zipfile
 
@@ -21,6 +22,9 @@ from src.deployment.shared_v9_research_release import (
 )
 from src.models.broad_literature_candidate_registry_v9 import candidate_registry_v9
 from src.models.broad_literature_shared_router_v9 import BroadLiteratureSharedRouterV9
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _candidate():
@@ -172,6 +176,25 @@ def test_v9_release_is_immutable(c):
         )
         write_release(root, **arguments)
         c.raises(lambda: write_release(root, **arguments), FileExistsError)
+
+
+def test_repository_bundle_is_complete_public_and_loadable(c):
+    release = ROOT / "releases/shared-v9-research-v1"
+    predictor = load_release(release, device="cpu")
+    c.eq(len(predictor.models), 3)
+    tracked = set(subprocess.check_output(
+        ("git", "ls-files"), cwd=ROOT, text=True
+    ).splitlines())
+    for seed in RESEARCH_SEEDS:
+        c.true(f"releases/shared-v9-research-v1/weights-seed{seed}.npz" in tracked)
+    payload = b"\n".join(
+        path.read_bytes() for path in release.iterdir() if path.is_file()
+    ).lower()
+    for forbidden in (
+        b"participant_id", b"group_id", b"patient_id", b"/users/", b"/home/",
+        b"aws_secret", b"runpod_api", b"nvapi-",
+    ):
+        c.true(forbidden not in payload, forbidden.decode("utf-8"))
 
 
 if __name__ == "__main__":

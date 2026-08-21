@@ -12,11 +12,19 @@ claims.
 Some paths and generated artifacts named by archived documents now exist only
 in Git history.
 
-The sole current authority is:
+The current authority is:
 
 - `../CURRENT_MODEL.md`
+- `../CURRENT_RESEARCH_MODEL.md`
+- `../CURRENT_DEPLOYMENT_MODEL.md`
 - `../model_registry.json`
-- `../../src/models/current.py`
+- `../../src/deployment/shared_v9_research_release.py`
+
+The former Universal Clinical Router v4 authority is preserved as
+`models/current_model_ucr4.md` with its v2 registry snapshot. The former
+top-level project summary, Chinese progress report, and MARLIN/GRU architecture
+note were moved into `experiments/` or `models/` because they are useful only
+for historical reproduction.
 
 Historical source modules may be imported directly only when reproducing an
 archived experiment. They must never be re-exported from `src.models` or called

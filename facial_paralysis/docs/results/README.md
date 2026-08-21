@@ -1,23 +1,19 @@
 # Result status
 
-Universal Clinical Router v4 is the sole current model. Its authoritative
-human-readable result is `universal_clinical_router_v4.md`; its exact model and
-aggregate report are under `artifacts/universal_clinical_router_v4/` and are
-bound by `../model_registry.json`.
+Shared V9 / BLV9-009 is the current research model. Its authoritative
+human-readable result is `broad_literature_shared_v9.md`; its exact aggregate
+selection report is `artifacts/broad_literature_shared_v9/report.json`, and its
+public three-seed weights are under `../../releases/shared-v9-research-v1/`.
 
-New candidates are recorded separately in `../model_candidates.json` so a
-candidate cannot silently change the default. The latest bounded experiment,
-`universal_clinical_router_v6_candidate.md`, adds dense action geometry and
-passes its exposed participant-disjoint development gate on all three profiles.
-It remains non-current until an untouched external validation succeeds. The v5
-selective-confidence study remains recorded as a rejected experiment.
+New candidates are recorded separately so a candidate cannot silently change
+the default. Shared V10 is the latest bounded follow-up and did not replace V9.
 
 Other files in this directory are frozen point-in-time experiments, component
 evidence, external-cohort audits, or failed candidate studies. Terms such as
 “current,” “champion,” or “promoted” inside those files describe the decision at
-the date of that experiment and do not override the v4 registry. They may be
-used to audit how a v4 expert was selected, but not as alternative current model
+the date of that experiment and do not override the V9 registry. They may be
+used to audit how an earlier expert was selected, but not as alternative current model
 specifications.
 
-`current_development_model.json` is retained as the frozen 110D component record
-referenced by v4; it is not a separate current model.
+`current_development_model.json` is retained as the frozen 110D component record;
+it is not a separate current model.

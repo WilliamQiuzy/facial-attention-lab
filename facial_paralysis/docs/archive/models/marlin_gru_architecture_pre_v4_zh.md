@@ -1,8 +1,8 @@
 # 面瘫严重度模型:结构与训练流程(中文说明 / PPT 用)
 
 > **历史架构说明：** 下文的 MARLIN/GRU/HB 网络不是当前默认模型。当前唯一
-> 主模型是 Universal Clinical Router v4，见 `CURRENT_MODEL.md` 与
-> `model_registry.json`。
+> 主模型是 Universal Clinical Router v4，见 `../../CURRENT_MODEL.md` 与
+> `../../model_registry.json`。
 
 > **状态更新（2026-08-05）：** 本文主体是旧版神经网络架构说明，不代表当前
 > 最佳模型。当前唯一开发集模型结论请以 `CURRENT_MODEL.md` 为准：身份审计后、

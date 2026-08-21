@@ -1,6 +1,6 @@
 > **历史快照：** 本文记录 Universal Clinical Router v4 之前的研究过程，不再
-> 代表当前模型。当前唯一主模型见 `CURRENT_MODEL.md` 和
-> `model_registry.json`。
+> 代表当前模型。当前唯一主模型见 `../../CURRENT_MODEL.md` 和
+> `../../model_registry.json`。
 
 ## 当时的模型结论（2026-08-05）
 
@@ -13,7 +13,7 @@ Action+Phase proxy 都没有通过预注册晋级门，因此继续锁定110维�
 这是 affected-vs-unaffected 二分类开发结果，不是 HB 分级，也不是 Mayo
 65个无标签视频的准确率。49个视频已完成1,176对标签盲审，得到48个身份组；
 另有10个保护组的缓存、特征、拟合和预测全部保持为0，一次锁定的外层测试
-仍未授权。完整边界见 `CURRENT_MODEL.md`。
+仍未授权。完整边界见 `../../CURRENT_MODEL.md`。
 
 下文记录项目的历史研究过程；其中旧的 MARLIN、0.668 QWK、
 Blendshape/Fusion 和 SSL 模型均为历史基线，不再代表当前最佳模型。

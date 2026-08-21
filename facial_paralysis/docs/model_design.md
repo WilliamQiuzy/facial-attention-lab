@@ -1,13 +1,14 @@
 # Facial-Paralysis Model — Design and Architecture History
 
 > **ARCHIVED DESIGN:** The neural and HB architectures below are historical and
-> are not default imports. Universal Clinical Router v4 is specified by
-> `CURRENT_MODEL.md` and `model_registry.json`.
+> are not default imports. The current Shared V9 research model is specified by
+> `CURRENT_MODEL.md` and `model_registry.json`; Universal Clinical Router v4 is
+> preserved only as a historical comparator.
 
 _Historical status snapshot: 2026-08-05._
 
-`CURRENT_MODEL.md` is the source of truth for Universal Clinical Router v4 and its
-claim boundary. This document preserves the broader neural architecture and
+`CURRENT_MODEL.md` is the source of truth for the current model and its claim
+boundary. This document preserves the broader historical neural architecture and
 HB research design.
 
 ---

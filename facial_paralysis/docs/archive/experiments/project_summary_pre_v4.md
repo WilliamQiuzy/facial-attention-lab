@@ -2,14 +2,14 @@
 
 > **ARCHIVED SNAPSHOT:** This pre-v4 summary is retained for research history.
 > Universal Clinical Router v4 is the sole current model; see
-> `CURRENT_MODEL.md` and `model_registry.json`.
+> `../../CURRENT_MODEL.md` and `../../model_registry.json`.
 
 One historical narrative over the scattered docs (`model_design.md`,
 `archive/experiments/training_runs_pre_v4.md`, `autoresearch_fp/FINDINGS.md`,
 `mayo_faces_analysis.md`, `generalization.md`, and
 `archive/experiments/mayo_loop_findings_pre_v4.md`).
 
-> **Current-model authority:** `CURRENT_MODEL.md`, `model_registry.json`, and
+> **Current-model authority:** `../../CURRENT_MODEL.md`, `../../model_registry.json`, and
 > `results/current_development_model.json` override older uses of “champion” or
 > “deployable” in historical experiment logs.
 

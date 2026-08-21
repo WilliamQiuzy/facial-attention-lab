@@ -56,7 +56,9 @@ def test_machine_report_is_exact_reproducible_and_aggregate_only(c: Check):
 
 
 def test_v4_surfaces_remain_the_only_default(c: Check):
-    current = json.loads((ROOT / "docs/model_registry.json").read_bytes())
+    current = json.loads((
+        ROOT / "docs/archive/models/model_registry_v2_ucr4.json"
+    ).read_bytes())
     c.eq(current["current"]["name"], "universal_clinical_router_v4")
     c.eq(_sha(V4_MODEL), "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495")
     c.eq(_sha(V4_REPORT), "56379e252fd6c88d74a98a89241bdbf4a96b84080f18a6055a41f880c8b34d8a")

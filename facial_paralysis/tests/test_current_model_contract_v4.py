@@ -18,6 +18,10 @@ from _testlib import Check, run_all  # noqa: E402
 REGISTRY = ROOT / "docs/model_registry.json"
 MODEL = ROOT / "docs/results/artifacts/universal_clinical_router_v4/model.json"
 REPORT = ROOT / "docs/results/artifacts/universal_clinical_router_v4/report.json"
+V9_RELEASE = ROOT / "releases/shared-v9-research-v1"
+V9_MANIFEST_SHA256 = (
+    "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f"
+)
 FROZEN_110D = (
     ROOT / "outputs/dynamic_landmark/artifacts/110d-generalization-v1/"
     "final_palsynet_artifact.json"
@@ -42,23 +46,34 @@ CURRENT_EXPORTS = {
 }
 
 
-def test_registry_and_default_package_bind_only_v4(c: Check):
+def test_registry_binds_v9_while_v4_remains_a_compatibility_benchmark(c: Check):
     registry = json.loads(REGISTRY.read_bytes())
-    c.eq(set(registry), {"schema_version", "current", "deployment", "archived"})
-    c.eq(registry["schema_version"], "facial_paralysis_model_registry_v2")
+    c.eq(set(registry), {
+        "schema_version", "current", "deployment", "benchmark", "archived",
+    })
+    c.eq(registry["schema_version"], "facial_paralysis_model_registry_v3")
     current = registry["current"]
     c.eq(set(current), {
-        "name", "schema_version", "status", "python_module",
-        "runtime_module", "artifact_path", "artifact_sha256", "report_path",
+        "name", "version", "candidate_id", "mechanism", "status",
+        "loader_module", "release_manifest_path", "release_manifest_sha256",
+        "acceptance_path", "acceptance_sha256", "weight_files",
+        "selection_report_path", "selection_report_sha256",
     })
-    c.eq(current["name"], "universal_clinical_router_v4")
-    c.eq(current["schema_version"], "universal_clinical_router_v4")
-    c.eq(current["status"], "development_candidate_not_clinically_validated")
-    c.eq(current["python_module"], "src.models.current")
-    c.eq(current["runtime_module"], "src.models.universal_clinical_router_v4")
-    c.eq(current["artifact_path"], MODEL.relative_to(ROOT).as_posix())
-    c.eq(current["artifact_sha256"], EXPECTED_MODEL_SHA256)
-    c.eq(current["report_path"], REPORT.relative_to(ROOT).as_posix())
+    c.eq(current["name"], "broad_literature_shared_v9_blv9_009_ensemble")
+    c.eq(current["candidate_id"], "BLV9-009")
+    c.eq(current["mechanism"], "masked_clinical_reconstruction")
+    c.eq(current["loader_module"], "src.deployment.shared_v9_research_release")
+    c.eq(current["release_manifest_sha256"], V9_MANIFEST_SHA256)
+    acceptance = ROOT / current["acceptance_path"]
+    c.eq(hashlib.sha256(acceptance.read_bytes()).hexdigest(), current["acceptance_sha256"])
+    c.eq(len(current["weight_files"]), 3)
+    for row in current["weight_files"]:
+        path = ROOT / row["path"]
+        c.true(path.is_file())
+        c.eq(hashlib.sha256(path.read_bytes()).hexdigest(), row["sha256"])
+    benchmark = registry["benchmark"]
+    c.eq(benchmark["name"], "universal_clinical_router_v4")
+    c.eq(benchmark["artifact_sha256"], EXPECTED_MODEL_SHA256)
     c.true(type(registry["archived"]) is list and registry["archived"])
     c.true(all(
         type(row) is dict
@@ -78,7 +93,7 @@ def test_registry_and_default_package_bind_only_v4(c: Check):
     c.true(artifact["routing"]["dataset_identity_input"] is False)
 
 
-def test_current_artifacts_and_frozen_dependency_are_exact(c: Check):
+def test_v4_compatibility_artifacts_and_frozen_dependency_are_exact(c: Check):
     model = json.loads(MODEL.read_bytes())
     report = json.loads(REPORT.read_bytes())
     c.eq(hashlib.sha256(MODEL.read_bytes()).hexdigest(), EXPECTED_MODEL_SHA256)
@@ -90,18 +105,18 @@ def test_current_artifacts_and_frozen_dependency_are_exact(c: Check):
     )
 
 
-def test_active_docs_name_v4_and_do_not_restore_old_champion(c: Check):
+def test_active_docs_name_v9_and_do_not_restore_old_champion(c: Check):
     readme = (ROOT / "README.md").read_text()
     script_readme = (ROOT / "scripts/README.md").read_text()
     results_readme = (ROOT / "docs/results/README.md").read_text()
     current = (ROOT / "docs/CURRENT_MODEL.md").read_text()
     pipeline = (ROOT / "docs/PIPELINE.md").read_text()
-    c.true("Universal Clinical Router v4" in readme[:1200])
-    c.true("Universal Clinical Router v4" in script_readme[:1200])
-    c.true("Universal Clinical Router v4" in results_readme[:1200])
-    c.true("通用临床路由器第四版" in current[:1200])
-    c.true("Universal Clinical Router v4" in current.split("## 技术备注", 1)[1])
-    c.true("Universal Clinical Router v4" in pipeline[:1600])
+    c.true("Shared V9" in readme[:1200])
+    c.true("Shared V9" in script_readme[:1200])
+    c.true("Shared V9" in results_readme[:1200])
+    c.true("共享临床路由器第九版" in current[:1200])
+    c.true("BLV9-009" in current.split("## 技术备注", 1)[1])
+    c.true("Shared V9" in pipeline[:1600])
     c.true("No raw-video production CLI" in script_readme)
     for stale in (
         "current development champion is the **mirror-invariant 110D",
@@ -122,7 +137,8 @@ def test_active_docs_name_v4_and_do_not_restore_old_champion(c: Check):
 
     for retired_top_level in (
         "PAPER_DRAFT.md", "autoresearch_fp.md", "training_runs.md",
-        "loop_findings.md",
+        "loop_findings.md", "SUMMARY.md", "PROGRESS_REPORT.md",
+        "模型与训练_中文说明.md",
     ):
         c.true(not (ROOT / "docs" / retired_top_level).exists())
 

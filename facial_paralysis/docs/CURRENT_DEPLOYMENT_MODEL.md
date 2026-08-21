@@ -13,9 +13,9 @@ NeuroFace 和 56 名 MEEI 暴露开发参与者进行一次确定性全数据拟
 全部 Linux capabilities，并只发布到服务器本机回环地址。
 
 这是一项部署验收，不是临床验证。它没有 Mayo HB 标签训练，也不能报告 Mayo 二分类
-正确率或 HB 分级效果。`Universal Clinical Router v4` 暂时保留为当前科学比较基准；
-Shared V8 是当前实际部署版本。公开 Git 保存代码、摘要和验收证据；拟合权重保存在
-受限模型发布目录和私有 GHCR bundle 中，不进入公开 Git 历史。
+正确率或 HB 分级效果。`Shared V9 / BLV9-009` 是当前研究模型，并已在公开 Git 中提供
+完整三种子研究权重；Shared V8 仍是当前实际部署记录，其旧部署权重继续保存在受限
+模型发布目录和私有 GHCR bundle 中。
 
 私有 bundle 固定为
 `ghcr.io/williamqiuzy/facial-attention-lab-shared-v8-bundle@sha256:c1bd32815a5b1f92e1f52b08d1ecf52190266a21e1d740bc4d5fca70362c26af`。

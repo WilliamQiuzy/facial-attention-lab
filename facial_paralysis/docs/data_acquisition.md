@@ -1,8 +1,7 @@
 # Data acquisition plan — getting more data before HB labels
 
 > **Model-status note (2026-07-27):** Metrics below describe historical
-> baselines. Use `CURRENT_MODEL.md` for Universal Clinical Router v4, the sole
-> current model;
+> baselines. Use `CURRENT_MODEL.md` for the current Shared V9 research model;
 > no HB, Mayo, outer, or clinical-validation claim is authorized.
 
 _2026-06-17. What more data to collect to improve the model, and exactly how to get

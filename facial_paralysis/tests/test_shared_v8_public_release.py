@@ -28,10 +28,14 @@ def test_public_release_is_complete_but_excludes_restricted_weights(c):
     c.true("restricted" in (RELEASE / "README.md").read_text().lower())
 
 
-def test_registry_separates_scientific_and_deployment_current(c):
+def test_registry_separates_v9_research_and_v8_deployment(c):
     registry = json.loads((ROOT / "docs/model_registry.json").read_bytes())
-    c.eq(registry["schema_version"], "facial_paralysis_model_registry_v2")
-    c.eq(registry["current"]["name"], "universal_clinical_router_v4")
+    c.eq(registry["schema_version"], "facial_paralysis_model_registry_v3")
+    c.eq(
+        registry["current"]["name"],
+        "broad_literature_shared_v9_blv9_009_ensemble",
+    )
+    c.eq(registry["benchmark"]["name"], "universal_clinical_router_v4")
     deployment = registry["deployment"]
     c.eq(deployment["name"], "residual_shared_router_v8_rsr8_001")
     c.eq(deployment["version"], "shared-v8-deployment-v1")

@@ -23,15 +23,15 @@ def test_all_machine_reports_are_parseable_and_protected_closed(c):
         c.true("group_id" not in text and "participant_id" not in text)
 
 
-def test_failed_search_did_not_change_canonical_ucr4(c):
+def test_failed_search_preserves_archived_ucr4_snapshot(c):
     expected={
-        "docs/model_registry.json":"d41843e0f8e32fd9e2f7fa2451c4b9d996e3433ffcb417c15275a63bebef333b",
-        "docs/CURRENT_MODEL.md":"50842973631847f6aed8fe7100f05ae9d2d41ceabe7adb0d2fd1f7f8e1299e56",
+        "docs/archive/models/model_registry_v2_ucr4.json":"67ce23f2fb3155e181d5615c69e721ec19e253bb7797426587ed4bef5e63f489",
+        "docs/archive/models/current_model_ucr4.md":"d50e11bbafa2d9e797ea20ac5253c862a7b319d532a668fbc7186c5b917851cd",
         "src/models/current.py":"506f7b97c948c4f9e919981a6a771d9c03ee0194752f95f5912e65552e1fc8c4",
     }
     for relative,digest in expected.items():
         c.eq(hashlib.sha256((ROOT/relative).read_bytes()).hexdigest(),digest)
-    registry=json.loads((ROOT/"docs/model_registry.json").read_text())
+    registry=json.loads((ROOT/"docs/archive/models/model_registry_v2_ucr4.json").read_text())
     c.eq(registry["current"]["name"],"universal_clinical_router_v4")
 
 

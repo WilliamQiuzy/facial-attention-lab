@@ -70,10 +70,10 @@ def test_nondeterministic_v8_repeat_is_disclosed_not_selected(c):
 
 
 def test_v8_registry_and_deployment_remain_locked(c):
-    c.eq(_sha(ROOT / "docs/model_registry.json"),
+    c.eq(_sha(ROOT / "docs/archive/models/model_registry_v2_ucr4.json"),
          "67ce23f2fb3155e181d5615c69e721ec19e253bb7797426587ed4bef5e63f489")
-    c.eq(_sha(ROOT / "docs/CURRENT_DEPLOYMENT_MODEL.md"),
-         "702e3da45e1cdd19a04526046635442a5394c8dac0abf4baaa4d81381f342bf4")
+    c.eq(_sha(ROOT / "releases/shared-v8-deployment-v1/model_manifest.json"),
+         "d40721a8fbda0c37a7e30a49f68bc94aa943e34c35e21864a1e79a2597676cbc")
 
 
 def test_public_decision_is_honest_and_complete(c):

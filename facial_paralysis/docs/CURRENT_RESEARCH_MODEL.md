@@ -32,6 +32,12 @@ materially improved NeuroFace without reducing PalsyNet performance.
 specificity floors on every development source, has no protected Mayo-label
 evaluation, and does not replace `docs/CURRENT_DEPLOYMENT_MODEL.md`.
 
+The complete three-seed V9 research ensemble is now public under
+`releases/shared-v9-research-v1/`. Each member contains the exact fitted model
+tensors and common 110D scaler and is bound by SHA-256 in `manifest.json`.
+Publishing these research weights does not change the clinical or deployment
+claim boundary.
+
 Mayo performance is unknown until participant-level labels and a protected,
 participant-disjoint evaluation are available. No House-Brackmann or clinical
 accuracy claim is authorized by this research selection.
@@ -41,4 +47,5 @@ accuracy claim is authorized by this research selection.
 - Selection report: `docs/results/broad_literature_shared_v9.md`
 - V9 machine artifact:
   `docs/results/artifacts/broad_literature_shared_v9/report.json`
+- Public research weights: `releases/shared-v9-research-v1/`
 - V10 follow-up: `docs/results/shared_v10_bilateral_reconstruction.md`

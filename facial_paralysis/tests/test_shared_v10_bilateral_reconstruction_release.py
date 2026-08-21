@@ -54,12 +54,12 @@ def test_current_research_model_is_blv9_009_while_deployment_stays_v8(c):
     c.true("V8 remains the deployment model" in current)
     c.true("Mayo performance is unknown" in current)
     c.eq(
-        _sha(ROOT / "docs/model_registry.json"),
+        _sha(ROOT / "docs/archive/models/model_registry_v2_ucr4.json"),
         "67ce23f2fb3155e181d5615c69e721ec19e253bb7797426587ed4bef5e63f489",
     )
     c.eq(
-        _sha(ROOT / "docs/CURRENT_DEPLOYMENT_MODEL.md"),
-        "702e3da45e1cdd19a04526046635442a5394c8dac0abf4baaa4d81381f342bf4",
+        _sha(ROOT / "releases/shared-v8-deployment-v1/model_manifest.json"),
+        "d40721a8fbda0c37a7e30a49f68bc94aa943e34c35e21864a1e79a2597676cbc",
     )
 
 

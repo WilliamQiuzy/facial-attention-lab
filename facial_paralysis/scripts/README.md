@@ -1,18 +1,20 @@
 # Script support boundary
 
-Universal Clinical Router v4 is the sole current model. The supported model
-surface is `src.models.current`; the frozen artifact and exact evaluation
-entrypoints are registered in `docs/model_registry.json` and
-`docs/CURRENT_MODEL.md`.
+Shared V9 / BLV9-009 is the current research model. Its supported release
+surface is `src.deployment.shared_v9_research_release`; the complete public
+weights and exact identity are registered in `docs/model_registry.json` and
+`releases/shared-v9-research-v1/`.
 
 There is **No raw-video production CLI** in this research repository. Current
-v4 inference accepts already authenticated evidence that satisfies one of the
+V9 inference accepts already authenticated evidence that satisfies one of the
 three frozen profiles. A future end-to-end video command must implement the
 same fail-closed identity, task, timing, feature-schema, and artifact checks
 before it can be documented as supported.
 
 ## Current release/evidence scripts
 
+- `export_shared_v9_research_release_h200.py`: owner-only full-data training and
+  tensor-only export for the locked three-seed V9 ensemble.
 - `run_110d_generalization_v1.py` and `run_110d_outer_release_v1.py`: frozen
   free-recording expert evidence.
 - `run_neuroface_action_capacity_v1.py`: scripted three-action expert evidence.
