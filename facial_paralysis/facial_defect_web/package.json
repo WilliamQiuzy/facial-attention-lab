@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite --host localhost",
     "build": "tsc --noEmit && vite build",
+    "package:website": "pnpm build && node scripts/package-website.mjs",
     "typecheck": "tsc --noEmit --pretty false",
     "test": "vitest",
     "test:run": "vitest run",

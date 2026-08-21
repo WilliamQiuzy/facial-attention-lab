@@ -172,6 +172,21 @@ the current in-memory session. `localhost` is the browser address of the local
 development server; a branded address and remote doctor access require an HTTPS
 deployment.
 
+### Build the full website ZIP
+
+The doctor-facing ZIP is a multi-file production website, not a standalone HTML
+demo. Build it with:
+
+```bash
+pnpm package:website
+```
+
+The command writes `release/FaceAI-Website.zip`. The archive contains the full
+compiled site, a small localhost server, Mac and Windows launchers, and concise
+opening instructions. Node.js 22 LTS or newer is required on the receiving
+computer. The launcher opens the site on `localhost`, which preserves browser
+camera permission; a branded remote address still requires HTTPS deployment.
+
 ## Verification
 
 ```bash
