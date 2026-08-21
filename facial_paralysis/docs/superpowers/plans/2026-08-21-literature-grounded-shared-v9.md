@@ -37,16 +37,16 @@
 - Create: `src/models/anatomical_relational_router_v9.py`
 - Create: `tests/test_anatomical_relational_router_v9.py`
 
-- [ ] Write RED tests that bind exact 110D feature names to bilateral
+- [x] Write RED tests that bind exact 110D feature names to bilateral
   eye/brow/oral/global regions, reject reordered schemas, and prove the same
   relation weights serve all three sources.
-- [ ] Verify RED.
-- [ ] Implement region-local projections, one small shared relation block, and
+- [x] Verify RED.
+- [x] Implement region-local projections, one small shared relation block, and
   a zero-initialized local-global residual gate on top of V8 action tokens.
-- [ ] Prove the comparator is numerically exact when the gate is zero and that
+- [x] Prove the comparator is numerically exact when the gate is zero and that
   endpoint-specific parameters remain below ten percent.
-- [ ] Run the new and V8 regression tests.
-- [ ] Commit.
+- [x] Run the new and V8 regression tests.
+- [x] Commit.
 
 ### Task 3: Add clinical-kinematic auxiliary supervision
 
@@ -54,17 +54,21 @@
 - Create: `src/training/clinical_kinematic_auxiliary_v9.py`
 - Create: `tests/test_clinical_kinematic_auxiliary_v9.py`
 
-- [ ] Write RED tests for exact label-free targets: regional excursion,
+- [x] Write RED tests for exact label-free targets: regional excursion,
   regional velocity, bilateral correlation, valid-action masking, and no use
   of disease labels or held rows.
-- [ ] Verify RED.
-- [ ] Implement a small shared auxiliary head attached to action tokens and a
+- [x] Verify RED.
+- [x] Implement a small shared auxiliary head attached to action tokens and a
   robust standardized regression loss.  Fit target scaling on each training
   fold only and discard the head at inference.
-- [ ] Run unit and leakage regressions.
-- [ ] Commit.
+- [x] Run unit and leakage regressions.
+- [x] Commit.
 
 ### Task 4: Implement only authorized multi-task optimizers
+
+**Status:** Skipped by the frozen Task 1 diagnostic.  Neither GradNorm nor
+CAGrad met its authorization condition, so no optimizer code or experiment is
+created and this skip is not counted as a scientific attempt.
 
 **Files:**
 - Create: `src/training/evidence_authorized_multitask_v9.py`
