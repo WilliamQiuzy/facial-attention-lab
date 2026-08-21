@@ -1,6 +1,6 @@
 # Facial Paralysis Research
 
-Universal Clinical Router v4 is the sole canonical model in this project. It
+Universal Clinical Router v4 is the sole canonical scientific comparator in this project. It
 routes authenticated recording evidence to a frozen free-recording, scripted
 three-action, or externally timed seven-action expert without using dataset or
 institution identity as a predictor.
@@ -10,10 +10,13 @@ This is a research model, not a clinically validated diagnostic device.
 ## Start here
 
 - Current architecture, evidence, and limitations: `docs/CURRENT_MODEL.md`
+- Current deployable shared model and limitations:
+  `docs/CURRENT_DEPLOYMENT_MODEL.md`
+- Authorized NVIDIA server quickstart: `deploy/shared-v8/README.md`
 - Universal Clinical Router v6 development-candidate brief:
   [English](docs/results/universal_clinical_router_v6_mayo_brief_en.md) |
   [中文](docs/results/universal_clinical_router_v6_mayo_brief_zh.md)
-- V8 shared-model structure (research candidate, not the current model):
+- V8 shared-model structure (current deployment, not yet a clinical model):
   [Model Architecture](docs/architecture/model-architecture.md)
 - Machine-readable model registry: `docs/model_registry.json`
 - Active pipeline and verification commands: `docs/PIPELINE.md`

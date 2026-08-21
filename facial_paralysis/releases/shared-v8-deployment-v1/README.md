@@ -35,3 +35,8 @@ python scripts/launch_shared_v8_container_v1.py \
 
 The service binds only to `127.0.0.1`; place authenticated TLS ingress in front
 of it rather than exposing port 8080 directly.
+
+For an authorized second machine, use the digest-pinned private GHCR bundle and
+Compose quickstart in `deploy/shared-v8/`. The bundle contains only the locked
+manifest and weights in addition to the public runtime; it contains no raw
+media, participant identifiers, labels, or per-participant predictions.
