@@ -1,0 +1,1645 @@
+{
+  "audit": {
+    "mayo_predictions": 0,
+    "mayo_reads": 0,
+    "palsynet_protected_reads": 0
+  },
+  "candidate_registry": [
+    {
+      "candidate_id": "BRV10-000",
+      "contraindication": "Development research only; not Mayo or clinical validation.",
+      "medical_rationale": "Exact BLV9-009 masked clinical reconstruction baseline.",
+      "optimizer_mode": "adamw",
+      "reconstruction_mode": "v9_average"
+    },
+    {
+      "candidate_id": "BRV10-001",
+      "contraindication": "Development research only; not Mayo or clinical validation.",
+      "medical_rationale": "Exact BLV9-009 masked clinical reconstruction baseline.",
+      "optimizer_mode": "sam",
+      "reconstruction_mode": "v9_average"
+    },
+    {
+      "candidate_id": "BRV10-002",
+      "contraindication": "Absolute asymmetry is not a clinical laterality or severity label.",
+      "medical_rationale": "Reconstruct symmetric capacity and asymmetry magnitude without assigning a healthy side.",
+      "optimizer_mode": "adamw",
+      "reconstruction_mode": "bilateral_decomposition"
+    },
+    {
+      "candidate_id": "BRV10-003",
+      "contraindication": "Absolute asymmetry is not a clinical laterality or severity label.",
+      "medical_rationale": "Reconstruct symmetric capacity and asymmetry magnitude without assigning a healthy side.",
+      "optimizer_mode": "sam",
+      "reconstruction_mode": "bilateral_decomposition"
+    },
+    {
+      "candidate_id": "BRV10-004",
+      "contraindication": "View reconstruction cannot identify the affected facial nerve or House-Brackmann grade.",
+      "medical_rationale": "Preserve both unilateral response patterns while treating left and right as an unordered pair.",
+      "optimizer_mode": "adamw",
+      "reconstruction_mode": "unordered_twin"
+    },
+    {
+      "candidate_id": "BRV10-005",
+      "contraindication": "View reconstruction cannot identify the affected facial nerve or House-Brackmann grade.",
+      "medical_rationale": "Preserve both unilateral response patterns while treating left and right as an unordered pair.",
+      "optimizer_mode": "sam",
+      "reconstruction_mode": "unordered_twin"
+    }
+  ],
+  "commitments": {
+    "implementation_sha256": "a384eb40d4f851ad822626780a25ded178e35d47bede20a04289a3c6745e96f3",
+    "meei_collection_sha256": "721b6f5d20ec92e5719cefe4719f422f30451ca1a7c973faffbcdb36066d93c0",
+    "meei_manifest_sha256": "7770473fe4479cf11e4c88474ee28105cef7db5fca026918fc89cd6dc023c5ed",
+    "neuroface_collection_sha256": "757d13e3a12fcde01c4575019766a84e24e25f561b5906a750948d786e7f397e",
+    "neuroface_manifest_sha256": "235d2af2f3f4507b4ec858ff8dd9ff949d7f19e0d3656cbf5dcc0218648da07b",
+    "palsynet_collection_sha256": "56e49f2eff8584d590c4e9a5f4e344a6cd268b9e30e60e64e591682e724cd604",
+    "palsynet_reviewed_manifest_sha256": "fa756b79f0e1bc9053527de4632216281d9011a1f75e2bf652371dab38d2da9f",
+    "palsynet_split_registry_sha256": "738980264a698cb8a2d45a12fdc1ff95f349bbb4ac76787296e5314e40981ba0"
+  },
+  "counts": {
+    "meei": 56,
+    "neuroface": 36,
+    "palsynet": 38
+  },
+  "decision": {
+    "clinical_claim_authorized": false,
+    "deployment_model_changed": false,
+    "promoted_research_candidate_id": null,
+    "research_promotion_authorized": false
+  },
+  "evaluations": {
+    "BRV10-000": {
+      "0": {
+        "active_candidate_id": "BRV10-000",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.7321428571428571,
+            "auroc": 0.8434782608695652,
+            "balanced_accuracy": 0.6804347826086956,
+            "brier": 0.14005660164967454,
+            "sensitivity": 0.7608695652173914,
+            "specificity": 0.6
+          },
+          "neuroface": {
+            "accuracy": 0.4166666666666667,
+            "auroc": 0.4290909090909091,
+            "balanced_accuracy": 0.42727272727272725,
+            "brier": 0.36650857956785843,
+            "sensitivity": 0.4,
+            "specificity": 0.45454545454545453
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8347338935574229,
+            "balanced_accuracy": 0.5,
+            "brier": 0.36821729005971204,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8571428571428571,
+            "auroc": 0.9065217391304348,
+            "balanced_accuracy": 0.7956521739130434,
+            "brier": 0.13752194469187104,
+            "sensitivity": 0.8913043478260869,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.8333333333333334,
+            "auroc": 0.9163636363636364,
+            "balanced_accuracy": 0.7781818181818182,
+            "brier": 0.14997058406961383,
+            "sensitivity": 0.92,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.8991596638655461,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.12464827669641965,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "1": {
+        "active_candidate_id": "BRV10-000",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.6428571428571429,
+            "auroc": 0.8413043478260869,
+            "balanced_accuracy": 0.7434782608695653,
+            "brier": 0.2158062962055218,
+            "sensitivity": 0.5869565217391305,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.5277777777777778,
+            "auroc": 0.6036363636363636,
+            "balanced_accuracy": 0.6090909090909091,
+            "brier": 0.31277959680940404,
+            "sensitivity": 0.4,
+            "specificity": 0.8181818181818182
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8263305322128851,
+            "balanced_accuracy": 0.5,
+            "brier": 0.3199531209105915,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8035714285714286,
+            "auroc": 0.8804347826086957,
+            "balanced_accuracy": 0.7630434782608695,
+            "brier": 0.14436923400859003,
+            "sensitivity": 0.8260869565217391,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.8055555555555556,
+            "auroc": 0.9127272727272727,
+            "balanced_accuracy": 0.7581818181818182,
+            "brier": 0.15108802026977947,
+            "sensitivity": 0.88,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9747899159663864,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.1034948557674661,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "2": {
+        "active_candidate_id": "BRV10-000",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.48214285714285715,
+            "auroc": 0.8173913043478261,
+            "balanced_accuracy": 0.6456521739130435,
+            "brier": 0.3887196241452268,
+            "sensitivity": 0.391304347826087,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.4444444444444444,
+            "auroc": 0.5236363636363637,
+            "balanced_accuracy": 0.5490909090909091,
+            "brier": 0.42018855476862904,
+            "sensitivity": 0.28,
+            "specificity": 0.8181818181818182
+          },
+          "palsynet": {
+            "accuracy": 0.631578947368421,
+            "auroc": 0.7843137254901961,
+            "balanced_accuracy": 0.5938375350140056,
+            "brier": 0.23100393575031805,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.23529411764705882
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8571428571428571,
+            "auroc": 0.9108695652173913,
+            "balanced_accuracy": 0.7956521739130434,
+            "brier": 0.1352719229217409,
+            "sensitivity": 0.8913043478260869,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.8333333333333334,
+            "auroc": 0.8363636363636364,
+            "balanced_accuracy": 0.8036363636363637,
+            "brier": 0.1505301372069876,
+            "sensitivity": 0.88,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9243697478991597,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.1203282674381561,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      }
+    },
+    "BRV10-001": {
+      "0": {
+        "active_candidate_id": "BRV10-001",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.6964285714285714,
+            "auroc": 0.8108695652173914,
+            "balanced_accuracy": 0.6978260869565217,
+            "brier": 0.1712870549750823,
+            "sensitivity": 0.6956521739130435,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.3888888888888889,
+            "auroc": 0.37454545454545457,
+            "balanced_accuracy": 0.5090909090909091,
+            "brier": 0.35511854864852227,
+            "sensitivity": 0.2,
+            "specificity": 0.8181818181818182
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8571428571428572,
+            "balanced_accuracy": 0.5,
+            "brier": 0.30260621001955607,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8214285714285714,
+            "auroc": 0.8717391304347826,
+            "balanced_accuracy": 0.7739130434782608,
+            "brier": 0.17722402411259422,
+            "sensitivity": 0.8478260869565217,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.8333333333333334,
+            "auroc": 0.8909090909090909,
+            "balanced_accuracy": 0.8036363636363637,
+            "brier": 0.19511598789667708,
+            "sensitivity": 0.88,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.868421052631579,
+            "auroc": 0.8991596638655462,
+            "balanced_accuracy": 0.8641456582633054,
+            "brier": 0.14610736893059134,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8235294117647058
+          }
+        }
+      },
+      "1": {
+        "active_candidate_id": "BRV10-001",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.5178571428571429,
+            "auroc": 0.8,
+            "balanced_accuracy": 0.6673913043478261,
+            "brier": 0.30110936684710143,
+            "sensitivity": 0.43478260869565216,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.4444444444444444,
+            "auroc": 0.6000000000000001,
+            "balanced_accuracy": 0.6,
+            "brier": 0.36504672619149425,
+            "sensitivity": 0.2,
+            "specificity": 1.0
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8291316526610644,
+            "balanced_accuracy": 0.5,
+            "brier": 0.2647482505716688,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.7857142857142857,
+            "auroc": 0.9043478260869565,
+            "balanced_accuracy": 0.8304347826086957,
+            "brier": 0.1748373349779469,
+            "sensitivity": 0.7608695652173914,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.7222222222222222,
+            "auroc": 0.7927272727272727,
+            "balanced_accuracy": 0.6981818181818182,
+            "brier": 0.20779294679851448,
+            "sensitivity": 0.76,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9663865546218486,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.12558030526503985,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "2": {
+        "active_candidate_id": "BRV10-001",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.4642857142857143,
+            "auroc": 0.8173913043478261,
+            "balanced_accuracy": 0.6739130434782609,
+            "brier": 0.3522134730378831,
+            "sensitivity": 0.34782608695652173,
+            "specificity": 1.0
+          },
+          "neuroface": {
+            "accuracy": 0.3888888888888889,
+            "auroc": 0.44363636363636366,
+            "balanced_accuracy": 0.4581818181818182,
+            "brier": 0.3708496930214386,
+            "sensitivity": 0.28,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.7105263157894737,
+            "auroc": 0.8375350140056023,
+            "balanced_accuracy": 0.6876750700280112,
+            "brier": 0.19072761332377072,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.47058823529411764
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8571428571428571,
+            "auroc": 0.908695652173913,
+            "balanced_accuracy": 0.8347826086956522,
+            "brier": 0.16497492143098821,
+            "sensitivity": 0.8695652173913043,
+            "specificity": 0.8
+          },
+          "neuroface": {
+            "accuracy": 0.8055555555555556,
+            "auroc": 0.8436363636363636,
+            "balanced_accuracy": 0.7836363636363637,
+            "brier": 0.1822704086407784,
+            "sensitivity": 0.84,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.938375350140056,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.1414560695497262,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      }
+    },
+    "BRV10-002": {
+      "0": {
+        "active_candidate_id": "BRV10-002",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.7678571428571429,
+            "auroc": 0.8586956521739131,
+            "balanced_accuracy": 0.7021739130434783,
+            "brier": 0.13051138455026384,
+            "sensitivity": 0.8043478260869565,
+            "specificity": 0.6
+          },
+          "neuroface": {
+            "accuracy": 0.4444444444444444,
+            "auroc": 0.4072727272727273,
+            "balanced_accuracy": 0.44727272727272727,
+            "brier": 0.384271472805137,
+            "sensitivity": 0.44,
+            "specificity": 0.45454545454545453
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8319327731092437,
+            "balanced_accuracy": 0.5,
+            "brier": 0.36055802645684415,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8571428571428571,
+            "auroc": 0.9260869565217392,
+            "balanced_accuracy": 0.7956521739130434,
+            "brier": 0.1280068589145618,
+            "sensitivity": 0.8913043478260869,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.8333333333333334,
+            "auroc": 0.9163636363636364,
+            "balanced_accuracy": 0.7781818181818182,
+            "brier": 0.14748246053147318,
+            "sensitivity": 0.92,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.8963585434173669,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.12243206848933523,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "1": {
+        "active_candidate_id": "BRV10-002",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.6428571428571429,
+            "auroc": 0.8217391304347826,
+            "balanced_accuracy": 0.7434782608695653,
+            "brier": 0.21953351305182828,
+            "sensitivity": 0.5869565217391305,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.5277777777777778,
+            "auroc": 0.5963636363636364,
+            "balanced_accuracy": 0.6090909090909091,
+            "brier": 0.3464857231682503,
+            "sensitivity": 0.4,
+            "specificity": 0.8181818181818182
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8235294117647058,
+            "balanced_accuracy": 0.5,
+            "brier": 0.3439417997367224,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8392857142857143,
+            "auroc": 0.8869565217391304,
+            "balanced_accuracy": 0.7847826086956522,
+            "brier": 0.14047174498656362,
+            "sensitivity": 0.8695652173913043,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.7777777777777778,
+            "auroc": 0.9054545454545454,
+            "balanced_accuracy": 0.7127272727272727,
+            "brier": 0.15490272942198394,
+            "sensitivity": 0.88,
+            "specificity": 0.5454545454545454
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9747899159663864,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.10374780572396662,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "2": {
+        "active_candidate_id": "BRV10-002",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.5178571428571429,
+            "auroc": 0.8021739130434783,
+            "balanced_accuracy": 0.6673913043478261,
+            "brier": 0.365662806038256,
+            "sensitivity": 0.43478260869565216,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.3611111111111111,
+            "auroc": 0.49090909090909096,
+            "balanced_accuracy": 0.4127272727272727,
+            "brier": 0.3967699727344771,
+            "sensitivity": 0.28,
+            "specificity": 0.5454545454545454
+          },
+          "palsynet": {
+            "accuracy": 0.631578947368421,
+            "auroc": 0.7731092436974789,
+            "balanced_accuracy": 0.5938375350140056,
+            "brier": 0.22926903169848067,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.23529411764705882
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8392857142857143,
+            "auroc": 0.9108695652173914,
+            "balanced_accuracy": 0.7456521739130435,
+            "brier": 0.13207212738461832,
+            "sensitivity": 0.8913043478260869,
+            "specificity": 0.6
+          },
+          "neuroface": {
+            "accuracy": 0.8611111111111112,
+            "auroc": 0.8109090909090909,
+            "balanced_accuracy": 0.8236363636363637,
+            "brier": 0.1518703345748331,
+            "sensitivity": 0.92,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.9215686274509803,
+            "balanced_accuracy": 0.8879551820728291,
+            "brier": 0.11843063777782245,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8235294117647058
+          }
+        }
+      }
+    },
+    "BRV10-003": {
+      "0": {
+        "active_candidate_id": "BRV10-003",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.6428571428571429,
+            "auroc": 0.817391304347826,
+            "balanced_accuracy": 0.6652173913043478,
+            "brier": 0.1726800713741538,
+            "sensitivity": 0.6304347826086957,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.3888888888888889,
+            "auroc": 0.3636363636363636,
+            "balanced_accuracy": 0.40727272727272723,
+            "brier": 0.33532574830708556,
+            "sensitivity": 0.36,
+            "specificity": 0.45454545454545453
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8683473389355743,
+            "balanced_accuracy": 0.5,
+            "brier": 0.2868930970532237,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8214285714285714,
+            "auroc": 0.8891304347826088,
+            "balanced_accuracy": 0.7739130434782608,
+            "brier": 0.1740665640414521,
+            "sensitivity": 0.8478260869565217,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.7777777777777778,
+            "auroc": 0.8909090909090909,
+            "balanced_accuracy": 0.7636363636363637,
+            "brier": 0.19521326776214232,
+            "sensitivity": 0.8,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.9019607843137254,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.14245122806765992,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "1": {
+        "active_candidate_id": "BRV10-003",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.5357142857142857,
+            "auroc": 0.7999999999999999,
+            "balanced_accuracy": 0.6782608695652174,
+            "brier": 0.28101406890681646,
+            "sensitivity": 0.45652173913043476,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.4444444444444444,
+            "auroc": 0.589090909090909,
+            "balanced_accuracy": 0.6,
+            "brier": 0.3869510904919761,
+            "sensitivity": 0.2,
+            "specificity": 1.0
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8347338935574229,
+            "balanced_accuracy": 0.5,
+            "brier": 0.2563559449112732,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8214285714285714,
+            "auroc": 0.9108695652173914,
+            "balanced_accuracy": 0.8521739130434782,
+            "brier": 0.16949869116228158,
+            "sensitivity": 0.8043478260869565,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.6944444444444444,
+            "auroc": 0.7745454545454545,
+            "balanced_accuracy": 0.6272727272727273,
+            "brier": 0.20347110948687255,
+            "sensitivity": 0.8,
+            "specificity": 0.45454545454545453
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9663865546218486,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.1257177579063169,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "2": {
+        "active_candidate_id": "BRV10-003",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.4107142857142857,
+            "auroc": 0.8043478260869565,
+            "balanced_accuracy": 0.6413043478260869,
+            "brier": 0.35808764950906596,
+            "sensitivity": 0.2826086956521739,
+            "specificity": 1.0
+          },
+          "neuroface": {
+            "accuracy": 0.3888888888888889,
+            "auroc": 0.4218181818181818,
+            "balanced_accuracy": 0.40727272727272723,
+            "brier": 0.35712384905240085,
+            "sensitivity": 0.36,
+            "specificity": 0.45454545454545453
+          },
+          "palsynet": {
+            "accuracy": 0.6578947368421053,
+            "auroc": 0.8235294117647058,
+            "balanced_accuracy": 0.6288515406162465,
+            "brier": 0.19527816123798436,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.35294117647058826
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8214285714285714,
+            "auroc": 0.9,
+            "balanced_accuracy": 0.8130434782608695,
+            "brier": 0.1667355918581595,
+            "sensitivity": 0.8260869565217391,
+            "specificity": 0.8
+          },
+          "neuroface": {
+            "accuracy": 0.8055555555555556,
+            "auroc": 0.8654545454545455,
+            "balanced_accuracy": 0.7836363636363637,
+            "brier": 0.177284619298305,
+            "sensitivity": 0.84,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.9355742296918768,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.13838882432549662,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      }
+    },
+    "BRV10-004": {
+      "0": {
+        "active_candidate_id": "BRV10-004",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.7857142857142857,
+            "auroc": 0.841304347826087,
+            "balanced_accuracy": 0.7521739130434782,
+            "brier": 0.14052435341990419,
+            "sensitivity": 0.8043478260869565,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.3888888888888889,
+            "auroc": 0.44727272727272727,
+            "balanced_accuracy": 0.40727272727272723,
+            "brier": 0.3726446969860995,
+            "sensitivity": 0.36,
+            "specificity": 0.45454545454545453
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8319327731092436,
+            "balanced_accuracy": 0.5,
+            "brier": 0.37171686052907266,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8392857142857143,
+            "auroc": 0.9065217391304348,
+            "balanced_accuracy": 0.7456521739130435,
+            "brier": 0.13488769984922444,
+            "sensitivity": 0.8913043478260869,
+            "specificity": 0.6
+          },
+          "neuroface": {
+            "accuracy": 0.8055555555555556,
+            "auroc": 0.9163636363636364,
+            "balanced_accuracy": 0.7581818181818182,
+            "brier": 0.14896009395797882,
+            "sensitivity": 0.88,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.8963585434173669,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.12144470498399614,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "1": {
+        "active_candidate_id": "BRV10-004",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.6964285714285714,
+            "auroc": 0.8521739130434783,
+            "balanced_accuracy": 0.7760869565217392,
+            "brier": 0.2059679831788696,
+            "sensitivity": 0.6521739130434783,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.5555555555555556,
+            "auroc": 0.64,
+            "balanced_accuracy": 0.6290909090909091,
+            "brier": 0.28919283143801333,
+            "sensitivity": 0.44,
+            "specificity": 0.8181818181818182
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8263305322128851,
+            "balanced_accuracy": 0.5,
+            "brier": 0.3339152227497631,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8392857142857143,
+            "auroc": 0.8782608695652174,
+            "balanced_accuracy": 0.7847826086956522,
+            "brier": 0.13817674384734965,
+            "sensitivity": 0.8695652173913043,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.7777777777777778,
+            "auroc": 0.9018181818181819,
+            "balanced_accuracy": 0.7127272727272727,
+            "brier": 0.15249271987541657,
+            "sensitivity": 0.88,
+            "specificity": 0.5454545454545454
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9719887955182072,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.10349886850686826,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "2": {
+        "active_candidate_id": "BRV10-004",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.5,
+            "auroc": 0.8,
+            "balanced_accuracy": 0.6565217391304348,
+            "brier": 0.3960511176756545,
+            "sensitivity": 0.41304347826086957,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.4166666666666667,
+            "auroc": 0.4872727272727273,
+            "balanced_accuracy": 0.47818181818181815,
+            "brier": 0.4052782017188112,
+            "sensitivity": 0.32,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.631578947368421,
+            "auroc": 0.7731092436974789,
+            "balanced_accuracy": 0.5938375350140056,
+            "brier": 0.23250004004789568,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.23529411764705882
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8571428571428571,
+            "auroc": 0.9130434782608696,
+            "balanced_accuracy": 0.7565217391304347,
+            "brier": 0.12949924467836632,
+            "sensitivity": 0.9130434782608695,
+            "specificity": 0.6
+          },
+          "neuroface": {
+            "accuracy": 0.8055555555555556,
+            "auroc": 0.8254545454545454,
+            "balanced_accuracy": 0.7581818181818182,
+            "brier": 0.15166312201309579,
+            "sensitivity": 0.88,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9187675070028011,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.11953424506290554,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      }
+    },
+    "BRV10-005": {
+      "0": {
+        "active_candidate_id": "BRV10-005",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.7142857142857143,
+            "auroc": 0.8108695652173913,
+            "balanced_accuracy": 0.708695652173913,
+            "brier": 0.16385693204667878,
+            "sensitivity": 0.717391304347826,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.3611111111111111,
+            "auroc": 0.3927272727272727,
+            "balanced_accuracy": 0.4636363636363636,
+            "brier": 0.35227711697824304,
+            "sensitivity": 0.2,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8655462184873949,
+            "balanced_accuracy": 0.5,
+            "brier": 0.31815638430880017,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8214285714285714,
+            "auroc": 0.8978260869565218,
+            "balanced_accuracy": 0.7739130434782608,
+            "brier": 0.1704499833403041,
+            "sensitivity": 0.8478260869565217,
+            "specificity": 0.7
+          },
+          "neuroface": {
+            "accuracy": 0.8333333333333334,
+            "auroc": 0.8909090909090909,
+            "balanced_accuracy": 0.8036363636363637,
+            "brier": 0.19121217109327435,
+            "sensitivity": 0.88,
+            "specificity": 0.7272727272727273
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.9019607843137254,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.14225869991607085,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "1": {
+        "active_candidate_id": "BRV10-005",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.5714285714285714,
+            "auroc": 0.8108695652173913,
+            "balanced_accuracy": 0.7,
+            "brier": 0.264245402651434,
+            "sensitivity": 0.5,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.5,
+            "auroc": 0.6072727272727272,
+            "balanced_accuracy": 0.64,
+            "brier": 0.3550069859743156,
+            "sensitivity": 0.28,
+            "specificity": 1.0
+          },
+          "palsynet": {
+            "accuracy": 0.5526315789473685,
+            "auroc": 0.8375350140056023,
+            "balanced_accuracy": 0.5,
+            "brier": 0.26287497632714046,
+            "sensitivity": 1.0,
+            "specificity": 0.0
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8214285714285714,
+            "auroc": 0.8891304347826087,
+            "balanced_accuracy": 0.8521739130434782,
+            "brier": 0.17046467462665876,
+            "sensitivity": 0.8043478260869565,
+            "specificity": 0.9
+          },
+          "neuroface": {
+            "accuracy": 0.7222222222222222,
+            "auroc": 0.7890909090909092,
+            "balanced_accuracy": 0.6727272727272727,
+            "brier": 0.2012958151254414,
+            "sensitivity": 0.8,
+            "specificity": 0.5454545454545454
+          },
+          "palsynet": {
+            "accuracy": 0.9210526315789473,
+            "auroc": 0.9635854341736694,
+            "balanced_accuracy": 0.9173669467787114,
+            "brier": 0.12604693756447818,
+            "sensitivity": 0.9523809523809523,
+            "specificity": 0.8823529411764706
+          }
+        }
+      },
+      "2": {
+        "active_candidate_id": "BRV10-005",
+        "leave_one_source_out": {
+          "meei": {
+            "accuracy": 0.375,
+            "auroc": 0.8260869565217391,
+            "balanced_accuracy": 0.6195652173913043,
+            "brier": 0.3837142210666447,
+            "sensitivity": 0.2391304347826087,
+            "specificity": 1.0
+          },
+          "neuroface": {
+            "accuracy": 0.4722222222222222,
+            "auroc": 0.4218181818181818,
+            "balanced_accuracy": 0.5181818181818182,
+            "brier": 0.36336338510775257,
+            "sensitivity": 0.4,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.6842105263157895,
+            "auroc": 0.8319327731092437,
+            "balanced_accuracy": 0.6582633053221288,
+            "brier": 0.19143775774986754,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.4117647058823529
+          }
+        },
+        "model_fits": 9,
+        "task_specific_parameter_fraction": 0.019762901368092816,
+        "within_source": {
+          "meei": {
+            "accuracy": 0.8571428571428571,
+            "auroc": 0.908695652173913,
+            "balanced_accuracy": 0.8347826086956522,
+            "brier": 0.16079869148967083,
+            "sensitivity": 0.8695652173913043,
+            "specificity": 0.8
+          },
+          "neuroface": {
+            "accuracy": 0.8055555555555556,
+            "auroc": 0.8254545454545454,
+            "balanced_accuracy": 0.7581818181818182,
+            "brier": 0.1801565290852899,
+            "sensitivity": 0.88,
+            "specificity": 0.6363636363636364
+          },
+          "palsynet": {
+            "accuracy": 0.8947368421052632,
+            "auroc": 0.9355742296918768,
+            "balanced_accuracy": 0.8935574229691876,
+            "brier": 0.1410386998449246,
+            "sensitivity": 0.9047619047619048,
+            "specificity": 0.8823529411764706
+          }
+        }
+      }
+    }
+  },
+  "promotion_gate": {
+    "maximum_accuracy_or_auroc_regression": 0.01,
+    "minimum_accuracy_every_source": 0.9,
+    "minimum_auroc_every_source": 0.92,
+    "minimum_sensitivity_every_source": 0.85,
+    "minimum_specificity_every_source": 0.8,
+    "requires_strict_worst_source_specificity_improvement": true
+  },
+  "runtime": {
+    "elapsed_seconds": 265.3584673009991,
+    "epochs": 20,
+    "folds": 6,
+    "gpu": "NVIDIA H200",
+    "numpy": "2.4.6",
+    "python": "3.11.13",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "torch": "2.7.1+cu128"
+  },
+  "schema_version": "bilateral_reconstruction_shared_v10_search",
+  "selection": {
+    "leave_one_source_out_role": "descriptive_transfer_stress_test_only",
+    "primary_metric": "minimum_source_specificity",
+    "promotion_estimator": "prespecified_three_seed_mean_probability",
+    "ranking": [
+      "BRV10-003",
+      "BRV10-001",
+      "BRV10-005",
+      "BRV10-000",
+      "BRV10-004",
+      "BRV10-002"
+    ],
+    "research_baseline": "BLV9-009/BRV10-000",
+    "secondary_metric": "minimum_source_auroc",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "tertiary_metric": "minimum_source_accuracy"
+  },
+  "status": "participant_disjoint_development_research_not_clinically_validated",
+  "summaries": {
+    "BRV10-000": {
+      "leave_one_source_out_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.6190476190476191,
+          "auroc": 0.8340579710144927,
+          "balanced_accuracy": 0.6898550724637681,
+          "brier": 0.24819417400014107,
+          "sensitivity": 0.5797101449275363,
+          "specificity": 0.7999999999999999
+        },
+        "neuroface": {
+          "accuracy": 0.46296296296296297,
+          "auroc": 0.5187878787878788,
+          "balanced_accuracy": 0.5284848484848484,
+          "brier": 0.36649224371529715,
+          "sensitivity": 0.36000000000000004,
+          "specificity": 0.6969696969696969
+        },
+        "palsynet": {
+          "accuracy": 0.5789473684210527,
+          "auroc": 0.815126050420168,
+          "balanced_accuracy": 0.5312791783380019,
+          "brier": 0.30639144890687386,
+          "sensitivity": 0.9841269841269842,
+          "specificity": 0.0784313725490196
+        }
+      },
+      "promotion_gate_passed": false,
+      "three_seed_probability_ensemble": {
+        "meei": {
+          "accuracy": 0.8392857142857143,
+          "auroc": 0.9260869565217391,
+          "balanced_accuracy": 0.7847826086956522,
+          "brier": 0.13551097624456346,
+          "sensitivity": 0.8695652173913043,
+          "specificity": 0.7
+        },
+        "neuroface": {
+          "accuracy": 0.8888888888888888,
+          "auroc": 0.92,
+          "balanced_accuracy": 0.8690909090909091,
+          "brier": 0.14606328942280694,
+          "sensitivity": 0.92,
+          "specificity": 0.8181818181818182
+        },
+        "palsynet": {
+          "accuracy": 0.9210526315789473,
+          "auroc": 0.9523809523809523,
+          "balanced_accuracy": 0.9173669467787114,
+          "brier": 0.11308277473774955,
+          "sensitivity": 0.9523809523809523,
+          "specificity": 0.8823529411764706
+        }
+      },
+      "within_source_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.8392857142857143,
+          "auroc": 0.8992753623188406,
+          "balanced_accuracy": 0.7847826086956521,
+          "brier": 0.13905436720740066,
+          "sensitivity": 0.8695652173913043,
+          "specificity": 0.6999999999999998
+        },
+        "neuroface": {
+          "accuracy": 0.8240740740740741,
+          "auroc": 0.8884848484848485,
+          "balanced_accuracy": 0.7799999999999999,
+          "brier": 0.1505295805154603,
+          "sensitivity": 0.8933333333333334,
+          "specificity": 0.6666666666666666
+        },
+        "palsynet": {
+          "accuracy": 0.912280701754386,
+          "auroc": 0.9327731092436974,
+          "balanced_accuracy": 0.9094304388422034,
+          "brier": 0.11615713330068062,
+          "sensitivity": 0.9365079365079364,
+          "specificity": 0.8823529411764706
+        }
+      }
+    },
+    "BRV10-001": {
+      "leave_one_source_out_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.5595238095238096,
+          "auroc": 0.8094202898550725,
+          "balanced_accuracy": 0.6797101449275362,
+          "brier": 0.27486996495335564,
+          "sensitivity": 0.49275362318840576,
+          "specificity": 0.8666666666666667
+        },
+        "neuroface": {
+          "accuracy": 0.4074074074074074,
+          "auroc": 0.4727272727272727,
+          "balanced_accuracy": 0.5224242424242425,
+          "brier": 0.3636716559538184,
+          "sensitivity": 0.22666666666666668,
+          "specificity": 0.8181818181818182
+        },
+        "palsynet": {
+          "accuracy": 0.6052631578947368,
+          "auroc": 0.8412698412698413,
+          "balanced_accuracy": 0.5625583566760037,
+          "brier": 0.25269402463833185,
+          "sensitivity": 0.9682539682539683,
+          "specificity": 0.1568627450980392
+        }
+      },
+      "promotion_gate_passed": false,
+      "three_seed_probability_ensemble": {
+        "meei": {
+          "accuracy": 0.8214285714285714,
+          "auroc": 0.9043478260869565,
+          "balanced_accuracy": 0.8130434782608695,
+          "brier": 0.16971685335876627,
+          "sensitivity": 0.8260869565217391,
+          "specificity": 0.8
+        },
+        "neuroface": {
+          "accuracy": 0.8333333333333334,
+          "auroc": 0.8690909090909091,
+          "balanced_accuracy": 0.8290909090909091,
+          "brier": 0.19248879373853586,
+          "sensitivity": 0.84,
+          "specificity": 0.8181818181818182
+        },
+        "palsynet": {
+          "accuracy": 0.8947368421052632,
+          "auroc": 0.9523809523809523,
+          "balanced_accuracy": 0.8935574229691876,
+          "brier": 0.1353082141720854,
+          "sensitivity": 0.9047619047619048,
+          "specificity": 0.8823529411764706
+        }
+      },
+      "within_source_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.8214285714285715,
+          "auroc": 0.8949275362318839,
+          "balanced_accuracy": 0.8130434782608695,
+          "brier": 0.1723454268405098,
+          "sensitivity": 0.8260869565217391,
+          "specificity": 0.8000000000000002
+        },
+        "neuroface": {
+          "accuracy": 0.7870370370370371,
+          "auroc": 0.8424242424242424,
+          "balanced_accuracy": 0.7618181818181818,
+          "brier": 0.19505978111199,
+          "sensitivity": 0.8266666666666667,
+          "specificity": 0.6969696969696969
+        },
+        "palsynet": {
+          "accuracy": 0.8947368421052632,
+          "auroc": 0.9346405228758169,
+          "balanced_accuracy": 0.8916900093370681,
+          "brier": 0.13771458124845248,
+          "sensitivity": 0.9206349206349206,
+          "specificity": 0.8627450980392156
+        }
+      }
+    },
+    "BRV10-002": {
+      "leave_one_source_out_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.6428571428571429,
+          "auroc": 0.827536231884058,
+          "balanced_accuracy": 0.7043478260869565,
+          "brier": 0.2385692345467827,
+          "sensitivity": 0.608695652173913,
+          "specificity": 0.7999999999999999
+        },
+        "neuroface": {
+          "accuracy": 0.4444444444444444,
+          "auroc": 0.4981818181818182,
+          "balanced_accuracy": 0.48969696969696974,
+          "brier": 0.37584238956928817,
+          "sensitivity": 0.37333333333333335,
+          "specificity": 0.6060606060606061
+        },
+        "palsynet": {
+          "accuracy": 0.5789473684210527,
+          "auroc": 0.8095238095238094,
+          "balanced_accuracy": 0.5312791783380019,
+          "brier": 0.3112562859640157,
+          "sensitivity": 0.9841269841269842,
+          "specificity": 0.0784313725490196
+        }
+      },
+      "promotion_gate_passed": false,
+      "three_seed_probability_ensemble": {
+        "meei": {
+          "accuracy": 0.8571428571428571,
+          "auroc": 0.9260869565217392,
+          "balanced_accuracy": 0.7956521739130434,
+          "brier": 0.1304215061352666,
+          "sensitivity": 0.8913043478260869,
+          "specificity": 0.7
+        },
+        "neuroface": {
+          "accuracy": 0.8611111111111112,
+          "auroc": 0.9054545454545454,
+          "balanced_accuracy": 0.8236363636363637,
+          "brier": 0.14726568396343873,
+          "sensitivity": 0.92,
+          "specificity": 0.7272727272727273
+        },
+        "palsynet": {
+          "accuracy": 0.9210526315789473,
+          "auroc": 0.9523809523809523,
+          "balanced_accuracy": 0.9173669467787114,
+          "brier": 0.11183273740624443,
+          "sensitivity": 0.9523809523809523,
+          "specificity": 0.8823529411764706
+        }
+      },
+      "within_source_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.8452380952380952,
+          "auroc": 0.9079710144927536,
+          "balanced_accuracy": 0.7753623188405797,
+          "brier": 0.13351691042858124,
+          "sensitivity": 0.8840579710144927,
+          "specificity": 0.6666666666666666
+        },
+        "neuroface": {
+          "accuracy": 0.8240740740740741,
+          "auroc": 0.8775757575757576,
+          "balanced_accuracy": 0.7715151515151515,
+          "brier": 0.15141850817609673,
+          "sensitivity": 0.9066666666666667,
+          "specificity": 0.6363636363636364
+        },
+        "palsynet": {
+          "accuracy": 0.9035087719298246,
+          "auroc": 0.9309056956115779,
+          "balanced_accuracy": 0.899626517273576,
+          "brier": 0.1148701706637081,
+          "sensitivity": 0.9365079365079364,
+          "specificity": 0.8627450980392156
+        }
+      }
+    },
+    "BRV10-003": {
+      "leave_one_source_out_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.5297619047619048,
+          "auroc": 0.8072463768115942,
+          "balanced_accuracy": 0.6615942028985508,
+          "brier": 0.2705939299300121,
+          "sensitivity": 0.45652173913043476,
+          "specificity": 0.8666666666666667
+        },
+        "neuroface": {
+          "accuracy": 0.4074074074074074,
+          "auroc": 0.4581818181818182,
+          "balanced_accuracy": 0.4715151515151515,
+          "brier": 0.3598002292838209,
+          "sensitivity": 0.3066666666666667,
+          "specificity": 0.6363636363636364
+        },
+        "palsynet": {
+          "accuracy": 0.5877192982456141,
+          "auroc": 0.842203548085901,
+          "balanced_accuracy": 0.5429505135387488,
+          "brier": 0.24617573440082707,
+          "sensitivity": 0.9682539682539683,
+          "specificity": 0.11764705882352942
+        }
+      },
+      "promotion_gate_passed": false,
+      "three_seed_probability_ensemble": {
+        "meei": {
+          "accuracy": 0.8214285714285714,
+          "auroc": 0.9043478260869565,
+          "balanced_accuracy": 0.8130434782608695,
+          "brier": 0.16740313329686268,
+          "sensitivity": 0.8260869565217391,
+          "specificity": 0.8
+        },
+        "neuroface": {
+          "accuracy": 0.8611111111111112,
+          "auroc": 0.8945454545454545,
+          "balanced_accuracy": 0.8490909090909091,
+          "brier": 0.18871599630574798,
+          "sensitivity": 0.88,
+          "specificity": 0.8181818181818182
+        },
+        "palsynet": {
+          "accuracy": 0.8947368421052632,
+          "auroc": 0.9523809523809523,
+          "balanced_accuracy": 0.8935574229691876,
+          "brier": 0.13308509238210242,
+          "sensitivity": 0.9047619047619048,
+          "specificity": 0.8823529411764706
+        }
+      },
+      "within_source_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.8214285714285715,
+          "auroc": 0.9,
+          "balanced_accuracy": 0.8130434782608695,
+          "brier": 0.17010028235396443,
+          "sensitivity": 0.8260869565217391,
+          "specificity": 0.8000000000000002
+        },
+        "neuroface": {
+          "accuracy": 0.7592592592592592,
+          "auroc": 0.8436363636363637,
+          "balanced_accuracy": 0.724848484848485,
+          "brier": 0.19198966551577326,
+          "sensitivity": 0.8133333333333334,
+          "specificity": 0.6363636363636364
+        },
+        "palsynet": {
+          "accuracy": 0.9035087719298246,
+          "auroc": 0.9346405228758169,
+          "balanced_accuracy": 0.9014939309056955,
+          "brier": 0.13551927009982448,
+          "sensitivity": 0.9206349206349206,
+          "specificity": 0.8823529411764706
+        }
+      }
+    },
+    "BRV10-004": {
+      "leave_one_source_out_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.6607142857142857,
+          "auroc": 0.8311594202898552,
+          "balanced_accuracy": 0.7282608695652174,
+          "brier": 0.24751448475814275,
+          "sensitivity": 0.6231884057971014,
+          "specificity": 0.8333333333333334
+        },
+        "neuroface": {
+          "accuracy": 0.4537037037037037,
+          "auroc": 0.5248484848484849,
+          "balanced_accuracy": 0.5048484848484849,
+          "brier": 0.35570524338097465,
+          "sensitivity": 0.37333333333333335,
+          "specificity": 0.6363636363636364
+        },
+        "palsynet": {
+          "accuracy": 0.5789473684210527,
+          "auroc": 0.8104575163398692,
+          "balanced_accuracy": 0.5312791783380019,
+          "brier": 0.31271070777557713,
+          "sensitivity": 0.9841269841269842,
+          "specificity": 0.0784313725490196
+        }
+      },
+      "promotion_gate_passed": false,
+      "three_seed_probability_ensemble": {
+        "meei": {
+          "accuracy": 0.8392857142857143,
+          "auroc": 0.9239130434782609,
+          "balanced_accuracy": 0.7847826086956522,
+          "brier": 0.1305841216485892,
+          "sensitivity": 0.8695652173913043,
+          "specificity": 0.7
+        },
+        "neuroface": {
+          "accuracy": 0.8611111111111112,
+          "auroc": 0.9090909090909091,
+          "balanced_accuracy": 0.8236363636363637,
+          "brier": 0.14712503675348415,
+          "sensitivity": 0.92,
+          "specificity": 0.7272727272727273
+        },
+        "palsynet": {
+          "accuracy": 0.9210526315789473,
+          "auroc": 0.9523809523809523,
+          "balanced_accuracy": 0.9173669467787114,
+          "brier": 0.11172710206896559,
+          "sensitivity": 0.9523809523809523,
+          "specificity": 0.8823529411764706
+        }
+      },
+      "within_source_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.8452380952380952,
+          "auroc": 0.8992753623188406,
+          "balanced_accuracy": 0.7623188405797102,
+          "brier": 0.13418789612498014,
+          "sensitivity": 0.8913043478260869,
+          "specificity": 0.6333333333333333
+        },
+        "neuroface": {
+          "accuracy": 0.7962962962962964,
+          "auroc": 0.8812121212121212,
+          "balanced_accuracy": 0.743030303030303,
+          "brier": 0.15103864528216374,
+          "sensitivity": 0.88,
+          "specificity": 0.606060606060606
+        },
+        "palsynet": {
+          "accuracy": 0.912280701754386,
+          "auroc": 0.9290382819794584,
+          "balanced_accuracy": 0.9094304388422034,
+          "brier": 0.11482593951792332,
+          "sensitivity": 0.9365079365079364,
+          "specificity": 0.8823529411764706
+        }
+      }
+    },
+    "BRV10-005": {
+      "leave_one_source_out_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.5535714285714285,
+          "auroc": 0.8159420289855072,
+          "balanced_accuracy": 0.676086956521739,
+          "brier": 0.2706055185882525,
+          "sensitivity": 0.4855072463768116,
+          "specificity": 0.8666666666666667
+        },
+        "neuroface": {
+          "accuracy": 0.4444444444444445,
+          "auroc": 0.4739393939393939,
+          "balanced_accuracy": 0.5406060606060605,
+          "brier": 0.3568824960201038,
+          "sensitivity": 0.2933333333333334,
+          "specificity": 0.787878787878788
+        },
+        "palsynet": {
+          "accuracy": 0.5964912280701755,
+          "auroc": 0.8450046685340803,
+          "balanced_accuracy": 0.5527544351073762,
+          "brier": 0.2574897061286027,
+          "sensitivity": 0.9682539682539683,
+          "specificity": 0.1372549019607843
+        }
+      },
+      "promotion_gate_passed": false,
+      "three_seed_probability_ensemble": {
+        "meei": {
+          "accuracy": 0.8214285714285714,
+          "auroc": 0.9130434782608695,
+          "balanced_accuracy": 0.8130434782608695,
+          "brier": 0.16468510764384311,
+          "sensitivity": 0.8260869565217391,
+          "specificity": 0.8
+        },
+        "neuroface": {
+          "accuracy": 0.8333333333333334,
+          "auroc": 0.8654545454545454,
+          "balanced_accuracy": 0.8036363636363637,
+          "brier": 0.18780417466753174,
+          "sensitivity": 0.88,
+          "specificity": 0.7272727272727273
+        },
+        "palsynet": {
+          "accuracy": 0.8947368421052632,
+          "auroc": 0.9523809523809523,
+          "balanced_accuracy": 0.8935574229691876,
+          "brier": 0.13404865392281065,
+          "sensitivity": 0.9047619047619048,
+          "specificity": 0.8823529411764706
+        }
+      },
+      "within_source_three_seed_mean": {
+        "meei": {
+          "accuracy": 0.8333333333333334,
+          "auroc": 0.8985507246376812,
+          "balanced_accuracy": 0.8202898550724638,
+          "brier": 0.16723778315221124,
+          "sensitivity": 0.8405797101449276,
+          "specificity": 0.8000000000000002
+        },
+        "neuroface": {
+          "accuracy": 0.7870370370370371,
+          "auroc": 0.8351515151515153,
+          "balanced_accuracy": 0.744848484848485,
+          "brier": 0.19088817176800188,
+          "sensitivity": 0.8533333333333334,
+          "specificity": 0.6363636363636364
+        },
+        "palsynet": {
+          "accuracy": 0.9035087719298246,
+          "auroc": 0.9337068160597571,
+          "balanced_accuracy": 0.9014939309056955,
+          "brier": 0.13644811244182453,
+          "sensitivity": 0.9206349206349206,
+          "specificity": 0.8823529411764706
+        }
+      }
+    }
+  }
+}
