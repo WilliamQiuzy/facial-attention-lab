@@ -28,7 +28,7 @@ def test_public_release_is_complete_but_excludes_restricted_weights(c):
     c.true("restricted" in (RELEASE / "README.md").read_text().lower())
 
 
-def test_registry_separates_v9_research_and_v8_deployment(c):
+def test_registry_keeps_v8_historical_after_v9_deployment_activation(c):
     registry = json.loads((ROOT / "docs/model_registry.json").read_bytes())
     c.eq(registry["schema_version"], "facial_paralysis_model_registry_v3")
     c.eq(
@@ -37,10 +37,13 @@ def test_registry_separates_v9_research_and_v8_deployment(c):
     )
     c.eq(registry["benchmark"]["name"], "universal_clinical_router_v4")
     deployment = registry["deployment"]
-    c.eq(deployment["name"], "residual_shared_router_v8_rsr8_001")
-    c.eq(deployment["version"], "shared-v8-deployment-v1")
-    c.eq(deployment["weights_sha256"], "72e40ea7b127b6768e931665df622550f06cc5a1bbad20070a42614c5b9901ab")
-    c.eq(deployment["weights_distribution"], "restricted_release_not_in_public_git")
+    c.eq(deployment["name"], "broad_literature_shared_v9_blv9_009_ensemble")
+    c.eq(deployment["version"], "shared-v9-public-oci-v1")
+    c.true(any(
+        row.get("name") == "residual_shared_router_v8_rsr8_001"
+        and row.get("status") == "archived_not_current"
+        for row in registry["archived"]
+    ))
 
 
 def test_public_manifests_are_identifier_and_secret_free(c):

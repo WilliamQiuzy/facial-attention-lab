@@ -4,6 +4,9 @@ This public image contains the complete three-member BLV9-009 ensemble, common
 110D scaler, API code, and checksum manifest. It requires no private model
 mount, H200 directory, GitHub token, or Docker registry login.
 
+Public package: `ghcr.io/williamqiuzy/facial-attention-lab-shared-v9`. The
+Compose file pins the accepted immutable digest rather than a mutable tag.
+
 The service is a research inference API, not clinically validated software. It
 accepts authenticated, preprocessed MediaPipe clinical-action tensors in the
 frozen binary NPZ contract; it does not accept a raw video or return an HB grade.

@@ -6,10 +6,10 @@ simulated attention results, and simple clinician review. The legacy research
 workbench remains available for synthetic case, batch, model-comparison, and
 structured-review exercises.
 
-This repository contains public research-model source and deidentified aggregate
-PalsyNet development results, but no Mayo patient recordings, patient-derived
-features, clinical labels, fitted model weights, or real-image synthesis
-outputs. Patient records and selected test-image bytes remain in browser memory
+This repository contains public research-model source, the frozen Shared V9
+research weights, and deidentified aggregate development results, but no Mayo
+patient recordings, patient-derived features, clinical labels, or real-image
+synthesis outputs. Patient records and selected test-image bytes remain in browser memory
 for the current session only. The ten bundled images are separate AI-generated
 identities, hash-locked in the application allowlist, and may only be presented
 as unpaired interface demonstrations. The interface and research models are not
@@ -34,6 +34,23 @@ pnpm typecheck
 pnpm test:run
 pnpm build
 ```
+
+## Shared V9 public Docker service
+
+The immutable public image includes the complete three-member V9 ensemble. On
+an x86-64 Docker server, no GitHub or registry login is required:
+
+```bash
+git clone --depth 1 --branch codex/shared-v9-public-release \
+  https://github.com/WilliamQiuzy/facial-attention-lab.git
+cd facial-attention-lab/facial_paralysis/deploy/shared-v9
+docker compose pull
+docker compose up -d
+curl --fail http://127.0.0.1:18090/readyz
+```
+
+This is a research API for validated preprocessed clinical-action tensors, not
+a raw-video endpoint or a clinically validated diagnostic service.
 
 The application source is in `facial_paralysis/facial_defect_web/`. Its ten approved synthetic assets remain in `facial_defect_synthesis/output/synthetic/` so the byte-verification and static imports use the same repository-relative paths as the research workspace. Sanitized generation evidence is recorded in `facial_paralysis/facial_defect_web/audits/approved-synthetic-provenance.json`.
 

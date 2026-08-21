@@ -1,23 +1,16 @@
-# 当前部署模型：Shared V8 deployment v1
+# 当前部署模型：Shared V9 public OCI v1
 
-当前锁定部署版本是 `ResidualSharedRouterV8 / RSR8-001`。它把 110D 临床几何、
-可用时的 478 点动作轨迹和动作类型编码送入同一个共享 64 维患者表示；数据协议只在
-共享表示之后通过小型残差适配器与二分类头处理。模型以 38 名 PalsyNet、36 名
-NeuroFace 和 56 名 MEEI 暴露开发参与者进行一次确定性全数据拟合，训练 seed 为 0，
-20 个 epoch，冻结权重 SHA-256 为
-`72e40ea7b127b6768e931665df622550f06cc5a1bbad20070a42614c5b9901ab`。
+当前锁定部署版本是 `Shared V9 / BLV9-009` 的三种子集成。公共镜像内置模型代码、
+三个冻结权重和校验清单，不需要私有模型挂载或 Docker registry 登录。Compose 使用
+不可变镜像摘要：
+`ghcr.io/williamqiuzy/facial-attention-lab-shared-v9@sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95`。
 
-本版本已经通过 H200 GPU 服务验收：重启前后各执行 1000 次串行与 200 次并发请求，
-三种协议输出完全一致；重启后串行 P95 为 28.07 ms，GPU 显存约 744 MiB，CPU/GPU
-最大概率差为 `7.03e-6`。容器使用非 root 用户、只读根文件系统、只读模型挂载、删除
-全部 Linux capabilities，并只发布到服务器本机回环地址。
+该镜像已经在 H200 上分别完成 CPU 和 CUDA 启动、readiness 与真实推理验收；同一输入
+的 CPU/GPU 概率最大差为 `5.52e-6`。它以 UID/GID 1001 非 root 运行，根文件系统只读，
+删除全部 Linux capabilities，只将 API 绑定到宿主机 `127.0.0.1:18090`。
 
-这是一项部署验收，不是临床验证。它没有 Mayo HB 标签训练，也不能报告 Mayo 二分类
-正确率或 HB 分级效果。`Shared V9 / BLV9-009` 是当前研究模型，并已在公开 Git 中提供
-完整三种子研究权重；Shared V8 仍是当前实际部署记录，其旧部署权重继续保存在受限
-模型发布目录和私有 GHCR bundle 中。
-
-私有 bundle 固定为
-`ghcr.io/williamqiuzy/facial-attention-lab-shared-v8-bundle@sha256:c1bd32815a5b1f92e1f52b08d1ecf52190266a21e1d740bc4d5fca70362c26af`。
-详细发布文件位于 `releases/shared-v8-deployment-v1/`，跨服务器启动说明位于
-`deploy/shared-v8/README.md`。
+这仍然是研究推理服务，不是临床产品。当前 API 只接受已验证、预处理后的 MediaPipe
+临床动作张量；它不直接读取原始视频，也没有 Mayo HB 标签训练，因此不能把启动验收
+解释为 Mayo 正确率、HB 分级效果或临床诊断能力。跨服务器操作说明位于
+`deploy/shared-v9/README.md`，镜像证据位于
+`releases/shared-v9-research-v1/oci_manifest.json`。Shared V8 仅作为历史复现记录保留。

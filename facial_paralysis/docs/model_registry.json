@@ -29,18 +29,18 @@
     "selection_report_sha256": "27762fafb4923f043483bfc481d70948b3aaff12141f0a5fe2dbfeb1756c7ac4"
   },
   "deployment": {
-    "name": "residual_shared_router_v8_rsr8_001",
-    "version": "shared-v8-deployment-v1",
-    "status": "locked_research_deployment_not_clinically_validated",
-    "api_module": "src.deployment.shared_v8_service",
-    "release_manifest_path": "releases/shared-v8-deployment-v1/model_manifest.json",
-    "weights_sha256": "72e40ea7b127b6768e931665df622550f06cc5a1bbad20070a42614c5b9901ab",
-    "weights_distribution": "restricted_release_not_in_public_git",
-    "image_id": "sha256:d5f1de3c57ab5b080ab30907f114b764b67bc3acc897ff29ceda426cb44296ea",
-    "acceptance_path": "releases/shared-v8-deployment-v1/acceptance_summary.json",
-    "oci_manifest_path": "releases/shared-v8-deployment-v1/oci_manifest.json",
-    "bundle_digest": "sha256:c1bd32815a5b1f92e1f52b08d1ecf52190266a21e1d740bc4d5fca70362c26af",
-    "compose_path": "deploy/shared-v8/compose.yaml"
+    "name": "broad_literature_shared_v9_blv9_009_ensemble",
+    "version": "shared-v9-public-oci-v1",
+    "status": "locked_public_research_deployment_not_clinically_validated",
+    "api_module": "src.deployment.shared_v9_service",
+    "release_manifest_path": "releases/shared-v9-research-v1/manifest.json",
+    "weights_distribution": "embedded_public_three_member_ensemble",
+    "registry": "ghcr.io/williamqiuzy/facial-attention-lab-shared-v9",
+    "image_id": "sha256:86f6018e1049c6c599d15f31ff52059667a4cecbfe2d041c7b78499fc421a79b",
+    "image_digest": "sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95",
+    "oci_manifest_path": "releases/shared-v9-research-v1/oci_manifest.json",
+    "oci_manifest_sha256": "a13d3d2abc3365c5cb7b6afd23a4e64962a0ad7d4400f7eb366aadb073650ddd",
+    "compose_path": "deploy/shared-v9/compose.yaml"
   },
   "benchmark": {
     "name": "universal_clinical_router_v4",
@@ -51,6 +51,11 @@
     "artifact_sha256": "c8f8c217d508b15bf0d8626b42cead857192ecd738b1fffab94f364c6ed80495"
   },
   "archived": [
+    {
+      "name": "residual_shared_router_v8_rsr8_001",
+      "status": "archived_not_current",
+      "default_import": false
+    },
     {
       "name": "web_marlin_gru_ordinal",
       "status": "archived_not_current",

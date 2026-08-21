@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 
 from _testlib import run_all
@@ -33,11 +34,12 @@ def test_v9_image_is_closed_nonroot_and_contains_exact_public_weights(c):
 def test_cpu_default_and_optional_gpu_compose_are_hardened(c):
     cpu = (ROOT / "deploy/shared-v9/compose.yaml").read_text()
     gpu = (ROOT / "deploy/shared-v9/compose.gpu.yaml").read_text()
-    c.true(re.search(
-        r"image: ghcr\.io/williamqiuzy/facial-attention-lab-shared-v9:[a-z0-9._-]+",
-        cpu,
-    ) is not None)
-    c.true(":latest" not in cpu)
+    c.true(
+        "image: ghcr.io/williamqiuzy/facial-attention-lab-shared-v9@"
+        "sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95"
+        in cpu
+    )
+    c.true(":latest" not in cpu and ":v9-public" not in cpu)
     for token in (
         "SHARED_V9_DEVICE: cpu", "read_only: true", 'user: "1001:1001"',
         "cap_drop:", "- ALL", "no-new-privileges:true",
@@ -57,6 +59,36 @@ def test_public_quickstart_is_anonymous_and_one_command(c):
     ):
         c.true(phrase in quickstart, phrase)
     c.true("docker login" not in quickstart)
+
+
+def test_public_oci_release_binds_image_and_h200_acceptance(c):
+    release = json.loads(
+        (ROOT / "releases/shared-v9-research-v1/oci_manifest.json").read_bytes()
+    )
+    c.eq(release["schema_version"], "shared_v9_public_oci_v1")
+    c.eq(release["visibility"], "public")
+    c.eq(
+        release["image_digest"],
+        "sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95",
+    )
+    c.eq(
+        release["image_id"],
+        "sha256:86f6018e1049c6c599d15f31ff52059667a4cecbfe2d041c7b78499fc421a79b",
+    )
+    c.eq(release["source_commit"], "452cb9be173ec472743acc1c617368f89b3cd97c")
+    c.true(release["acceptance"]["cpu"] is True)
+    c.true(release["acceptance"]["gpu_h200"] is True)
+    c.true(release["acceptance"]["cpu_gpu_maximum_absolute_difference"] < 1e-5)
+    c.true(release["clinical_validation"] is False)
+    registry = json.loads((ROOT / "docs/model_registry.json").read_bytes())
+    deployment = registry["deployment"]
+    c.eq(deployment["name"], release["model_id"])
+    c.eq(deployment["version"], "shared-v9-public-oci-v1")
+    c.eq(deployment["image_digest"], release["image_digest"])
+    c.eq(
+        deployment["oci_manifest_sha256"],
+        "a13d3d2abc3365c5cb7b6afd23a4e64962a0ad7d4400f7eb366aadb073650ddd",
+    )
 
 
 if __name__ == "__main__":
