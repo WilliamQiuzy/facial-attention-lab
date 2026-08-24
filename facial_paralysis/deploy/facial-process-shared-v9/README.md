@@ -91,7 +91,9 @@ or label is returned.
 
 All containers run as non-root, with read-only root filesystems, dropped Linux
 capabilities, `no-new-privileges`, bounded processes, and tmpfs working space.
-Only port 8080 is published; model and gateway ports remain internal.
+Only `127.0.0.1:8080` is published; model and gateway ports remain internal.
+An approved same-host reverse proxy may provide authenticated TLS access when
+remote research use is required.
 
 This source release does not provide TLS termination, user authentication,
 authorization, audit-log storage, PHI retention policy, backup, monitoring, or

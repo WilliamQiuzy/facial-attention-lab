@@ -115,7 +115,10 @@ def test_compose_exposes_only_web_and_pins_shared_v9(c: Check):
     c.true("sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95" in compose)
     c.true(all(name in compose for name in ("shared-v9:", "gateway:", "web:")))
     c.true(compose.count("ports:") == 1)
-    c.true('"8080:8080"' in compose)
+    c.true(
+        '"127.0.0.1:8080:8080"' in compose,
+        "the local research UI must not bind to every host interface",
+    )
     c.true(compose.count("read_only: true") == 3)
     c.true(compose.count("no-new-privileges:true") == 3)
     c.true(compose.count("platform: linux/amd64") == 2)

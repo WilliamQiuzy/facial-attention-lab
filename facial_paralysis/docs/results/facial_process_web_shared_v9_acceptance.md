@@ -20,9 +20,9 @@ Browser -> Nginx -> raw-video gateway -> MediaPipe original/true-flip
         -> 110D + 478-point action tensors -> Shared V9 -> strict binary response
 ```
 
-The local Compose stack started with three healthy containers. Only web port
-8080 was published. All containers ran non-root with read-only root filesystems,
-dropped capabilities, and `no-new-privileges`.
+The local Compose stack started with three healthy containers. Only
+`127.0.0.1:8080` was published. All containers ran non-root with read-only root
+filesystems, dropped capabilities, and `no-new-privileges`.
 
 A 32-second synthetic public face video was sent through the published Nginx
 route. The request completed with HTTP 200, used all seven active movements,
@@ -42,6 +42,28 @@ a scientific or clinical performance measurement.
   and no horizontal overflow.
 - Malformed content type returned HTTP 415; closed multipart and downstream
   identity failures are covered by the gateway tests.
+
+## Local 24/7 and edge acceptance
+
+- A macOS LaunchAgent was installed locally to open Docker, reconcile Compose
+  once per minute, and prevent idle system sleep while the user is logged in.
+- A manually stopped Web container recovered in 50 seconds; a killed model
+  container recovered in 60 seconds; all three services returned to healthy.
+- Seventeen malformed-request cases returned the frozen 400, 415, 405, or 422
+  boundary without paths, hashes, tracebacks, or filenames in the response.
+- A burst of 200 health requests returned 200/200 HTTP 200; a burst of 50 JSON
+  requests to the multipart endpoint returned 50/50 HTTP 415.
+- One valid synthetic public-face request and three simultaneous requests all
+  returned the exact Shared V9 contract. Concurrent completion times were
+  6.16, 12.36, and 18.29 seconds, showing bounded serial preprocessing rather
+  than request loss.
+- Live no-face, 10 fps, and two-second recordings each failed preprocessing
+  with HTTP 422. A flat but trackable synthetic face remained eligible, which
+  preserves the prompted-flat clinical behavior.
+- Desktop and 390 × 844 mobile browser flows passed a real inference, reset,
+  no-overflow, no-console-error, and no-external-request check.
+- Port 8080 was reachable on loopback and unreachable through the Mac's LAN
+  address. No MOV, MP4, M4V, AVI, or WebM file remained in container tmpfs.
 
 ## Boundary
 
