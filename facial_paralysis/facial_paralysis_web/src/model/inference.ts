@@ -7,12 +7,14 @@ export const SCRIPT_VERSION = 'faces-script/24-004956-v1' as const
 export const EXPECTED_MODEL_ID = 'broad_literature_shared_v9_blv9_009_ensemble' as const
 export const EXPECTED_CANDIDATE_ID = 'BLV9-009' as const
 export const EXPECTED_RELEASE_MANIFEST_SHA256 =
-  'c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f' as const
+  '81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64' as const
 export const EXPECTED_FACE_LANDMARKER_SHA256 =
   '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff' as const
 export const EXPECTED_PREPROCESSING_VERSION = 'faces-to-shared-v9/v1' as const
 
 export type RecordingSource = 'livelink-upload' | 'browser-camera'
+const TIMING_SOURCES = ['capture_event_log', 'audio_forced_alignment', 'blinded_manual'] as const
+export type CaptureTimingSource = typeof TIMING_SOURCES[number]
 
 export interface CaptureActionTimingDraft {
   readonly id: FacesActionId
@@ -25,6 +27,7 @@ export interface CaptureActionTimingDraft {
 export interface CaptureTimelineDraft {
   readonly recordingDurationMs: number
   readonly actions: readonly CaptureActionTimingDraft[]
+  readonly timingSource?: CaptureTimingSource
   readonly sourceRecordingSha256?: string
   readonly sourceSidecar?: string
 }
@@ -42,11 +45,12 @@ export interface ResearchInferenceResult {
     readonly faceLandmarkerSha256: typeof EXPECTED_FACE_LANDMARKER_SHA256
     readonly mirrorMethod: 'horizontal_flip_and_redetect'
     readonly protocol: 'cue_aligned_action'
-    readonly timingSource: 'capture_event_log'
+    readonly timingSource: CaptureTimingSource
   }
   readonly quality: {
     readonly eligible: true
-    readonly actionsUsed: 7
+    readonly actionsUsed: 6 | 7
+    readonly optionalActionsUnavailable: readonly 'reanimated_smile'[]
     readonly actions: readonly {
       readonly id: Exclude<FacesActionId, 'repose'>
       readonly v9Action: string
@@ -112,6 +116,13 @@ function probability(value: unknown, path: string): number {
   return value
 }
 
+function captureTimingSource(value: unknown, path: string): CaptureTimingSource {
+  if (typeof value !== 'string' || !TIMING_SOURCES.includes(value as CaptureTimingSource)) {
+    contractError(path, 'expected capture_event_log, audio_forced_alignment, or blinded_manual')
+  }
+  return value as CaptureTimingSource
+}
+
 const ACTIVE_IDS = FACES_PROTOCOL.slice(1).map((step) => step.id)
 const V9_ACTIONS = [
   'BROW_RAISE', 'EYE_GENTLE', 'EYE_FORCEFUL', 'SMILE_GENTLE',
@@ -137,22 +148,33 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
   exact(preprocessing.face_landmarker_sha256, EXPECTED_FACE_LANDMARKER_SHA256, 'preprocessing.face_landmarker_sha256')
   exact(preprocessing.mirror_method, 'horizontal_flip_and_redetect', 'preprocessing.mirror_method')
   exact(preprocessing.protocol, 'cue_aligned_action', 'preprocessing.protocol')
-  exact(preprocessing.timing_source, 'capture_event_log', 'preprocessing.timing_source')
+  const timingSource = captureTimingSource(preprocessing.timing_source, 'preprocessing.timing_source')
 
   const quality = recordAt(root.quality, 'quality')
-  exactKeys(quality, ['eligible', 'actions_used', 'actions'], 'quality')
+  exactKeys(quality, ['eligible', 'actions_used', 'optional_actions_unavailable', 'actions'], 'quality')
   exact(quality.eligible, true, 'quality.eligible')
-  exact(quality.actions_used, 7, 'quality.actions_used')
-  if (!Array.isArray(quality.actions) || quality.actions.length !== 7) {
-    contractError('quality.actions', 'expected seven active actions')
+  if (!Array.isArray(quality.optional_actions_unavailable)) {
+    contractError('quality.optional_actions_unavailable', 'expected an array')
+  }
+  const optionalActionsUnavailable = quality.optional_actions_unavailable
+  if (
+    optionalActionsUnavailable.length > 1
+    || (optionalActionsUnavailable.length === 1 && optionalActionsUnavailable[0] !== 'reanimated_smile')
+  ) {
+    contractError('quality.optional_actions_unavailable', 'only reanimated smile may be unavailable')
+  }
+  const actionCount = optionalActionsUnavailable.length === 0 ? 7 : 6
+  exact(quality.actions_used, actionCount, 'quality.actions_used')
+  if (!Array.isArray(quality.actions) || quality.actions.length !== actionCount) {
+    contractError('quality.actions', `expected ${actionCount} active actions`)
   }
   let previousHoldEnd = -1
   const actions = quality.actions.map((raw, index) => {
     const path = `quality.actions[${index}]`
     const row = recordAt(raw, path)
     exactKeys(row, ['id', 'v9_action', 'hold_start_ms', 'hold_end_ms', 'valid_samples'], path)
-    exact(row.id, ACTIVE_IDS[index], `${path}.id`)
-    exact(row.v9_action, V9_ACTIONS[index], `${path}.v9_action`)
+    exact(row.id, ACTIVE_IDS.slice(0, actionCount)[index], `${path}.id`)
+    exact(row.v9_action, V9_ACTIONS.slice(0, actionCount)[index], `${path}.v9_action`)
     const holdStartMs = integer(row.hold_start_ms, `${path}.hold_start_ms`)
     const holdEndMs = integer(row.hold_end_ms, `${path}.hold_end_ms`, 1)
     if (holdEndMs - holdStartMs !== 3_000 || holdStartMs < previousHoldEnd) {
@@ -197,9 +219,14 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
       faceLandmarkerSha256: EXPECTED_FACE_LANDMARKER_SHA256,
       mirrorMethod: 'horizontal_flip_and_redetect',
       protocol: 'cue_aligned_action',
-      timingSource: 'capture_event_log',
+      timingSource,
     },
-    quality: { eligible: true, actionsUsed: 7, actions },
+    quality: {
+      eligible: true,
+      actionsUsed: actionCount as 6 | 7,
+      optionalActionsUnavailable: optionalActionsUnavailable as 'reanimated_smile'[],
+      actions,
+    },
     prediction: {
       probability: aggregate,
       memberProbabilities: members,
@@ -236,11 +263,22 @@ function validateEndpoint(endpoint: string): string {
   return url.toString()
 }
 
-function validateTimeline(timeline: CaptureTimelineDraft): CaptureTimelineDraft {
-  if (!timeline || !Array.isArray(timeline.actions) || timeline.actions.length !== 8) {
-    throw new InferenceContractError('timeline: all eight externally timed FACES actions are required')
+function validateTimeline(
+  timeline: CaptureTimelineDraft,
+  expectedActionCount?: 7 | 8,
+): CaptureTimelineDraft {
+  if (
+    !timeline
+    || !Array.isArray(timeline.actions)
+    || ![7, 8].includes(timeline.actions.length)
+    || (expectedActionCount !== undefined && timeline.actions.length !== expectedActionCount)
+  ) {
+    throw new InferenceContractError('timeline: expected the exact seven- or eight-step FACES script')
   }
   const duration = integer(timeline.recordingDurationMs, 'timeline.recordingDurationMs', 1)
+  if (timeline.timingSource !== undefined) {
+    captureTimingSource(timeline.timingSource, 'timeline.timingSource')
+  }
   let previousCompletion = -1
   timeline.actions.forEach((row, index) => {
     if (row.id !== FACES_PROTOCOL[index].id) contractError(`timeline.actions[${index}].id`, 'protocol order drifted')
@@ -267,12 +305,12 @@ export function parseCaptureTimelineSidecar(source: string): CaptureTimelineDraf
   exactKeys(root, ['schema_version', 'script_version', 'recording_sha256', 'timing_source', 'recording_duration_ms', 'actions'], 'timeline sidecar')
   exact(root.schema_version, TIMELINE_SCHEMA_VERSION, 'timeline sidecar.schema_version')
   exact(root.script_version, SCRIPT_VERSION, 'timeline sidecar.script_version')
-  exact(root.timing_source, 'capture_event_log', 'timeline sidecar.timing_source')
+  const timingSource = captureTimingSource(root.timing_source, 'timeline sidecar.timing_source')
   if (typeof root.recording_sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(root.recording_sha256)) {
     contractError('timeline sidecar.recording_sha256', 'expected lowercase SHA-256')
   }
-  if (!Array.isArray(root.actions) || root.actions.length !== 8) {
-    contractError('timeline sidecar.actions', 'expected eight actions')
+  if (!Array.isArray(root.actions) || ![7, 8].includes(root.actions.length)) {
+    contractError('timeline sidecar.actions', 'expected seven or eight actions')
   }
   const actions = root.actions.map((rawAction, index): CaptureActionTimingDraft => {
     const path = `timeline sidecar.actions[${index}]`
@@ -291,6 +329,7 @@ export function parseCaptureTimelineSidecar(source: string): CaptureTimelineDraf
   return validateTimeline({
     recordingDurationMs: integer(root.recording_duration_ms, 'timeline sidecar.recording_duration_ms', 1),
     actions,
+    timingSource,
     sourceRecordingSha256: root.recording_sha256,
     sourceSidecar: source,
   })
@@ -303,10 +342,10 @@ async function sha256(file: File): Promise<string> {
 }
 
 export async function analyzeRecording(file: File, options: AnalyzeRecordingOptions): Promise<ResearchInferenceResult> {
-  if (!options.reanimatedSmileApplicable) {
-    throw new InferenceContractError('Shared V9 requires seven active movements; Step 8 cannot be imputed.')
-  }
-  const timeline = validateTimeline(options.timeline)
+  const timeline = validateTimeline(
+    options.timeline,
+    options.reanimatedSmileApplicable ? 8 : 7,
+  )
   const digest = await sha256(file)
   if (timeline.sourceRecordingSha256 && timeline.sourceRecordingSha256 !== digest) {
     throw new InferenceContractError('timeline sidecar: recording SHA-256 differs from the selected video')
@@ -318,13 +357,13 @@ export async function analyzeRecording(file: File, options: AnalyzeRecordingOpti
     protocol_version: FACES_PROTOCOL_VERSION,
     recording_source: options.recordingSource,
     video_sha256: digest,
-    reanimated_smile_applicable: true,
+    reanimated_smile_applicable: options.reanimatedSmileApplicable,
   }))
   const generatedTimeline = JSON.stringify({
     schema_version: TIMELINE_SCHEMA_VERSION,
     script_version: SCRIPT_VERSION,
     recording_sha256: digest,
-    timing_source: 'capture_event_log',
+    timing_source: timeline.timingSource ?? 'capture_event_log',
     recording_duration_ms: timeline.recordingDurationMs,
     actions: timeline.actions.map((row) => ({
       action: row.id === 'repose' ? 'neutral_repose' : row.id,

@@ -20,7 +20,7 @@ MODEL = ROOT / "docs/results/artifacts/universal_clinical_router_v4/model.json"
 REPORT = ROOT / "docs/results/artifacts/universal_clinical_router_v4/report.json"
 V9_RELEASE = ROOT / "releases/shared-v9-research-v1"
 V9_MANIFEST_SHA256 = (
-    "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f"
+    "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64"
 )
 FROZEN_110D = (
     ROOT / "outputs/dynamic_landmark/artifacts/110d-generalization-v1/"

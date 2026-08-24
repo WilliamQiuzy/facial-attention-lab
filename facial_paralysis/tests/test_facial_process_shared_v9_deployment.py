@@ -112,7 +112,12 @@ def test_web_image_is_static_same_origin_proxy(c: Check):
 
 def test_compose_exposes_only_web_and_pins_shared_v9(c: Check):
     compose = _text("deploy/facial-process-shared-v9/compose.yaml")
-    c.true("sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95" in compose)
+    c.true("image: facial-attention-lab-shared-v9:script-flex-v1" in compose)
+    c.true("dockerfile: environment/shared_v9_public_v1.Dockerfile" in compose)
+    c.true(
+        "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64"
+        in _text("environment/shared_v9_public_v1.Dockerfile")
+    )
     c.true(all(name in compose for name in ("shared-v9:", "gateway:", "web:")))
     c.true(compose.count("ports:") == 1)
     c.true(
@@ -126,6 +131,10 @@ def test_compose_exposes_only_web_and_pins_shared_v9(c: Check):
         "/tmp:rw,noexec,nosuid,nodev,size=1258291200,mode=1777" in compose,
         "the gateway must hold the spooled upload and its exact decode copy",
     )
+    c.true("volumes:" not in compose, "raw video must not have persistent storage")
+    c.eq(compose.count('driver: "json-file"'), 3)
+    c.eq(compose.count('max-size: "10m"'), 3)
+    c.eq(compose.count('max-file: "3"'), 3)
 
 
 if __name__ == "__main__":

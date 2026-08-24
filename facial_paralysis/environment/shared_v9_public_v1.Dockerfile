@@ -31,7 +31,7 @@ COPY --chown=1001:1001 \
   releases/shared-v9-research-v1/weights-seed1.npz \
   releases/shared-v9-research-v1/weights-seed2.npz \
   /model/
-RUN echo "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f  /model/manifest.json" \
+RUN echo "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64  /model/manifest.json" \
       | sha256sum --check --strict \
     && echo "7befb2853b89a11ebf904483b027098d042e36d12891d65d93ffc4766ad3fc96  /model/weights-seed0.npz" \
       | sha256sum --check --strict \

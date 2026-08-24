@@ -5,6 +5,7 @@ import {
   EXPECTED_RELEASE_MANIFEST_SHA256,
   InferenceContractError,
   analyzeRecording,
+  parseCaptureTimelineSidecar,
   parseInferenceResponse,
   type CaptureTimelineDraft,
 } from './inference'
@@ -14,9 +15,9 @@ const actionIds = [
   'relaxed_smile', 'lip_pucker', 'lower_teeth_show', 'reanimated_smile',
 ] as const
 
-const timeline = (): CaptureTimelineDraft => ({
-  recordingDurationMs: 32_000,
-  actions: actionIds.map((id, index) => ({
+const timeline = (includeOptional = true): CaptureTimelineDraft => ({
+  recordingDurationMs: (includeOptional ? 8 : 7) * 4_000,
+  actions: actionIds.slice(0, includeOptional ? 8 : 7).map((id, index) => ({
     id,
     promptStartMs: index * 4_000,
     holdStartMs: index * 4_000 + 500,
@@ -25,7 +26,7 @@ const timeline = (): CaptureTimelineDraft => ({
   })),
 })
 
-const response = () => ({
+const response = (includeOptional = true) => ({
   schema_version: 'facial-paralysis-shared-v9-inference/v1',
   model: {
     model_id: EXPECTED_MODEL_ID,
@@ -42,8 +43,9 @@ const response = () => ({
   },
   quality: {
     eligible: true,
-    actions_used: 7,
-    actions: actionIds.slice(1).map((id, index) => ({
+    actions_used: includeOptional ? 7 : 6,
+    optional_actions_unavailable: includeOptional ? [] : ['reanimated_smile'],
+    actions: actionIds.slice(1, includeOptional ? 8 : 7).map((id, index) => ({
       id,
       v9_action: ['BROW_RAISE', 'EYE_GENTLE', 'EYE_FORCEFUL', 'SMILE_GENTLE', 'LIP_PUCKER', 'SHOW_BOTTOM_TEETH', 'SMILE_FULL'][index],
       hold_start_ms: index * 4_000 + 4_500,
@@ -107,16 +109,57 @@ describe('Shared V9 inference contract', () => {
     expect(postedTimeline.actions[7].action).toBe('reanimated_smile')
   })
 
-  it('fails before upload when the eighth movement or exact timeline is absent', async () => {
+  it('posts the medically valid seven-step script without imputing step eight', async () => {
     const file = new File(['synthetic'], 'faces.webm', { type: 'video/webm' })
-    const fetcher = vi.fn()
-    await expect(analyzeRecording(file, {
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => response(false) })
+    const parsed = await analyzeRecording(file, {
       endpoint: '/api/v1/facial-paralysis/infer',
       recordingSource: 'browser-camera',
       reanimatedSmileApplicable: false,
-      timeline: timeline(),
+      timeline: timeline(false),
       fetcher,
-    })).rejects.toThrow(/seven active movements/i)
-    expect(fetcher).not.toHaveBeenCalled()
+    })
+    expect(parsed.quality.actionsUsed).toBe(6)
+    expect(parsed.quality.optionalActionsUnavailable).toEqual(['reanimated_smile'])
+    const body = fetcher.mock.calls[0][1].body as FormData
+    const manifest = JSON.parse(String(body.get('manifest')))
+    const postedTimeline = JSON.parse(String(body.get('timeline')))
+    expect(manifest.reanimated_smile_applicable).toBe(false)
+    expect(postedTimeline.actions).toHaveLength(7)
+    expect(postedTimeline.actions.at(-1).action).toBe('lower_teeth_show')
+  })
+
+  it('preserves an audited Mayo audio-aligned timing source instead of relabelling it', async () => {
+    const file = new File(['mayo-audio-aligned-fixture'], 'faces.mp4', { type: 'video/mp4' })
+    const digestBytes = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+    const digest = Array.from(new Uint8Array(digestBytes), (value) => value.toString(16).padStart(2, '0')).join('')
+    const draft = timeline(false)
+    const source = JSON.stringify({
+      schema_version: 'faces-action-timeline/v1',
+      script_version: 'faces-script/24-004956-v1',
+      recording_sha256: digest,
+      timing_source: 'audio_forced_alignment',
+      recording_duration_ms: draft.recordingDurationMs,
+      actions: draft.actions.map((row) => ({
+        action: row.id === 'repose' ? 'neutral_repose' : row.id,
+        status: 'completed',
+        prompt_start_ms: row.promptStartMs,
+        hold_start_ms: row.holdStartMs,
+        hold_end_ms: row.holdEndMs,
+        completion_ms: row.completionMs,
+      })),
+    })
+    const acceptedResponse = response(false)
+    acceptedResponse.preprocessing.timing_source = 'audio_forced_alignment'
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => acceptedResponse })
+    await analyzeRecording(file, {
+      endpoint: '/api/v1/facial-paralysis/infer',
+      recordingSource: 'livelink-upload',
+      reanimatedSmileApplicable: false,
+      timeline: parseCaptureTimelineSidecar(source),
+      fetcher,
+    })
+    const body = fetcher.mock.calls[0][1].body as FormData
+    expect(String(body.get('timeline'))).toBe(source)
   })
 })

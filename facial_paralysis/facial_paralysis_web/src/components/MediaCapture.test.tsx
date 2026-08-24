@@ -56,6 +56,60 @@ describe('MediaCapture', () => {
     )
   })
 
+  it('binds a seven-step timeline without inventing reanimated smile', async () => {
+    const user = userEvent.setup()
+    const onRecordingChange = vi.fn()
+    render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    const video = new File(['video'], 'seven-step.mp4', { type: 'video/mp4' })
+    await user.upload(screen.getByLabelText('Choose LifeLink Face video'), video)
+    const ids = [
+      'neutral_repose', 'eyebrow_raise', 'gentle_eye_closure', 'tight_eye_squeeze',
+      'relaxed_smile', 'lip_pucker', 'lower_teeth_show',
+    ]
+    const sidecar = new File([JSON.stringify({
+      schema_version: 'faces-action-timeline/v1',
+      script_version: 'faces-script/24-004956-v1',
+      recording_sha256: 'a'.repeat(64),
+      timing_source: 'capture_event_log',
+      recording_duration_ms: 28_000,
+      actions: ids.map((action, index) => ({
+        action,
+        status: 'completed',
+        prompt_start_ms: index * 4_000,
+        hold_start_ms: index * 4_000 + 500,
+        hold_end_ms: index * 4_000 + 3_500,
+        completion_ms: index * 4_000 + 3_750,
+      })),
+    })], 'seven-step.timeline.json', { type: 'application/json' })
+    await user.upload(screen.getByLabelText('Choose FACES action timeline'), sidecar)
+
+    expect(onRecordingChange).toHaveBeenLastCalledWith(
+      video,
+      'livelink-upload',
+      expect.objectContaining({
+        preserveProtocolChoice: true,
+        reanimatedSmileApplicable: false,
+        timeline: expect.objectContaining({ recordingDurationMs: 28_000 }),
+      }),
+    )
+  })
+
+  it('revokes the preview URL after replacement and unmount', async () => {
+    const user = userEvent.setup()
+    const revoke = vi.mocked(URL.revokeObjectURL)
+    const { unmount } = render(<MediaCapture onRecordingChange={vi.fn()} />)
+    const first = new File(['first'], 'first.mp4', { type: 'video/mp4' })
+    const second = new File(['second'], 'second.mp4', { type: 'video/mp4' })
+    const input = screen.getByLabelText('Choose LifeLink Face video')
+
+    await user.upload(input, first)
+    await user.upload(input, second)
+    expect(revoke).toHaveBeenCalledWith('blob:faces-test')
+    const callsBeforeUnmount = revoke.mock.calls.length
+    unmount()
+    expect(revoke.mock.calls.length).toBeGreaterThan(callsBeforeUnmount)
+  })
+
   it('rejects unsupported non-video files', async () => {
     const user = userEvent.setup({ applyAccept: false })
     const onRecordingChange = vi.fn()

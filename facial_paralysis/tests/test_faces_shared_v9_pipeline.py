@@ -27,6 +27,7 @@ from src.preprocessing.faces_shared_v9_pipeline import (  # noqa: E402
     extract_paired_meshes,
     parse_capture_evidence,
 )
+from src.preprocessing import faces_shared_v9_pipeline as pipeline_module  # noqa: E402
 from src.deployment.shared_v8_release import validate_request_arrays  # noqa: E402
 from src.models.dense_clinical_shared_encoder_v1 import ACTION_VOCAB  # noqa: E402
 from src.preprocessing.script_action_segmentation_v1 import (  # noqa: E402
@@ -36,7 +37,12 @@ from src.preprocessing.script_action_segmentation_v1 import (  # noqa: E402
 )
 
 
-def _payloads(*, include_optional: bool = True, video: bytes | None = None):
+def _payloads(
+    *,
+    include_optional: bool = True,
+    video: bytes | None = None,
+    timing_source: str = "capture_event_log",
+):
     video = video or b"small identifier-free video fixture"
     digest = hashlib.sha256(video).hexdigest()
     action_count = 8 if include_optional else 7
@@ -55,7 +61,7 @@ def _payloads(*, include_optional: bool = True, video: bytes | None = None):
         "schema_version": FACES_TIMELINE_SCHEMA,
         "script_version": FACES_SCRIPT_VERSION,
         "recording_sha256": digest,
-        "timing_source": "capture_event_log",
+        "timing_source": timing_source,
         "recording_duration_ms": action_count * 4_000,
         "actions": actions,
     }
@@ -90,7 +96,7 @@ def test_capture_evidence_binds_video_timeline_and_medical_action_map(c: Check):
     ))
 
 
-def test_capture_evidence_fails_closed_on_drift_and_missing_final_action(c: Check):
+def test_capture_evidence_accepts_both_medically_valid_script_variants(c: Check):
     video, manifest, timeline = _payloads()
     changed = json.loads(manifest)
     changed["video_sha256"] = "0" * 64
@@ -103,11 +109,19 @@ def test_capture_evidence_fails_closed_on_drift_and_missing_final_action(c: Chec
     )
 
     video, manifest, timeline = _payloads(include_optional=False)
-    c.raises(
-        lambda: parse_capture_evidence(video, manifest, timeline),
-        ValueError,
-        "the frozen V9 route does not silently impute reanimated smile",
+    evidence = parse_capture_evidence(video, manifest, timeline)
+    c.eq(evidence.manifest.reanimated_smile_applicable, False)
+    c.eq(
+        tuple(item.action for item in evidence.timeline.actions),
+        FACES_ACTION_ORDER[:-1],
     )
+
+    video, manifest, timeline = _payloads(
+        include_optional=False,
+        timing_source="audio_forced_alignment",
+    )
+    evidence = parse_capture_evidence(video, manifest, timeline)
+    c.eq(evidence.timeline.timing_source.value, "audio_forced_alignment")
 
     duplicate = manifest.replace(
         b'"schema_version":', b'"schema_version":"forged","schema_version":', 1
@@ -215,6 +229,51 @@ def test_action_pipeline_builds_exact_v9_tensor_contract_and_keeps_flat_actions(
         c.eq(saved["clinical_original"].dtype, np.dtype(np.float32))
 
 
+def test_action_pipeline_omits_optional_action_without_zero_imputation(c: Check):
+    video, manifest, timeline = _payloads(include_optional=False)
+    evidence = parse_capture_evidence(video, manifest, timeline)
+    stream = _mesh_stream(evidence)
+    prepared = build_v9_action_arrays(
+        evidence,
+        frame_timestamps_ms=stream[0],
+        source_frame_indices=stream[1],
+        original_meshes=stream[2],
+        mirrored_meshes=stream[3],
+        pair_valid_mask=stream[4],
+        source_fps=stream[5],
+    )
+    c.eq(prepared.valid_samples_per_action, (32, 32, 32, 32, 32, 32))
+    expected_names = tuple(name for _faces, name in FACES_TO_V9_ACTIONS[:-1])
+    expected_codes = np.asarray(
+        [ACTION_VOCAB.index(name) for name in expected_names], dtype=np.int64
+    )
+    c.true(np.array_equal(prepared.arrays["action_codes"], expected_codes))
+    c.true(bool(prepared.arrays["action_mask"].all()))
+    c.eq(prepared.arrays["clinical_original"].shape, (6, 110))
+    validated = validate_request_arrays("cue_aligned_action", prepared.arrays)
+    c.eq(validated["clinical_original"].shape, (1, 6, 110))
+    c.true(ACTION_VOCAB.index("SMILE_FULL") not in set(expected_codes.tolist()))
+
+    prediction = {
+        "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+        "protocol": "cue_aligned_action",
+        "probability": 0.73,
+        "member_probabilities": [0.71, 0.74, 0.74],
+        "predicted_class": 1,
+        "threshold": 0.5,
+    }
+    response = build_gateway_response(
+        prediction,
+        evidence=evidence,
+        valid_samples_per_action=prepared.valid_samples_per_action,
+        preprocessing_version="faces-to-shared-v9/v1",
+        face_landmarker_sha256="6" * 64,
+    )
+    c.eq(response["quality"]["actions_used"], 6)
+    c.eq(response["quality"]["optional_actions_unavailable"], ["reanimated_smile"])
+    c.true(all(row["id"] != "reanimated_smile" for row in response["quality"]["actions"]))
+
+
 def test_action_pipeline_rejects_under_supported_tracking_without_motion_bias(c: Check):
     video, manifest, timeline = _payloads()
     evidence = parse_capture_evidence(video, manifest, timeline)
@@ -239,7 +298,7 @@ def test_action_pipeline_rejects_under_supported_tracking_without_motion_bias(c:
     )
 
 
-def _encoded_capture_video() -> bytes:
+def _encoded_capture_video(*, include_optional: bool = True) -> bytes:
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "capture.mp4"
         writer = cv2.VideoWriter(
@@ -247,13 +306,46 @@ def _encoded_capture_video() -> bytes:
         )
         if not writer.isOpened():
             raise RuntimeError("test OpenCV MP4 writer is unavailable")
-        for frame_index in range(32 * 12):
+        action_count = 8 if include_optional else 7
+        for frame_index in range(action_count * 4 * 12):
             frame = np.zeros((16, 16, 3), dtype=np.uint8)
             frame[:, :8] = (0, 0, frame_index % 251 + 1)
             frame[:, 8:] = (frame_index % 251 + 1, 0, 0)
             writer.write(frame)
         writer.release()
         return path.read_bytes()
+
+
+def test_video_decoder_removes_request_scoped_files_on_success_and_failure(c: Check):
+    video = _encoded_capture_video(include_optional=False)
+    raw_video, manifest, timeline = _payloads(
+        include_optional=False,
+        video=video,
+    )
+    evidence = parse_capture_evidence(raw_video, manifest, timeline)
+    with tempfile.TemporaryDirectory() as controlled_root:
+        original_tempdir = pipeline_module.tempfile.tempdir
+        pipeline_module.tempfile.tempdir = controlled_root
+        try:
+            decoded = decode_capture_samples(
+                raw_video,
+                evidence.timeline,
+                filename="capture.mp4",
+            )
+            c.eq(len(decoded.frames), 7 * 32)
+            c.eq(list(Path(controlled_root).iterdir()), [])
+            c.raises(
+                lambda: decode_capture_samples(
+                    b"not a decodable mp4",
+                    evidence.timeline,
+                    filename="capture.mp4",
+                ),
+                ValueError,
+                "decode failures also remove request-scoped video bytes",
+            )
+            c.eq(list(Path(controlled_root).iterdir()), [])
+        finally:
+            pipeline_module.tempfile.tempdir = original_tempdir
 
 
 def test_video_decoder_samples_only_external_holds_and_true_flip_redetects(c: Check):

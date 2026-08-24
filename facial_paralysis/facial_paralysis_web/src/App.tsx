@@ -90,7 +90,6 @@ export function App({
       !authorizedEndpoint ||
       reanimatedSmileApplicable === null
       || !captureTimeline
-      || !reanimatedSmileApplicable
     ) return
     const generation = analysisGenerationRef.current + 1
     analysisGenerationRef.current = generation
@@ -150,12 +149,12 @@ export function App({
               <p>Guide a standardized FACES recording, bring in a LifeLink Face video, and review the one binary research output the current Shared V9 model supports.</p>
               <a className="button button-primary hero-action" href="#capture">Start a capture <ArrowRight aria-hidden="true" size={19} /></a>
             </div>
-            <div className="hero-visual" aria-label="Eight-step facial movement protocol overview">
+            <div className="hero-visual" aria-label="Seven- or eight-step facial movement protocol overview">
               <div className="face-orbit" aria-hidden="true">
                 <span className="face-outline"><i className="eye-left" /><i className="eye-right" /><i className="mouth-line" /></span>
                 {['01','02','03','04','05','06','07','08'].map((label) => <b key={label}>{label}</b>)}
               </div>
-              <div className="hero-stat"><strong>8</strong><span>guided movements<br />3-second holds</span></div>
+              <div className="hero-stat"><strong>7–8</strong><span>guided movements<br />3-second holds</span></div>
             </div>
           </div>
         </section>
@@ -199,9 +198,14 @@ export function App({
                   <input type="checkbox" checked={authorizedEndpoint} onChange={(event) => setAuthorizedEndpoint(event.target.checked)} />
                   <span>I confirm this is an authorized research endpoint.</span>
                 </label>
-                <button className="button button-primary button-wide" type="button" disabled={!recording || !authorizedEndpoint || !captureTimeline || reanimatedSmileApplicable !== true || analysisState === 'running'} onClick={runResearchAnalysis}>
+                <button className="button button-primary button-wide" type="button" disabled={!recording || !authorizedEndpoint || !captureTimeline || reanimatedSmileApplicable === null || analysisState === 'running'} onClick={runResearchAnalysis}>
                   {analysisState === 'running' ? <><span className="spinner" /> Validating response…</> : <>Run research analysis <ArrowRight aria-hidden="true" size={18} /></>}
                 </button>
+                {recording ? (
+                  <button className="button button-secondary button-wide" type="button" disabled={analysisState === 'running'} onClick={reset}>
+                    Clear recording and start over
+                  </button>
+                ) : null}
               </>
             ) : (
               <div className="endpoint-state"><span className="status-dot" /><span><strong>Research endpoint not configured</strong>Add a vetted HTTPS endpoint to enable model inference</span></div>
@@ -217,7 +221,7 @@ export function App({
             {!recording ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Add a recording to continue.</p> : null}
             {recording && reanimatedSmileApplicable === null ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Resolve conditional step 8 in the voice guide.</p> : null}
             {recording && !captureTimeline ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Shared V9 requires the guided capture timeline; uploaded videos need an authenticated timeline sidecar.</p> : null}
-            {recording && reanimatedSmileApplicable === false ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> This frozen Shared V9 route requires all seven active movements, including Step 8.</p> : null}
+            {recording && reanimatedSmileApplicable === false ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Step 8 is marked unavailable; analysis will use the six completed active movements without imputation.</p> : null}
             {analysisError ? <p className="inline-alert" role="alert">{analysisError}</p> : null}
           </div>
         </section>
@@ -228,7 +232,7 @@ export function App({
           <span className="eyebrow">Interpretation boundary</span>
           <h2>This is a research interface, not a diagnosis.</h2>
           <div className="boundary-grid">
-            <p><strong>What it can show</strong>One Shared V9 binary research probability from a fully timed eight-step FACES capture.</p>
+            <p><strong>What it can show</strong>One Shared V9 binary research probability from a fully timed seven- or eight-step FACES capture.</p>
             <p><strong>What it cannot show</strong>Eye or mouth severity, House-Brackmann grade, treatment advice, or clinical validation.</p>
             <p><strong>What stays human</strong>The clinician reviews the source recording and decides whether any research output is useful.</p>
           </div>

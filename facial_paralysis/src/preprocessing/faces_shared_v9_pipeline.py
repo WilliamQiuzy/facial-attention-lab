@@ -34,7 +34,7 @@ PREPROCESSING_VERSION = "faces-to-shared-v9/v1"
 SHARED_V9_MODEL_ID = "broad_literature_shared_v9_blv9_009_ensemble"
 SHARED_V9_CANDIDATE_ID = "BLV9-009"
 SHARED_V9_MANIFEST_SHA256 = (
-    "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f"
+    "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64"
 )
 FACES_TO_V9_ACTIONS = (
     ("eyebrow_raise", "BROW_RAISE"),
@@ -165,18 +165,28 @@ def parse_capture_evidence(
     expected_actions = len(FACES_ACTION_ORDER) if manifest.reanimated_smile_applicable else 7
     if len(timeline.actions) != expected_actions:
         raise ValueError("timeline action count contradicts the capture manifest")
-    if not manifest.reanimated_smile_applicable:
-        raise ValueError(
-            "Shared V9 requires the validated seven active FACES movements; "
-            "reanimated smile cannot be imputed"
-        )
+    expected_order = (
+        FACES_ACTION_ORDER
+        if manifest.reanimated_smile_applicable
+        else FACES_ACTION_ORDER[:-1]
+    )
     if (
         timeline.schema_version != FACES_TIMELINE_SCHEMA
         or timeline.script_version != FACES_SCRIPT_VERSION
-        or tuple(item.action for item in timeline.actions) != FACES_ACTION_ORDER
+        or tuple(item.action for item in timeline.actions) != expected_order
     ):
         raise ValueError("timeline identity differs from the V9 FACES contract")
     return CaptureEvidence(manifest=manifest, timeline=timeline, video_sha256=digest)
+
+
+def _present_v9_actions(evidence: CaptureEvidence) -> tuple[tuple[str, str], ...]:
+    if not isinstance(evidence, CaptureEvidence):
+        raise ValueError("validated capture evidence is required")
+    return (
+        FACES_TO_V9_ACTIONS
+        if evidence.manifest.reanimated_smile_applicable
+        else FACES_TO_V9_ACTIONS[:-1]
+    )
 
 
 def _immutable(value: np.ndarray) -> np.ndarray:
@@ -433,7 +443,7 @@ def build_v9_action_arrays(
     motion[~valid] = np.nan
 
     segments = {}
-    for action in FACES_ACTION_ORDER:
+    for action in tuple(item.action for item in evidence.timeline.actions):
         segment = segment_faces_action(
             evidence.timeline,
             action,
@@ -450,7 +460,8 @@ def build_v9_action_arrays(
         segments[action] = segment
 
     baseline = segments["neutral_repose"]
-    active = [segments[action] for action, _v9 in FACES_TO_V9_ACTIONS]
+    present_actions = _present_v9_actions(evidence)
+    active = [segments[action] for action, _v9 in present_actions]
     original_actions = np.stack([original[item.frame_positions] for item in active])
     mirrored_actions = np.stack([mirrored[item.frame_positions] for item in active])
     action_valid = np.stack([item.valid_mask for item in active])
@@ -465,7 +476,7 @@ def build_v9_action_arrays(
         mirrored_baseline[None, ...], len(active), axis=0
     )
     baseline_masks = np.repeat(baseline_valid[None, ...], len(active), axis=0)
-    action_names = tuple(v9 for _faces, v9 in FACES_TO_V9_ACTIONS)
+    action_names = tuple(v9 for _faces, v9 in present_actions)
     bag = dense_action_token_bag(
         original_actions,
         mirrored_actions,
@@ -557,9 +568,10 @@ def build_gateway_response(
         or int(probability >= 0.5) != prediction["predicted_class"]
     ):
         raise ValueError("V9 aggregate probability is inconsistent")
+    present_actions = _present_v9_actions(evidence)
     if (
         type(valid_samples_per_action) is not tuple
-        or len(valid_samples_per_action) != len(FACES_TO_V9_ACTIONS)
+        or len(valid_samples_per_action) != len(present_actions)
         or any(type(value) is not int or not 26 <= value <= 32
                for value in valid_samples_per_action)
     ):
@@ -574,7 +586,7 @@ def build_gateway_response(
             "valid_samples": valid,
         }
         for (action, v9_action), valid in zip(
-            FACES_TO_V9_ACTIONS, valid_samples_per_action
+            present_actions, valid_samples_per_action
         )
     ]
     return {
@@ -595,6 +607,10 @@ def build_gateway_response(
         "quality": {
             "eligible": True,
             "actions_used": len(action_rows),
+            "optional_actions_unavailable": (
+                [] if evidence.manifest.reanimated_smile_applicable
+                else ["reanimated_smile"]
+            ),
             "actions": action_rows,
         },
         "prediction": {

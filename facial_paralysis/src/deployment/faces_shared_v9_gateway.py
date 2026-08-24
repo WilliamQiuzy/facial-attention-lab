@@ -273,37 +273,45 @@ def create_app(
         content_type = request.headers.get("content-type", "")
         if not content_type.casefold().startswith("multipart/form-data;"):
             raise HTTPException(status_code=415, detail="multipart form is required")
+        form = None
         try:
-            form = await request.form(
-                max_files=1,
-                max_fields=2,
-                max_part_size=256 * 1024,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="invalid multipart form") from exc
-        items = list(form.multi_items())
-        names = [name for name, _value in items]
-        if sorted(names) != ["manifest", "timeline", "video"]:
-            raise HTTPException(status_code=400, detail="form fields differ from the contract")
-        values = {name: value for name, value in items}
-        upload = values["video"]
-        manifest = values["manifest"]
-        timeline = values["timeline"]
-        if (
-            not isinstance(upload, UploadFile)
-            or type(manifest) is not str
-            or type(timeline) is not str
-            or not upload.filename
-        ):
-            raise HTTPException(status_code=400, detail="form value types differ from the contract")
-        video = await _bounded_video(upload)
+            try:
+                form = await request.form(
+                    max_files=1,
+                    max_fields=2,
+                    max_part_size=256 * 1024,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="invalid multipart form") from exc
+            items = list(form.multi_items())
+            names = [name for name, _value in items]
+            if sorted(names) != ["manifest", "timeline", "video"]:
+                raise HTTPException(status_code=400, detail="form fields differ from the contract")
+            values = {name: value for name, value in items}
+            upload = values["video"]
+            manifest = values["manifest"]
+            timeline = values["timeline"]
+            if (
+                not isinstance(upload, UploadFile)
+                or type(manifest) is not str
+                or type(timeline) is not str
+                or not upload.filename
+            ):
+                raise HTTPException(status_code=400, detail="form value types differ from the contract")
+            video = await _bounded_video(upload)
+            filename = str(upload.filename)
+            manifest_payload = manifest.encode("utf-8")
+            timeline_payload = timeline.encode("utf-8")
+        finally:
+            if form is not None:
+                await form.close()
         try:
             prepared = await run_in_threadpool(
                 processor,
                 video,
-                upload.filename,
-                manifest.encode("utf-8"),
-                timeline.encode("utf-8"),
+                filename,
+                manifest_payload,
+                timeline_payload,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="capture failed preprocessing gates") from exc

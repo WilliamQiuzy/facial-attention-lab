@@ -193,7 +193,7 @@ export function MediaCapturePanel({
       setUploadError(null)
       onRecordingChange(uploadedFile, 'livelink-upload', {
         preserveProtocolChoice: true,
-        reanimatedSmileApplicable: true,
+        reanimatedSmileApplicable: timeline.actions.length === 8,
         timeline,
       })
     } catch (error) {

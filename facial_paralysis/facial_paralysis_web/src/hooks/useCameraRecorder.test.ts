@@ -180,6 +180,23 @@ describe('camera recorder helpers', () => {
     expect(stopTrack).toHaveBeenCalledTimes(1)
   })
 
+  it('releases active camera resources when the page is hidden or refreshed', async () => {
+    const stopTrack = vi.fn()
+    const stream = { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    })
+
+    const { result } = renderHook(() => useCameraRecorder())
+    await act(async () => result.current.enableCamera())
+    expect(result.current.status).toBe('ready')
+
+    act(() => window.dispatchEvent(new PageTransitionEvent('pagehide')))
+
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+  })
+
   it('surfaces synchronous MediaRecorder setup failure and releases the camera', async () => {
     const stopTrack = vi.fn()
     const stream = { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream

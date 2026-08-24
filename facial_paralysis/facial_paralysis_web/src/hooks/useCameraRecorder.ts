@@ -315,7 +315,13 @@ export function useCameraRecorder(): CameraRecorderState {
 
   useEffect(() => {
     mountedRef.current = true
+    const handlePageHide = () => {
+      requestGenerationRef.current += 1
+      discardActiveRecorder()
+    }
+    window.addEventListener('pagehide', handlePageHide)
     return () => {
+      window.removeEventListener('pagehide', handlePageHide)
       mountedRef.current = false
       requestGenerationRef.current += 1
       discardActiveRecorder()

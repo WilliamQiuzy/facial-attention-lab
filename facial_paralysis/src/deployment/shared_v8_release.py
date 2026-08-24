@@ -34,7 +34,7 @@ PROTOCOL_TASK_CODES = {
 _PROTOCOL_ACTION_COUNTS = {
     "free_motion_four_window": (4,),
     "scripted_three_action": (3,),
-    "cue_aligned_action": (7, 8),
+    "cue_aligned_action": (6, 7, 8),
 }
 _REQUEST_FIELDS = frozenset({
     "clinical_original",

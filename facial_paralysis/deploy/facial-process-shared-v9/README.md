@@ -39,10 +39,12 @@ docker compose -f deploy/facial-process-shared-v9/compose.yaml up --build -d
 
 Then open <http://127.0.0.1:8080>.
 
-The model container is pinned to:
+The full stack builds its model container from the checked-in, digest-pinned
+Dockerfile and the Git-tracked release weights. Its release-manifest commitment
+is:
 
 ```text
-ghcr.io/williamqiuzy/facial-attention-lab-shared-v9@sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95
+81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64
 ```
 
 The gateway independently pins the official MediaPipe Face Landmarker asset to
@@ -69,9 +71,12 @@ internal readiness route are available. They do not prove clinical validity.
 - `timeline`: canonical `faces-action-timeline/v1` JSON.
 
 The manifest binds the video SHA-256, FACES protocol version, capture source,
-and step-8 applicability. The timeline binds the same video hash and the eight
-ordered prompt/hold/completion intervals. Every hold is exactly three seconds.
-The server rejects missing actions, digest drift, duplicate or extra form
+and step-8 applicability. The timeline binds the same video hash, an external
+timing source (`capture_event_log`, audited `audio_forced_alignment`, or
+`blinded_manual`), and either
+seven ordered intervals (steps 1–7) or eight (steps 1–8). Every hold is exactly
+three seconds. Step 8 is omitted when not clinically applicable; it is never
+zero-imputed. The server rejects missing mandatory actions, digest drift, duplicate or extra form
 fields, unsupported media, insufficient frame rate, incomplete time coverage,
 and fewer than 26 valid paired MediaPipe samples in any active action.
 
@@ -92,6 +97,11 @@ or label is returned.
 All containers run as non-root, with read-only root filesystems, dropped Linux
 capabilities, `no-new-privileges`, bounded processes, and tmpfs working space.
 Only `127.0.0.1:8080` is published; model and gateway ports remain internal.
+There are no persistent media volumes. Browser recording state is page-scoped;
+the visible **Clear recording and start over** action, page refresh, or tab close
+releases it. Gateway decode files are request-scoped inside a 1.2 GiB tmpfs and
+are removed after success or failure. Docker JSON logs rotate at 10 MiB with
+three files per service.
 An approved same-host reverse proxy may provide authenticated TLS access when
 remote research use is required.
 

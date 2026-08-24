@@ -1,6 +1,6 @@
 # Facial Process Web
 
-Research-only React interface for a standardized eight-step FACES recording.
+Research-only React interface for standardized seven- or eight-step FACES recordings.
 It can record a session in the browser or import a LifeLink Face video plus its
 capture-event timeline. It sends the raw video to the local preprocessing
 gateway and displays only the pinned Shared V9 binary research output.
@@ -58,13 +58,15 @@ and a completion event:
 7. lower teeth show;
 8. reanimated/full smile.
 
-This frozen Shared V9 route requires all seven active movements (steps 2–8).
-When step 8 is not applicable, the interface may still capture a study video,
-but V9 inference is disabled rather than imputing the missing action.
+Steps 2–7 are the six mandatory active movements. Step 8 is included only when
+facial reanimation applies. Shared V9 accepts either six or seven active action
+tokens; an inapplicable Step 8 is omitted rather than imputed.
 
 An imported video therefore also requires its canonical
 `faces-action-timeline/v1` JSON sidecar. The browser hashes the selected video
-and rejects a sidecar whose `recording_sha256` does not match.
+and rejects a sidecar whose `recording_sha256` does not match. Browser-guided
+sessions use `capture_event_log`; audited historical imports may retain
+`audio_forced_alignment` or `blinded_manual` rather than being relabelled.
 
 ## Output boundary
 
@@ -90,4 +92,6 @@ that the endpoint is authorized, but that control does not replace study
 governance, authentication, encryption, retention rules, or access control.
 The browser keeps the selected file in the current session; the checked-in
 gateway performs request-scoped preprocessing and does not implement a media
-database.
+database. **Clear recording and start over**, page refresh, and tab close release
+the page-owned recording; gateway temporary decode files are deleted on both
+successful and failed requests.

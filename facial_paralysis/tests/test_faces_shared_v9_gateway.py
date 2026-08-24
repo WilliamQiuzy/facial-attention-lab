@@ -22,6 +22,7 @@ from src.deployment.faces_shared_v9_gateway import (  # noqa: E402
     SharedV9HttpClient,
     create_app,
 )
+from src.deployment import faces_shared_v9_gateway as gateway_module  # noqa: E402
 from src.deployment.shared_v8_release import validate_request_arrays  # noqa: E402
 from src.preprocessing.faces_shared_v9_pipeline import (  # noqa: E402
     build_v9_action_arrays,
@@ -125,7 +126,7 @@ def test_gateway_rejects_open_forms_unusable_script_and_bad_downstream(c: Check)
     )
     c.eq(extra.status_code, 400)
     video, manifest, timeline = _payloads(include_optional=False)
-    unavailable = client.post(
+    seven_step = client.post(
         "/api/v1/facial-paralysis/infer",
         files={"video": ("capture.mp4", video, "video/mp4")},
         data={
@@ -133,7 +134,8 @@ def test_gateway_rejects_open_forms_unusable_script_and_bad_downstream(c: Check)
             "timeline": timeline.decode("utf-8"),
         },
     )
-    c.eq(unavailable.status_code, 422)
+    c.eq(seven_step.status_code, 200)
+    c.eq(seven_step.json()["quality"]["actions_used"], 6)
 
     def wrong_model(_payload: bytes):
         result = _inference(_payload)
@@ -149,6 +151,87 @@ def test_gateway_rejects_open_forms_unusable_script_and_bad_downstream(c: Check)
         },
     )
     c.eq(bad_downstream.status_code, 502)
+
+
+def test_gateway_closes_multipart_uploads_on_success_and_failure(c: Check):
+    original_close = gateway_module.UploadFile.close
+    closed: list[str] = []
+
+    async def tracked_close(upload):
+        closed.append(str(upload.filename))
+        await original_close(upload)
+
+    gateway_module.UploadFile.close = tracked_close
+    try:
+        video, manifest, timeline = _payloads()
+        success = _client().post(
+            "/api/v1/facial-paralysis/infer",
+            files={"video": ("capture.mp4", video, "video/mp4")},
+            data={
+                "manifest": manifest.decode("utf-8"),
+                "timeline": timeline.decode("utf-8"),
+            },
+        )
+        c.eq(success.status_code, 200)
+
+        changed_manifest = json.loads(manifest)
+        changed_manifest["video_sha256"] = "0" * 64
+        invalid = _client().post(
+            "/api/v1/facial-paralysis/infer",
+            files={"video": ("capture.mp4", video, "video/mp4")},
+            data={
+                "manifest": json.dumps(changed_manifest),
+                "timeline": timeline.decode("utf-8"),
+            },
+        )
+        c.eq(invalid.status_code, 422)
+    finally:
+        gateway_module.UploadFile.close = original_close
+    c.eq(closed, ["capture.mp4", "capture.mp4"])
+
+
+def test_gateway_closes_oversized_upload_without_calling_processor(c: Check):
+    original_limit = gateway_module.MAX_VIDEO_BYTES
+    original_close = gateway_module.UploadFile.close
+    closed: list[str] = []
+    processor_calls: list[bool] = []
+
+    async def tracked_close(upload):
+        closed.append(str(upload.filename))
+        await original_close(upload)
+
+    def forbidden_processor(*_args):
+        processor_calls.append(True)
+        raise AssertionError("oversized bytes reached the processor")
+
+    gateway_module.MAX_VIDEO_BYTES = 8
+    gateway_module.UploadFile.close = tracked_close
+    try:
+        video, manifest, timeline = _payloads(video=b"123456789")
+        client = TestClient(create_app(
+            processor=forbidden_processor,
+            inference_client=_inference,
+            readiness_client=lambda: {
+                "status": "ready",
+                "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+                "candidate_id": "BLV9-009",
+                "ensemble_members": 3,
+            },
+        ))
+        response = client.post(
+            "/api/v1/facial-paralysis/infer",
+            files={"video": ("capture.mp4", video, "video/mp4")},
+            data={
+                "manifest": manifest.decode("utf-8"),
+                "timeline": timeline.decode("utf-8"),
+            },
+        )
+        c.eq(response.status_code, 413)
+    finally:
+        gateway_module.UploadFile.close = original_close
+        gateway_module.MAX_VIDEO_BYTES = original_limit
+    c.eq(closed, ["capture.mp4"])
+    c.eq(processor_calls, [])
 
 
 class _Response:

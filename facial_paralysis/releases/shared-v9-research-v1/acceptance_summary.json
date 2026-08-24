@@ -3,7 +3,7 @@
   "status": "pass",
   "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
   "candidate_id": "BLV9-009",
-  "release_manifest_sha256": "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f",
+  "release_manifest_sha256": "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64",
   "weights": {
     "members": 3,
     "total_bytes": 4014133,
@@ -36,7 +36,7 @@
     "passed": true
   },
   "targeted_tests": {
-    "passed": 39,
+    "passed": 46,
     "failed": 0
   },
   "public_safety": {

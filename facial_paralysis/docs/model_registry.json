@@ -8,9 +8,9 @@
     "status": "locked_research_model_not_clinically_validated",
     "loader_module": "src.deployment.shared_v9_research_release",
     "release_manifest_path": "releases/shared-v9-research-v1/manifest.json",
-    "release_manifest_sha256": "c4fdaf054f3076a2e31b0e1ae93d1e91a45212817eb39d1c4a53620a4007b18f",
+    "release_manifest_sha256": "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64",
     "acceptance_path": "releases/shared-v9-research-v1/acceptance_summary.json",
-    "acceptance_sha256": "9bac7cbfc9d780cf5dc346ab89210217cf3259d1d8f9b6dce9ec2eac74aa098c",
+    "acceptance_sha256": "32bab71b36fdd1c5b23eee7432a2ece4d3468a417babedc1255783db97fe9c4c",
     "weight_files": [
       {
         "path": "releases/shared-v9-research-v1/weights-seed0.npz",

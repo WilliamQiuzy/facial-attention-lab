@@ -54,8 +54,8 @@ def _provenance():
     }
 
 
-def _request(protocol: str) -> dict[str, np.ndarray]:
-    actions = {
+def _request(protocol: str, *, actions_override: int | None = None) -> dict[str, np.ndarray]:
+    actions = actions_override or {
         "free_motion_four_window": 4,
         "scripted_three_action": 3,
         "cue_aligned_action": 7,
@@ -182,6 +182,12 @@ def test_repository_bundle_is_complete_public_and_loadable(c):
     release = ROOT / "releases/shared-v9-research-v1"
     predictor = load_release(release, device="cpu")
     c.eq(len(predictor.models), 3)
+    six_action = predictor.predict(
+        "cue_aligned_action",
+        _request("cue_aligned_action", actions_override=6),
+    )
+    c.true(np.isfinite(six_action.probability))
+    c.eq(len(six_action.member_probabilities), 3)
     tracked = set(subprocess.check_output(
         ("git", "ls-files"), cwd=ROOT, text=True
     ).splitlines())
