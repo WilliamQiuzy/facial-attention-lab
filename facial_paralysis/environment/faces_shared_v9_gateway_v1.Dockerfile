@@ -33,6 +33,7 @@ COPY scripts/serve_faces_shared_v9_gateway.py /app/facial_paralysis/scripts/serv
 RUN find /app/facial_paralysis /models -type d -exec chmod 0555 {} + \
     && find /app/facial_paralysis /models -type f -exec chmod 0444 {} +
 
+LABEL io.github.williamqiu.facial-process.storage-scope="shared-v9"
 USER 1001:1001
 EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \

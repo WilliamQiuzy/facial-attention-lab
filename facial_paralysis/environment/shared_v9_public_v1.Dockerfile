@@ -1,4 +1,5 @@
-FROM pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2
+ARG PYTORCH_BASE_PLATFORM=linux/amd64
+FROM --platform=${PYTORCH_BASE_PLATFORM} pytorch/pytorch@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.source="https://github.com/WilliamQiuzy/facial-attention-lab" \
@@ -44,6 +45,7 @@ RUN echo "81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64  /mod
     && chmod 0555 /model \
     && chmod 0444 /model/manifest.json /model/weights-seed*.npz
 
+LABEL io.github.williamqiu.facial-process.storage-scope="shared-v9"
 USER 1001:1001
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \

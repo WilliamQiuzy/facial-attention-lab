@@ -137,5 +137,11 @@ def test_compose_exposes_only_web_and_pins_shared_v9(c: Check):
     c.eq(compose.count('max-file: "3"'), 3)
 
 
+def test_model_build_explicitly_targets_its_pinned_amd64_base(c: Check):
+    dockerfile = _text("environment/shared_v9_public_v1.Dockerfile")
+    c.true("ARG PYTORCH_BASE_PLATFORM=linux/amd64" in dockerfile)
+    c.true("FROM --platform=${PYTORCH_BASE_PLATFORM} pytorch/pytorch@sha256:" in dockerfile)
+
+
 if __name__ == "__main__":
     run_all("test_facial_process_shared_v9_deployment", dict(globals()))

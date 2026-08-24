@@ -1,0 +1,10 @@
+[log]
+  format = "text"
+  level = "warn"
+
+[worker.oci]
+  gc = true
+  reservedSpace = "2GB"
+  maxUsedSpace = "8GB"
+  minFreeSpace = "20GB"
+  max-parallelism = 4

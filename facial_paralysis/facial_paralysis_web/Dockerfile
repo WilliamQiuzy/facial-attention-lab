@@ -10,6 +10,7 @@ COPY facial_paralysis_web/ ./
 RUN pnpm test:run && pnpm build
 
 FROM ${NGINX_BASE}
+LABEL io.github.williamqiu.facial-process.storage-scope="shared-v9"
 COPY facial_paralysis_web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /web/dist/ /usr/share/nginx/html/
 USER 101:101

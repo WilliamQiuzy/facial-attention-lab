@@ -34,7 +34,10 @@ git clone https://github.com/WilliamQiuzy/facial-attention-lab.git
 cd facial-attention-lab
 git switch codex/facial-process-web-v9-integration
 cd facial_paralysis
-docker compose -f deploy/facial-process-shared-v9/compose.yaml up --build -d
+python3 scripts/maintain_facial_process_docker.py init-builder
+docker compose -f deploy/facial-process-shared-v9/compose.yaml build \
+  --builder facial-process-v9-builder
+docker compose -f deploy/facial-process-shared-v9/compose.yaml up --no-build -d
 ```
 
 Then open <http://127.0.0.1:8080>.
@@ -110,3 +113,33 @@ authorization, audit-log storage, PHI retention policy, backup, monitoring, or
 high availability. Add those controls in the institution's approved ingress
 and data-governance environment before any participant use. This remains a
 research prototype, not a medical device or deployable clinical product.
+
+## Project-scoped storage maintenance
+
+Builds use the dedicated `facial-process-v9-builder`, so new cache is isolated
+from other Docker projects. Maintenance is a two-step, fail-closed operation.
+Audit does not delete anything and writes a plan valid for 15 minutes:
+
+```bash
+python3 scripts/maintain_facial_process_docker.py audit \
+  --plan /tmp/facial-process-v9-cleanup-plan.json
+python3 scripts/maintain_facial_process_docker.py apply \
+  --plan /tmp/facial-process-v9-cleanup-plan.json
+```
+
+Only untagged images older than seven days that carry the exact Facial Process
+ownership label and are unused by every running or stopped container are
+eligible. Apply rereads the complete image/container inventory and refuses to
+run if it changed after audit. It prunes cache only from the named project
+builder, keeps at least 2 GB of that cache, and targets at most 8 GB. It never
+removes volumes or tagged images. `docker system prune`, global
+`docker image prune`, global `docker builder prune`, and `docker volume prune`
+must not be used for this project because this host contains unrelated Docker
+workloads and mixed historical cache.
+
+For the local LaunchAgent, the same tool caps all three watchdog logs at 1 MiB
+without following symbolic links:
+
+```bash
+python3 scripts/maintain_facial_process_docker.py cap-logs
+```
