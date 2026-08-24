@@ -1,5 +1,11 @@
 # Facial Paralysis Clinician Web Implementation Plan
 
+> **Historical plan, superseded.** The supported deployment is Shared V9 and
+> its current contract is documented in
+> `../../../../docs/plans/facial_process_web_shared_v9_integration.md` and
+> `../../../../deploy/facial-process-shared-v9/README.md`. The V4 contract below
+> is retained only to explain the original frontend implementation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a polished, responsive research clinician web app that accepts a LifeLink Face video or records one in-browser with the eight-step FACES voice protocol, then presents only the severity outputs supported by the current Facial Paralysis model contract.

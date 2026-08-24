@@ -14,7 +14,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .patient_multistream import MP_FEATURE_NAMES_BY_SCHEMA
+from .feature_schema import MP_FEATURE_NAMES_BY_SCHEMA
 
 
 DYNAMIC_FEATURE_SCHEMA = "mediapipe_bs_lr_v1+clinical23_v2"

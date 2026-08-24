@@ -17,6 +17,13 @@
 !scripts/serve_shared_v8.py
 !environment/shared_v9_public_v1.Dockerfile
 !scripts/serve_shared_v9.py
+!scripts/serve_faces_shared_v9_gateway.py
+!environment/faces_shared_v9_gateway_v1.lock
+!environment/faces_shared_v9_gateway_v1.Dockerfile
+!facial_paralysis_web/
+!facial_paralysis_web/**
+facial_paralysis_web/node_modules/
+facial_paralysis_web/dist/
 !releases/
 !releases/shared-v9-research-v1/
 !releases/shared-v9-research-v1/manifest.json

@@ -26,6 +26,7 @@ export interface CameraRecorderState {
   readonly status: CameraStatus
   readonly error: string | null
   readonly recordingFile: File | null
+  readonly recordingStartedAtMs: number | null
   readonly videoRef: React.RefObject<HTMLVideoElement | null>
   readonly enableCamera: () => Promise<void>
   readonly startRecording: () => void
@@ -51,6 +52,7 @@ export function useCameraRecorder(): CameraRecorderState {
   const [status, setStatus] = useState<CameraStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [recordingFile, setRecordingFile] = useState<File | null>(null)
+  const [recordingStartedAtMs, setRecordingStartedAtMs] = useState<number | null>(null)
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
@@ -109,6 +111,7 @@ export function useCameraRecorder(): CameraRecorderState {
   const closeCamera = useCallback(() => {
     requestGenerationRef.current += 1
     discardActiveRecorder()
+    setRecordingStartedAtMs(null)
     setStatus((current) => (current === 'recorded' ? current : 'idle'))
   }, [discardActiveRecorder])
 
@@ -161,6 +164,7 @@ export function useCameraRecorder(): CameraRecorderState {
     commitGenerationRef.current = null
     chunksRef.current = []
     setRecordingFile(null)
+    setRecordingStartedAtMs(null)
     setError(null)
     const mimeType = selectSupportedVideoMimeType()
     let recorder: MediaRecorder | null = null
@@ -174,6 +178,7 @@ export function useCameraRecorder(): CameraRecorderState {
       recorder.onstart = () => {
         if (!mountedRef.current || recordingGenerationRef.current !== generation) return
         clearStartWatchdog()
+        setRecordingStartedAtMs(performance.now())
         setStatus('recording')
       }
       recorder.onstop = () => {
@@ -184,6 +189,7 @@ export function useCameraRecorder(): CameraRecorderState {
           recordingGenerationRef.current += 1
           commitGenerationRef.current = null
           chunksRef.current = []
+          setRecordingStartedAtMs(null)
           releaseActiveCamera()
           recorderRef.current = null
           setError('The video recorder stopped unexpectedly. The incomplete recording was discarded.')
@@ -194,6 +200,7 @@ export function useCameraRecorder(): CameraRecorderState {
         const extension = type.includes('mp4') ? 'mp4' : 'webm'
         const blob = new Blob(chunksRef.current, { type })
         chunksRef.current = []
+        setRecordingStartedAtMs(null)
         commitGenerationRef.current = null
         if (blob.size === 0) {
           releaseActiveCamera()
@@ -218,6 +225,7 @@ export function useCameraRecorder(): CameraRecorderState {
         recordingGenerationRef.current += 1
         commitGenerationRef.current = null
         chunksRef.current = []
+        setRecordingStartedAtMs(null)
         releaseActiveCamera()
         recorderRef.current = null
         setError('The browser could not record this camera stream.')
@@ -231,6 +239,7 @@ export function useCameraRecorder(): CameraRecorderState {
           recorderRef.current !== recorder
         ) return
         discardActiveRecorder()
+        setRecordingStartedAtMs(null)
         setError('The video recorder did not start in time. The incomplete recording was discarded.')
         setStatus('error')
       }, RECORDER_START_TIMEOUT_MS)
@@ -247,6 +256,7 @@ export function useCameraRecorder(): CameraRecorderState {
       clearFinalizationWatchdog()
       commitGenerationRef.current = null
       chunksRef.current = []
+      setRecordingStartedAtMs(null)
       releaseActiveCamera()
       recorderRef.current = null
       setError('Video recording could not start with this camera and browser. Upload a LifeLink Face video instead.')
@@ -268,6 +278,7 @@ export function useCameraRecorder(): CameraRecorderState {
           recorderRef.current !== recorder
         ) return
         discardActiveRecorder()
+        setRecordingStartedAtMs(null)
         setError('The video recorder did not finish in time. The incomplete recording was discarded.')
         setStatus('error')
       }, RECORDER_FINALIZE_TIMEOUT_MS)
@@ -278,6 +289,7 @@ export function useCameraRecorder(): CameraRecorderState {
         clearFinalizationWatchdog()
         commitGenerationRef.current = null
         chunksRef.current = []
+        setRecordingStartedAtMs(null)
         releaseActiveCamera()
         recorderRef.current = null
         setError('The browser could not finalize this recording. Please record again.')
@@ -289,12 +301,14 @@ export function useCameraRecorder(): CameraRecorderState {
   const discardRecording = useCallback(() => {
     discardActiveRecorder()
     setRecordingFile(null)
+    setRecordingStartedAtMs(null)
     setError(null)
     setStatus('idle')
   }, [discardActiveRecorder])
 
   const resetRecording = useCallback(() => {
     setRecordingFile(null)
+    setRecordingStartedAtMs(null)
     setError(null)
     setStatus('idle')
   }, [])
@@ -312,6 +326,7 @@ export function useCameraRecorder(): CameraRecorderState {
     status,
     error,
     recordingFile,
+    recordingStartedAtMs,
     videoRef,
     enableCamera,
     startRecording,

@@ -1,5 +1,9 @@
 # Guided Voice Recording Implementation Plan
 
+> **Historical implementation plan.** The active Shared V9 capture and
+> deployment contract is documented in
+> `../../../../docs/plans/facial_process_web_shared_v9_integration.md`.
+
 > **For Codex:** Implement this plan test-first. Keep the browser recording fail-closed: interrupted or voice-failed sessions must not become analyzable recordings.
 
 **Goal:** Replace the separate camera-recording and voice-play actions with one guided workflow that records the full FACES sequence, advances automatically after every three-second hold, and safely stops or discards incomplete capture.

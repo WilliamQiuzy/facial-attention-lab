@@ -8,7 +8,7 @@ const steps = [
   ['Prepare', 'Position and consent'],
   ['Capture', 'Upload or record'],
   ['Analyze', 'Validate and run'],
-  ['Review', 'Regional outputs'],
+  ['Review', 'Binary research output'],
 ] as const
 
 export function WorkflowRail({ current }: WorkflowRailProps) {

@@ -1,0 +1,55 @@
+services:
+  shared-v9:
+    platform: linux/amd64
+    image: ghcr.io/williamqiuzy/facial-attention-lab-shared-v9@sha256:ec0e2b34e2233e159d555ab3761fe113f5b768562ba9d9d7bf7c2d7a27d42c95
+    restart: unless-stopped
+    user: "1001:1001"
+    read_only: true
+    environment:
+      SHARED_V9_DEVICE: cpu
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+
+  gateway:
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: environment/faces_shared_v9_gateway_v1.Dockerfile
+    restart: unless-stopped
+    user: "1001:1001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=1258291200,mode=1777
+    depends_on:
+      shared-v9:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../..
+      dockerfile: facial_paralysis_web/Dockerfile
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=629145600,mode=1777
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      - "8080:8080"

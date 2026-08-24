@@ -1,191 +1,122 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import {
-  EXPECTED_MODEL_SHA256,
+  EXPECTED_MODEL_ID,
+  EXPECTED_RELEASE_MANIFEST_SHA256,
   InferenceContractError,
   analyzeRecording,
   parseInferenceResponse,
+  type CaptureTimelineDraft,
 } from './inference'
 
-const validResponse = () => ({
-  schema_version: 'facial-palsy-research-inference/v1',
-  provenance: {
-    model_file: 'warmstart_v4_expanded.pt',
-    model_sha256: EXPECTED_MODEL_SHA256,
-    preprocessing_version: 'predict-pipeline/v1',
-    segmentation_version: 'faces-segmentation/v1',
-  },
-  segmentation: {
-    duration_ms: 42_000,
-    actions: [
-      { id: 'repose', status: 'completed', start_ms: 0, end_ms: 3_000 },
-      { id: 'eyebrow_raise', status: 'completed', start_ms: 5_000, end_ms: 8_000 },
-      { id: 'gentle_eye_closure', status: 'completed', start_ms: 10_000, end_ms: 13_000 },
-      { id: 'tight_eye_squeeze', status: 'completed', start_ms: 15_000, end_ms: 18_000 },
-      { id: 'relaxed_smile', status: 'completed', start_ms: 20_000, end_ms: 23_000 },
-      { id: 'lip_pucker', status: 'completed', start_ms: 25_000, end_ms: 28_000 },
-      { id: 'lower_teeth_show', status: 'completed', start_ms: 30_000, end_ms: 33_000 },
-      { id: 'reanimated_smile', status: 'not_applicable', start_ms: null, end_ms: null },
-    ],
-  },
-  scores: {
-    palsy_probability: 0.73,
-    eyes: { level: 1, expected: 1.2, p_gt: [0.82, 0.38], label: 'Slight' },
-    mouth: { level: 2, expected: 1.7, p_gt: [0.91, 0.79], label: 'Strong' },
-  },
+const actionIds = [
+  'repose', 'eyebrow_raise', 'gentle_eye_closure', 'tight_eye_squeeze',
+  'relaxed_smile', 'lip_pucker', 'lower_teeth_show', 'reanimated_smile',
+] as const
+
+const timeline = (): CaptureTimelineDraft => ({
+  recordingDurationMs: 32_000,
+  actions: actionIds.map((id, index) => ({
+    id,
+    promptStartMs: index * 4_000,
+    holdStartMs: index * 4_000 + 500,
+    holdEndMs: index * 4_000 + 3_500,
+    completionMs: index * 4_000 + 3_750,
+  })),
 })
 
-describe('parseInferenceResponse', () => {
-  it('accepts the exact versioned v4 response contract', () => {
-    const parsed = parseInferenceResponse(validResponse())
-    expect(parsed.scores.eyes.label).toBe('Slight')
-    expect(parsed.segmentation.actions).toHaveLength(8)
-  })
-
-  it('accepts a completed optional reanimated-smile segment', () => {
-    const response = validResponse()
-    response.segmentation.actions[7] = {
-      id: 'reanimated_smile',
-      status: 'completed',
-      start_ms: 35_000,
-      end_ms: 38_000,
-    }
-    expect(parseInferenceResponse(response).segmentation.actions[7].status).toBe('completed')
-  })
-
-  it('rejects incomplete required segmentation', () => {
-    const response = validResponse()
-    response.segmentation.actions[4].status = 'skipped'
-    expect(() => parseInferenceResponse(response)).toThrow(InferenceContractError)
-  })
-
-  it('rejects a skipped conditional segment until applicability is resolved', () => {
-    const response = validResponse()
-    response.segmentation.actions[7].status = 'skipped'
-    expect(() => parseInferenceResponse(response)).toThrow(/segmentation/i)
-  })
-
-  it('rejects overlapping or out-of-bounds segment timestamps', () => {
-    const overlapping = validResponse()
-    overlapping.segmentation.actions[2].start_ms = 7_000
-    expect(() => parseInferenceResponse(overlapping)).toThrow(/segment/i)
-
-    const outOfBounds = validResponse()
-    outOfBounds.segmentation.actions[6].end_ms = 50_000
-    expect(() => parseInferenceResponse(outOfBounds)).toThrow(/segment/i)
-  })
-
-  it('rejects probabilities outside their supported ranges', () => {
-    const response = validResponse()
-    response.scores.palsy_probability = 1.01
-    expect(() => parseInferenceResponse(response)).toThrow(/probability/i)
-  })
-
-  it('rejects ordinal thresholds with the wrong length or order', () => {
-    const wrongLength = validResponse()
-    wrongLength.scores.eyes.p_gt = [0.8]
-    expect(() => parseInferenceResponse(wrongLength)).toThrow(/threshold/i)
-
-    const wrongOrder = validResponse()
-    wrongOrder.scores.mouth.p_gt = [0.3, 0.8]
-    expect(() => parseInferenceResponse(wrongOrder)).toThrow(/threshold/i)
-  })
-
-  it('rejects mismatched ordinal labels and levels', () => {
-    const response = validResponse()
-    response.scores.eyes.label = 'Strong'
-    expect(() => parseInferenceResponse(response)).toThrow(/label/i)
-  })
-
-  it('rejects unpinned provenance', () => {
-    const response = validResponse()
-    const provenance: { model_sha256: string } = response.provenance
-    provenance.model_sha256 = '0'.repeat(64)
-    expect(() => parseInferenceResponse(response)).toThrow(/provenance/i)
-  })
-
-  it('rejects unsupported clinical or spatial fields and any unknown field', () => {
-    for (const field of ['hb_grade', 'heatmap', 'coarse3', 'extra']) {
-      const response = validResponse() as Record<string, unknown>
-      response[field] = field
-      expect(() => parseInferenceResponse(response)).toThrow(/unknown/i)
-    }
-  })
+const response = () => ({
+  schema_version: 'facial-paralysis-shared-v9-inference/v1',
+  model: {
+    model_id: EXPECTED_MODEL_ID,
+    candidate_id: 'BLV9-009',
+    release_manifest_sha256: EXPECTED_RELEASE_MANIFEST_SHA256,
+    ensemble_members: 3,
+  },
+  preprocessing: {
+    version: 'faces-to-shared-v9/v1',
+    face_landmarker_sha256: '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff',
+    mirror_method: 'horizontal_flip_and_redetect',
+    protocol: 'cue_aligned_action',
+    timing_source: 'capture_event_log',
+  },
+  quality: {
+    eligible: true,
+    actions_used: 7,
+    actions: actionIds.slice(1).map((id, index) => ({
+      id,
+      v9_action: ['BROW_RAISE', 'EYE_GENTLE', 'EYE_FORCEFUL', 'SMILE_GENTLE', 'LIP_PUCKER', 'SHOW_BOTTOM_TEETH', 'SMILE_FULL'][index],
+      hold_start_ms: index * 4_000 + 4_500,
+      hold_end_ms: index * 4_000 + 7_500,
+      valid_samples: 32,
+    })),
+  },
+  prediction: {
+    probability: 0.73,
+    member_probabilities: [0.71, 0.74, 0.74],
+    predicted_class: 1,
+    threshold: 0.5,
+    interpretation: 'research_score_only',
+  },
+  clinical_use_eligible: false,
 })
 
-describe('analyzeRecording', () => {
-  it('posts video and a versioned protocol manifest to the configured endpoint', async () => {
-    const fetcher = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => validResponse(),
-    })
-    const file = new File(['synthetic'], 'faces-protocol.webm', { type: 'video/webm' })
+describe('Shared V9 inference contract', () => {
+  it('accepts only the pinned Shared V9 binary research result', () => {
+    const parsed = parseInferenceResponse(response())
+    expect(parsed.model.candidateId).toBe('BLV9-009')
+    expect(parsed.prediction.probability).toBe(0.73)
+    expect(parsed.quality.actions).toHaveLength(7)
+    expect(parsed.clinicalUseEligible).toBe(false)
+  })
 
+  it('rejects identity drift, extra clinical fields, and inconsistent ensemble means', () => {
+    const wrongModel = response()
+    ;(wrongModel.model as { model_id: string }).model_id = 'wrong'
+    expect(() => parseInferenceResponse(wrongModel)).toThrow(InferenceContractError)
+
+    const extra = response() as Record<string, unknown>
+    extra.hb_grade = 3
+    expect(() => parseInferenceResponse(extra)).toThrow(/unknown/i)
+
+    const inconsistent = response()
+    inconsistent.prediction.probability = 0.9
+    expect(() => parseInferenceResponse(inconsistent)).toThrow(/ensemble/i)
+  })
+
+  it('hashes exact video bytes and posts the manifest plus external timeline', async () => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => response() })
+    const file = new File(['synthetic'], 'faces.webm', { type: 'video/webm' })
     await analyzeRecording(file, {
-      endpoint: 'https://research.example.test/infer',
-      recordingSource: 'livelink-upload',
-      reanimatedSmileApplicable: false,
+      endpoint: '/api/v1/facial-paralysis/infer',
+      recordingSource: 'browser-camera',
+      reanimatedSmileApplicable: true,
+      timeline: timeline(),
       fetcher,
     })
-
-    const [, init] = fetcher.mock.calls[0]
+    const [url, init] = fetcher.mock.calls[0]
+    expect(url).toBe('/api/v1/facial-paralysis/infer')
+    expect(init.credentials).toBe('same-origin')
     const body = init.body as FormData
-    expect(body.get('video')).toBe(file)
-    expect(JSON.parse(String(body.get('manifest')))).toEqual({
-      schema_version: 'faces-capture-manifest/v1',
-      protocol_version: 'FACES-v0.01',
-      recording_source: 'livelink-upload',
-      reanimated_smile_applicable: false,
-    })
+    const manifest = JSON.parse(String(body.get('manifest')))
+    const postedTimeline = JSON.parse(String(body.get('timeline')))
+    expect(manifest.schema_version).toBe('faces-v9-capture-manifest/v1')
+    expect(manifest.video_sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(postedTimeline.recording_sha256).toBe(manifest.video_sha256)
+    expect(postedTimeline.actions[0].action).toBe('neutral_repose')
+    expect(postedTimeline.actions[7].action).toBe('reanimated_smile')
   })
 
-  it('rejects segmentation that contradicts the clinician step-8 choice', async () => {
-    const file = new File(['synthetic'], 'faces-protocol.webm', { type: 'video/webm' })
-    const notApplicableResponse = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => validResponse(),
-    })
-    await expect(
-      analyzeRecording(file, {
-        endpoint: 'https://research.example.test/infer',
-        recordingSource: 'livelink-upload',
-        reanimatedSmileApplicable: true,
-        fetcher: notApplicableResponse,
-      }),
-    ).rejects.toThrow(/reanimated.*clinician/i)
-
-    const completed = validResponse()
-    completed.segmentation.actions[7] = {
-      id: 'reanimated_smile',
-      status: 'completed',
-      start_ms: 35_000,
-      end_ms: 38_000,
-    }
-    const completedResponse = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => completed,
-    })
-    await expect(
-      analyzeRecording(file, {
-        endpoint: 'https://research.example.test/infer',
-        recordingSource: 'livelink-upload',
-        reanimatedSmileApplicable: false,
-        fetcher: completedResponse,
-      }),
-    ).rejects.toThrow(/reanimated.*clinician/i)
-  })
-
-  it('propagates network failure without returning demonstration data', async () => {
-    const fetcher = vi.fn().mockRejectedValue(new Error('offline'))
-    const file = new File(['synthetic'], 'faces-protocol.webm', { type: 'video/webm' })
-
-    await expect(
-      analyzeRecording(file, {
-        endpoint: 'https://research.example.test/infer',
-        recordingSource: 'browser-camera',
-        reanimatedSmileApplicable: true,
-        fetcher,
-      }),
-    ).rejects.toThrow(/offline/i)
+  it('fails before upload when the eighth movement or exact timeline is absent', async () => {
+    const file = new File(['synthetic'], 'faces.webm', { type: 'video/webm' })
+    const fetcher = vi.fn()
+    await expect(analyzeRecording(file, {
+      endpoint: '/api/v1/facial-paralysis/infer',
+      recordingSource: 'browser-camera',
+      reanimatedSmileApplicable: false,
+      timeline: timeline(),
+      fetcher,
+    })).rejects.toThrow(/seven active movements/i)
+    expect(fetcher).not.toHaveBeenCalled()
   })
 })

@@ -63,6 +63,44 @@ describe('camera recorder helpers', () => {
     expect(result.current.recordingFile).not.toBeNull()
   })
 
+  it('anchors capture timing to the MediaRecorder onstart event', async () => {
+    const stream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream
+    let now = 100
+
+    class DelayedStartMediaRecorder {
+      static isTypeSupported = () => true
+      state: RecordingState = 'inactive'
+      mimeType = 'video/webm'
+      ondataavailable: ((event: BlobEvent) => void) | null = null
+      onstart: (() => void) | null = null
+      onstop: (() => void) | null = null
+      onerror: (() => void) | null = null
+
+      start() {
+        this.state = 'recording'
+        now = 375
+        this.onstart?.()
+      }
+    }
+
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue(stream) },
+    })
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    vi.stubGlobal('MediaRecorder', DelayedStartMediaRecorder)
+
+    const { result } = renderHook(() => useCameraRecorder())
+    await act(async () => result.current.enableCamera())
+    expect(result.current.recordingStartedAtMs).toBeNull()
+    act(() => result.current.startRecording())
+
+    expect(result.current.status).toBe('recording')
+    expect(result.current.recordingStartedAtMs).toBe(375)
+    act(() => result.current.discardRecording())
+    expect(result.current.recordingStartedAtMs).toBeNull()
+  })
+
   it('discards an interrupted recording without publishing a partial file', async () => {
     const stopTrack = vi.fn()
     const stream = { getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream

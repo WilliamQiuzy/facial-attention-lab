@@ -99,6 +99,30 @@ describe('guided voice sequence', () => {
     expect(result.current.phase).toBe('complete')
   })
 
+  it('publishes recording-relative prompt and exact hold timestamps', () => {
+    const { result } = renderHook(() => useGuidedVoiceSequence())
+    const recordingOrigin = performance.now()
+    act(() => result.current.start(true, recordingOrigin))
+
+    for (let stepIndex = 0; stepIndex < 8; stepIndex += 1) {
+      act(() => utterances[stepIndex].onend?.())
+      act(() => vi.advanceTimersByTime(3_000))
+    }
+
+    expect(result.current.timeline?.actions).toHaveLength(8)
+    expect(result.current.timeline?.actions[0]).toMatchObject({
+      id: 'repose',
+      promptStartMs: 0,
+      holdStartMs: 0,
+      holdEndMs: 3_000,
+      completionMs: 3_000,
+    })
+    expect(result.current.timeline?.actions[7].id).toBe('reanimated_smile')
+    expect(result.current.timeline?.recordingDurationMs).toBeGreaterThanOrEqual(
+      result.current.timeline?.actions[7].completionMs ?? Infinity,
+    )
+  })
+
   it('does not advance a hold before its monotonic three-second deadline', () => {
     const { result } = renderHook(() => useGuidedVoiceSequence())
 

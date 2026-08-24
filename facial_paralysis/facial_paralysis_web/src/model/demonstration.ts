@@ -1,4 +1,11 @@
-import type { RegionalSeverity } from './inference'
+export type SeverityLabel = 'Normal' | 'Slight' | 'Strong'
+
+export interface RegionalSeverity {
+  readonly level: 0 | 1 | 2
+  readonly expected: number
+  readonly pGt: readonly [number, number]
+  readonly label: SeverityLabel
+}
 
 export interface DemonstrationResult {
   readonly mode: 'demonstration'

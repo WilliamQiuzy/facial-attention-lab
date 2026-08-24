@@ -9,7 +9,8 @@ import { WorkflowRail } from './components/WorkflowRail'
 import { createDemonstrationResult } from './model/demonstration'
 import {
   analyzeRecording,
-  EXPECTED_MODEL_FILE,
+  EXPECTED_CANDIDATE_ID,
+  type CaptureTimelineDraft,
   type RecordingSource,
   type ResearchInferenceResult,
 } from './model/inference'
@@ -34,12 +35,13 @@ function capturePreparation() {
 }
 
 export function App({
-  apiEndpoint = import.meta.env.VITE_FACIAL_PARALYSIS_API_URL ?? '',
+  apiEndpoint = import.meta.env.VITE_FACIAL_PARALYSIS_API_URL ?? '/api/v1/facial-paralysis/infer',
   demonstrationEnabled = import.meta.env.VITE_ENABLE_DEMONSTRATION === 'true',
   analyze = analyzeRecording,
 }: AppProps) {
   const [recording, setRecording] = useState<File | null>(null)
   const [recordingSource, setRecordingSource] = useState<RecordingSource>('livelink-upload')
+  const [captureTimeline, setCaptureTimeline] = useState<CaptureTimelineDraft | null>(null)
   const [reanimatedSmileApplicable, setReanimatedSmileApplicable] = useState<boolean | null>(null)
   const [authorizedEndpoint, setAuthorizedEndpoint] = useState(false)
   const [result, setResult] = useState<DisplayResult | null>(null)
@@ -63,6 +65,7 @@ export function App({
     setAnalysisError(null)
     setAnalysisState('idle')
     setAuthorizedEndpoint(false)
+    setCaptureTimeline(options?.timeline ?? null)
     if (options?.preserveProtocolChoice) {
       if (typeof options.reanimatedSmileApplicable === 'boolean') {
         setReanimatedSmileApplicable(options.reanimatedSmileApplicable)
@@ -86,6 +89,8 @@ export function App({
       !apiEndpoint ||
       !authorizedEndpoint ||
       reanimatedSmileApplicable === null
+      || !captureTimeline
+      || !reanimatedSmileApplicable
     ) return
     const generation = analysisGenerationRef.current + 1
     analysisGenerationRef.current = generation
@@ -97,6 +102,7 @@ export function App({
         endpoint: apiEndpoint,
         recordingSource,
         reanimatedSmileApplicable,
+        timeline: captureTimeline,
       })
       if (analysisGenerationRef.current !== generation) return
       setResult(accepted)
@@ -124,6 +130,7 @@ export function App({
     setAnalysisState('idle')
     setAuthorizedEndpoint(false)
     setReanimatedSmileApplicable(null)
+    setCaptureTimeline(null)
     setSessionKey((current) => current + 1)
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     window.scrollTo?.({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })
@@ -140,7 +147,7 @@ export function App({
             <div className="hero-copy">
               <span className="eyebrow">Facial movement assessment · Research prototype</span>
               <h1 id="hero-title">Capture the full facial movement story.</h1>
-              <p>Guide a standardized FACES recording, bring in a LifeLink Face video, and review only the regional outputs the current research model can support.</p>
+              <p>Guide a standardized FACES recording, bring in a LifeLink Face video, and review the one binary research output the current Shared V9 model supports.</p>
               <a className="button button-primary hero-action" href="#capture">Start a capture <ArrowRight aria-hidden="true" size={19} /></a>
             </div>
             <div className="hero-visual" aria-label="Eight-step facial movement protocol overview">
@@ -180,8 +187,8 @@ export function App({
           <div className="analysis-copy">
             <span className="eyebrow">Research analysis</span>
             <h2 id="analysis-title">Validate the path before any result appears.</h2>
-            <p>The browser does not run the PyTorch checkpoint. An authorized server must segment the protocol, run the pinned model, and return an exact versioned response.</p>
-            <div className="model-chip"><ShieldCheck aria-hidden="true" size={18} /><span><strong>Target checkpoint</strong>{EXPECTED_MODEL_FILE}</span></div>
+            <p>The server verifies the capture timeline, extracts paired MediaPipe geometry, and runs the pinned Shared V9 ensemble.</p>
+            <div className="model-chip"><ShieldCheck aria-hidden="true" size={18} /><span><strong>Target release</strong>{EXPECTED_CANDIDATE_ID} · Shared V9</span></div>
           </div>
           <div className="analysis-actions-card">
             {apiEndpoint ? (
@@ -192,7 +199,7 @@ export function App({
                   <input type="checkbox" checked={authorizedEndpoint} onChange={(event) => setAuthorizedEndpoint(event.target.checked)} />
                   <span>I confirm this is an authorized research endpoint.</span>
                 </label>
-                <button className="button button-primary button-wide" type="button" disabled={!recording || !authorizedEndpoint || reanimatedSmileApplicable === null || analysisState === 'running'} onClick={runResearchAnalysis}>
+                <button className="button button-primary button-wide" type="button" disabled={!recording || !authorizedEndpoint || !captureTimeline || reanimatedSmileApplicable !== true || analysisState === 'running'} onClick={runResearchAnalysis}>
                   {analysisState === 'running' ? <><span className="spinner" /> Validating response…</> : <>Run research analysis <ArrowRight aria-hidden="true" size={18} /></>}
                 </button>
               </>
@@ -209,6 +216,8 @@ export function App({
 
             {!recording ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Add a recording to continue.</p> : null}
             {recording && reanimatedSmileApplicable === null ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Resolve conditional step 8 in the voice guide.</p> : null}
+            {recording && !captureTimeline ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Shared V9 requires the guided capture timeline; uploaded videos need an authenticated timeline sidecar.</p> : null}
+            {recording && reanimatedSmileApplicable === false ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> This frozen Shared V9 route requires all seven active movements, including Step 8.</p> : null}
             {analysisError ? <p className="inline-alert" role="alert">{analysisError}</p> : null}
           </div>
         </section>
@@ -219,8 +228,8 @@ export function App({
           <span className="eyebrow">Interpretation boundary</span>
           <h2>This is a research interface, not a diagnosis.</h2>
           <div className="boundary-grid">
-            <p><strong>What it can show</strong>Binary warm-start probability and eye/mouth ordinal outputs from an exact accepted response.</p>
-            <p><strong>What it cannot show</strong>Clinical grade, treatment advice, validated patient accuracy, or spatial localization.</p>
+            <p><strong>What it can show</strong>One Shared V9 binary research probability from a fully timed eight-step FACES capture.</p>
+            <p><strong>What it cannot show</strong>Eye or mouth severity, House-Brackmann grade, treatment advice, or clinical validation.</p>
             <p><strong>What stays human</strong>The clinician reviews the source recording and decides whether any research output is useful.</p>
           </div>
         </section>

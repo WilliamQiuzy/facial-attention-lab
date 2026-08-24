@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import type { CaptureActionTimingDraft, CaptureTimelineDraft } from '../model/inference'
 import { FACES_PROTOCOL, type FacesProtocolStep } from '../protocol/facesProtocol'
 
 export type GuidedVoicePhase = 'idle' | 'speaking' | 'holding' | 'complete' | 'error'
@@ -15,8 +16,9 @@ export interface GuidedVoiceSequenceState {
   readonly activeStepIndex: number | null
   readonly countdown: number | null
   readonly completedStepIndexes: readonly number[]
+  readonly timeline: CaptureTimelineDraft | null
   readonly error: string | null
-  readonly start: (reanimatedSmileApplicable: boolean) => void
+  readonly start: (reanimatedSmileApplicable: boolean, recordingStartedAtMs?: number) => void
   readonly cancel: () => void
 }
 
@@ -45,10 +47,12 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
   const [activeStepIndex, setActiveStepIndex] = useState<number | null>(null)
   const [countdown, setCountdown] = useState<number | null>(null)
   const [completedStepIndexes, setCompletedStepIndexes] = useState<readonly number[]>([])
+  const [timeline, setTimeline] = useState<CaptureTimelineDraft | null>(null)
   const [error, setError] = useState<string | null>(null)
   const generationRef = useRef(0)
   const holdTimerRef = useRef<number | null>(null)
   const speechWatchdogRef = useRef<number | null>(null)
+  const timelineRowsRef = useRef<CaptureActionTimingDraft[]>([])
 
   const clearTimers = useCallback(() => {
     if (holdTimerRef.current !== null) {
@@ -69,10 +73,15 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
     setActiveStepIndex(null)
     setCountdown(null)
     setCompletedStepIndexes([])
+    timelineRowsRef.current = []
+    setTimeline(null)
     setError(null)
   }, [clearTimers])
 
-  const start = useCallback((reanimatedSmileApplicable: boolean) => {
+  const start = useCallback((
+    reanimatedSmileApplicable: boolean,
+    recordingStartedAtMs = performance.now(),
+  ) => {
     generationRef.current += 1
     const generation = generationRef.current
     clearTimers()
@@ -80,6 +89,8 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
     setActiveStepIndex(null)
     setCountdown(null)
     setCompletedStepIndexes([])
+    timelineRowsRef.current = []
+    setTimeline(null)
     setError(null)
 
     if (!speechIsSupported()) {
@@ -89,6 +100,7 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
     }
 
     const plan = buildGuidedProtocolPlan(reanimatedSmileApplicable)
+    const relativeNow = () => Math.max(0, Math.round(performance.now() - recordingStartedAtMs))
 
     const failRun = (message: string) => {
       if (generationRef.current !== generation) return
@@ -112,6 +124,7 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
       setActiveStepIndex(entry.stepIndex)
       setCountdown(null)
       setPhase('speaking')
+      const promptStartMs = relativeNow()
 
       let utterance: SpeechSynthesisUtterance
       try {
@@ -138,6 +151,8 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
           speechWatchdogRef.current = null
         }
 
+        const holdStartMs = relativeNow()
+        const holdEndMs = holdStartMs + entry.step.holdSeconds * 1_000
         const deadline = performance.now() + entry.step.holdSeconds * 1_000
         setPhase('holding')
         setCountdown(entry.step.holdSeconds)
@@ -153,12 +168,27 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
 
           holdTimerRef.current = null
           setCountdown(null)
+          const completionMs = Math.max(holdEndMs, relativeNow())
+          timelineRowsRef.current = [
+            ...timelineRowsRef.current,
+            Object.freeze({
+              id: entry.step.id,
+              promptStartMs,
+              holdStartMs,
+              holdEndMs,
+              completionMs,
+            }),
+          ]
           setCompletedStepIndexes((current) =>
             current.includes(entry.stepIndex) ? current : [...current, entry.stepIndex],
           )
           if (planIndex + 1 < plan.length) {
             speakEntry(planIndex + 1)
           } else {
+            setTimeline(Object.freeze({
+              recordingDurationMs: Math.max(1, completionMs),
+              actions: Object.freeze([...timelineRowsRef.current]),
+            }))
             setPhase('complete')
           }
         }
@@ -198,6 +228,7 @@ export function useGuidedVoiceSequence(): GuidedVoiceSequenceState {
     activeStepIndex,
     countdown,
     completedStepIndexes,
+    timeline,
     error,
     start,
     cancel,

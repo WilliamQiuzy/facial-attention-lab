@@ -117,15 +117,16 @@ export function GuidedCaptureWorkspace({
     if (
       sessionPhase === 'starting' &&
       camera.status === 'recording' &&
+      camera.recordingStartedAtMs !== null &&
       !voiceStartedRef.current
     ) {
       const plan = capturePlanRef.current
       if (!plan) return
       voiceStartedRef.current = true
-      voice.start(plan.reanimatedSmileApplicable)
+      voice.start(plan.reanimatedSmileApplicable, camera.recordingStartedAtMs)
       setSessionPhase('guiding')
     }
-  }, [camera.status, sessionPhase, voice.start])
+  }, [camera.recordingStartedAtMs, camera.status, sessionPhase, voice.start])
 
   useEffect(() => {
     if (!guidedActive) return
@@ -188,7 +189,7 @@ export function GuidedCaptureWorkspace({
     ) return
 
     const plan = capturePlanRef.current
-    if (!plan || publishedCaptureRef.current === plan.captureId) return
+    if (!plan || !voice.timeline || publishedCaptureRef.current === plan.captureId) return
     publishedCaptureRef.current = plan.captureId
     runLockedRef.current = false
     onRecordingChange(camera.recordingFile, 'browser-camera', {
@@ -196,9 +197,10 @@ export function GuidedCaptureWorkspace({
       captureId: plan.captureId,
       actionIds: plan.actionIds,
       reanimatedSmileApplicable: plan.reanimatedSmileApplicable,
+      timeline: voice.timeline,
     })
     setSessionPhase('complete')
-  }, [camera.recordingFile, camera.status, onRecordingChange, sessionPhase])
+  }, [camera.recordingFile, camera.status, onRecordingChange, sessionPhase, voice.timeline])
 
   useEffect(() => {
     if (sessionPhase !== 'complete' || camera.status !== 'idle') return

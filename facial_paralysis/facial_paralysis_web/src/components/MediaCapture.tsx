@@ -9,7 +9,11 @@ import {
 import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react'
 
 import { type CameraRecorderState, useCameraRecorder } from '../hooks/useCameraRecorder'
-import type { RecordingSource } from '../model/inference'
+import {
+  parseCaptureTimelineSidecar,
+  type CaptureTimelineDraft,
+  type RecordingSource,
+} from '../model/inference'
 import type { FacesActionId } from '../protocol/facesProtocol'
 
 const SUPPORTED_EXTENSIONS = ['.mov', '.mp4', '.avi', '.m4v', '.webm']
@@ -21,6 +25,7 @@ export interface RecordingChangeOptions {
   readonly captureId?: string
   readonly actionIds?: readonly FacesActionId[]
   readonly reanimatedSmileApplicable?: boolean
+  readonly timeline?: CaptureTimelineDraft
 }
 
 export type RecordingChangeHandler = (
@@ -81,8 +86,11 @@ export function MediaCapturePanel({
 }: MediaCapturePanelProps) {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadedTimeline, setUploadedTimeline] = useState<CaptureTimelineDraft | null>(null)
+  const [uploadedTimelineName, setUploadedTimelineName] = useState<string | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const inputId = useId()
+  const timelineInputId = useId()
   const sourceId = useId()
   const uploadTabRef = useRef<HTMLButtonElement | null>(null)
   const cameraTabRef = useRef<HTMLButtonElement | null>(null)
@@ -148,13 +156,52 @@ export function MediaCapturePanel({
     if (!file) return
     if (!isSupportedVideo(file)) {
       setUploadedFile(null)
+      setUploadedTimeline(null)
+      setUploadedTimelineName(null)
       setUploadError('Choose a supported video file: MOV, MP4, M4V, AVI, or WebM.')
       onRecordingChange(null, 'livelink-upload')
       return
     }
     setUploadError(null)
     setUploadedFile(file)
+    setUploadedTimeline(null)
+    setUploadedTimelineName(null)
     onRecordingChange(file, 'livelink-upload')
+  }
+
+  const selectTimeline = async (file: File | undefined) => {
+    if (!file || !uploadedFile) return
+    if (file.size < 1 || file.size > 256 * 1024 || !file.name.toLowerCase().endsWith('.json')) {
+      setUploadedTimeline(null)
+      setUploadedTimelineName(null)
+      setUploadError('Choose a bounded JSON FACES action timeline.')
+      onRecordingChange(uploadedFile, 'livelink-upload')
+      return
+    }
+    try {
+      const source = typeof file.text === 'function'
+        ? await file.text()
+        : await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onerror = () => reject(new Error('Timeline could not be read.'))
+            reader.onload = () => resolve(String(reader.result ?? ''))
+            reader.readAsText(file)
+          })
+      const timeline = parseCaptureTimelineSidecar(source)
+      setUploadedTimeline(timeline)
+      setUploadedTimelineName(file.name)
+      setUploadError(null)
+      onRecordingChange(uploadedFile, 'livelink-upload', {
+        preserveProtocolChoice: true,
+        reanimatedSmileApplicable: true,
+        timeline,
+      })
+    } catch (error) {
+      setUploadedTimeline(null)
+      setUploadedTimelineName(null)
+      setUploadError(error instanceof Error ? error.message : 'Timeline was not accepted.')
+      onRecordingChange(uploadedFile, 'livelink-upload')
+    }
   }
 
   const resetCameraRecording = () => {
@@ -236,6 +283,20 @@ export function MediaCapturePanel({
             </div>
           )}
           {uploadError ? <p className="inline-alert" role="alert">{uploadError}</p> : null}
+          {uploadedFile ? <div className="timeline-upload">
+            <input
+              className="visually-hidden"
+              id={timelineInputId}
+              type="file"
+              accept="application/json,.json"
+              aria-label="Choose FACES action timeline"
+              onChange={(event) => void selectTimeline(event.target.files?.[0])}
+            />
+            <label className="button button-secondary" htmlFor={timelineInputId}>
+              {uploadedTimeline ? 'Replace action timeline' : 'Add action timeline'}
+            </label>
+            <span>{uploadedTimelineName ?? 'Required for Shared V9 inference'}</span>
+          </div> : null}
         </div>
       ) : (
         <div className="camera-panel" role="tabpanel" id={cameraPanelId} aria-labelledby={cameraTabId}>

@@ -15,6 +15,8 @@ This is a research model, not a clinically validated diagnostic device.
 - Current deployable shared model and limitations:
   `docs/CURRENT_DEPLOYMENT_MODEL.md`
 - Public CPU/H200 Docker quickstart: `deploy/shared-v9/README.md`
+- Raw-video Facial Process Web deployment:
+  `deploy/facial-process-shared-v9/README.md`
 - Universal Clinical Router v6 development-candidate brief:
   [English](docs/results/universal_clinical_router_v6_mayo_brief_en.md) |
   [中文](docs/results/universal_clinical_router_v6_mayo_brief_zh.md)

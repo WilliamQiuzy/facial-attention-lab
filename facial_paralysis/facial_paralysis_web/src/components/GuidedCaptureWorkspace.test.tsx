@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
     status: 'ready' as 'idle' | 'requesting' | 'ready' | 'recording' | 'recorded' | 'error',
     error: null as string | null,
     recordingFile: null as File | null,
+    recordingStartedAtMs: null as number | null,
     videoRef: { current: null },
     enableCamera: vi.fn(),
     startRecording: vi.fn(),
@@ -23,6 +24,7 @@ const mocks = vi.hoisted(() => ({
     activeStepIndex: null as number | null,
     countdown: null as number | null,
     completedStepIndexes: [] as number[],
+    timeline: null as import('../model/inference').CaptureTimelineDraft | null,
     error: null as string | null,
     start: vi.fn(),
     cancel: vi.fn(),
@@ -42,11 +44,13 @@ describe('GuidedCaptureWorkspace', () => {
     mocks.camera.status = 'ready'
     mocks.camera.error = null
     mocks.camera.recordingFile = null
+    mocks.camera.recordingStartedAtMs = null
     mocks.voice.supported = true
     mocks.voice.phase = 'idle'
     mocks.voice.activeStepIndex = null
     mocks.voice.countdown = null
     mocks.voice.completedStepIndexes = []
+    mocks.voice.timeline = null
     mocks.voice.error = null
     Object.values(mocks.camera).forEach((value) => {
       if (typeof value === 'function' && 'mockClear' in value) value.mockClear()
@@ -95,10 +99,24 @@ describe('GuidedCaptureWorkspace', () => {
     expect(mocks.camera.startRecording).toHaveBeenCalledTimes(1)
     expect(mocks.voice.start).not.toHaveBeenCalled()
 
+    mocks.camera.recordingStartedAtMs = 12_345
     mocks.camera.status = 'recording'
     rerender(<GuidedCaptureWorkspace {...props} />)
-    await waitFor(() => expect(mocks.voice.start).toHaveBeenCalledWith(false))
+    await waitFor(() => expect(mocks.voice.start).toHaveBeenCalledWith(false, 12_345))
 
+    mocks.voice.timeline = {
+      recordingDurationMs: 28_000,
+      actions: [
+        'repose', 'eyebrow_raise', 'gentle_eye_closure', 'tight_eye_squeeze',
+        'relaxed_smile', 'lip_pucker', 'lower_teeth_show',
+      ].map((id, index) => ({
+        id,
+        promptStartMs: index * 4_000,
+        holdStartMs: index * 4_000 + 500,
+        holdEndMs: index * 4_000 + 3_500,
+        completionMs: index * 4_000 + 3_750,
+      })) as import('../model/inference').CaptureTimelineDraft['actions'],
+    }
     mocks.voice.phase = 'complete'
     mocks.voice.activeStepIndex = 6
     rerender(<GuidedCaptureWorkspace {...props} />)
@@ -125,6 +143,7 @@ describe('GuidedCaptureWorkspace', () => {
             'lip_pucker',
             'lower_teeth_show',
           ],
+          timeline: mocks.voice.timeline,
         }),
       )
     })
@@ -142,6 +161,7 @@ describe('GuidedCaptureWorkspace', () => {
     await user.click(screen.getByRole('tab', { name: 'Use this device' }))
     await user.click(screen.getByRole('button', { name: 'Start guided recording' }))
 
+    mocks.camera.recordingStartedAtMs = 12_345
     mocks.camera.status = 'recording'
     mocks.voice.phase = 'speaking'
     mocks.voice.activeStepIndex = 1
@@ -193,6 +213,7 @@ describe('GuidedCaptureWorkspace', () => {
     const { rerender } = render(<GuidedCaptureWorkspace {...props} />)
     await user.click(screen.getByRole('tab', { name: 'Use this device' }))
     await user.click(screen.getByRole('button', { name: 'Start guided recording' }))
+    mocks.camera.recordingStartedAtMs = 12_345
     mocks.camera.status = 'recording'
     mocks.voice.phase = 'speaking'
     mocks.voice.activeStepIndex = 0
@@ -219,6 +240,7 @@ describe('GuidedCaptureWorkspace', () => {
     const { rerender } = render(<GuidedCaptureWorkspace {...props} />)
     await user.click(screen.getByRole('tab', { name: 'Use this device' }))
     await user.click(screen.getByRole('button', { name: 'Start guided recording' }))
+    mocks.camera.recordingStartedAtMs = 12_345
     mocks.camera.status = 'recording'
     rerender(<GuidedCaptureWorkspace {...props} />)
     mocks.voice.phase = 'error'
@@ -239,6 +261,7 @@ describe('GuidedCaptureWorkspace', () => {
     const { rerender } = render(<GuidedCaptureWorkspace {...props} />)
     await user.click(screen.getByRole('tab', { name: 'Use this device' }))
     await user.click(screen.getByRole('button', { name: 'Start guided recording' }))
+    mocks.camera.recordingStartedAtMs = 12_345
     mocks.camera.status = 'recording'
     rerender(<GuidedCaptureWorkspace {...props} />)
     mocks.voice.phase = 'complete'
