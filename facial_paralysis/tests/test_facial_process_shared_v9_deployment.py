@@ -100,14 +100,47 @@ def test_web_image_is_static_same_origin_proxy(c: Check):
     c.true("pnpm-workspace.yaml" in dockerfile)
     c.true("pnpm build" in dockerfile)
     c.true("location = /api/v1/facial-paralysis/infer" in nginx)
+    c.true("location = /api/v1/facial-paralysis/ready" in nginx)
     c.true("proxy_pass http://gateway:8081" in nginx)
-    c.true("client_max_body_size 512m" in nginx)
+    c.true(
+        "client_max_body_size 513m" in nginx,
+        "the proxy limit must include multipart overhead above the exact 512 MiB video limit",
+    )
     c.true("Content-Security-Policy" in nginx)
     c.true("frame-ancestors 'none'" in nginx)
     c.true("Permissions-Policy" in nginx)
     c.true("camera=(self)" in nginx)
     c.true("facial_paralysis_web/node_modules/" in ignored)
     c.true("facial_paralysis_web/dist/" in ignored)
+
+
+def test_skip_link_is_visually_hidden_until_keyboard_focus(c: Check):
+    css = _text("facial_paralysis_web/src/styles/app.css")
+    hidden_rule = css.split(".skip-link {", 1)[1].split("}", 1)[0]
+    focus_rule = css.split(".skip-link:focus-visible {", 1)[1].split("}", 1)[0]
+    c.true("clip-path: inset(50%)" in hidden_rule)
+    c.true("width: 1px" in hidden_rule and "height: 1px" in hidden_rule)
+    c.true("overflow: hidden" in hidden_rule)
+    c.true("transform:" not in hidden_rule)
+    c.true("position: fixed" in focus_rule)
+    c.true("clip-path: none" in focus_rule)
+
+
+def test_print_report_keeps_compact_sections_with_their_headings(c: Check):
+    css = _text("facial_paralysis_web/src/styles/app.css")
+    print_rules = css.split("@media print {", 1)[1]
+    c.true(".report-section.compact { break-inside: avoid; page-break-inside: avoid; }" in print_rules)
+    c.true(".evidence-frame," not in print_rules.split("footer { display: none !important; }", 1)[0])
+    c.true("This printed report includes identifiable facial context images." in print_rules)
+    c.true(".evidence-frame { min-height: 150px; }" in print_rules)
+
+
+def test_web_typecheck_excludes_macos_conflict_copy_filenames(c: Check):
+    tsconfig = _text("facial_paralysis_web/tsconfig.json")
+    dockerignore = _text(".dockerignore")
+    c.true('"exclude": ["src/**/* *.ts", "src/**/* *.tsx"]' in tsconfig)
+    c.true("facial_paralysis_web/src/**/* *.ts" in dockerignore)
+    c.true("facial_paralysis_web/src/**/* *.tsx" in dockerignore)
 
 
 def test_compose_exposes_only_web_and_pins_shared_v9(c: Check):

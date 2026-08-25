@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hmac
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import stat
 import threading
+import time
 from typing import Callable, Mapping
 import urllib.parse
 import urllib.request
@@ -18,6 +21,8 @@ from starlette.datastructures import UploadFile
 
 from src.preprocessing.faces_shared_v9_pipeline import (
     CaptureEvidence,
+    CaptureTimingError,
+    CaptureTrackingError,
     MAX_VIDEO_BYTES,
     PREPROCESSING_VERSION,
     PreparedV9Request,
@@ -36,6 +41,58 @@ FACE_LANDMARKER_SHA256 = (
     "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff"
 )
 
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_preprocessing_failure_detail(error: ValueError) -> dict[str, object]:
+    """Reduce internal preprocessing failures to non-identifying public evidence."""
+    if isinstance(error, CaptureTrackingError):
+        return {
+            "code": "face_tracking_insufficient",
+            "action": error.action,
+            "valid_samples": error.valid_samples,
+            "required_samples": error.required_samples,
+        }
+    message = str(error)
+    if (
+        "capture manifest" in message
+        or "action timeline" in message
+        or "video digest differs from capture evidence" in message
+        or "timeline action count contradicts" in message
+        or "timeline identity differs" in message
+        or "validated capture evidence is required" in message
+    ):
+        return {"code": "capture_evidence_invalid"}
+    if "video container extension is unsupported" in message:
+        return {"code": "video_format_unsupported"}
+    if (
+        "video frame rate is below the gateway minimum" in message
+        or "video frame rate cannot provide unique hold samples" in message
+    ):
+        return {"code": "video_frame_rate_too_low"}
+    if (
+        "video dimensions are outside the gateway bounds" in message
+        or "decoded frame dimensions changed" in message
+    ):
+        return {"code": "video_dimensions_unsupported"}
+    if (
+        "decoded duration contradicts the FACES timeline" in message
+        or "does not cover every FACES hold" in message
+        or "sampling exceeds half a source frame" in message
+    ):
+        return {"code": "video_timing_mismatch"}
+    if (
+        "video cannot be decoded" in message
+    ):
+        return {"code": "video_decode_failed"}
+    if (
+        "interocular distance is degenerate" in message
+        or "normalized landmark geometry" in message
+        or "degenerate landmark geometry" in message
+    ):
+        return {"code": "face_geometry_invalid"}
+    return {"code": "preprocessing_failed"}
+
 
 @dataclass(frozen=True)
 class GatewayPreparedCapture:
@@ -44,6 +101,99 @@ class GatewayPreparedCapture:
     evidence: CaptureEvidence
     prepared: PreparedV9Request
     face_landmarker_sha256: str
+
+
+_IDEMPOTENCY_DOMAIN = b"facial-process-shared-v9-idempotency/v1\n"
+
+
+def _idempotency_key(
+    video_payload: bytes,
+    manifest_payload: bytes,
+    timeline_payload: bytes,
+) -> str:
+    """Bind one browser retry key to exact evidence and the frozen release."""
+    if any(type(value) is not bytes or not value for value in (
+        video_payload, manifest_payload, timeline_payload
+    )):
+        raise ValueError("idempotency evidence must be nonempty exact bytes")
+    components = (
+        hashlib.sha256(video_payload).hexdigest(),
+        hashlib.sha256(manifest_payload).hexdigest(),
+        hashlib.sha256(timeline_payload).hexdigest(),
+        SHARED_V9_MODEL_ID,
+        SHARED_V9_CANDIDATE_ID,
+        PREPROCESSING_VERSION,
+    )
+    return hashlib.sha256(
+        _IDEMPOTENCY_DOMAIN + "\n".join(components).encode("ascii")
+    ).hexdigest()
+
+
+@dataclass
+class _IdempotencyEntry:
+    commitment: str
+    created_at: float
+    event: threading.Event
+    response: dict[str, object] | None = None
+
+
+class _IdempotencyRegistry:
+    """Short-lived single-flight response replay without retaining video bytes."""
+
+    def __init__(self, *, ttl_seconds: float = 900.0, max_entries: int = 128):
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._entries: dict[str, _IdempotencyEntry] = {}
+        self._lock = threading.Lock()
+
+    def claim(self, key: str, commitment: str):
+        now = time.monotonic()
+        with self._lock:
+            expired = [
+                stored_key for stored_key, item in self._entries.items()
+                if item.response is not None
+                and now - item.created_at >= self._ttl_seconds
+            ]
+            for stored_key in expired:
+                del self._entries[stored_key]
+            existing = self._entries.get(key)
+            if existing is not None:
+                if not hmac.compare_digest(existing.commitment, commitment):
+                    raise ValueError("idempotency key is bound to different evidence")
+                return ("replay" if existing.response is not None else "wait", existing)
+            if len(self._entries) >= self._max_entries:
+                raise RuntimeError("idempotency registry is at capacity")
+            entry = _IdempotencyEntry(
+                commitment=commitment,
+                created_at=now,
+                event=threading.Event(),
+            )
+            self._entries[key] = entry
+            return "owner", entry
+
+    def complete(
+        self,
+        key: str,
+        entry: _IdempotencyEntry,
+        response: dict[str, object],
+    ) -> None:
+        with self._lock:
+            if self._entries.get(key) is not entry:
+                raise RuntimeError("idempotency owner changed before completion")
+            entry.response = response
+            entry.event.set()
+
+    def abort(self, key: str, entry: _IdempotencyEntry) -> None:
+        with self._lock:
+            if self._entries.get(key) is entry:
+                del self._entries[key]
+            entry.event.set()
+
+    @staticmethod
+    def wait(entry: _IdempotencyEntry) -> dict[str, object]:
+        if not entry.event.wait(timeout=330.0) or entry.response is None:
+            raise RuntimeError("idempotent inference did not complete")
+        return entry.response
 
 
 def _unique_json_object(pairs):
@@ -232,11 +382,11 @@ def _validate_ready(value: object) -> dict[str, object]:
 async def _bounded_video(upload: UploadFile) -> bytes:
     payload = await upload.read(MAX_VIDEO_BYTES + 1)
     if not payload:
-        raise HTTPException(status_code=400, detail="video is required")
+        raise HTTPException(status_code=400, detail={"code": "video_required"})
     if len(payload) > MAX_VIDEO_BYTES:
-        raise HTTPException(status_code=413, detail="video is too large")
+        raise HTTPException(status_code=413, detail={"code": "video_too_large"})
     if await upload.read(1):
-        raise HTTPException(status_code=413, detail="video is too large")
+        raise HTTPException(status_code=413, detail={"code": "video_too_large"})
     return bytes(payload)
 
 
@@ -256,6 +406,7 @@ def create_app(
         redoc_url=None,
         openapi_url=None,
     )
+    idempotency_registry = _IdempotencyRegistry()
 
     @app.get("/healthz")
     def healthz():
@@ -266,13 +417,19 @@ def create_app(
         try:
             return _validate_ready(readiness_client())
         except Exception as exc:  # downstream is outside this trust boundary
-            raise HTTPException(status_code=503, detail="Shared V9 is not ready") from exc
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "model_not_ready"},
+            ) from exc
 
     @app.post("/api/v1/facial-paralysis/infer")
     async def infer(request: Request):
         content_type = request.headers.get("content-type", "")
         if not content_type.casefold().startswith("multipart/form-data;"):
-            raise HTTPException(status_code=415, detail="multipart form is required")
+            raise HTTPException(
+                status_code=415,
+                detail={"code": "multipart_required"},
+            )
         form = None
         try:
             try:
@@ -282,11 +439,17 @@ def create_app(
                     max_part_size=256 * 1024,
                 )
             except Exception as exc:
-                raise HTTPException(status_code=400, detail="invalid multipart form") from exc
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "invalid_capture_request"},
+                ) from exc
             items = list(form.multi_items())
             names = [name for name, _value in items]
             if sorted(names) != ["manifest", "timeline", "video"]:
-                raise HTTPException(status_code=400, detail="form fields differ from the contract")
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "invalid_capture_request"},
+                )
             values = {name: value for name, value in items}
             upload = values["video"]
             manifest = values["manifest"]
@@ -297,7 +460,10 @@ def create_app(
                 or type(timeline) is not str
                 or not upload.filename
             ):
-                raise HTTPException(status_code=400, detail="form value types differ from the contract")
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "invalid_capture_request"},
+                )
             video = await _bounded_video(upload)
             filename = str(upload.filename)
             manifest_payload = manifest.encode("utf-8")
@@ -305,6 +471,53 @@ def create_app(
         finally:
             if form is not None:
                 await form.close()
+
+        supplied_key = request.headers.get("idempotency-key", "")
+        if (
+            len(supplied_key) != 64
+            or any(character not in "0123456789abcdef" for character in supplied_key)
+        ):
+            raise HTTPException(
+                status_code=428,
+                detail={"code": "idempotency_key_required"},
+            )
+        expected_key = _idempotency_key(video, manifest_payload, timeline_payload)
+        if not hmac.compare_digest(supplied_key, expected_key):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "idempotency_key_conflict"},
+            )
+        try:
+            ownership, idempotency_entry = idempotency_registry.claim(
+                supplied_key, expected_key
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "idempotency_key_conflict"},
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "gateway_unavailable"},
+            ) from exc
+        if ownership == "replay":
+            if idempotency_entry.response is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "gateway_unavailable"},
+                )
+            return idempotency_entry.response
+        if ownership == "wait":
+            try:
+                return await run_in_threadpool(
+                    idempotency_registry.wait, idempotency_entry
+                )
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail={"code": "inference_unavailable"},
+                ) from exc
         try:
             prepared = await run_in_threadpool(
                 processor,
@@ -314,21 +527,51 @@ def create_app(
                 timeline_payload,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail="capture failed preprocessing gates") from exc
+            detail = _safe_preprocessing_failure_detail(exc)
+            if isinstance(exc, CaptureTimingError):
+                _LOGGER.warning(
+                    "capture_timing_rejected reason=%s decoded_duration_ms=%d "
+                    "timeline_duration_ms=%d last_hold_ms=%d source_fps=%.6f "
+                    "decoded_frame_count=%d tolerance_ms=%d",
+                    exc.reason,
+                    exc.decoded_duration_ms,
+                    exc.timeline_duration_ms,
+                    exc.last_hold_ms,
+                    exc.source_fps,
+                    exc.decoded_frame_count,
+                    exc.tolerance_ms,
+                )
+            else:
+                _LOGGER.warning("capture_gate_rejected code=%s", detail["code"])
+            idempotency_registry.abort(supplied_key, idempotency_entry)
+            raise HTTPException(status_code=422, detail=detail) from exc
         if not isinstance(prepared, GatewayPreparedCapture):
-            raise HTTPException(status_code=500, detail="gateway processor contract failed")
+            idempotency_registry.abort(supplied_key, idempotency_entry)
+            raise HTTPException(
+                status_code=500,
+                detail={"code": "gateway_unavailable"},
+            )
         try:
             request_payload = encode_v9_request_npz(prepared.prepared.arrays)
             prediction = await run_in_threadpool(inference_client, request_payload)
-            return build_gateway_response(
+            response = build_gateway_response(
                 prediction,
                 evidence=prepared.evidence,
                 valid_samples_per_action=prepared.prepared.valid_samples_per_action,
+                descriptive_evidence_per_action=(
+                    prepared.prepared.descriptive_evidence_per_action
+                ),
                 preprocessing_version=PREPROCESSING_VERSION,
                 face_landmarker_sha256=prepared.face_landmarker_sha256,
             )
         except Exception as exc:
-            raise HTTPException(status_code=502, detail="Shared V9 inference failed") from exc
+            idempotency_registry.abort(supplied_key, idempotency_entry)
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "inference_unavailable"},
+            ) from exc
+        idempotency_registry.complete(supplied_key, idempotency_entry, response)
+        return response
 
     return app
 

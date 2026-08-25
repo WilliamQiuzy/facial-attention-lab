@@ -1,14 +1,14 @@
 import { CircleHelp, FlaskConical } from 'lucide-react'
 
-export function AppHeader() {
+export function AppHeader({ showResearchStrip = true }: { showResearchStrip?: boolean }) {
   return (
     <>
-      <div className="research-strip">
+      {showResearchStrip ? <div className="research-strip">
         <div className="header-inner">
           <span><FlaskConical aria-hidden="true" size={14} /> Research use only</span>
           <span>FACES protocol · Source script v0.01</span>
         </div>
-      </div>
+      </div> : null}
       <header className="app-header">
         <div className="header-inner masthead">
           <a className="product-mark" href="#top" aria-label="FACES Research Capture home">

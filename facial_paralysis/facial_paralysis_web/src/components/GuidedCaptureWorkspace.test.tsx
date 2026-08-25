@@ -60,6 +60,21 @@ describe('GuidedCaptureWorkspace', () => {
     })
   })
 
+  it('locks a patient recording until the pinned model endpoint is ready', async () => {
+    const user = userEvent.setup()
+    render(
+      <GuidedCaptureWorkspace
+        endpointReady={false}
+        reanimatedSmileApplicable={false}
+        onReanimatedSmileApplicableChange={vi.fn()}
+        onRecordingChange={vi.fn()}
+      />,
+    )
+    await user.click(screen.getByRole('tab', { name: 'Use this device' }))
+    expect(screen.getByRole('button', { name: 'Start guided recording' })).toBeDisabled()
+    expect(screen.getByText(/wait for the research endpoint readiness check/i)).toBeInTheDocument()
+  })
+
   it('requires a ready camera and explicit step-8 choice before combined start', async () => {
     const user = userEvent.setup()
     const { rerender } = render(

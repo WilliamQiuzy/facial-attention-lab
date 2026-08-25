@@ -1,6 +1,6 @@
 import { FACES_PROTOCOL, FACES_PROTOCOL_VERSION, type FacesActionId } from '../protocol/facesProtocol'
 
-export const INFERENCE_SCHEMA_VERSION = 'facial-paralysis-shared-v9-inference/v1' as const
+export const INFERENCE_SCHEMA_VERSION = 'facial-paralysis-shared-v9-inference/v2' as const
 export const MANIFEST_SCHEMA_VERSION = 'faces-v9-capture-manifest/v1' as const
 export const TIMELINE_SCHEMA_VERSION = 'faces-action-timeline/v1' as const
 export const SCRIPT_VERSION = 'faces-script/24-004956-v1' as const
@@ -11,6 +11,9 @@ export const EXPECTED_RELEASE_MANIFEST_SHA256 =
 export const EXPECTED_FACE_LANDMARKER_SHA256 =
   '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff' as const
 export const EXPECTED_PREPROCESSING_VERSION = 'faces-to-shared-v9/v1' as const
+export const MAX_VIDEO_BYTES = 512 * 1024 * 1024
+export const READINESS_TIMEOUT_MS = 10_000
+export const INFERENCE_TIMEOUT_MS = 300_000
 
 export type RecordingSource = 'livelink-upload' | 'browser-camera'
 const TIMING_SOURCES = ['capture_event_log', 'audio_forced_alignment', 'blinded_manual'] as const
@@ -64,15 +67,35 @@ export interface ResearchInferenceResult {
     readonly memberProbabilities: readonly [number, number, number]
     readonly predictedClass: 0 | 1
     readonly threshold: 0.5
-    readonly interpretation: 'research_score_only'
+    readonly interpretation: 'class_1_research_score_only'
+    readonly endpointSemantics: 'meei_facial_palsy_vs_healthy_control_development_head'
+    readonly class0Label: 'meei_healthy_control'
+    readonly class1Label: 'meei_facial_palsy'
+  }
+  readonly reportEvidence: {
+    readonly normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled'
+    readonly interpretation: 'measured_movement_observation_not_causal_or_severity'
+    readonly contextFrameMethod: 'registered_hold_midpoint_not_model_selected'
+    readonly actions: readonly {
+      readonly id: Exclude<FacesActionId, 'repose'>
+      readonly contextFrameMs: number
+      readonly observations: readonly {
+        readonly metric: string
+        readonly value: number
+        readonly unit: 'interocular_distance'
+      }[]
+    }[]
   }
   readonly clinicalUseEligible: false
 }
 
 export class InferenceContractError extends Error {
-  constructor(message: string) {
+  readonly retryable: boolean
+
+  constructor(message: string, retryable = false) {
     super(message)
     this.name = 'InferenceContractError'
+    this.retryable = retryable
   }
 }
 
@@ -116,6 +139,13 @@ function probability(value: unknown, path: string): number {
   return value
 }
 
+function nonnegativeFinite(value: unknown, path: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    contractError(path, 'expected a finite nonnegative measurement')
+  }
+  return value
+}
+
 function captureTimingSource(value: unknown, path: string): CaptureTimingSource {
   if (typeof value !== 'string' || !TIMING_SOURCES.includes(value as CaptureTimingSource)) {
     contractError(path, 'expected capture_event_log, audio_forced_alignment, or blinded_manual')
@@ -128,10 +158,19 @@ const V9_ACTIONS = [
   'BROW_RAISE', 'EYE_GENTLE', 'EYE_FORCEFUL', 'SMILE_GENTLE',
   'LIP_PUCKER', 'SHOW_BOTTOM_TEETH', 'SMILE_FULL',
 ] as const
+const ACTION_EVIDENCE_METRICS = [
+  ['brow_height_asymmetry_iod', 'brow_height_change_from_rest_iod'],
+  ['eye_aperture_asymmetry_iod', 'residual_eye_aperture_iod', 'eye_closure_change_from_rest_iod'],
+  ['eye_aperture_asymmetry_iod', 'residual_eye_aperture_iod', 'eye_closure_change_from_rest_iod'],
+  ['mouth_corner_vertical_asymmetry_iod', 'mouth_corner_vertical_change_from_rest_iod'],
+  ['mouth_corner_horizontal_asymmetry_iod', 'mouth_width_change_from_rest_iod'],
+  ['mouth_corner_vertical_asymmetry_iod', 'lower_lip_change_from_rest_iod', 'mouth_open_change_from_rest_iod'],
+  ['mouth_corner_vertical_asymmetry_iod', 'mouth_corner_vertical_change_from_rest_iod'],
+] as const
 
 export function parseInferenceResponse(value: unknown): ResearchInferenceResult {
   const root = recordAt(value, 'response')
-  exactKeys(root, ['schema_version', 'model', 'preprocessing', 'quality', 'prediction', 'clinical_use_eligible'], 'response')
+  exactKeys(root, ['schema_version', 'model', 'preprocessing', 'quality', 'prediction', 'report_evidence', 'clinical_use_eligible'], 'response')
   exact(root.schema_version, INFERENCE_SCHEMA_VERSION, 'response.schema_version')
   exact(root.clinical_use_eligible, false, 'response.clinical_use_eligible')
 
@@ -190,7 +229,10 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
   })
 
   const prediction = recordAt(root.prediction, 'prediction')
-  exactKeys(prediction, ['probability', 'member_probabilities', 'predicted_class', 'threshold', 'interpretation'], 'prediction')
+  exactKeys(prediction, [
+    'probability', 'member_probabilities', 'predicted_class', 'threshold',
+    'interpretation', 'endpoint_semantics', 'class_0_label', 'class_1_label',
+  ], 'prediction')
   const aggregate = probability(prediction.probability, 'prediction.probability')
   if (!Array.isArray(prediction.member_probabilities) || prediction.member_probabilities.length !== 3) {
     contractError('prediction.member_probabilities', 'expected three ensemble members')
@@ -204,7 +246,67 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
     contractError('prediction.predicted_class', 'does not match the frozen threshold')
   }
   exact(prediction.threshold, 0.5, 'prediction.threshold')
-  exact(prediction.interpretation, 'research_score_only', 'prediction.interpretation')
+  exact(prediction.interpretation, 'class_1_research_score_only', 'prediction.interpretation')
+  exact(
+    prediction.endpoint_semantics,
+    'meei_facial_palsy_vs_healthy_control_development_head',
+    'prediction.endpoint_semantics',
+  )
+  exact(prediction.class_0_label, 'meei_healthy_control', 'prediction.class_0_label')
+  exact(prediction.class_1_label, 'meei_facial_palsy', 'prediction.class_1_label')
+
+  const reportEvidence = recordAt(root.report_evidence, 'report_evidence')
+  exactKeys(
+    reportEvidence,
+    ['normalization', 'interpretation', 'context_frame_method', 'actions'],
+    'report_evidence',
+  )
+  exact(
+    reportEvidence.normalization,
+    'original_view_centered_eye_axis_aligned_interocular_scaled',
+    'report_evidence.normalization',
+  )
+  exact(
+    reportEvidence.interpretation,
+    'measured_movement_observation_not_causal_or_severity',
+    'report_evidence.interpretation',
+  )
+  exact(
+    reportEvidence.context_frame_method,
+    'registered_hold_midpoint_not_model_selected',
+    'report_evidence.context_frame_method',
+  )
+  if (!Array.isArray(reportEvidence.actions) || reportEvidence.actions.length !== actionCount) {
+    contractError('report_evidence.actions', `expected ${actionCount} action evidence rows`)
+  }
+  const evidenceActions = reportEvidence.actions.map((raw, index) => {
+    const path = `report_evidence.actions[${index}]`
+    const row = recordAt(raw, path)
+    exactKeys(row, ['id', 'context_frame_ms', 'observations'], path)
+    exact(row.id, actions[index].id, `${path}.id`)
+    const contextFrameMs = integer(row.context_frame_ms, `${path}.context_frame_ms`)
+    const expectedMidpoint = (actions[index].holdStartMs + actions[index].holdEndMs) / 2
+    if (contextFrameMs !== expectedMidpoint) {
+      contractError(`${path}.context_frame_ms`, 'expected the registered hold midpoint')
+    }
+    const expectedMetrics = ACTION_EVIDENCE_METRICS[index]
+    if (!Array.isArray(row.observations) || row.observations.length !== expectedMetrics.length) {
+      contractError(`${path}.observations`, 'metric count differs from the action contract')
+    }
+    const observations = row.observations.map((rawObservation, observationIndex) => {
+      const observationPath = `${path}.observations[${observationIndex}]`
+      const observation = recordAt(rawObservation, observationPath)
+      exactKeys(observation, ['metric', 'value', 'unit'], observationPath)
+      exact(observation.metric, expectedMetrics[observationIndex], `${observationPath}.metric`)
+      exact(observation.unit, 'interocular_distance', `${observationPath}.unit`)
+      return {
+        metric: expectedMetrics[observationIndex],
+        value: nonnegativeFinite(observation.value, `${observationPath}.value`),
+        unit: 'interocular_distance' as const,
+      }
+    })
+    return { id: actions[index].id, contextFrameMs, observations }
+  })
 
   return {
     mode: 'research-inference',
@@ -232,7 +334,16 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
       memberProbabilities: members,
       predictedClass: predictedClass as 0 | 1,
       threshold: 0.5,
-      interpretation: 'research_score_only',
+      interpretation: 'class_1_research_score_only',
+      endpointSemantics: 'meei_facial_palsy_vs_healthy_control_development_head',
+      class0Label: 'meei_healthy_control',
+      class1Label: 'meei_facial_palsy',
+    },
+    reportEvidence: {
+      normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled',
+      interpretation: 'measured_movement_observation_not_causal_or_severity',
+      contextFrameMethod: 'registered_hold_midpoint_not_model_selected',
+      actions: evidenceActions,
     },
     clinicalUseEligible: false,
   }
@@ -244,6 +355,137 @@ interface AnalyzeRecordingOptions {
   readonly reanimatedSmileApplicable: boolean
   readonly timeline: CaptureTimelineDraft
   readonly fetcher?: typeof fetch
+}
+
+const ENDPOINT_FAILURE_GUIDANCE = Object.freeze({
+  invalid_capture_request: {
+    status: 400,
+    message: 'The recording request was incomplete. The same recording is still available; review its action timeline and retry.',
+  },
+  video_required: {
+    status: 400,
+    message: 'No video data was received. The same recording is still available; retry the upload.',
+  },
+  video_too_large: {
+    status: 413,
+    message: 'The recording is larger than 512 MB and cannot be uploaded. Use the guided browser recording or an approved compressed copy.',
+  },
+  multipart_required: {
+    status: 415,
+    message: 'The research upload format was not accepted. Keep the same recording and retry from this page.',
+  },
+  idempotency_key_required: {
+    status: 428,
+    message: 'The research request identity was missing. Keep the recording in this browser and contact the research system administrator.',
+  },
+  idempotency_key_conflict: {
+    status: 409,
+    message: 'The research request identity did not match the recording evidence. Do not resubmit this recording until the research system is checked.',
+  },
+  capture_evidence_invalid: {
+    status: 422,
+    message: 'The video and action timeline did not match. Clear this recording and complete the guided sequence again without refreshing or switching tabs.',
+  },
+  video_format_unsupported: {
+    status: 422,
+    message: 'This video format is not supported. Re-record in this browser, or upload a MOV, MP4, M4V, AVI, or WebM file.',
+  },
+  video_frame_rate_too_low: {
+    status: 422,
+    message: 'The video frame rate is too low to measure every action reliably. Re-record in this browser with other camera applications closed.',
+  },
+  video_dimensions_unsupported: {
+    status: 422,
+    message: 'The video dimensions are not supported. Re-record with the camera unobstructed, or upload the original-resolution recording.',
+  },
+  video_timing_mismatch: {
+    status: 422,
+    message: 'The recorded video timing did not match the guided action timeline. Re-record without pausing, switching cameras, locking the screen, or moving this tab to the background.',
+  },
+  video_decode_failed: {
+    status: 422,
+    message: 'The browser video could not be decoded reliably. Re-record in this browser, or upload a supported MOV, MP4, M4V, AVI, or WebM file.',
+  },
+  face_geometry_invalid: {
+    status: 422,
+    message: 'Facial geometry could not be measured reliably. Re-record with the face centered and upright, the full face visible, and steady front lighting.',
+  },
+  preprocessing_failed: {
+    status: 422,
+    message: 'The recording did not pass the preprocessing checks. Re-record the complete guided sequence with the face centered and this tab kept active.',
+  },
+  inference_unavailable: {
+    status: 502,
+    message: 'The model service could not complete this request. The same recording is still available; wait briefly and retry.',
+  },
+  model_not_ready: {
+    status: 503,
+    message: 'The model service is not ready. Keep this page open and retry before recording again.',
+  },
+  gateway_unavailable: {
+    status: 500,
+    message: 'The video processing service could not complete this request. The same recording is still available; wait briefly and retry.',
+  },
+} as const)
+
+const TRACKING_ACTION_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  neutral_repose: 'Neutral Expression',
+  eyebrow_raise: 'Eyebrow Raise',
+  gentle_eye_closure: 'Gentle Eye Closure',
+  tight_eye_squeeze: 'Tight Eye Squeeze',
+  relaxed_smile: 'Relaxed Smile',
+  lip_pucker: 'Lip Pucker',
+  lower_teeth_show: 'Show Bottom Teeth',
+  reanimated_smile: 'Reanimated Smile',
+})
+
+function exactObjectKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+}
+
+async function endpointFailure(response: Response): Promise<Error> {
+  try {
+    const source = await response.text()
+    if (source.length < 1 || source.length > 4_096) throw new Error('error body outside bound')
+    const payload: unknown = JSON.parse(source)
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new Error('error body is not an object')
+    const root = payload as Record<string, unknown>
+    if (!exactObjectKeys(root, ['detail'])) throw new Error('error body fields drifted')
+    const detailValue = root.detail
+    if (typeof detailValue !== 'object' || detailValue === null || Array.isArray(detailValue)) throw new Error('error detail is not an object')
+    const detail = detailValue as Record<string, unknown>
+    const code = detail.code
+    if (code === 'face_tracking_insufficient') {
+      if (
+        response.status !== 422
+        || !exactObjectKeys(detail, ['code', 'action', 'valid_samples', 'required_samples'])
+        || typeof detail.action !== 'string'
+        || !Object.hasOwn(TRACKING_ACTION_LABELS, detail.action)
+        || typeof detail.valid_samples !== 'number'
+        || !Number.isInteger(detail.valid_samples)
+        || detail.valid_samples < 0
+        || detail.valid_samples >= 26
+        || detail.required_samples !== 26
+      ) throw new Error('tracking detail differs from contract')
+      return new InferenceContractError(
+        `Face tracking was insufficient during ${TRACKING_ACTION_LABELS[detail.action]}: ${detail.valid_samples} of 26 required samples were usable. Re-record and keep the full face and neck visible, the camera at eye level, and steady front lighting.`,
+        false,
+      )
+    }
+    if (
+      typeof code === 'string'
+      && exactObjectKeys(detail, ['code'])
+      && Object.hasOwn(ENDPOINT_FAILURE_GUIDANCE, code)
+    ) {
+      const guidance = ENDPOINT_FAILURE_GUIDANCE[code as keyof typeof ENDPOINT_FAILURE_GUIDANCE]
+      if (response.status === guidance.status) {
+        return new InferenceContractError(guidance.message, response.status >= 500)
+      }
+    }
+  } catch {
+    // Preserve the generic fail-closed message for malformed or unknown errors.
+  }
+  return new Error(`Research endpoint returned HTTP ${response.status}. No result was accepted.`)
 }
 
 function validateEndpoint(endpoint: string): string {
@@ -261,6 +503,66 @@ function validateEndpoint(endpoint: string): string {
     throw new Error('Research endpoint must use HTTPS (localhost HTTP is allowed for development).')
   }
   return url.toString()
+}
+
+function readinessEndpoint(endpoint: string): string {
+  const validated = validateEndpoint(endpoint)
+  if (!validated.endsWith('/infer')) {
+    throw new InferenceContractError('Research endpoint must end with the frozen /infer route.')
+  }
+  return `${validated.slice(0, -'/infer'.length)}/ready`
+}
+
+export async function checkResearchEndpoint(
+  endpoint: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, READINESS_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetcher(readinessEndpoint(endpoint), {
+      method: 'GET', credentials: 'same-origin', cache: 'no-store', redirect: 'error', signal: controller.signal,
+    })
+  } catch {
+    throw new InferenceContractError(
+      timedOut
+        ? 'The research endpoint readiness check timed out. Retry the endpoint check before recording.'
+        : 'The research endpoint could not be reached. Retry the endpoint check before recording.',
+    )
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (!response.ok) {
+    const failure = await endpointFailure(response)
+    throw failure instanceof InferenceContractError
+      ? failure
+      : new InferenceContractError('The research endpoint is not ready. Retry the endpoint check before recording.')
+  }
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new InferenceContractError('The research endpoint readiness response was not accepted.')
+  }
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new InferenceContractError('The research endpoint readiness response was not accepted.')
+  }
+  const ready = payload as Record<string, unknown>
+  if (
+    !exactObjectKeys(ready, ['status', 'model_id', 'candidate_id', 'ensemble_members', 'preprocessing'])
+    || ready.status !== 'ready'
+    || ready.model_id !== EXPECTED_MODEL_ID
+    || ready.candidate_id !== EXPECTED_CANDIDATE_ID
+    || ready.ensemble_members !== 3
+    || ready.preprocessing !== EXPECTED_PREPROCESSING_VERSION
+  ) {
+    throw new InferenceContractError('The research endpoint does not match the pinned Shared V9 release.')
+  }
 }
 
 function validateTimeline(
@@ -341,7 +643,38 @@ async function sha256(file: File): Promise<string> {
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('')
 }
 
+async function sha256Bytes(value: Uint8Array): Promise<string> {
+  if (!globalThis.crypto?.subtle) throw new Error('This browser cannot hash the request safely.')
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', Uint8Array.from(value).buffer)
+  return Array.from(new Uint8Array(digest), (item) => item.toString(16).padStart(2, '0')).join('')
+}
+
+async function idempotencyKey(
+  videoSha256: string,
+  manifestSource: string,
+  timelineSource: string,
+): Promise<string> {
+  const encoder = new TextEncoder()
+  const manifestSha256 = await sha256Bytes(encoder.encode(manifestSource))
+  const timelineSha256 = await sha256Bytes(encoder.encode(timelineSource))
+  const components = [
+    videoSha256,
+    manifestSha256,
+    timelineSha256,
+    EXPECTED_MODEL_ID,
+    EXPECTED_CANDIDATE_ID,
+    EXPECTED_PREPROCESSING_VERSION,
+  ].join('\n')
+  return sha256Bytes(encoder.encode(`facial-process-shared-v9-idempotency/v1\n${components}`))
+}
+
 export async function analyzeRecording(file: File, options: AnalyzeRecordingOptions): Promise<ResearchInferenceResult> {
+  if (file.size < 1) {
+    throw new InferenceContractError('The recording is empty. Record the complete guided sequence again.')
+  }
+  if (file.size > MAX_VIDEO_BYTES) {
+    throw new InferenceContractError('The recording is larger than 512 MB and cannot be uploaded.')
+  }
   const timeline = validateTimeline(
     options.timeline,
     options.reanimatedSmileApplicable ? 8 : 7,
@@ -350,15 +683,13 @@ export async function analyzeRecording(file: File, options: AnalyzeRecordingOpti
   if (timeline.sourceRecordingSha256 && timeline.sourceRecordingSha256 !== digest) {
     throw new InferenceContractError('timeline sidecar: recording SHA-256 differs from the selected video')
   }
-  const body = new FormData()
-  body.append('video', file)
-  body.append('manifest', JSON.stringify({
+  const manifestSource = JSON.stringify({
     schema_version: MANIFEST_SCHEMA_VERSION,
     protocol_version: FACES_PROTOCOL_VERSION,
     recording_source: options.recordingSource,
     video_sha256: digest,
     reanimated_smile_applicable: options.reanimatedSmileApplicable,
-  }))
+  })
   const generatedTimeline = JSON.stringify({
     schema_version: TIMELINE_SCHEMA_VERSION,
     script_version: SCRIPT_VERSION,
@@ -374,11 +705,40 @@ export async function analyzeRecording(file: File, options: AnalyzeRecordingOpti
       completion_ms: row.completionMs,
     })),
   })
-  body.append('timeline', timeline.sourceSidecar ?? generatedTimeline)
+  const timelineSource = timeline.sourceSidecar ?? generatedTimeline
+  const requestKey = await idempotencyKey(digest, manifestSource, timelineSource)
+  const body = new FormData()
+  body.append('video', file)
+  body.append('manifest', manifestSource)
+  body.append('timeline', timelineSource)
   const fetcher = options.fetcher ?? fetch
-  const response = await fetcher(validateEndpoint(options.endpoint), {
-    method: 'POST', body, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-  })
-  if (!response.ok) throw new Error(`Research endpoint returned HTTP ${response.status}. No result was accepted.`)
+  const controller = new AbortController()
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, INFERENCE_TIMEOUT_MS)
+  let response: Response
+  try {
+    response = await fetcher(validateEndpoint(options.endpoint), {
+      method: 'POST',
+      body,
+      headers: { 'Idempotency-Key': requestKey },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'error',
+      signal: controller.signal,
+    })
+  } catch {
+    throw new InferenceContractError(
+      timedOut
+        ? 'The research analysis timed out. The same recording is still available; wait briefly and retry.'
+        : 'Could not reach the research endpoint. The same recording is still available; check the connection and retry.',
+      true,
+    )
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (!response.ok) throw await endpointFailure(response as Response)
   return parseInferenceResponse(await response.json())
 }

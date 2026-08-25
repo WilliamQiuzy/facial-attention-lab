@@ -22,6 +22,7 @@ type GuidedSessionPhase =
   | 'error'
 
 interface GuidedCaptureWorkspaceProps {
+  readonly endpointReady?: boolean
   readonly reanimatedSmileApplicable: boolean | null
   readonly onReanimatedSmileApplicableChange: (applicable: boolean) => void
   readonly onRecordingChange: RecordingChangeHandler
@@ -49,6 +50,7 @@ function snapshotCapturePlan(
 }
 
 export function GuidedCaptureWorkspace({
+  endpointReady = true,
   reanimatedSmileApplicable,
   onReanimatedSmileApplicableChange,
   onRecordingChange,
@@ -237,8 +239,11 @@ export function GuidedCaptureWorkspace({
   if (sessionPhase === 'finalizing') statusText = 'All guided movements are complete. Finalizing the video…'
   if (sessionPhase === 'complete') statusText = 'Guided recording complete. Review the video below before analysis.'
   if (sessionPhase === 'cancelled' && cancelledMessage) statusText = cancelledMessage
+  if (!endpointReady && !guidedActive && sessionPhase !== 'complete') {
+    statusText = 'Wait for the research endpoint readiness check before starting a patient recording.'
+  }
 
-  const canStart = mode === 'camera' && camera.status === 'ready' && reanimatedSmileApplicable !== null && voice.supported
+  const canStart = endpointReady && mode === 'camera' && camera.status === 'ready' && reanimatedSmileApplicable !== null && voice.supported
   const patientStepIndex = voice.activeStepIndex ?? 0
   const patientStep = FACES_PROTOCOL[patientStepIndex]
   const patientGuidePhase: PatientGuidePhase = sessionPhase === 'starting'

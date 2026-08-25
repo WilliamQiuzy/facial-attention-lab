@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 import numpy as np
@@ -28,6 +30,7 @@ from src.preprocessing.faces_shared_v9_pipeline import (  # noqa: E402
     build_v9_action_arrays,
     parse_capture_evidence,
 )
+from src.preprocessing import faces_shared_v9_pipeline as pipeline_module  # noqa: E402
 
 
 def _processor(video, filename, manifest, timeline):
@@ -66,7 +69,7 @@ def _inference(payload: bytes):
 
 
 def _client(inference=_inference):
-    return TestClient(create_app(
+    client = TestClient(create_app(
         processor=_processor,
         inference_client=inference,
         readiness_client=lambda: {
@@ -76,6 +79,103 @@ def _client(inference=_inference):
             "ensemble_members": 3,
         },
     ))
+    video, manifest, timeline = _payloads()
+    client.headers["Idempotency-Key"] = gateway_module._idempotency_key(
+        video, manifest, timeline
+    )
+    return client
+
+
+def _idempotency_headers(video: bytes, manifest: bytes, timeline: bytes):
+    return {
+        "Idempotency-Key": gateway_module._idempotency_key(
+            video, manifest, timeline
+        )
+    }
+
+
+def test_gateway_replays_one_single_flight_result_and_rejects_key_drift(c: Check):
+    processor_calls = 0
+    inference_calls = 0
+    inference_entered = threading.Event()
+    release_inference = threading.Event()
+
+    def counted_processor(*args):
+        nonlocal processor_calls
+        processor_calls += 1
+        return _processor(*args)
+
+    def counted_inference(payload):
+        nonlocal inference_calls
+        inference_calls += 1
+        inference_entered.set()
+        release_inference.wait(timeout=5)
+        return _inference(payload)
+
+    client = TestClient(create_app(
+        processor=counted_processor,
+        inference_client=counted_inference,
+        readiness_client=lambda: {
+            "status": "ready",
+            "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+            "candidate_id": "BLV9-009",
+            "ensemble_members": 3,
+        },
+    ))
+    video, manifest, timeline = _payloads()
+    headers = _idempotency_headers(video, manifest, timeline)
+
+    def submit():
+        return client.post(
+            "/api/v1/facial-paralysis/infer",
+            files={"video": ("capture.mp4", video, "video/mp4")},
+            data={
+                "manifest": manifest.decode("utf-8"),
+                "timeline": timeline.decode("utf-8"),
+            },
+            headers=headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(submit)
+        c.true(inference_entered.wait(timeout=5))
+        second = executor.submit(submit)
+        release_inference.set()
+        first_response = first.result(timeout=10)
+        second_response = second.result(timeout=10)
+    c.eq(first_response.status_code, 200)
+    c.eq(second_response.status_code, 200)
+    c.eq(first_response.json(), second_response.json())
+    c.eq(processor_calls, 1)
+    c.eq(inference_calls, 1)
+
+    replay = submit()
+    c.eq(replay.json(), first_response.json())
+    c.eq(processor_calls, 1)
+    c.eq(inference_calls, 1)
+
+    missing = client.post(
+        "/api/v1/facial-paralysis/infer",
+        files={"video": ("capture.mp4", video, "video/mp4")},
+        data={
+            "manifest": manifest.decode("utf-8"),
+            "timeline": timeline.decode("utf-8"),
+        },
+    )
+    c.eq(missing.status_code, 428)
+    c.eq(missing.json(), {"detail": {"code": "idempotency_key_required"}})
+
+    drift = client.post(
+        "/api/v1/facial-paralysis/infer",
+        files={"video": ("capture.mp4", video + b"changed", "video/mp4")},
+        data={
+            "manifest": manifest.decode("utf-8"),
+            "timeline": timeline.decode("utf-8"),
+        },
+        headers=headers,
+    )
+    c.eq(drift.status_code, 409)
+    c.eq(drift.json(), {"detail": {"code": "idempotency_key_conflict"}})
 
 
 def test_gateway_health_ready_and_exact_multipart_inference(c: Check):
@@ -106,6 +206,81 @@ def test_gateway_health_ready_and_exact_multipart_inference(c: Check):
     c.true("capture.mp4" not in response.text)
 
 
+def test_gateway_exposes_a_closed_error_for_every_http_failure_class(c: Check):
+    client = _client()
+    video, manifest, timeline = _payloads()
+    wrong_content = client.post(
+        "/api/v1/facial-paralysis/infer",
+        content=b"not multipart",
+        headers={"content-type": "application/octet-stream"},
+    )
+    c.eq(wrong_content.status_code, 415)
+    c.eq(wrong_content.json(), {"detail": {"code": "multipart_required"}})
+
+    empty_video = client.post(
+        "/api/v1/facial-paralysis/infer",
+        files={"video": ("capture.mp4", b"", "video/mp4")},
+        data={
+            "manifest": manifest.decode("utf-8"),
+            "timeline": timeline.decode("utf-8"),
+        },
+    )
+    c.eq(empty_video.status_code, 400)
+    c.eq(empty_video.json(), {"detail": {"code": "video_required"}})
+
+    missing_field = client.post(
+        "/api/v1/facial-paralysis/infer",
+        files={"video": ("capture.mp4", video, "video/mp4")},
+        data={"manifest": manifest.decode("utf-8")},
+    )
+    c.eq(missing_field.status_code, 400)
+    c.eq(missing_field.json(), {"detail": {"code": "invalid_capture_request"}})
+
+    def unavailable(_payload: bytes):
+        raise TimeoutError("/private/patient-name must not escape")
+
+    downstream = _client(unavailable).post(
+        "/api/v1/facial-paralysis/infer",
+        files={"video": ("capture.mp4", video, "video/mp4")},
+        data={
+            "manifest": manifest.decode("utf-8"),
+            "timeline": timeline.decode("utf-8"),
+        },
+    )
+    c.eq(downstream.status_code, 502)
+    c.eq(downstream.json(), {"detail": {"code": "inference_unavailable"}})
+    c.true("patient-name" not in downstream.text)
+
+    not_ready = TestClient(create_app(
+        processor=_processor,
+        inference_client=_inference,
+        readiness_client=lambda: (_ for _ in ()).throw(RuntimeError("private")),
+    )).get("/readyz")
+    c.eq(not_ready.status_code, 503)
+    c.eq(not_ready.json(), {"detail": {"code": "model_not_ready"}})
+
+    invalid_processor = TestClient(create_app(
+        processor=lambda *_args: object(),
+        inference_client=_inference,
+        readiness_client=lambda: {
+            "status": "ready",
+            "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+            "candidate_id": "BLV9-009",
+            "ensemble_members": 3,
+        },
+    )).post(
+        "/api/v1/facial-paralysis/infer",
+        files={"video": ("capture.mp4", video, "video/mp4")},
+        data={
+            "manifest": manifest.decode("utf-8"),
+            "timeline": timeline.decode("utf-8"),
+        },
+        headers=_idempotency_headers(video, manifest, timeline),
+    )
+    c.eq(invalid_processor.status_code, 500)
+    c.eq(invalid_processor.json(), {"detail": {"code": "gateway_unavailable"}})
+
+
 def test_gateway_rejects_open_forms_unusable_script_and_bad_downstream(c: Check):
     client = _client()
     video, manifest, timeline = _payloads()
@@ -133,6 +308,7 @@ def test_gateway_rejects_open_forms_unusable_script_and_bad_downstream(c: Check)
             "manifest": manifest.decode("utf-8"),
             "timeline": timeline.decode("utf-8"),
         },
+        headers=_idempotency_headers(video, manifest, timeline),
     )
     c.eq(seven_step.status_code, 200)
     c.eq(seven_step.json()["quality"]["actions_used"], 6)
@@ -183,6 +359,11 @@ def test_gateway_closes_multipart_uploads_on_success_and_failure(c: Check):
                 "manifest": json.dumps(changed_manifest),
                 "timeline": timeline.decode("utf-8"),
             },
+            headers=_idempotency_headers(
+                video,
+                json.dumps(changed_manifest).encode("utf-8"),
+                timeline,
+            ),
         )
         c.eq(invalid.status_code, 422)
     finally:
@@ -207,6 +388,20 @@ def test_gateway_closes_oversized_upload_without_calling_processor(c: Check):
     gateway_module.MAX_VIDEO_BYTES = 8
     gateway_module.UploadFile.close = tracked_close
     try:
+        exact_video, exact_manifest, exact_timeline = _payloads(video=b"12345678")
+        exact = _client().post(
+            "/api/v1/facial-paralysis/infer",
+            files={"video": ("capture.mp4", exact_video, "video/mp4")},
+            data={
+                "manifest": exact_manifest.decode("utf-8"),
+                "timeline": exact_timeline.decode("utf-8"),
+            },
+            headers=_idempotency_headers(
+                exact_video, exact_manifest, exact_timeline
+            ),
+        )
+        c.eq(exact.status_code, 200)
+
         video, manifest, timeline = _payloads(video=b"123456789")
         client = TestClient(create_app(
             processor=forbidden_processor,
@@ -230,8 +425,66 @@ def test_gateway_closes_oversized_upload_without_calling_processor(c: Check):
     finally:
         gateway_module.UploadFile.close = original_close
         gateway_module.MAX_VIDEO_BYTES = original_limit
-    c.eq(closed, ["capture.mp4"])
+    c.eq(closed, ["capture.mp4", "capture.mp4"])
     c.eq(processor_calls, [])
+
+
+def test_gateway_returns_only_safe_preprocessing_failure_codes(c: Check):
+    video, manifest, timeline = _payloads(include_optional=False)
+
+    def post_with(error: ValueError):
+        def rejected_processor(*_args):
+            raise error
+
+        client = TestClient(create_app(
+            processor=rejected_processor,
+            inference_client=_inference,
+            readiness_client=lambda: {
+                "status": "ready",
+                "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+                "candidate_id": "BLV9-009",
+                "ensemble_members": 3,
+            },
+        ))
+        return client.post(
+            "/api/v1/facial-paralysis/infer",
+            files={"video": ("capture.mp4", video, "video/mp4")},
+            data={
+                "manifest": manifest.decode("utf-8"),
+                "timeline": timeline.decode("utf-8"),
+            },
+            headers=_idempotency_headers(video, manifest, timeline),
+        )
+
+    tracking_error_type = getattr(pipeline_module, "CaptureTrackingError")
+    tracking = post_with(
+        tracking_error_type("lower_teeth_show", valid_samples=25)
+    )
+    c.eq(tracking.status_code, 422)
+    c.eq(tracking.json(), {
+        "detail": {
+            "code": "face_tracking_insufficient",
+            "action": "lower_teeth_show",
+            "valid_samples": 25,
+            "required_samples": 26,
+        },
+    })
+    timing = post_with(ValueError("decoded duration contradicts the FACES timeline"))
+    c.eq(timing.json(), {"detail": {"code": "video_timing_mismatch"}})
+    categories = {
+        "capture manifest fields differ from the closed schema": "capture_evidence_invalid",
+        "video container extension is unsupported": "video_format_unsupported",
+        "video frame rate is below the gateway minimum": "video_frame_rate_too_low",
+        "video dimensions are outside the gateway bounds": "video_dimensions_unsupported",
+        "interocular distance is degenerate": "face_geometry_invalid",
+    }
+    for message, code in categories.items():
+        response = post_with(ValueError(message))
+        c.eq(response.status_code, 422)
+        c.eq(response.json(), {"detail": {"code": code}})
+    unknown = post_with(ValueError("/private/patient-name.mov internal secret"))
+    c.eq(unknown.json(), {"detail": {"code": "preprocessing_failed"}})
+    c.true("patient-name" not in unknown.text)
 
 
 class _Response:

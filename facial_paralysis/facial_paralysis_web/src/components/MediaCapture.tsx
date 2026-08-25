@@ -10,6 +10,7 @@ import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react'
 
 import { type CameraRecorderState, useCameraRecorder } from '../hooks/useCameraRecorder'
 import {
+  MAX_VIDEO_BYTES,
   parseCaptureTimelineSidecar,
   type CaptureTimelineDraft,
   type RecordingSource,
@@ -159,6 +160,18 @@ export function MediaCapturePanel({
       setUploadedTimeline(null)
       setUploadedTimelineName(null)
       setUploadError('Choose a supported video file: MOV, MP4, M4V, AVI, or WebM.')
+      onRecordingChange(null, 'livelink-upload')
+      return
+    }
+    if (file.size < 1 || file.size > MAX_VIDEO_BYTES) {
+      setUploadedFile(null)
+      setUploadedTimeline(null)
+      setUploadedTimelineName(null)
+      setUploadError(
+        file.size < 1
+          ? 'The selected video is empty. Choose a complete FACES recording.'
+          : 'The selected video is larger than 512 MB. Choose an approved compressed copy.',
+      )
       onRecordingChange(null, 'livelink-upload')
       return
     }

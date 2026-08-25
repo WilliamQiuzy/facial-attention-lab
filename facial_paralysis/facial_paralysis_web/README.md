@@ -76,10 +76,16 @@ action order, tracking support, ensemble arithmetic, and threshold.
 
 The interface shows:
 
-- one binary research probability;
+- one MEEI facial-palsy-versus-healthy-control classification score;
 - the frozen 0.5-threshold research class;
-- the three ensemble-member probabilities;
-- action-level landmark tracking support.
+- recorded action context frames and descriptive movement geometry;
+- plain-language action and face-tracking coverage.
+
+The report's **Save PDF** flow includes the recorded action context images and
+prints an identifiable-media warning. **Download recorded video** exports the
+exact page-scoped source file to the current device with a fixed filename that
+does not reuse a potentially identifying upload name. Both are local browser
+exports; neither adds server-side media persistence.
 
 It does **not** show or infer House–Brackmann grade, eye or mouth severity,
 facial laterality, treatment advice, or a clinically validated diagnosis.

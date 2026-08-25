@@ -1,0 +1,180 @@
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
+
+import type { ResearchInferenceResult } from '../model/inference'
+import { frameHasVisibleContent, ResultsView } from './ResultsView'
+
+const ids = [
+  'eyebrow_raise', 'gentle_eye_closure', 'tight_eye_squeeze',
+  'relaxed_smile', 'lip_pucker', 'lower_teeth_show', 'reanimated_smile',
+] as const
+const v9Actions = ['BROW_RAISE', 'EYE_GENTLE', 'EYE_FORCEFUL', 'SMILE_GENTLE', 'LIP_PUCKER', 'SHOW_BOTTOM_TEETH', 'SMILE_FULL']
+const metrics = [
+  ['brow_height_asymmetry_iod', 'brow_height_change_from_rest_iod'],
+  ['eye_aperture_asymmetry_iod', 'residual_eye_aperture_iod', 'eye_closure_change_from_rest_iod'],
+  ['eye_aperture_asymmetry_iod', 'residual_eye_aperture_iod', 'eye_closure_change_from_rest_iod'],
+  ['mouth_corner_vertical_asymmetry_iod', 'mouth_corner_vertical_change_from_rest_iod'],
+  ['mouth_corner_horizontal_asymmetry_iod', 'mouth_width_change_from_rest_iod'],
+  ['mouth_corner_vertical_asymmetry_iod', 'lower_lip_change_from_rest_iod', 'mouth_open_change_from_rest_iod'],
+  ['mouth_corner_vertical_asymmetry_iod', 'mouth_corner_vertical_change_from_rest_iod'],
+]
+
+function result(includeOptional: boolean): ResearchInferenceResult {
+  const count = includeOptional ? 7 : 6
+  return {
+    mode: 'research-inference',
+    model: {
+      modelId: 'broad_literature_shared_v9_blv9_009_ensemble',
+      candidateId: 'BLV9-009',
+      releaseManifestSha256: '81e396954090a0da6b99519909c1af15b6df5d1585ba27a642539352fe0a0c64',
+      ensembleMembers: 3,
+    },
+    preprocessing: {
+      version: 'faces-to-shared-v9/v1',
+      faceLandmarkerSha256: '64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff',
+      mirrorMethod: 'horizontal_flip_and_redetect',
+      protocol: 'cue_aligned_action',
+      timingSource: 'capture_event_log',
+    },
+    quality: {
+      eligible: true,
+      actionsUsed: count,
+      optionalActionsUnavailable: includeOptional ? [] : ['reanimated_smile'],
+      actions: ids.slice(0, count).map((id, index) => ({
+        id,
+        v9Action: v9Actions[index],
+        holdStartMs: index * 4_000 + 4_500,
+        holdEndMs: index * 4_000 + 7_500,
+        validSamples: 26 + index,
+      })),
+    },
+    prediction: {
+      probability: 0.48,
+      memberProbabilities: [0.45, 0.48, 0.51],
+      predictedClass: 0,
+      threshold: 0.5,
+      interpretation: 'class_1_research_score_only',
+      endpointSemantics: 'meei_facial_palsy_vs_healthy_control_development_head',
+      class0Label: 'meei_healthy_control',
+      class1Label: 'meei_facial_palsy',
+    },
+    reportEvidence: {
+      normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled',
+      interpretation: 'measured_movement_observation_not_causal_or_severity',
+      contextFrameMethod: 'registered_hold_midpoint_not_model_selected',
+      actions: ids.slice(0, count).map((id, index) => ({
+        id,
+        contextFrameMs: index * 4_000 + 6_000,
+        observations: metrics[index].map((metric, metricIndex) => ({
+          metric,
+          value: 0.01 * (metricIndex + 1),
+          unit: 'interocular_distance' as const,
+        })),
+      })),
+    },
+    clinicalUseEligible: false,
+  }
+}
+
+describe('Research Movement Report', () => {
+  it('samples the full frame instead of treating dark corners as a black frame', () => {
+    const getImageData = vi.fn((x: number, y: number, width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4).fill(
+        x > 30 && x < 70 && y > 30 && y < 70 ? 8 : 0,
+      ),
+    }))
+    expect(frameHasVisibleContent({ getImageData } as unknown as CanvasRenderingContext2D, 100, 100)).toBe(true)
+    expect(getImageData).toHaveBeenCalledTimes(5)
+
+    getImageData.mockImplementation((_x: number, _y: number, width: number, height: number) => ({
+      data: new Uint8ClampedArray(width * height * 4),
+    }))
+    expect(frameHasVisibleContent({ getImageData } as unknown as CanvasRenderingContext2D, 100, 100)).toBe(false)
+  })
+
+  it('explains a 48 score and presents a six-action evidence report without invented grades', () => {
+    const { container } = render(
+      <ResultsView
+        result={result(false)}
+        recording={new File(['video'], 'capture.webm', { type: 'video/webm' })}
+        onBack={vi.fn()}
+        onReset={vi.fn()}
+      />,
+    )
+    expect(screen.getAllByText('48 / 100')).toHaveLength(1)
+    expect(screen.getByText(/2 points below the fixed cutpoint of 50/i)).toBeInTheDocument()
+    expect(screen.getByText(/higher scores lean toward the facial-palsy class/i)).toBeInTheDocument()
+    expect(screen.getByText('Healthy-control class')).toBeInTheDocument()
+    expect(screen.queryByText(/does not estimate the chance/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Research use only/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Validated response')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /how the model formed the score/i })).toBeInTheDocument()
+    expect(screen.getByText(/recorded actions → MediaPipe facial geometry → shared encoder → MEEI classification score/i)).toBeInTheDocument()
+    expect(screen.queryByText(/auditable movement observations/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/0\.010 means 1% of the distance between the eyes/i)).toBeInTheDocument()
+    expect(screen.getByText(/no clinical normal range or severity meaning/i)).toBeInTheDocument()
+    expect(screen.getByText(/measured movement observation — not a cause/i)).toBeInTheDocument()
+    expect(screen.getByText('Brow-height change from rest')).toBeInTheDocument()
+    expect(screen.getByText('Lower-lip movement from rest')).toBeInTheDocument()
+    expect(screen.getAllByText('Recorded context frame unavailable')).toHaveLength(6)
+    expect(screen.getByRole('heading', { name: 'Recording coverage' })).toBeInTheDocument()
+    expect(screen.getByText('Neutral baseline + all 6 active movements')).toBeInTheDocument()
+    expect(screen.getByText(/all 7 recorded steps in this session were used/i)).toBeInTheDocument()
+    expect(screen.getByText('26–31 usable of 32 checkpoints per movement')).toBeInTheDocument()
+    expect(screen.getByText(/each active movement is checked at 32 evenly spaced time points/i)).toBeInTheDocument()
+    expect(screen.getByText(/neutral recording provides the resting baseline/i)).toBeInTheDocument()
+    expect(screen.getByText('Not part of this session')).toBeInTheDocument()
+    expect(screen.queryByText('Active movements used')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sample support')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Reanimated smile' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Clinical scale status' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Not assessed')).not.toBeInTheDocument()
+    expect(screen.queryByText('Not collected')).not.toBeInTheDocument()
+    expect(screen.queryByText('Validated response provenance')).not.toBeInTheDocument()
+    expect(screen.getByText(/House–Brackmann, Sunnybrook, eFACE, and FaCE require separate clinician or patient assessment/i)).toBeInTheDocument()
+    expect(container.querySelector('.report-limitations svg')).toHaveAttribute('width', '32')
+    expect(container.textContent).not.toMatch(/\bcaused\b|contributed|abnormal|affected side|model confidence|BLV9-009/i)
+  })
+
+  it('supports all seven actions and report navigation without rerunning inference', async () => {
+    const user = userEvent.setup()
+    const onBack = vi.fn()
+    const onReset = vi.fn()
+    render(
+      <ResultsView
+        result={result(true)}
+        recording={new File(['video'], 'capture.webm', { type: 'video/webm' })}
+        onBack={onBack}
+        onReset={onReset}
+      />,
+    )
+    expect(screen.getByRole('heading', { name: 'Reanimated smile' })).toBeInTheDocument()
+    expect(screen.getByText('Neutral baseline + all 7 active movements')).toBeInTheDocument()
+    expect(screen.getByText(/all 8 recorded steps in this session were used/i)).toBeInTheDocument()
+    expect(screen.getByText('Included')).toBeInTheDocument()
+    await user.click(screen.getByRole('link', { name: /back to session summary/i }))
+    await user.click(screen.getByRole('button', { name: /start a new session/i }))
+    expect(onBack).toHaveBeenCalledTimes(1)
+    expect(onReset).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves the evidence images in the PDF and offers the source recording download', async () => {
+    const user = userEvent.setup()
+    const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
+    render(
+      <ResultsView
+        result={result(false)}
+        recording={new File(['video'], 'capture.webm', { type: 'video/webm' })}
+        onBack={vi.fn()}
+        onReset={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/recorded context images are included in the saved PDF/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download recorded video' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save PDF' }))
+    expect(print).toHaveBeenCalledTimes(1)
+    print.mockRestore()
+  })
+})

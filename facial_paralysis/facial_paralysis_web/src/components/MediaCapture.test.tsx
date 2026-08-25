@@ -5,6 +5,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { MediaCapture } from './MediaCapture'
 
 describe('MediaCapture', () => {
+  function withReportedSize(file: File, size: number): File {
+    Object.defineProperty(file, 'size', { configurable: true, value: size })
+    return file
+  }
+
   it('accepts a supported LifeLink Face video and shows session-only metadata', async () => {
     const user = userEvent.setup()
     const onRecordingChange = vi.fn()
@@ -134,6 +139,57 @@ describe('MediaCapture', () => {
 
     expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'livelink-upload')
     expect(screen.queryByText('first-session.mp4')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
+  })
+
+  it.each([
+    [0, /empty/i],
+    [512 * 1024 * 1024 + 1, /larger than 512 MB/i],
+  ] as const)('rejects unusable video size %s before retaining or uploading it', async (size, message) => {
+    const user = userEvent.setup()
+    const onRecordingChange = vi.fn()
+    render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    const file = withReportedSize(
+      new File(['bounded'], 'session.mp4', { type: 'video/mp4' }),
+      size,
+    )
+
+    await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
+
+    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'livelink-upload')
+    expect(screen.getByRole('alert')).toHaveTextContent(message)
+    expect(screen.queryByText('session.mp4')).not.toBeInTheDocument()
+  })
+
+  it('accepts the exact 512 MiB browser boundary', async () => {
+    const user = userEvent.setup()
+    const onRecordingChange = vi.fn()
+    render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    const file = withReportedSize(
+      new File(['bounded'], 'boundary.webm', { type: 'video/webm' }),
+      512 * 1024 * 1024,
+    )
+
+    await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
+
+    expect(onRecordingChange).toHaveBeenLastCalledWith(file, 'livelink-upload')
+    expect(screen.getByText('boundary.webm')).toBeInTheDocument()
+  })
+
+  it.each([
+    ['video bytes', 'misleading.mp4', 'image/png'],
+    ['video bytes', 'misleading.jpg', 'video/mp4'],
+  ])('rejects misleading extension and MIME combinations', async (contents, name, type) => {
+    const user = userEvent.setup({ applyAccept: false })
+    const onRecordingChange = vi.fn()
+    render(<MediaCapture onRecordingChange={onRecordingChange} />)
+
+    await user.upload(
+      screen.getByLabelText('Choose LifeLink Face video'),
+      new File([contents], name, { type }),
+    )
+
+    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'livelink-upload')
     expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
   })
 

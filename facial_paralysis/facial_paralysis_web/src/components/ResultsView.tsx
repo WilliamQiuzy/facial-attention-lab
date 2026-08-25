@@ -1,22 +1,60 @@
-import { AlertTriangle, CheckCircle2, Eye, Info, ScanFace } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  BarChart3,
+  Eye,
+  FileDown,
+  FileSearch,
+  ScanFace,
+  ShieldCheck,
+} from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 
-import type { DemonstrationResult } from '../model/demonstration'
-import type { RegionalSeverity } from '../model/demonstration'
+import type { DemonstrationResult, RegionalSeverity } from '../model/demonstration'
 import type { ResearchInferenceResult } from '../model/inference'
+import { RecordingDownloadButton } from './RecordingDownloadButton'
 
 export type DisplayResult = ResearchInferenceResult | DemonstrationResult
+
+const ACTION_LABELS: Readonly<Record<string, string>> = {
+  eyebrow_raise: 'Eyebrow raise',
+  gentle_eye_closure: 'Gentle eye closure',
+  tight_eye_squeeze: 'Tight eye squeeze',
+  relaxed_smile: 'Relaxed smile',
+  lip_pucker: 'Lip pucker',
+  lower_teeth_show: 'Show lower teeth',
+  reanimated_smile: 'Reanimated smile',
+}
+
+const METRIC_LABELS: Readonly<Record<string, string>> = {
+  brow_height_asymmetry_iod: 'Left–right brow-height difference',
+  brow_height_change_from_rest_iod: 'Brow-height change from rest',
+  eye_aperture_asymmetry_iod: 'Left–right eye-opening difference',
+  residual_eye_aperture_iod: 'Eye opening during the hold',
+  eye_closure_change_from_rest_iod: 'Eye-opening change from rest',
+  mouth_corner_vertical_asymmetry_iod: 'Left–right mouth-corner height difference',
+  mouth_corner_vertical_change_from_rest_iod: 'Mouth-corner movement from rest',
+  mouth_corner_horizontal_asymmetry_iod: 'Left–right mouth-corner width difference',
+  mouth_width_change_from_rest_iod: 'Mouth-width change from rest',
+  lower_lip_change_from_rest_iod: 'Lower-lip movement from rest',
+  mouth_open_change_from_rest_iod: 'Mouth-opening change from rest',
+}
+
+function score(value: number): string {
+  return `${Math.round(value * 100)} / 100`
+}
 
 function percent(value: number): string {
   return `${Math.round(value * 100)}%`
 }
 
-function RegionCard({ title, icon, region, demonstration }: { title: string; icon: React.ReactNode; region: RegionalSeverity; demonstration: boolean }) {
+function RegionCard({ title, icon, region }: { title: string; icon: React.ReactNode; region: RegionalSeverity }) {
   const markerPosition = region.level * 50
   return (
     <article className="region-card">
       <div className="region-card-header">
         <span className="region-icon">{icon}</span>
-        <div><span>{demonstration ? 'Interface preview value' : 'Ordinal region output'}</span><h3>{title}</h3></div>
+        <div><span>Interface preview value</span><h3>{title}</h3></div>
         <strong className={`severity-chip severity-${region.level}`}>{region.label}</strong>
       </div>
       <div className="severity-scale" aria-label={`${title} ordinal level ${region.level} of 2`}>
@@ -27,67 +65,243 @@ function RegionCard({ title, icon, region, demonstration }: { title: string; ico
         <div><span>P(level &gt; Normal)</span><strong>{percent(region.pGt[0])}</strong><i><b style={{ width: percent(region.pGt[0]) }} /></i></div>
         <div><span>P(level &gt; Slight)</span><strong>{percent(region.pGt[1])}</strong><i><b style={{ width: percent(region.pGt[1]) }} /></i></div>
       </div>
-      <p>{demonstration ? 'Deterministic layout values only; no model processed this video.' : 'Threshold probabilities are ordinal model outputs, not calibrated confidence.'}</p>
+      <p>Deterministic layout values only; no model processed this video.</p>
     </article>
   )
 }
 
-export function ResultsView({ result, onReset }: { result: DisplayResult; onReset: () => void }) {
-  const isDemo = result.mode === 'demonstration'
-  const probability = isDemo ? result.scores.palsyProbability : result.prediction.probability
+type FrameState = Readonly<Record<string, string | null>>
+
+export function frameHasVisibleContent(
+  context: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+): boolean {
+  const sampleSize = Math.max(1, Math.min(16, Math.floor(width / 6), Math.floor(height / 6)))
+  const positions: ReadonlyArray<readonly [number, number]> = [
+    [0.1, 0.1],
+    [0.9, 0.1],
+    [0.1, 0.9],
+    [0.9, 0.9],
+    [0.5, 0.5],
+  ]
+  let visible = false
+  for (const [xRatio, yRatio] of positions) {
+    const x = Math.round((width - sampleSize) * xRatio)
+    const y = Math.round((height - sampleSize) * yRatio)
+    const sample = context.getImageData(x, y, sampleSize, sampleSize).data
+    for (let index = 0; index < sample.length; index += 4) {
+      if (sample[index] !== 0 || sample[index + 1] !== 0 || sample[index + 2] !== 0) {
+        visible = true
+        break
+      }
+    }
+  }
+  return visible
+}
+
+function waitForMediaEvent(
+  element: HTMLVideoElement,
+  event: 'loadedmetadata' | 'durationchange' | 'seeked',
+  timeoutMs = 4_000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      cleanup()
+      reject(new Error(`${event} timed out`))
+    }, timeoutMs)
+    const onEvent = () => { cleanup(); resolve() }
+    const onError = () => { cleanup(); reject(new Error('video decode failed')) }
+    const cleanup = () => {
+      window.clearTimeout(timeout)
+      element.removeEventListener(event, onEvent)
+      element.removeEventListener('error', onError)
+    }
+    element.addEventListener(event, onEvent, { once: true })
+    element.addEventListener('error', onError, { once: true })
+  })
+}
+
+function useContextFrames(
+  recording: File,
+  actions: ResearchInferenceResult['reportEvidence']['actions'],
+): FrameState {
+  const [frames, setFrames] = useState<FrameState>({})
+
+  useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
+    const canvas = document.createElement('canvas')
+    const video = document.createElement('video')
+    video.preload = 'metadata'
+    video.muted = true
+    video.playsInline = true
+
+    const run = async () => {
+      const failed = Object.fromEntries(actions.map((action) => [action.id, null]))
+      if (navigator.userAgent.includes('jsdom')) {
+        if (!cancelled) setFrames(failed)
+        return
+      }
+      try {
+        objectUrl = URL.createObjectURL(recording)
+        video.src = objectUrl
+        video.load()
+        await waitForMediaEvent(video, 'loadedmetadata')
+        if (!Number.isFinite(video.duration)) {
+          const durationReady = waitForMediaEvent(video, 'durationchange')
+          video.currentTime = Number.MAX_SAFE_INTEGER
+          await durationReady
+        }
+        if (!Number.isFinite(video.duration) || video.duration <= 0 || video.videoWidth < 2 || video.videoHeight < 2) {
+          throw new Error('video metadata is unusable')
+        }
+        const width = Math.min(video.videoWidth, 640)
+        const height = Math.max(2, Math.round(video.videoHeight * width / video.videoWidth))
+        canvas.width = width
+        canvas.height = height
+        const context = canvas.getContext('2d', { alpha: false })
+        if (!context) throw new Error('canvas is unavailable')
+        const next: Record<string, string | null> = {}
+        for (const action of actions) {
+          if (cancelled) return
+          const target = Math.min(Math.max(action.contextFrameMs / 1_000, 0), Math.max(video.duration - 0.001, 0))
+          if (Math.abs(video.currentTime - target) > 0.001) {
+            const seeked = waitForMediaEvent(video, 'seeked')
+            video.currentTime = target
+            await seeked
+          }
+          context.drawImage(video, 0, 0, width, height)
+          next[action.id] = frameHasVisibleContent(context, width, height)
+            ? canvas.toDataURL('image/jpeg', 0.82)
+            : null
+          context.clearRect(0, 0, width, height)
+        }
+        if (!cancelled) setFrames(next)
+      } catch {
+        if (!cancelled) setFrames(failed)
+      }
+    }
+    void run()
+    return () => {
+      cancelled = true
+      if (objectUrl) {
+        video.pause()
+        video.removeAttribute('src')
+        video.load()
+      }
+      canvas.width = 0
+      canvas.height = 0
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [recording, actions])
+
+  return frames
+}
+
+function DemonstrationResults({ result, onReset }: { result: DemonstrationResult; onReset: () => void }) {
   return (
     <section className="results-section" aria-labelledby="results-title">
-      <div className={isDemo ? 'result-banner is-demo' : 'result-banner is-accepted'} role="status" aria-live="polite" aria-atomic="true">
-        {isDemo ? <AlertTriangle aria-hidden="true" size={21} /> : <CheckCircle2 aria-hidden="true" size={21} />}
-        <div>
-          <strong>{isDemo ? result.provenanceLabel : 'Accepted research inference'}</strong>
-          <span>{isDemo ? 'Interface preview values only. No model processed this video.' : 'Video hash, action timeline, preprocessing, and Shared V9 identity passed the fail-closed gate.'}</span>
-        </div>
+      <div className="result-banner is-demo" role="status" aria-live="polite" aria-atomic="true">
+        <AlertTriangle aria-hidden="true" size={21} />
+        <div><strong>{result.provenanceLabel}</strong><span>Interface preview values only. No model processed this video.</span></div>
       </div>
-
       <div className="results-heading">
-        <div>
-          <span className="eyebrow">{isDemo ? 'Interface demonstration' : 'Research output'}</span>
-          <h2 id="results-title">Shared V9 movement summary</h2>
-          <p>{isDemo ? 'Preview the result layout only. These values were not produced by a model.' : 'Review the source video alongside these model outputs. They do not replace clinician assessment.'}</p>
-        </div>
+        <div><span className="eyebrow">Interface demonstration</span><h2 id="results-title">Shared V9 movement summary</h2><p>Preview the result layout only. These values were not produced by a model.</p></div>
         <button className="button button-secondary" type="button" onClick={onReset}>Start a new session</button>
       </div>
-
       <div className="probability-card">
-        <div className="probability-copy">
-          <span className="region-icon"><ScanFace aria-hidden="true" size={24} /></span>
-          <div>
-            <span>{isDemo ? 'Interface preview value' : 'Binary model output'}</span>
-            <h3>{isDemo ? 'Demonstration probability layout' : 'Uncalibrated research probability'}</h3>
-            <p>{isDemo ? 'Synthetic display value generated from local file metadata.' : 'Shared V9 ensemble probability for its binary research endpoint.'}</p>
-          </div>
-        </div>
-        <div className="probability-value">
-          <strong>{percent(probability)}</strong>
-          <span>{isDemo ? 'not model output' : 'not a diagnosis'}</span>
-        </div>
+        <div className="probability-copy"><span className="region-icon"><ScanFace aria-hidden="true" size={24} /></span><div><span>Interface preview value</span><h3>Demonstration probability layout</h3><p>Synthetic display value generated from local file metadata.</p></div></div>
+        <div className="probability-value"><strong>{percent(result.scores.palsyProbability)}</strong><span>not model output</span></div>
       </div>
-
-      {isDemo ? <div className="region-grid">
-        <RegionCard title="Eye region" icon={<Eye aria-hidden="true" size={22} />} region={result.scores.eyes} demonstration />
-        <RegionCard title="Mouth region" icon={<ScanFace aria-hidden="true" size={22} />} region={result.scores.mouth} demonstration />
-      </div> : null}
-
-      {!isDemo ? (
-        <div className="provenance-card">
-          <Info aria-hidden="true" size={20} />
-          <div>
-            <strong>Validated response provenance</strong>
-            <dl>
-              <div><dt>Release</dt><dd>{result.model.candidateId}</dd></div>
-              <div><dt>Manifest SHA-256</dt><dd><code>{result.model.releaseManifestSha256.slice(0, 12)}…{result.model.releaseManifestSha256.slice(-8)}</code></dd></div>
-              <div><dt>Preprocessing</dt><dd>{result.preprocessing.version}</dd></div>
-              <div><dt>Valid actions</dt><dd>{result.quality.actionsUsed} / 7</dd></div>
-            </dl>
-          </div>
-        </div>
-      ) : null}
+      <div className="region-grid">
+        <RegionCard title="Eye region" icon={<Eye aria-hidden="true" size={22} />} region={result.scores.eyes} />
+        <RegionCard title="Mouth region" icon={<ScanFace aria-hidden="true" size={22} />} region={result.scores.mouth} />
+      </div>
     </section>
   )
+}
+
+function ResearchReport({ result, recording, onBack, onReset }: {
+  result: ResearchInferenceResult
+  recording: File
+  onBack: () => void
+  onReset: () => void
+}) {
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const frames = useContextFrames(recording, result.reportEvidence.actions)
+  const cutpoint = Math.round(result.prediction.threshold * 100)
+  const displayedScore = Math.round(result.prediction.probability * 100)
+  const pointsFromCutpoint = Math.abs(displayedScore - cutpoint)
+  const cutpointRelation = displayedScore >= cutpoint ? 'above' : 'below'
+  const outputClass = result.prediction.predictedClass === 1 ? 'Facial-palsy class' : 'Healthy-control class'
+  const validSamples = result.quality.actions.map((action) => action.validSamples)
+  const minimumValidSamples = Math.min(...validSamples)
+  const maximumValidSamples = Math.max(...validSamples)
+
+  useEffect(() => { headingRef.current?.focus() }, [])
+
+  return (
+    <article className="research-report" aria-labelledby="research-report-title">
+      <nav className="report-toolbar" aria-label="Research report actions">
+        <a className="report-back-link" href="#analysis" onClick={(event) => { event.preventDefault(); onBack() }}><ArrowLeft aria-hidden="true" size={17} /> Back to session summary</a>
+        <div className="report-toolbar-actions">
+          <div className="report-save-control">
+            <button className="button button-primary report-save-button" type="button" onClick={() => window.print()}><FileDown aria-hidden="true" size={17} /> Save PDF</button>
+            <span>Recorded context images are included in the saved PDF.</span>
+          </div>
+          <RecordingDownloadButton recording={recording} compact />
+          <button className="button button-secondary" type="button" onClick={onReset}>Start a new session</button>
+        </div>
+      </nav>
+
+      <header className="report-header">
+        <div><h1 id="research-report-title" ref={headingRef} tabIndex={-1}>Research Movement Report</h1><p>Facial movement classification and recorded action evidence.</p></div>
+      </header>
+
+      <section className="report-score-section" aria-labelledby="score-title">
+        <div className="report-score-card"><span className="region-icon"><BarChart3 aria-hidden="true" size={25} /></span><div><span>MEEI facial-movement classification score</span><strong>{score(result.prediction.probability)}</strong><p>{pointsFromCutpoint} points {cutpointRelation} the fixed cutpoint of {cutpoint}.</p></div></div>
+        <div className="score-explanation">
+          <h2 id="score-title">What this number represents</h2>
+          <p>This is the average of three model outputs on the MEEI facial-palsy-versus-healthy-control classification scale. Higher scores lean toward the facial-palsy class; lower scores lean toward the healthy-control class.</p>
+          <div className="classification-summary"><span>Current output</span><strong>{outputClass}</strong><small>{pointsFromCutpoint} points {cutpointRelation} the cutpoint</small></div>
+        </div>
+      </section>
+
+      <section className="report-section" aria-labelledby="basis-title">
+        <div className="section-heading"><span className="region-icon"><ScanFace aria-hidden="true" size={22} /></span><div><h2 id="basis-title">How the model formed the score</h2><p>Recorded actions → MediaPipe facial geometry → shared encoder → MEEI classification score.</p></div></div>
+      </section>
+
+      <section className="report-section" aria-labelledby="evidence-title">
+        <div className="section-heading"><span className="region-icon"><FileSearch aria-hidden="true" size={22} /></span><div><h2 id="evidence-title">Recorded action evidence</h2><p>Each context image is taken at the registered midpoint of its three-second hold. It is recorded context, not a frame selected by the model.</p></div></div>
+        <p className="measurement-boundary"><ShieldCheck aria-hidden="true" size={18} /><strong>Measured movement observation — not a cause of the model score or a clinical severity grade.</strong></p>
+        <p className="measurement-unit-note">0.010 means 1% of the distance between the eyes. These descriptive geometry values have no clinical normal range or severity meaning.</p>
+        <div className="evidence-grid">{result.reportEvidence.actions.map((action) => (
+          <article className="evidence-card" key={action.id}>
+            <div className="evidence-frame">{frames[action.id] ? <img src={frames[action.id] ?? undefined} alt={`${ACTION_LABELS[action.id]} recorded context at ${(action.contextFrameMs / 1_000).toFixed(1)} seconds`} /> : <div className="frame-fallback" role="img" aria-label={`${ACTION_LABELS[action.id]} context frame unavailable`}><ScanFace aria-hidden="true" size={30} /><span>Recorded context frame unavailable</span></div>}<span>{(action.contextFrameMs / 1_000).toFixed(1)} s</span></div>
+            <div className="evidence-copy"><h3>{ACTION_LABELS[action.id]}</h3><dl>{action.observations.map((observation) => <div key={observation.metric}><dt>{METRIC_LABELS[observation.metric]}</dt><dd>{observation.value.toFixed(3)} <span>× inter-eye distance</span></dd></div>)}</dl></div>
+          </article>
+        ))}</div>
+      </section>
+
+      <section className="report-section compact recording-coverage" aria-labelledby="quality-title">
+        <h2 id="quality-title">Recording coverage</h2>
+        <dl className="report-definition-list"><div><dt>Recorded steps included in this score</dt><dd>Neutral baseline + all {result.quality.actionsUsed} active movements</dd></div><div><dt>Face tracking coverage</dt><dd>{minimumValidSamples}–{maximumValidSamples} usable of 32 checkpoints per movement</dd></div><div><dt>Optional Step 8</dt><dd>{result.quality.optionalActionsUnavailable.length ? 'Not part of this session' : 'Included'}</dd></div></dl>
+        <div className="coverage-explanation"><p><ShieldCheck aria-hidden="true" size={19} />All {result.quality.actionsUsed + 1} recorded steps in this session were used: one neutral baseline and {result.quality.actionsUsed} active movements.</p><p>Each active movement is checked at 32 evenly spaced time points; the range above shows how many had usable face tracking. The neutral recording provides the resting baseline used for movement-change measurements.</p></div>
+      </section>
+
+      <section className="report-limitations" aria-labelledby="limitations-title"><AlertTriangle aria-hidden="true" size={32} strokeWidth={1.8} /><div><h2 id="limitations-title">Interpretation limits</h2><p>This research model has not been clinically validated for Mayo patients and does not provide diagnosis, etiology, affected-side identification, or treatment guidance. Scores close to the cutpoint may be sensitive to recording and population differences. House–Brackmann, Sunnybrook, eFACE, and FaCE require separate clinician or patient assessment and are not generated in this report.</p></div></section>
+    </article>
+  )
+}
+
+export function ResultsView({ result, recording, onReset, onBack = () => undefined }: {
+  result: DisplayResult
+  recording?: File
+  onReset: () => void
+  onBack?: () => void
+}) {
+  if (result.mode === 'demonstration') return <DemonstrationResults result={result} onReset={onReset} />
+  if (!recording) throw new Error('Research report requires the in-memory browser recording')
+  return <ResearchReport result={result} recording={recording} onBack={onBack} onReset={onReset} />
 }

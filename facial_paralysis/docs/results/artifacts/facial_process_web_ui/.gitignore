@@ -1,0 +1,7 @@
+# Public report artifacts use an explicit non-person synthetic allowlist.
+*
+!.gitignore
+!evidence-report-synthetic-desktop.png
+!evidence-report-synthetic-mobile.png
+!evidence-report-no-face-rejection.png
+!facial-process-shared-v9-synthetic-report-with-images.pdf

@@ -42,6 +42,10 @@ docker compose -f deploy/facial-process-shared-v9/compose.yaml up --no-build -d
 
 Then open <http://127.0.0.1:8080>.
 
+The page verifies `GET /api/v1/facial-paralysis/ready` against the exact pinned
+model and preprocessing identity before enabling a guided patient recording.
+It does not treat a configured URL as proof that the model is online.
+
 The full stack builds its model container from the checked-in, digest-pinned
 Dockerfile and the Git-tracked release weights. Its release-manifest commitment
 is:
@@ -82,18 +86,48 @@ three seconds. Step 8 is omitted when not clinically applicable; it is never
 zero-imputed. The server rejects missing mandatory actions, digest drift, duplicate or extra form
 fields, unsupported media, insufficient frame rate, incomplete time coverage,
 and fewer than 26 valid paired MediaPipe samples in any active action.
+The browser and proxy accept an exact 512 MiB video; Nginx reserves one
+additional MiB for bounded multipart framing so that boundary-valid uploads
+reach the gateway's authoritative size check.
+
+Every expected failure returns one closed non-identifying error code. The UI
+turns it into a concrete recovery action for missing video, invalid capture
+evidence, unsupported format/dimensions/frame rate, timeline drift, decode
+failure, action-specific tracking failure, facial-geometry failure, gateway or
+model unavailability, and a five-minute request timeout. Network/service
+failures retain the same page-scoped recording for retry. Capture-quality
+failures retain the preview and explain why a new recording is required.
 
 The success response has schema
-`facial-paralysis-shared-v9-inference/v1`. It contains only:
+`facial-paralysis-shared-v9-inference/v2`. It contains only:
 
 - pinned model/release identity;
 - pinned preprocessing and MediaPipe identity;
 - action-level tracking counts;
-- ensemble probability, three member probabilities, 0.5-threshold class;
+- the MEEI-development-head class-1 research score, three member scores, and
+  the fixed 0.5 threshold, explicitly not a calibrated Mayo/FACES patient
+  probability;
+- finite, inter-eye-normalized descriptive brow, eye, and mouth movement
+  observations for each registered action hold;
 - `clinical_use_eligible: false`.
 
 No raw landmarks, video path, patient identifier, HB grade, regional severity,
-or label is returned.
+or patient label is returned. Context frames are decoded only from the
+page-scoped browser recording at registered hold midpoints; the server never
+returns or persists images.
+
+After recording, the browser can export the exact source video to the current
+device under a fixed de-identified filename. The formal report can also be
+printed or saved as PDF with its context images. These exports use the existing
+in-memory recording and do not create a server media store; the exported files
+remain identifiable and must be handled under the approved protocol.
+
+Every inference requires an `Idempotency-Key` derived from the exact video,
+canonical manifest and timeline, model release, and preprocessing identity.
+The browser synchronously blocks repeated activation. The gateway keeps a
+bounded 15-minute in-memory single-flight result so the same key and bytes wait
+for or replay one response, while a key reused for different bytes is rejected.
+No video bytes enter this cache.
 
 ## Security and operational boundary
 
@@ -143,3 +177,11 @@ without following symbolic links:
 ```bash
 python3 scripts/maintain_facial_process_docker.py cap-logs
 ```
+
+When a local keep-running supervisor uses an additional Compose override, all
+manual rebuild/start commands must use that same override (or retag the newly
+built images to the override's fixed local tags before `up`). Running the base
+Compose file alone while the supervisor reconciles a different image set can
+briefly recreate healthy containers. This is a supervisor-configuration drift,
+not a storage-cleanup operation; the daily maintenance tool itself never calls
+Compose and never restarts a service.

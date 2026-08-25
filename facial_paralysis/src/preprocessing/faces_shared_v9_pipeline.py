@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from .dense_bilateral_action_v1 import normalize_dense_landmarks
+from .clinical_landmarks import clinical_landmark_features
 from .shared_clinical_tokens_v1 import dense_action_token_bag
 from .script_action_segmentation_v1 import (
     FACES_ACTION_ORDER,
@@ -29,7 +30,7 @@ from .script_action_segmentation_v1 import (
 
 CAPTURE_MANIFEST_SCHEMA = "faces-v9-capture-manifest/v1"
 CAPTURE_PROTOCOL_VERSION = "FACES-v0.01"
-GATEWAY_RESPONSE_SCHEMA = "facial-paralysis-shared-v9-inference/v1"
+GATEWAY_RESPONSE_SCHEMA = "facial-paralysis-shared-v9-inference/v2"
 PREPROCESSING_VERSION = "faces-to-shared-v9/v1"
 SHARED_V9_MODEL_ID = "broad_literature_shared_v9_blv9_009_ensemble"
 SHARED_V9_CANDIDATE_ID = "BLV9-009"
@@ -59,6 +60,81 @@ ACTION_VOCAB = (
 )
 
 
+class CaptureTrackingError(ValueError):
+    """Non-identifying action-level evidence for an insufficient face track."""
+
+    def __init__(
+        self,
+        action: str,
+        *,
+        valid_samples: int,
+        required_samples: int = 26,
+    ):
+        if (
+            action not in FACES_ACTION_ORDER
+            or type(valid_samples) is not int
+            or not 0 <= valid_samples <= 32
+            or type(required_samples) is not int
+            or not 1 <= required_samples <= 32
+        ):
+            raise ValueError("tracking failure evidence differs from the closed contract")
+        self.action = action
+        self.valid_samples = valid_samples
+        self.required_samples = required_samples
+        super().__init__(
+            f"FACES action {action} has {valid_samples} of 32 valid paired samples; "
+            f"{required_samples} required"
+        )
+
+
+class CaptureTimingError(ValueError):
+    """Non-identifying numeric evidence for a decoded/timeline clock mismatch."""
+
+    _REASONS = frozenset({
+        "recording_too_long",
+        "hold_sampling_incomplete",
+        "hold_sampling_precision",
+        "incomplete_final_hold",
+        "timeline_duration_drift",
+    })
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        decoded_duration_ms: int,
+        timeline_duration_ms: int,
+        last_hold_ms: int,
+        source_fps: float,
+        decoded_frame_count: int,
+        tolerance_ms: int,
+    ):
+        if (
+            reason not in self._REASONS
+            or type(decoded_duration_ms) is not int
+            or decoded_duration_ms < 1
+            or type(timeline_duration_ms) is not int
+            or timeline_duration_ms < 1
+            or type(last_hold_ms) is not int
+            or last_hold_ms < 1
+            or not math.isfinite(source_fps)
+            or source_fps <= 0
+            or type(decoded_frame_count) is not int
+            or decoded_frame_count < 1
+            or type(tolerance_ms) is not int
+            or tolerance_ms < 1
+        ):
+            raise ValueError("timing failure evidence differs from the closed contract")
+        self.reason = reason
+        self.decoded_duration_ms = decoded_duration_ms
+        self.timeline_duration_ms = timeline_duration_ms
+        self.last_hold_ms = last_hold_ms
+        self.source_fps = float(source_fps)
+        self.decoded_frame_count = decoded_frame_count
+        self.tolerance_ms = tolerance_ms
+        super().__init__("decoded duration contradicts the FACES timeline")
+
+
 @dataclass(frozen=True)
 class CaptureManifest:
     schema_version: str
@@ -79,6 +155,20 @@ class CaptureEvidence:
 class PreparedV9Request:
     arrays: dict[str, np.ndarray]
     valid_samples_per_action: tuple[int, ...]
+    descriptive_evidence_per_action: tuple["DescriptiveActionEvidence", ...]
+
+
+@dataclass(frozen=True)
+class DescriptiveObservation:
+    metric: str
+    value: float
+
+
+@dataclass(frozen=True)
+class DescriptiveActionEvidence:
+    action_id: str
+    context_frame_ms: int
+    observations: tuple[DescriptiveObservation, ...]
 
 
 @dataclass(frozen=True)
@@ -257,23 +347,21 @@ def decode_capture_samples(
         if not capture.isOpened():
             raise ValueError("video cannot be decoded")
         try:
-            fps = float(capture.get(cv2.CAP_PROP_FPS))
+            reported_fps = float(capture.get(cv2.CAP_PROP_FPS))
             width = int(round(capture.get(cv2.CAP_PROP_FRAME_WIDTH)))
             height = int(round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-            if (
-                not math.isfinite(fps)
-                or fps < 32.0 / 3.0
-                or width < 2
-                or height < 2
-                or width * height > MAX_VIDEO_PIXELS
-            ):
-                raise ValueError("video clock or dimensions are outside the gateway bounds")
+            if width < 2 or height < 2 or width * height > MAX_VIDEO_PIXELS:
+                raise ValueError("video dimensions are outside the gateway bounds")
             selected_frames: list[np.ndarray] = []
             selected_times: list[float] = []
             selected_indices: list[int] = []
             target_index = 0
             previous: tuple[int, float, np.ndarray] | None = None
             decoded_count = 0
+            clock_mode: str | None = None
+            position_origin: float | None = None
+            previous_position: float | None = None
+            last_timestamp = 0.0
             while True:
                 ok, frame = capture.read()
                 if not ok:
@@ -284,7 +372,37 @@ def decode_capture_samples(
                     or frame.shape != (height, width, 3)
                 ):
                     raise ValueError("decoded frame dimensions changed inside the recording")
-                timestamp = decoded_count * 1000.0 / fps
+                raw_position = float(capture.get(cv2.CAP_PROP_POS_MSEC))
+                if decoded_count == 0:
+                    if math.isfinite(raw_position) and raw_position >= 0:
+                        position_origin = raw_position
+                        previous_position = raw_position
+                    timestamp = 0.0
+                elif clock_mode is None:
+                    if (
+                        position_origin is not None
+                        and math.isfinite(raw_position)
+                        and raw_position > position_origin
+                    ):
+                        clock_mode = "container"
+                        timestamp = raw_position - position_origin
+                        previous_position = raw_position
+                    else:
+                        if not math.isfinite(reported_fps) or reported_fps <= 0:
+                            raise ValueError("video frame rate is below the gateway minimum")
+                        clock_mode = "nominal"
+                        timestamp = decoded_count * 1000.0 / reported_fps
+                elif clock_mode == "container":
+                    if (
+                        not math.isfinite(raw_position)
+                        or previous_position is None
+                        or raw_position <= previous_position
+                    ):
+                        raise ValueError("video container timestamps are not strictly increasing")
+                    timestamp = raw_position - position_origin
+                    previous_position = raw_position
+                else:
+                    timestamp = decoded_count * 1000.0 / reported_fps
                 current = (decoded_count, timestamp, frame)
                 while target_index < targets.size and targets[target_index] <= timestamp:
                     target = float(targets[target_index])
@@ -297,35 +415,68 @@ def decode_capture_samples(
                     selected_frames.append(_immutable(chosen[2]))
                     target_index += 1
                 previous = current
+                last_timestamp = timestamp
                 decoded_count += 1
-            if previous is not None:
-                while target_index < targets.size:
-                    target = float(targets[target_index])
-                    if abs(previous[1] - target) > 500.0 / fps:
-                        break
-                    if selected_indices and previous[0] <= selected_indices[-1]:
-                        break
-                    selected_indices.append(previous[0])
-                    selected_times.append(previous[1])
-                    selected_frames.append(_immutable(previous[2]))
-                    target_index += 1
         finally:
             capture.release()
-    if decoded_count < 1 or target_index != targets.size:
+    if decoded_count < 1:
         raise ValueError("decoded recording does not cover every FACES hold")
-    duration_ms = int(round(decoded_count * 1000.0 / fps))
+    if decoded_count == 1 or clock_mode != "container":
+        fps = reported_fps
+    else:
+        fps = (decoded_count - 1) * 1000.0 / last_timestamp
+    if not math.isfinite(fps) or fps < 32.0 / 3.0:
+        raise ValueError("video frame rate is below the gateway minimum")
+    if previous is not None:
+        while target_index < targets.size:
+            target = float(targets[target_index])
+            if abs(previous[1] - target) > 500.0 / fps:
+                break
+            if selected_indices and previous[0] <= selected_indices[-1]:
+                break
+            selected_indices.append(previous[0])
+            selected_times.append(previous[1])
+            selected_frames.append(_immutable(previous[2]))
+            target_index += 1
+    duration_ms = int(round(last_timestamp + 1000.0 / fps))
     last_hold = timeline.actions[-1].hold_end_ms
     tolerance_ms = max(250, int(math.ceil(2000.0 / fps)))
-    if (
-        duration_ms > MAX_VIDEO_DURATION_MS
-        or last_hold > duration_ms + tolerance_ms
-        or abs(duration_ms - timeline.recording_duration_ms) > 1_500
-    ):
-        raise ValueError("decoded duration contradicts the FACES timeline")
+    if target_index != targets.size:
+        timing_reason = "hold_sampling_incomplete"
+    elif duration_ms > MAX_VIDEO_DURATION_MS:
+        timing_reason = "recording_too_long"
+    elif last_hold > duration_ms + tolerance_ms:
+        timing_reason = "incomplete_final_hold"
+    elif abs(duration_ms - timeline.recording_duration_ms) > 1_500:
+        timing_reason = "timeline_duration_drift"
+    else:
+        timing_reason = None
+    if timing_reason is not None:
+        raise CaptureTimingError(
+            timing_reason,
+            decoded_duration_ms=duration_ms,
+            timeline_duration_ms=timeline.recording_duration_ms,
+            last_hold_ms=last_hold,
+            source_fps=fps,
+            decoded_frame_count=decoded_count,
+            tolerance_ms=tolerance_ms,
+        )
     sampled_times = np.asarray(selected_times, dtype=np.float64)
     target_error = np.abs(sampled_times - targets)
-    if np.any(target_error > 500.0 / fps + np.finfo(np.float64).eps * 32):
-        raise ValueError("decoded hold sampling exceeds half a source frame")
+    target_tolerance_ms = min(
+        (timing.hold_end_ms - timing.hold_start_ms) / 64.0
+        for timing in timeline.actions
+    )
+    if np.any(target_error > target_tolerance_ms + np.finfo(np.float64).eps * 32):
+        raise CaptureTimingError(
+            "hold_sampling_precision",
+            decoded_duration_ms=duration_ms,
+            timeline_duration_ms=timeline.recording_duration_ms,
+            last_hold_ms=last_hold,
+            source_fps=fps,
+            decoded_frame_count=decoded_count,
+            tolerance_ms=max(1, int(math.ceil(target_tolerance_ms))),
+        )
     return DecodedCaptureSamples(
         frames=tuple(selected_frames),
         frame_timestamps_ms=_immutable(sampled_times),
@@ -404,6 +555,107 @@ def _mesh_stream(
     return timestamps.astype(np.float64, copy=False), indices, original, mirrored, valid
 
 
+_ACTION_EVIDENCE_METRICS = {
+    "eyebrow_raise": (
+        "brow_height_asymmetry_iod",
+        "brow_height_change_from_rest_iod",
+    ),
+    "gentle_eye_closure": (
+        "eye_aperture_asymmetry_iod",
+        "residual_eye_aperture_iod",
+        "eye_closure_change_from_rest_iod",
+    ),
+    "tight_eye_squeeze": (
+        "eye_aperture_asymmetry_iod",
+        "residual_eye_aperture_iod",
+        "eye_closure_change_from_rest_iod",
+    ),
+    "relaxed_smile": (
+        "mouth_corner_vertical_asymmetry_iod",
+        "mouth_corner_vertical_change_from_rest_iod",
+    ),
+    "lip_pucker": (
+        "mouth_corner_horizontal_asymmetry_iod",
+        "mouth_width_change_from_rest_iod",
+    ),
+    "lower_teeth_show": (
+        "mouth_corner_vertical_asymmetry_iod",
+        "lower_lip_change_from_rest_iod",
+        "mouth_open_change_from_rest_iod",
+    ),
+    "reanimated_smile": (
+        "mouth_corner_vertical_asymmetry_iod",
+        "mouth_corner_vertical_change_from_rest_iod",
+    ),
+}
+
+
+def _clinical_rows(meshes: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    selected = meshes[mask]
+    rows = np.stack([
+        clinical_landmark_features(mesh, 1.0, 1.0) for mesh in selected
+    ]).astype(np.float64, copy=False)
+    if rows.ndim != 2 or rows.shape[1] != 23 or not np.isfinite(rows).all():
+        raise ValueError("descriptive clinical geometry could not be measured")
+    return rows
+
+
+def _descriptive_action_evidence(
+    *,
+    action_id: str,
+    timing,
+    action_meshes: np.ndarray,
+    action_valid: np.ndarray,
+    baseline_meshes: np.ndarray,
+    baseline_valid: np.ndarray,
+) -> DescriptiveActionEvidence:
+    action_rows = _clinical_rows(action_meshes, action_valid)
+    rest_rows = _clinical_rows(baseline_meshes, baseline_valid)
+    action_median = np.median(action_rows, axis=0)
+    rest_median = np.median(rest_rows, axis=0)
+    action_brow = float(np.mean(action_median[[10, 11]]))
+    rest_brow = float(np.mean(rest_median[[10, 11]]))
+    action_eye = float(np.mean(action_median[[0, 1]]))
+    rest_eye = float(np.mean(rest_median[[0, 1]]))
+    values = {
+        "brow_height_asymmetry_iod": float(action_median[12]),
+        "brow_height_change_from_rest_iod": abs(action_brow - rest_brow),
+        "eye_aperture_asymmetry_iod": float(action_median[2]),
+        "residual_eye_aperture_iod": action_eye,
+        "eye_closure_change_from_rest_iod": abs(action_eye - rest_eye),
+        "mouth_corner_vertical_asymmetry_iod": float(action_median[16]),
+        "mouth_corner_vertical_change_from_rest_iod": float(np.mean(np.abs(
+            action_median[[14, 15]] - rest_median[[14, 15]]
+        ))),
+        "mouth_corner_horizontal_asymmetry_iod": float(action_median[20]),
+        "mouth_width_change_from_rest_iod": abs(
+            float(action_median[21] - rest_median[21])
+        ),
+        "lower_lip_change_from_rest_iod": abs(float(
+            np.median(action_meshes[action_valid, 14, 1])
+            - np.median(baseline_meshes[baseline_valid, 14, 1])
+        )),
+        "mouth_open_change_from_rest_iod": abs(
+            float(action_median[22] - rest_median[22])
+        ),
+    }
+    metrics = _ACTION_EVIDENCE_METRICS.get(action_id)
+    if metrics is None:
+        raise ValueError("action has no descriptive evidence contract")
+    observations = tuple(
+        DescriptiveObservation(metric=metric, value=values[metric])
+        for metric in metrics
+    )
+    if any(not math.isfinite(item.value) or item.value < 0.0 for item in observations):
+        raise ValueError("descriptive action evidence must be finite and nonnegative")
+    midpoint = (timing.hold_start_ms + timing.hold_end_ms) // 2
+    return DescriptiveActionEvidence(
+        action_id=action_id,
+        context_frame_ms=midpoint,
+        observations=observations,
+    )
+
+
 def build_v9_action_arrays(
     evidence: CaptureEvidence,
     *,
@@ -456,11 +708,15 @@ def build_v9_action_arrays(
             landmark_features=combined,
         )
         if not segment.eligible:
-            raise ValueError(f"FACES action {action} failed the 26-of-32 tracking gate")
+            raise CaptureTrackingError(
+                action,
+                valid_samples=int(segment.valid_mask.sum()),
+            )
         segments[action] = segment
 
     baseline = segments["neutral_repose"]
     present_actions = _present_v9_actions(evidence)
+    by_action = {item.action: item for item in evidence.timeline.actions}
     active = [segments[action] for action, _v9 in present_actions]
     original_actions = np.stack([original[item.frame_positions] for item in active])
     mirrored_actions = np.stack([mirrored[item.frame_positions] for item in active])
@@ -502,7 +758,22 @@ def build_v9_action_arrays(
     }
     frozen = {name: _immutable(value) for name, value in arrays.items()}
     counts = tuple(int(item.valid_mask.sum()) for item in active)
-    return PreparedV9Request(arrays=frozen, valid_samples_per_action=counts)
+    descriptive = tuple(
+        _descriptive_action_evidence(
+            action_id=action_id,
+            timing=by_action[action_id],
+            action_meshes=original[segment.frame_positions],
+            action_valid=segment.valid_mask,
+            baseline_meshes=original_baseline,
+            baseline_valid=baseline_valid,
+        )
+        for (action_id, _v9), segment in zip(present_actions, active)
+    )
+    return PreparedV9Request(
+        arrays=frozen,
+        valid_samples_per_action=counts,
+        descriptive_evidence_per_action=descriptive,
+    )
 
 
 def encode_v9_request_npz(arrays: Mapping[str, np.ndarray]) -> bytes:
@@ -533,6 +804,7 @@ def build_gateway_response(
     *,
     evidence: CaptureEvidence,
     valid_samples_per_action: tuple[int, ...],
+    descriptive_evidence_per_action: tuple[DescriptiveActionEvidence, ...],
     preprocessing_version: str,
     face_landmarker_sha256: str,
 ) -> dict[str, object]:
@@ -577,6 +849,45 @@ def build_gateway_response(
     ):
         raise ValueError("every active FACES action requires 26 of 32 valid samples")
     by_action = {item.action: item for item in evidence.timeline.actions}
+    if (
+        type(descriptive_evidence_per_action) is not tuple
+        or len(descriptive_evidence_per_action) != len(present_actions)
+    ):
+        raise ValueError("descriptive evidence must align with every active action")
+    evidence_rows = []
+    for (action, _v9_action), item in zip(
+        present_actions, descriptive_evidence_per_action
+    ):
+        timing = by_action[action]
+        expected_midpoint = (timing.hold_start_ms + timing.hold_end_ms) // 2
+        expected_metrics = _ACTION_EVIDENCE_METRICS[action]
+        if (
+            not isinstance(item, DescriptiveActionEvidence)
+            or item.action_id != action
+            or item.context_frame_ms != expected_midpoint
+            or type(item.observations) is not tuple
+            or tuple(observation.metric for observation in item.observations)
+            != expected_metrics
+            or any(
+                not isinstance(observation, DescriptiveObservation)
+                or not math.isfinite(observation.value)
+                or observation.value < 0.0
+                for observation in item.observations
+            )
+        ):
+            raise ValueError("descriptive evidence differs from the closed action contract")
+        evidence_rows.append({
+            "id": action,
+            "context_frame_ms": item.context_frame_ms,
+            "observations": [
+                {
+                    "metric": observation.metric,
+                    "value": round(observation.value, 6),
+                    "unit": "interocular_distance",
+                }
+                for observation in item.observations
+            ],
+        })
     action_rows = [
         {
             "id": action,
@@ -618,7 +929,24 @@ def build_gateway_response(
             "member_probabilities": list(members),
             "predicted_class": int(prediction["predicted_class"]),
             "threshold": 0.5,
-            "interpretation": "research_score_only",
+            "interpretation": "class_1_research_score_only",
+            "endpoint_semantics": (
+                "meei_facial_palsy_vs_healthy_control_development_head"
+            ),
+            "class_0_label": "meei_healthy_control",
+            "class_1_label": "meei_facial_palsy",
+        },
+        "report_evidence": {
+            "normalization": (
+                "original_view_centered_eye_axis_aligned_interocular_scaled"
+            ),
+            "interpretation": (
+                "measured_movement_observation_not_causal_or_severity"
+            ),
+            "context_frame_method": (
+                "registered_hold_midpoint_not_model_selected"
+            ),
+            "actions": evidence_rows,
         },
         "clinical_use_eligible": False,
     }
@@ -626,8 +954,12 @@ def build_gateway_response(
 
 __all__ = [
     "CAPTURE_MANIFEST_SCHEMA",
+    "CaptureTimingError",
+    "CaptureTrackingError",
     "CaptureEvidence",
     "CaptureManifest",
+    "DescriptiveActionEvidence",
+    "DescriptiveObservation",
     "DecodedCaptureSamples",
     "FACES_TO_V9_ACTIONS",
     "GATEWAY_RESPONSE_SCHEMA",

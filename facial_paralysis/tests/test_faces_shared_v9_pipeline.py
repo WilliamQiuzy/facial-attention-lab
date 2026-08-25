@@ -34,6 +34,7 @@ from src.preprocessing.script_action_segmentation_v1 import (  # noqa: E402
     FACES_ACTION_ORDER,
     FACES_SCRIPT_VERSION,
     FACES_TIMELINE_SCHEMA,
+    segment_faces_action,
 )
 
 
@@ -136,6 +137,16 @@ def test_capture_evidence_accepts_both_medically_valid_script_variants(c: Check)
 def test_gateway_response_exposes_only_v9_binary_research_output(c: Check):
     video, manifest, timeline = _payloads()
     evidence = parse_capture_evidence(video, manifest, timeline)
+    stream = _mesh_stream(evidence)
+    prepared = build_v9_action_arrays(
+        evidence,
+        frame_timestamps_ms=stream[0],
+        source_frame_indices=stream[1],
+        original_meshes=stream[2],
+        mirrored_meshes=stream[3],
+        pair_valid_mask=stream[4],
+        source_fps=stream[5],
+    )
     prediction = {
         "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
         "protocol": "cue_aligned_action",
@@ -147,7 +158,8 @@ def test_gateway_response_exposes_only_v9_binary_research_output(c: Check):
     response = build_gateway_response(
         prediction,
         evidence=evidence,
-        valid_samples_per_action=(32, 31, 32, 30, 32, 32, 31),
+        valid_samples_per_action=prepared.valid_samples_per_action,
+        descriptive_evidence_per_action=prepared.descriptive_evidence_per_action,
         preprocessing_version="faces-to-shared-v9/v1",
         face_landmarker_sha256="6" * 64,
     )
@@ -156,11 +168,25 @@ def test_gateway_response_exposes_only_v9_binary_research_output(c: Check):
     c.eq(response["model"]["release_manifest_sha256"], SHARED_V9_MANIFEST_SHA256)
     c.eq(response["quality"]["actions_used"], 7)
     c.eq(response["prediction"]["probability"], 0.73)
-    c.eq(response["prediction"]["interpretation"], "research_score_only")
+    c.eq(response["prediction"]["interpretation"], "class_1_research_score_only")
+    c.eq(
+        response["report_evidence"]["interpretation"],
+        "measured_movement_observation_not_causal_or_severity",
+    )
+    c.eq(
+        response["report_evidence"]["normalization"],
+        "original_view_centered_eye_axis_aligned_interocular_scaled",
+    )
+    c.eq(len(response["report_evidence"]["actions"]), 7)
+    c.eq(
+        response["report_evidence"]["actions"][0]["context_frame_ms"],
+        6_000,
+    )
     c.eq(response["clinical_use_eligible"], False)
     serialized = json.dumps(response, sort_keys=True).lower()
     c.true("house-brackmann" not in serialized)
-    c.true('"eyes"' not in serialized and '"mouth"' not in serialized)
+    for forbidden in ("affected_side", "abnormal", "regional_severity", "caused", "contributed"):
+        c.true(forbidden not in serialized)
 
 
 def _mesh_stream(evidence):
@@ -215,6 +241,26 @@ def test_action_pipeline_builds_exact_v9_tensor_contract_and_keeps_flat_actions(
         source_fps=stream[5],
     )
     c.eq(prepared.valid_samples_per_action, (32, 32, 32, 32, 32, 32, 32))
+    c.eq(
+        tuple(item.action_id for item in prepared.descriptive_evidence_per_action),
+        tuple(action for action, _v9 in FACES_TO_V9_ACTIONS),
+    )
+    expected_metrics = (
+        ("brow_height_asymmetry_iod", "brow_height_change_from_rest_iod"),
+        ("eye_aperture_asymmetry_iod", "residual_eye_aperture_iod", "eye_closure_change_from_rest_iod"),
+        ("eye_aperture_asymmetry_iod", "residual_eye_aperture_iod", "eye_closure_change_from_rest_iod"),
+        ("mouth_corner_vertical_asymmetry_iod", "mouth_corner_vertical_change_from_rest_iod"),
+        ("mouth_corner_horizontal_asymmetry_iod", "mouth_width_change_from_rest_iod"),
+        ("mouth_corner_vertical_asymmetry_iod", "lower_lip_change_from_rest_iod", "mouth_open_change_from_rest_iod"),
+        ("mouth_corner_vertical_asymmetry_iod", "mouth_corner_vertical_change_from_rest_iod"),
+    )
+    for row, metrics in zip(prepared.descriptive_evidence_per_action, expected_metrics):
+        c.eq(tuple(item.metric for item in row.observations), metrics)
+        c.true(all(np.isfinite(item.value) and item.value >= 0.0 for item in row.observations))
+        c.eq(row.context_frame_ms, 6_000 + 4_000 * len([
+            prior for prior in prepared.descriptive_evidence_per_action
+            if prior.context_frame_ms < row.context_frame_ms
+        ]))
     expected_codes = np.asarray(
         [ACTION_VOCAB.index(name) for _faces, name in FACES_TO_V9_ACTIONS],
         dtype=np.int64,
@@ -266,6 +312,7 @@ def test_action_pipeline_omits_optional_action_without_zero_imputation(c: Check)
         prediction,
         evidence=evidence,
         valid_samples_per_action=prepared.valid_samples_per_action,
+        descriptive_evidence_per_action=prepared.descriptive_evidence_per_action,
         preprocessing_version="faces-to-shared-v9/v1",
         face_landmarker_sha256="6" * 64,
     )
@@ -298,22 +345,197 @@ def test_action_pipeline_rejects_under_supported_tracking_without_motion_bias(c:
     )
 
 
-def _encoded_capture_video(*, include_optional: bool = True) -> bytes:
+def test_tracking_gate_has_typed_safe_action_context_and_exact_boundary(c: Check):
+    video, manifest, timeline = _payloads(include_optional=False)
+    evidence = parse_capture_evidence(video, manifest, timeline)
+    timestamps, indices, original, mirrored, valid, fps = _mesh_stream(evidence)
+    combined = np.concatenate(
+        (original.reshape(original.shape[0], -1), mirrored.reshape(mirrored.shape[0], -1)),
+        axis=1,
+    )
+    segment = segment_faces_action(
+        evidence.timeline,
+        "lower_teeth_show",
+        timestamps,
+        indices,
+        valid,
+        np.zeros(timestamps.size, dtype=np.float64),
+        decoded_recording_sha256=evidence.video_sha256,
+        decoded_duration_ms=evidence.timeline.recording_duration_ms,
+        landmark_features=combined,
+    )
+    valid[segment.frame_positions[25:]] = False
+    tracking_error_type = getattr(pipeline_module, "CaptureTrackingError")
+    caught = None
+    try:
+        build_v9_action_arrays(
+            evidence,
+            frame_timestamps_ms=timestamps,
+            source_frame_indices=indices,
+            original_meshes=original,
+            mirrored_meshes=mirrored,
+            pair_valid_mask=valid,
+            source_fps=fps,
+        )
+    except tracking_error_type as error:
+        caught = error
+    c.true(caught is not None, "25 of 32 samples must produce typed tracking evidence")
+    c.eq(caught.action, "lower_teeth_show")
+    c.eq(caught.valid_samples, 25)
+    c.eq(caught.required_samples, 26)
+    c.true("/" not in str(caught), "typed tracking evidence must not contain a path")
+
+    valid[segment.frame_positions[25]] = True
+    accepted = build_v9_action_arrays(
+        evidence,
+        frame_timestamps_ms=timestamps,
+        source_frame_indices=indices,
+        original_meshes=original,
+        mirrored_meshes=mirrored,
+        pair_valid_mask=valid,
+        source_fps=fps,
+    )
+    c.eq(accepted.valid_samples_per_action[-1], 26)
+
+
+def _encoded_capture_video(
+    *,
+    include_optional: bool = True,
+    fps: float = 12.0,
+    duration_seconds: float | None = None,
+) -> bytes:
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "capture.mp4"
         writer = cv2.VideoWriter(
-            str(path), cv2.VideoWriter_fourcc(*"mp4v"), 12.0, (16, 16)
+            str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (16, 16)
         )
         if not writer.isOpened():
             raise RuntimeError("test OpenCV MP4 writer is unavailable")
         action_count = 8 if include_optional else 7
-        for frame_index in range(action_count * 4 * 12):
+        duration = duration_seconds if duration_seconds is not None else action_count * 4
+        for frame_index in range(int(round(duration * fps))):
             frame = np.zeros((16, 16, 3), dtype=np.uint8)
             frame[:, :8] = (0, 0, frame_index % 251 + 1)
             frame[:, 8:] = (frame_index % 251 + 1, 0, 0)
             writer.write(frame)
         writer.release()
         return path.read_bytes()
+
+
+def test_video_decoder_rejects_low_fps_incomplete_holds_and_duration_drift(c: Check):
+    low_fps = _encoded_capture_video(include_optional=False, fps=10.0)
+    raw, manifest, timeline = _payloads(include_optional=False, video=low_fps)
+    evidence = parse_capture_evidence(raw, manifest, timeline)
+    c.raises(
+        lambda: decode_capture_samples(raw, evidence.timeline, filename="capture.mp4"),
+        ValueError,
+        "a 10 fps capture cannot provide 32 unique samples in three seconds",
+    )
+
+    incomplete = _encoded_capture_video(
+        include_optional=False,
+        fps=12.0,
+        duration_seconds=26.0,
+    )
+    raw, manifest, timeline = _payloads(include_optional=False, video=incomplete)
+    evidence = parse_capture_evidence(raw, manifest, timeline)
+    timing_error_type = getattr(pipeline_module, "CaptureTimingError")
+    caught = None
+    try:
+        decode_capture_samples(raw, evidence.timeline, filename="capture.mp4")
+    except timing_error_type as error:
+        caught = error
+    c.true(caught is not None, "incomplete hold sampling must expose numeric diagnostics")
+    c.eq(caught.reason, "hold_sampling_incomplete")
+    c.eq(caught.decoded_duration_ms, 26_000)
+    c.eq(caught.timeline_duration_ms, 28_000)
+    c.eq(caught.last_hold_ms, 27_500)
+
+    normal = _encoded_capture_video(include_optional=False)
+    raw, manifest, timeline = _payloads(include_optional=False, video=normal)
+    changed = json.loads(timeline)
+    changed["recording_duration_ms"] = 30_000
+    evidence = parse_capture_evidence(
+        raw,
+        manifest,
+        json.dumps(changed, separators=(",", ":")).encode("utf-8"),
+    )
+    timing_error_type = getattr(pipeline_module, "CaptureTimingError")
+    caught = None
+    try:
+        decode_capture_samples(raw, evidence.timeline, filename="capture.mp4")
+    except timing_error_type as error:
+        caught = error
+    c.true(caught is not None, "duration drift must provide typed numeric diagnostics")
+    c.eq(caught.reason, "timeline_duration_drift")
+    c.eq(caught.decoded_duration_ms, 28_000)
+    c.eq(caught.timeline_duration_ms, 30_000)
+    c.eq(caught.last_hold_ms, 27_500)
+    c.eq(caught.decoded_frame_count, 336)
+    c.true(abs(caught.source_fps - 12.0) < 0.01)
+
+
+def test_video_decoder_uses_monotonic_container_timestamps_when_webm_fps_is_timebase(c: Check):
+    class BrowserWebmCapture:
+        def __init__(self, _path):
+            self._next = 0
+            self._last = -1
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            if prop == cv2.CAP_PROP_FPS:
+                return 1000.0
+            if prop in (cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT):
+                return 2.0
+            if prop == cv2.CAP_PROP_POS_MSEC:
+                frame_index = max(self._last, 0)
+                jitter_ms = 10.0 if frame_index % 2 == 0 else 0.0
+                return frame_index * 1000.0 / 30.0 + jitter_ms
+            return 0.0
+
+        def read(self):
+            if self._next >= 840:
+                return False, None
+            self._last = self._next
+            self._next += 1
+            return True, np.full((2, 2, 3), self._last % 251, dtype=np.uint8)
+
+        def release(self):
+            return None
+
+    video = b"synthetic browser MediaRecorder WebM"
+    raw, manifest, timeline = _payloads(include_optional=False, video=video)
+    evidence = parse_capture_evidence(raw, manifest, timeline)
+    original_capture = pipeline_module.cv2.VideoCapture
+    pipeline_module.cv2.VideoCapture = BrowserWebmCapture
+    try:
+        decoded = decode_capture_samples(raw, evidence.timeline, filename="capture.webm")
+    finally:
+        pipeline_module.cv2.VideoCapture = original_capture
+    c.eq(len(decoded.frames), 7 * 32)
+    c.true(abs(decoded.source_fps - 30.0) < 0.02)
+    c.true(abs(decoded.decoded_duration_ms - 28_000) <= 15)
+
+
+def test_true_flip_pair_is_invalid_when_either_detection_fails(c: Check):
+    video = _encoded_capture_video(include_optional=False)
+    raw, manifest, timeline = _payloads(include_optional=False, video=video)
+    evidence = parse_capture_evidence(raw, manifest, timeline)
+    decoded = decode_capture_samples(raw, evidence.timeline, filename="capture.mp4")
+    base = _mesh_stream(evidence)[2][0]
+    calls = 0
+
+    def one_sided_detector(_rgb):
+        nonlocal calls
+        calls += 1
+        return np.array(base, copy=True) if calls % 2 else None
+
+    paired = extract_paired_meshes(decoded, one_sided_detector)
+    c.true(not bool(paired.pair_valid_mask.any()))
+    c.true(bool(np.isnan(paired.original_meshes).all()))
+    c.true(bool(np.isnan(paired.mirrored_meshes).all()))
 
 
 def test_video_decoder_removes_request_scoped_files_on_success_and_failure(c: Check):
