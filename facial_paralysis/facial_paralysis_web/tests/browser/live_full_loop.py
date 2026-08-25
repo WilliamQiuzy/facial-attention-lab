@@ -279,32 +279,55 @@ def run(
                     raise AssertionError(f"inactive skip link is not visually hidden: {skip_style}")
                 expect(page.get_by_text("48 / 100").first).to_be_visible()
                 expect(page.get_by_text("MEEI facial-movement classification score", exact=True)).to_be_visible()
-                expect(page.get_by_text("Healthy-control class", exact=True)).to_be_visible()
-                expect(page.get_by_role("heading", name="How the model formed the score")).to_be_visible()
+                expect(page.get_by_text("Below MEEI research cutpoint", exact=True)).to_be_visible()
+                expect(page.get_by_role("heading", name="How the model formed the score")).to_have_count(0)
                 expect(page.get_by_role("heading", name="Recorded action evidence")).to_be_visible()
                 expect(page.get_by_role("heading", name="Recording coverage")).to_be_visible()
                 expect(page.get_by_text(f"Neutral baseline + all {7 if steps == 8 else 6} active movements", exact=True)).to_be_visible()
                 expect(page.get_by_text(f"All {steps} recorded steps in this session were used", exact=False)).to_be_visible()
-                expect(page.get_by_text("0.010 means 1% of the distance between the eyes.", exact=False)).to_be_visible()
+                expect(page.get_by_text("Measurements are scaled to the same eye-to-eye reference width", exact=False)).to_be_visible()
+                expect(page.get_by_text("Side-to-side difference", exact=True).first).to_be_visible()
+                expect(page.get_by_text("Change from neutral", exact=True).first).to_be_visible()
+                expect(page.get_by_text("Action tracking", exact=True).first).to_be_visible()
                 expect(page.get_by_role("heading", name="Clinical scale status")).to_have_count(0)
                 expect(page.get_by_text("Validated response provenance", exact=True)).to_have_count(0)
                 if page.locator(".report-limitations svg").get_attribute("width") != "32":
                     raise AssertionError("interpretation-limit warning icon is not the approved 32px size")
                 expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
                 expect(page.get_by_role("button", name="Save PDF")).to_be_visible()
-                expect(page.get_by_text("Recorded context images are included in the saved PDF.", exact=True)).to_be_visible()
-                page.evaluate("window.__savePdfAudit = 0; Object.defineProperty(window, 'print', { configurable: true, value: () => { window.__savePdfAudit += 1 } })")
-                page.get_by_role("button", name="Save PDF").click()
-                if page.evaluate("window.__savePdfAudit") != 1:
-                    raise AssertionError("Save PDF did not invoke the browser print flow exactly once")
+                expect(page.get_by_text("PDF includes the recorded evidence images", exact=False)).to_be_visible()
+                action_boxes = page.locator(".report-action-control .button").evaluate_all(
+                    "buttons => buttons.map(button => { const box = button.getBoundingClientRect(); return { top: box.top, left: box.left, width: box.width, height: box.height } })"
+                )
+                desktop_misaligned = (
+                    viewport_width > 620
+                    and max(box["top"] for box in action_boxes) - min(box["top"] for box in action_boxes) > 1
+                )
+                mobile_misaligned = (
+                    viewport_width <= 620
+                    and (
+                        max(box["left"] for box in action_boxes) - min(box["left"] for box in action_boxes) > 1
+                        or max(box["width"] for box in action_boxes) - min(box["width"] for box in action_boxes) > 1
+                    )
+                )
+                if len(action_boxes) != 3 or desktop_misaligned or mobile_misaligned or max(box["height"] for box in action_boxes) - min(box["height"] for box in action_boxes) > 1:
+                    raise AssertionError(f"report actions are not aligned: {action_boxes}")
+                with page.expect_download() as pdf_download_info:
+                    page.get_by_role("button", name="Save PDF").click()
+                report_pdf_download = pdf_download_info.value
+                if report_pdf_download.suggested_filename != "faces-research-movement-report.pdf":
+                    raise AssertionError("Save PDF did not directly download the fixed report filename")
+                if pdf is not None:
+                    pdf.parent.mkdir(parents=True, exist_ok=True)
+                    report_pdf_download.save_as(str(pdf))
                 expect(page.locator(".evidence-frame img")).to_have_count(
                     7 if steps == 8 else 6,
                     timeout=20_000,
                 )
                 report_url_audit = page.evaluate("({ created: window.__objectUrlAudit.created, revoked: window.__objectUrlAudit.revoked, live: window.__objectUrlAudit.live.size })")
                 if report_url_audit != {
-                    "created": baseline_url_audit["created"] + 1,
-                    "revoked": baseline_url_audit["revoked"],
+                    "created": baseline_url_audit["created"] + 2,
+                    "revoked": baseline_url_audit["revoked"] + 1,
                     "live": baseline_url_audit["live"] + 1,
                 }:
                     raise AssertionError(
@@ -346,18 +369,8 @@ def run(
 
             screenshot.parent.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(screenshot), full_page=True)
-            if pdf is not None:
-                if expected != "accepted":
-                    raise AssertionError("PDF acceptance is valid only for an accepted report")
-                pdf.parent.mkdir(parents=True, exist_ok=True)
-                page.emulate_media(media="print")
-                page.pdf(
-                    path=str(pdf),
-                    format="A4",
-                    print_background=True,
-                    margin={"top": "10mm", "right": "10mm", "bottom": "10mm", "left": "10mm"},
-                )
-                page.emulate_media(media="screen")
+            if pdf is not None and expected != "accepted":
+                raise AssertionError("PDF acceptance is valid only for an accepted report")
             if expected == "accepted":
                 page.get_by_role("link", name="Back to session summary").click()
                 expect(page.get_by_text("Research report ready", exact=True)).to_be_visible()

@@ -6,3 +6,6 @@ overrides:
 
 onlyBuiltDependencies:
   - esbuild
+
+allowBuilds:
+  core-js: false

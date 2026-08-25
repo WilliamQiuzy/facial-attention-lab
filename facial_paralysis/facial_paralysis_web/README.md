@@ -81,8 +81,9 @@ The interface shows:
 - recorded action context frames and descriptive movement geometry;
 - plain-language action and face-tracking coverage.
 
-The report's **Save PDF** flow includes the recorded action context images and
-prints an identifiable-media warning. **Download recorded video** exports the
+The report's **Save PDF** flow generates and directly downloads a PDF containing
+the recorded action context images and an identifiable-media warning, without
+opening the browser print dialog. **Download recorded video** exports the
 exact page-scoped source file to the current device with a fixed filename that
 does not reuse a potentially identifying upload name. Both are local browser
 exports; neither adds server-side media persistence.

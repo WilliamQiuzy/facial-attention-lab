@@ -26,7 +26,7 @@ export function RecordingDownloadButton({ recording, compact = false }: {
   compact?: boolean
 }) {
   return (
-    <div className={`recording-download-control${compact ? ' is-compact' : ''}`}>
+    <div className={`recording-download-control${compact ? ' is-compact report-action-control' : ''}`}>
       <button
         className={`button button-secondary${compact ? '' : ' button-wide'}`}
         type="button"
@@ -34,7 +34,7 @@ export function RecordingDownloadButton({ recording, compact = false }: {
       >
         <Download aria-hidden="true" size={17} /> Download recorded video
       </button>
-      <span>Saves the identifiable source video to this device.</span>
+      {!compact ? <span>Saves the identifiable source video to this device.</span> : null}
     </div>
   )
 }

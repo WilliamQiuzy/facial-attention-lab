@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -104,17 +104,23 @@ describe('Research Movement Report', () => {
     )
     expect(screen.getAllByText('48 / 100')).toHaveLength(1)
     expect(screen.getByText(/2 points below the fixed cutpoint of 50/i)).toBeInTheDocument()
-    expect(screen.getByText(/higher scores lean toward the facial-palsy class/i)).toBeInTheDocument()
-    expect(screen.getByText('Healthy-control class')).toBeInTheDocument()
+    expect(screen.getByText(/higher values indicate more similarity to the MEEI facial-palsy examples/i)).toBeInTheDocument()
+    expect(screen.getByText('Below MEEI research cutpoint')).toBeInTheDocument()
+    expect(screen.queryByText('Healthy-control class')).not.toBeInTheDocument()
+    expect(screen.queryByText('Facial-palsy class')).not.toBeInTheDocument()
     expect(screen.queryByText(/does not estimate the chance/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/Research use only/i)).not.toBeInTheDocument()
     expect(screen.queryByText('Validated response')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /how the model formed the score/i })).toBeInTheDocument()
-    expect(screen.getByText(/recorded actions → MediaPipe facial geometry → shared encoder → MEEI classification score/i)).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /how the model formed the score/i })).not.toBeInTheDocument()
     expect(screen.queryByText(/auditable movement observations/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/0\.010 means 1% of the distance between the eyes/i)).toBeInTheDocument()
+    expect(screen.getByText(/measurements are scaled to the same eye-to-eye reference width/i)).toBeInTheDocument()
     expect(screen.getByText(/no clinical normal range or severity meaning/i)).toBeInTheDocument()
     expect(screen.getByText(/measured movement observation — not a cause/i)).toBeInTheDocument()
+    expect(screen.getAllByText('Side-to-side difference').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Change from neutral').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/1\.0% of eye-to-eye width/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/smaller means the two sides were more alike in this recording/i).length).toBeGreaterThan(1)
+    expect(screen.getByText('26 of 32 points (81%)')).toBeInTheDocument()
     expect(screen.getByText('Brow-height change from rest')).toBeInTheDocument()
     expect(screen.getByText('Lower-lip movement from rest')).toBeInTheDocument()
     expect(screen.getAllByText('Recorded context frame unavailable')).toHaveLength(6)
@@ -133,6 +139,7 @@ describe('Research Movement Report', () => {
     expect(screen.queryByText('Not collected')).not.toBeInTheDocument()
     expect(screen.queryByText('Validated response provenance')).not.toBeInTheDocument()
     expect(screen.getByText(/House–Brackmann, Sunnybrook, eFACE, and FaCE require separate clinician or patient assessment/i)).toBeInTheDocument()
+    expect(screen.getByText(/not calibrated on FACES recordings/i)).toBeInTheDocument()
     expect(container.querySelector('.report-limitations svg')).toHaveAttribute('width', '32')
     expect(container.textContent).not.toMatch(/\bcaused\b|contributed|abnormal|affected side|model confidence|BLV9-009/i)
   })
@@ -159,10 +166,20 @@ describe('Research Movement Report', () => {
     expect(onReset).toHaveBeenCalledTimes(1)
   })
 
-  it('saves the evidence images in the PDF and offers the source recording download', async () => {
+  it('directly downloads a PDF with evidence images and aligns all three report actions', async () => {
     const user = userEvent.setup()
     const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
-    render(
+    const objectUrls: Blob[] = []
+    const filenames: string[] = []
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation((blob) => {
+      objectUrls.push(blob as Blob)
+      return 'blob:research-report'
+    })
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      filenames.push(this.download)
+    })
+    const { container } = render(
       <ResultsView
         result={result(false)}
         recording={new File(['video'], 'capture.webm', { type: 'video/webm' })}
@@ -171,10 +188,20 @@ describe('Research Movement Report', () => {
       />,
     )
 
-    expect(screen.getByText(/recorded context images are included in the saved PDF/i)).toBeInTheDocument()
+    expect(container.querySelectorAll('.report-action-control')).toHaveLength(3)
+    expect(screen.getByText(/PDF includes the recorded evidence images/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Download recorded video' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save PDF' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Save PDF' }))
-    expect(print).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(filenames).toContain('faces-research-movement-report.pdf'))
+    expect(print).not.toHaveBeenCalled()
+    const pdf = objectUrls.find((blob) => blob.type === 'application/pdf')
+    expect(pdf).toBeDefined()
+    expect(pdf?.size).toBeGreaterThan(1_000)
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:research-report')
     print.mockRestore()
+    createObjectURL.mockRestore()
+    revokeObjectURL.mockRestore()
+    anchorClick.mockRestore()
   })
 })

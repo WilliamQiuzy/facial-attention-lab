@@ -4,6 +4,8 @@ Shared V9 / BLV9-009 is the current research model. Its authoritative
 human-readable result is `broad_literature_shared_v9.md`; its exact aggregate
 selection report is `artifacts/broad_literature_shared_v9/report.json`, and its
 public three-seed weights are under `../../releases/shared-v9-research-v1/`.
+The current Facial Process Web report/PDF acceptance is
+`facial_process_web_evidence_report_acceptance_v4.md`.
 
 New candidates are recorded separately so a candidate cannot silently change
 the default. Shared V10 is the latest bounded follow-up and did not replace V9.
