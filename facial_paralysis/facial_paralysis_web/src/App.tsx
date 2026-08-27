@@ -351,14 +351,10 @@ export function App({
 
         {result?.mode === 'demonstration' ? <ResultsView result={result} onReset={reset} /> : null}
 
-        <section className="research-boundary" id="research-boundary">
-          <span className="eyebrow">Interpretation boundary</span>
-          <h2>This is a research interface, not a diagnosis.</h2>
-          <div className="boundary-grid">
-            <p><strong>What it can show</strong>One Shared V9 class-1 research score from a fully timed seven- or eight-step FACES capture.</p>
-            <p><strong>What it cannot show</strong>Eye or mouth severity, House-Brackmann grade, treatment advice, or clinical validation.</p>
-            <p><strong>What stays human</strong>The clinician reviews the source recording and decides whether any research output is useful.</p>
-          </div>
+        <section className="research-boundary clinical-workflow-note" id="research-boundary">
+          <span className="eyebrow">Clinical review</span>
+          <h2>Designed to support clinician review.</h2>
+          <p>FACES AI summarizes standardized facial movement recordings and keeps the source video available for review. Use the movement report alongside the recording and the clinical assessment appropriate to the encounter.</p>
         </section>
         </div>
       </main>

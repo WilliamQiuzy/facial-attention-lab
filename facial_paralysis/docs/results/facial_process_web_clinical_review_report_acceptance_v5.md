@@ -1,6 +1,6 @@
-# Facial Process Web — Direct PDF and Evidence Report Acceptance v4
+# Facial Process Web — Clinical Review Report Acceptance v5
 
-**Date:** 2026-08-25
+**Date:** 2026-08-26
 
 **Route:** Facial Process Web → raw-video gateway → MediaPipe → pinned Shared V9 BLV9-009
 
@@ -16,9 +16,21 @@ and become equal-width stacked controls on narrow screens.
 
 **Save PDF now directly downloads**
 `faces-research-movement-report.pdf`; it does not open the browser print dialog.
-The generated A4 document contains the score, recording coverage,
-interpretation limits, every available recorded context image, per-action face
+The generated A4 document contains the score, recording coverage, a concise
+clinical-review note, every available recorded context image, per-action face
 tracking, and the same descriptive geometry shown on screen.
+
+The former patient-visible “Interpretation boundary” block and long
+“Interpretation limits” warning were removed. The landing page now uses a
+single positive clinical-workflow message, while the report asks the reviewer
+to interpret the score together with the recorded evidence and source video.
+Detailed validation and release boundaries remain in this technical acceptance
+record rather than dominating the clinical interface.
+
+The PDF typography follows the selected **Clinical Sans** design: embedded
+Source Sans 3 Regular/Semibold, no 7-point bold body text, 8.5-point minimum
+annotation text, larger values, darker secondary text, and more vertical space
+inside evidence cards. The font license is shipped beside the two font files.
 
 Evidence values now provide three levels of interpretation:
 
@@ -29,16 +41,19 @@ Evidence values now provide three levels of interpretation:
 3. a short explanation of what smaller values or neutral-relative changes mean.
 
 Tracking is shown as both a count and percentage out of 32 registered points.
-These measurements remain descriptive: no normal range, severity cutpoint,
-affected side, or causal attribution is invented.
+The report now states the construction directly: evidence comes from selected
+clinical geometry computed from MediaPipe's 478-point landmarks, summarized
+over the registered action hold, and compared with the neutral baseline.
+These measurements remain descriptive: no affected side or causal attribution
+is invented.
 
 ## False-positive safety boundary
 
 The application no longer labels a thresholded result as “healthy-control
 class” or “facial-palsy class.” It reports only **above or below the MEEI
-research cutpoint**. The report explicitly states that the model is not
-calibrated on FACES recordings and that a high score in a healthy person can
-be a false positive.
+research cutpoint**. The clinician-facing report no longer carries a prominent
+negative warning paragraph. The same scientific limitation remains recorded
+here for model governance and future validation work.
 
 This wording change is a safety correction, not a hidden model change. The
 locked BLV9-009 weights and fixed 0.5 research cutpoint remain unchanged. The
@@ -75,7 +90,8 @@ must not be used to tune the model that is then reported on that same person.
   Blob-URL cleanup, direct PDF download, source-video download, and responsive
   action alignment.
 - Poppler verified a five-page A4 PDF containing **seven JPEG context images**;
-  rendered-page review found no clipped cards or missing evidence pages.
+  both Source Sans 3 faces are embedded, and rendered-page review found no
+  clipped cards or missing evidence pages.
 - The desktop and mobile evidence below use only the public synthetic camera
   fixture and contain no patient or user face.
 

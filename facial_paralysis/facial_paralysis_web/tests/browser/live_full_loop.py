@@ -291,8 +291,12 @@ def run(
                 expect(page.get_by_text("Action tracking", exact=True).first).to_be_visible()
                 expect(page.get_by_role("heading", name="Clinical scale status")).to_have_count(0)
                 expect(page.get_by_text("Validated response provenance", exact=True)).to_have_count(0)
-                if page.locator(".report-limitations svg").get_attribute("width") != "32":
-                    raise AssertionError("interpretation-limit warning icon is not the approved 32px size")
+                expect(page.get_by_role("heading", name="Interpretation limits")).to_have_count(0)
+                expect(page.get_by_text("not calibrated on FACES recordings", exact=False)).to_have_count(0)
+                expect(page.get_by_role("heading", name="Clinical review note")).to_be_visible()
+                expect(page.get_by_text("MediaPipe 478-point facial landmarks", exact=False)).to_be_visible()
+                if page.locator(".report-clinical-note svg").get_attribute("width") != "28":
+                    raise AssertionError("clinical-review icon is not the approved 28px size")
                 expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
                 expect(page.get_by_role("button", name="Save PDF")).to_be_visible()
                 expect(page.get_by_text("PDF includes the recorded evidence images", exact=False)).to_be_visible()

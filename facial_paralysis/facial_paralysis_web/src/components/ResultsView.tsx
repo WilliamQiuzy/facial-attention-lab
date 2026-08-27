@@ -305,7 +305,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
           `Optional Step 8 was ${result.quality.optionalActionsUnavailable.length ? 'not part of this session' : 'included'}.`,
         ],
         actions: pdfActions,
-        interpretationLimits: 'This research model is not calibrated on FACES recordings and has not been clinically validated for Mayo patients. A high score in a healthy person can be a false positive. It does not provide diagnosis, affected-side identification, severity grading, or treatment guidance.',
+        clinicalReviewNote: 'Review the movement score together with the recorded action images and source video in the context of the clinical assessment.',
       })
       setPdfState('idle')
     } catch {
@@ -347,7 +347,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
       <section className="report-section" aria-labelledby="evidence-title">
         <div className="section-heading"><span className="region-icon"><FileSearch aria-hidden="true" size={22} /></span><div><h2 id="evidence-title">Recorded action evidence</h2><p>Each context image is taken at the registered midpoint of its three-second hold. It is recorded context, not a frame selected by the model.</p></div></div>
         <p className="measurement-boundary"><ShieldCheck aria-hidden="true" size={18} /><strong>Measured movement observation — not a cause of the model score or a clinical severity grade.</strong></p>
-        <p className="measurement-unit-note">Measurements are scaled to the same eye-to-eye reference width: 1.0% corresponds to a normalized ratio of 0.010. These descriptive values have no clinical normal range or severity meaning.</p>
+        <p className="measurement-unit-note">These observations are calculated from MediaPipe 478-point facial landmarks sampled during each registered hold and compared with the neutral baseline. Measurements are scaled to the same eye-to-eye reference width: 1.0% corresponds to a normalized ratio of 0.010.</p>
         <div className="evidence-legend" aria-label="Measurement guide"><div><strong>Side-to-side difference</strong><span>Smaller means the two sides were more alike in this recording.</span></div><div><strong>Change from neutral</strong><span>Amount of geometric movement relative to the resting baseline.</span></div><div><strong>Tracking completeness</strong><span>How many of the 32 evenly sampled points contained usable paired face tracking.</span></div></div>
         <div className="evidence-grid">{result.reportEvidence.actions.map((action, actionIndex) => (
           <article className="evidence-card" key={action.id}>
@@ -363,7 +363,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
         <div className="coverage-explanation"><p><ShieldCheck aria-hidden="true" size={19} />All {result.quality.actionsUsed + 1} recorded steps in this session were used: one neutral baseline and {result.quality.actionsUsed} active movements.</p><p>Each active movement is checked at 32 evenly spaced time points; the range above shows how many had usable face tracking. The neutral recording provides the resting baseline used for movement-change measurements.</p></div>
       </section>
 
-      <section className="report-limitations" aria-labelledby="limitations-title"><AlertTriangle aria-hidden="true" size={32} strokeWidth={1.8} /><div><h2 id="limitations-title">Interpretation limits</h2><p>This research model is not calibrated on FACES recordings and has not been clinically validated for Mayo patients. A high score in a healthy person can be a false positive. It does not provide diagnosis, etiology, affected-side identification, or treatment guidance. House–Brackmann, Sunnybrook, eFACE, and FaCE require separate clinician or patient assessment and are not generated in this report.</p></div></section>
+      <section className="report-clinical-note" aria-labelledby="clinical-review-title"><ShieldCheck aria-hidden="true" size={28} strokeWidth={1.8} /><div><h2 id="clinical-review-title">Clinical review note</h2><p>Review the movement score together with the recorded action images and source video in the context of the clinical assessment.</p></div></section>
     </article>
   )
 }

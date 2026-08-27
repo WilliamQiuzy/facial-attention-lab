@@ -1,5 +1,8 @@
 import type { jsPDF as JsPdfDocument } from 'jspdf'
 
+import sourceSansRegular from '../assets/fonts/SourceSans3-Regular.ttf?inline'
+import sourceSansSemibold from '../assets/fonts/SourceSans3-Semibold.ttf?inline'
+
 export const RESEARCH_REPORT_PDF_FILENAME = 'faces-research-movement-report.pdf'
 
 export interface PdfMeasurement {
@@ -25,7 +28,7 @@ export interface ResearchReportPdfData {
   readonly cutpointSummary: string
   readonly recordingCoverage: readonly string[]
   readonly actions: readonly PdfActionEvidence[]
-  readonly interpretationLimits: string
+  readonly clinicalReviewNote: string
 }
 
 type Rgb = readonly [number, number, number]
@@ -37,9 +40,23 @@ const COLORS = {
   blueDark: [1, 45, 97] as Rgb,
   pale: [241, 247, 253] as Rgb,
   line: [207, 219, 230] as Rgb,
-  amber: [138, 82, 0] as Rgb,
-  amberPale: [255, 244, 216] as Rgb,
 } as const
+
+const PDF_FONT = 'SourceSans3'
+
+function fontBase64(dataUrl: string): string {
+  const marker = ';base64,'
+  const markerIndex = dataUrl.indexOf(marker)
+  if (markerIndex < 0) throw new Error('Embedded PDF font is not base64 encoded')
+  return dataUrl.slice(markerIndex + marker.length)
+}
+
+function registerFonts(document: JsPdfDocument): void {
+  document.addFileToVFS('SourceSans3-Regular.ttf', fontBase64(sourceSansRegular))
+  document.addFont('SourceSans3-Regular.ttf', PDF_FONT, 'normal', 400)
+  document.addFileToVFS('SourceSans3-Semibold.ttf', fontBase64(sourceSansSemibold))
+  document.addFont('SourceSans3-Semibold.ttf', PDF_FONT, 'bold', 600)
+}
 
 function setTextColor(document: JsPdfDocument, color: Rgb): void {
   document.setTextColor(color[0], color[1], color[2])
@@ -56,7 +73,7 @@ function wrappedText(
   style: 'normal' | 'bold' = 'normal',
   lineHeight = 1.25,
 ): number {
-  document.setFont('helvetica', style)
+  document.setFont(PDF_FONT, style, style === 'bold' ? 600 : 400)
   document.setFontSize(size)
   setTextColor(document, color)
   const lines = document.splitTextToSize(text, width) as string[]
@@ -67,8 +84,8 @@ function wrappedText(
 function addPageHeading(document: JsPdfDocument, title: string, subtitle: string): number {
   document.setFillColor(...COLORS.blueDark)
   document.rect(0, 0, 210, 34, 'F')
-  wrappedText(document, title, 16, 17, 178, 18, [255, 255, 255], 'bold')
-  wrappedText(document, subtitle, 16, 26, 178, 8.5, [218, 234, 250])
+  wrappedText(document, title, 16, 17, 178, 22, [255, 255, 255], 'bold')
+  wrappedText(document, subtitle, 16, 27, 178, 9.5, [218, 234, 250])
   return 46
 }
 
@@ -77,12 +94,12 @@ function drawAction(
   action: PdfActionEvidence,
   y: number,
 ): number {
-  const cardHeight = Math.max(74, 30 + action.measurements.length * 17)
+  const cardHeight = Math.max(82, 34 + action.measurements.length * 20.5)
   document.setDrawColor(...COLORS.line)
   document.setFillColor(249, 251, 253)
   document.roundedRect(14, y, 182, cardHeight, 2.5, 2.5, 'FD')
-  wrappedText(document, action.title, 20, y + 10, 92, 13, COLORS.blueDark, 'bold')
-  wrappedText(document, `Tracking: ${action.tracking}`, 120, y + 9.5, 68, 8.5, COLORS.muted, 'bold')
+  wrappedText(document, action.title, 20, y + 10, 92, 12, COLORS.blueDark, 'bold')
+  wrappedText(document, `Tracking: ${action.tracking}`, 120, y + 9.5, 68, 9, COLORS.muted)
 
   if (action.imageDataUrl) {
     try {
@@ -90,23 +107,23 @@ function drawAction(
     } catch {
       document.setFillColor(232, 239, 245)
       document.rect(20, y + 17, 54, 38, 'F')
-      wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 8, COLORS.muted, 'bold')
+      wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 9, COLORS.muted)
     }
   } else {
     document.setFillColor(232, 239, 245)
     document.rect(20, y + 17, 54, 38, 'F')
-    wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 8, COLORS.muted, 'bold')
+    wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 9, COLORS.muted)
   }
-  wrappedText(document, `Registered hold midpoint: ${action.contextSeconds}`, 20, y + 62, 54, 7.5, COLORS.muted)
+  wrappedText(document, `Registered hold midpoint: ${action.contextSeconds}`, 20, y + 62, 54, 8.5, COLORS.muted)
 
   let measurementY = y + 21
   for (const measurement of action.measurements) {
-    wrappedText(document, measurement.kind, 82, measurementY, 43, 7.5, COLORS.blue, 'bold')
-    wrappedText(document, measurement.label, 82, measurementY + 5.5, 62, 8.5, COLORS.ink, 'bold')
-    wrappedText(document, measurement.primaryValue, 147, measurementY + 5.5, 41, 8.5, COLORS.ink, 'bold')
-    wrappedText(document, measurement.normalizedValue, 147, measurementY + 10.5, 41, 7, COLORS.muted)
-    wrappedText(document, measurement.explanation, 82, measurementY + 12.5, 106, 7.2, COLORS.muted)
-    measurementY += 17
+    wrappedText(document, measurement.kind, 82, measurementY, 63, 9, [64, 86, 108], 'bold')
+    wrappedText(document, measurement.label, 82, measurementY + 6.2, 62, 9.5, COLORS.ink)
+    wrappedText(document, measurement.primaryValue, 147, measurementY + 6.2, 41, 10, COLORS.blueDark, 'bold')
+    wrappedText(document, measurement.normalizedValue, 147, measurementY + 12.1, 41, 8.5, COLORS.muted)
+    wrappedText(document, measurement.explanation, 82, measurementY + 14.5, 106, 8.7, COLORS.muted)
+    measurementY += 20.5
   }
   return y + cardHeight + 7
 }
@@ -114,6 +131,7 @@ function drawAction(
 export async function buildResearchReportPdf(data: ResearchReportPdfData): Promise<Blob> {
   const { jsPDF } = await import('jspdf')
   const document = new jsPDF({ unit: 'mm', format: 'a4', compress: true })
+  registerFonts(document)
   document.setProperties({
     title: 'FACES Research Movement Report',
     subject: 'Facial movement research report with recorded context evidence',
@@ -143,11 +161,13 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
   }
 
   y += 5
-  document.setFillColor(...COLORS.amberPale)
-  document.setDrawColor(231, 200, 128)
-  document.roundedRect(14, y, 182, 34, 2.5, 2.5, 'FD')
-  wrappedText(document, 'Interpretation limits', 20, y + 10, 168, 11, COLORS.amber, 'bold')
-  wrappedText(document, data.interpretationLimits, 20, y + 18, 168, 8.2, [93, 66, 29], 'normal', 1.35)
+  document.setFillColor(244, 248, 252)
+  document.setDrawColor(82, 126, 167)
+  document.roundedRect(14, y, 182, 27, 2.5, 2.5, 'FD')
+  document.setFillColor(82, 126, 167)
+  document.rect(14, y, 2, 27, 'F')
+  wrappedText(document, 'Clinical review note', 21, y + 9, 167, 11, COLORS.blueDark, 'bold')
+  wrappedText(document, data.clinicalReviewNote, 21, y + 17, 167, 9.5, [36, 54, 75], 'normal', 1.4)
 
   document.addPage()
   y = addPageHeading(
@@ -168,7 +188,7 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
   ) + 5
 
   for (const action of data.actions) {
-    const needed = Math.max(74, 30 + action.measurements.length * 17)
+    const needed = Math.max(82, 34 + action.measurements.length * 20.5)
     if (y + needed > 282) {
       document.addPage()
       y = addPageHeading(document, 'Recorded action evidence', 'Continued')
@@ -179,8 +199,8 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
   const pageCount = document.getNumberOfPages()
   for (let page = 1; page <= pageCount; page += 1) {
     document.setPage(page)
-    wrappedText(document, `Page ${page} of ${pageCount}`, 174, 291, 22, 7.5, COLORS.muted)
-    wrappedText(document, 'Contains identifiable facial images - handle under the approved protocol.', 14, 291, 150, 7.5, COLORS.muted)
+    wrappedText(document, `Page ${page} of ${pageCount}`, 174, 291, 22, 8.5, COLORS.muted)
+    wrappedText(document, 'Contains identifiable facial images - handle under the approved protocol.', 14, 291, 150, 8.5, COLORS.muted)
   }
 
   const bytes = document.output('arraybuffer')

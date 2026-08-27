@@ -114,13 +114,17 @@ describe('App', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '#analysis')
   })
-  it('states the research boundary and never claims unsupported HB or heatmap output', () => {
+  it('uses an internal clinical-review product message without the old negative boundary block', () => {
     render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /capture the full facial movement story/i })).toBeInTheDocument()
     expect(screen.getByText(/FACES protocol · Source script v0.01/i)).toBeInTheDocument()
     expect(screen.queryByText(/IRB/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/Eye or mouth severity, House-Brackmann/i)).toBeInTheDocument()
+    expect(screen.queryByText('Interpretation boundary')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /research interface, not a diagnosis/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Eye or mouth severity, House-Brackmann/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Designed to support clinician review.' })).toBeInTheDocument()
+    expect(screen.getByText(/FACES AI summarizes standardized facial movement recordings/i)).toBeInTheDocument()
     expect(screen.queryByText(/heatmap/i)).not.toBeInTheDocument()
   })
 

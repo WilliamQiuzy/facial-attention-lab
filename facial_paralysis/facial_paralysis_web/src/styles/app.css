@@ -2224,6 +2224,16 @@ h2 {
   font-size: clamp(2.55rem, 4.2vw, 4rem);
 }
 
+.clinical-workflow-note p {
+  max-width: 850px;
+  margin: 30px 0 0;
+  border-left: 3px solid var(--blue);
+  padding-left: 22px;
+  color: var(--ink-soft);
+  font-size: 1.08rem;
+  line-height: 1.7;
+}
+
 .boundary-grid {
   display: grid;
   margin-top: 42px;
@@ -2726,7 +2736,7 @@ footer p {
 
 .score-explanation h2,
 .report-section h2,
-.report-limitations h2 {
+.report-clinical-note h2 {
   margin-bottom: 10px;
   color: var(--blue-deep);
   font-size: 1.8rem;
@@ -3054,31 +3064,32 @@ footer p {
   font-weight: 750;
 }
 
-.report-limitations {
+.report-clinical-note {
   display: flex;
   align-items: flex-start;
   gap: 15px;
   margin-top: 20px;
-  border: 1px solid #e7c880;
+  border: 1px solid var(--blue-line);
+  border-left: 4px solid #527ea7;
   border-radius: 8px;
   padding: 25px 28px;
-  background: var(--amber-soft);
-  color: var(--amber);
+  background: #f4f8fc;
+  color: var(--blue-dark);
 }
 
-.report-limitations h2 {
+.report-clinical-note h2 {
   margin: 0 0 7px;
   font-size: 1.25rem;
 }
 
-.report-limitations > svg {
-  flex: 0 0 32px;
+.report-clinical-note > svg {
+  flex: 0 0 28px;
   margin-top: 1px;
 }
 
-.report-limitations p {
+.report-clinical-note p {
   margin: 0;
-  color: #5d421d;
+  color: var(--ink-soft);
   line-height: 1.55;
 }
 

@@ -226,8 +226,9 @@ def _assert_core_page(page: Page) -> None:
     expect(
         page.get_by_role("heading", name="Validate the path before any result appears.")
     ).to_be_visible()
+    expect(page.get_by_text("Interpretation boundary", exact=True)).to_have_count(0)
     expect(
-        page.get_by_role("heading", name="This is a research interface, not a diagnosis.")
+        page.get_by_role("heading", name="Designed to support clinician review.")
     ).to_be_visible()
     expect(
         page.get_by_text("No patient data is persisted by this browser prototype.", exact=True)
@@ -273,7 +274,7 @@ def _show_demonstration_result(page: Page) -> None:
     demo_button.click()
 
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_be_visible()
-    expect(page.get_by_role("heading", name="Regional movement summary")).to_be_visible()
+    expect(page.get_by_role("heading", name="Shared V9 movement summary")).to_be_visible()
     expect(page.get_by_role("heading", name="Demonstration probability layout")).to_be_visible()
     expect(page.get_by_role("heading", name="Eye region")).to_be_visible()
     expect(page.get_by_role("heading", name="Mouth region")).to_be_visible()
@@ -297,7 +298,7 @@ def _assert_demonstration_and_reset(page: Page) -> None:
 
     page.get_by_role("button", name="Start a new session").click()
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_have_count(0)
-    expect(page.get_by_role("heading", name="Regional movement summary")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Shared V9 movement summary")).to_have_count(0)
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_have_count(0)
     expect(page.get_by_label("Choose LifeLink Face video")).to_have_value("")
     expect(page.get_by_text("Choose a LifeLink Face recording", exact=True)).to_be_visible()
@@ -316,7 +317,7 @@ def _assert_reload_drops_session_state(page: Page) -> None:
     expect(page.get_by_label("Choose LifeLink Face video")).to_have_value("")
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_have_count(0)
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_have_count(0)
-    expect(page.get_by_role("heading", name="Regional movement summary")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Shared V9 movement summary")).to_have_count(0)
     expect(page.get_by_text("Choose a LifeLink Face recording", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="Preview demonstration results")).to_be_disabled()
     expect(page.locator(".workflow-rail .is-active strong")).to_have_text("Prepare")

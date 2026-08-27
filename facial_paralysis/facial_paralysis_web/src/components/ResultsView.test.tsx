@@ -114,7 +114,7 @@ describe('Research Movement Report', () => {
     expect(screen.queryByRole('heading', { name: /how the model formed the score/i })).not.toBeInTheDocument()
     expect(screen.queryByText(/auditable movement observations/i)).not.toBeInTheDocument()
     expect(screen.getByText(/measurements are scaled to the same eye-to-eye reference width/i)).toBeInTheDocument()
-    expect(screen.getByText(/no clinical normal range or severity meaning/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no clinical normal range or severity meaning/i)).not.toBeInTheDocument()
     expect(screen.getByText(/measured movement observation — not a cause/i)).toBeInTheDocument()
     expect(screen.getAllByText('Side-to-side difference').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Change from neutral').length).toBeGreaterThan(0)
@@ -138,9 +138,13 @@ describe('Research Movement Report', () => {
     expect(screen.queryByText('Not assessed')).not.toBeInTheDocument()
     expect(screen.queryByText('Not collected')).not.toBeInTheDocument()
     expect(screen.queryByText('Validated response provenance')).not.toBeInTheDocument()
-    expect(screen.getByText(/House–Brackmann, Sunnybrook, eFACE, and FaCE require separate clinician or patient assessment/i)).toBeInTheDocument()
-    expect(screen.getByText(/not calibrated on FACES recordings/i)).toBeInTheDocument()
-    expect(container.querySelector('.report-limitations svg')).toHaveAttribute('width', '32')
+    expect(screen.queryByRole('heading', { name: 'Interpretation limits' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/not calibrated on FACES recordings/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/House–Brackmann, Sunnybrook, eFACE, and FaCE/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Clinical review note' })).toBeInTheDocument()
+    expect(screen.getByText(/review the movement score together with the recorded action images and source video/i)).toBeInTheDocument()
+    expect(screen.getByText(/MediaPipe 478-point facial landmarks/i)).toBeInTheDocument()
+    expect(container.querySelector('.report-clinical-note svg')).toHaveAttribute('width', '28')
     expect(container.textContent).not.toMatch(/\bcaused\b|contributed|abnormal|affected side|model confidence|BLV9-009/i)
   })
 
@@ -168,6 +172,7 @@ describe('Research Movement Report', () => {
 
   it('directly downloads a PDF with evidence images and aligns all three report actions', async () => {
     const user = userEvent.setup()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const print = vi.spyOn(window, 'print').mockImplementation(() => undefined)
     const objectUrls: Blob[] = []
     const filenames: string[] = []
@@ -198,10 +203,12 @@ describe('Research Movement Report', () => {
     const pdf = objectUrls.find((blob) => blob.type === 'application/pdf')
     expect(pdf).toBeDefined()
     expect(pdf?.size).toBeGreaterThan(1_000)
+    expect(warning).not.toHaveBeenCalled()
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:research-report')
     print.mockRestore()
     createObjectURL.mockRestore()
     revokeObjectURL.mockRestore()
     anchorClick.mockRestore()
+    warning.mockRestore()
   })
 })
