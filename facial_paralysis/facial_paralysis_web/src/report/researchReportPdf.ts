@@ -43,6 +43,9 @@ const COLORS = {
 } as const
 
 const PDF_FONT = 'SourceSans3'
+const ACTION_CARD_BASE_HEIGHT = 37
+const ACTION_MEASUREMENT_HEIGHT = 23.5
+const ACTION_CARD_MIN_HEIGHT = 88
 
 function fontBase64(dataUrl: string): string {
   const marker = ';base64,'
@@ -94,12 +97,15 @@ function drawAction(
   action: PdfActionEvidence,
   y: number,
 ): number {
-  const cardHeight = Math.max(82, 34 + action.measurements.length * 20.5)
+  const cardHeight = Math.max(
+    ACTION_CARD_MIN_HEIGHT,
+    ACTION_CARD_BASE_HEIGHT + action.measurements.length * ACTION_MEASUREMENT_HEIGHT,
+  )
   document.setDrawColor(...COLORS.line)
   document.setFillColor(249, 251, 253)
   document.roundedRect(14, y, 182, cardHeight, 2.5, 2.5, 'FD')
   wrappedText(document, action.title, 20, y + 10, 92, 12, COLORS.blueDark, 'bold')
-  wrappedText(document, `Tracking: ${action.tracking}`, 120, y + 9.5, 68, 9, COLORS.muted)
+  wrappedText(document, `Tracking: ${action.tracking}`, 120, y + 9.5, 68, 10, COLORS.muted)
 
   if (action.imageDataUrl) {
     try {
@@ -114,16 +120,16 @@ function drawAction(
     document.rect(20, y + 17, 54, 38, 'F')
     wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 9, COLORS.muted)
   }
-  wrappedText(document, `Registered hold midpoint: ${action.contextSeconds}`, 20, y + 62, 54, 8.5, COLORS.muted)
+  wrappedText(document, `Registered hold midpoint: ${action.contextSeconds}`, 20, y + 62, 54, 9.2, COLORS.muted)
 
   let measurementY = y + 21
   for (const measurement of action.measurements) {
-    wrappedText(document, measurement.kind, 82, measurementY, 63, 9, [64, 86, 108], 'bold')
-    wrappedText(document, measurement.label, 82, measurementY + 6.2, 62, 9.5, COLORS.ink)
-    wrappedText(document, measurement.primaryValue, 147, measurementY + 6.2, 41, 10, COLORS.blueDark, 'bold')
-    wrappedText(document, measurement.normalizedValue, 147, measurementY + 12.1, 41, 8.5, COLORS.muted)
-    wrappedText(document, measurement.explanation, 82, measurementY + 14.5, 106, 8.7, COLORS.muted)
-    measurementY += 20.5
+    wrappedText(document, measurement.kind, 82, measurementY, 63, 9.5, [64, 86, 108], 'bold')
+    wrappedText(document, measurement.label, 82, measurementY + 6.7, 62, 10, COLORS.ink)
+    wrappedText(document, measurement.primaryValue, 147, measurementY + 6.7, 41, 10.5, COLORS.blueDark, 'bold')
+    wrappedText(document, measurement.normalizedValue, 147, measurementY + 13, 41, 9.3, COLORS.muted)
+    wrappedText(document, measurement.explanation, 82, measurementY + 16, 106, 9.3, COLORS.muted, 'normal', 1.35)
+    measurementY += ACTION_MEASUREMENT_HEIGHT
   }
   return y + cardHeight + 7
 }
@@ -188,7 +194,10 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
   ) + 5
 
   for (const action of data.actions) {
-    const needed = Math.max(82, 34 + action.measurements.length * 20.5)
+    const needed = Math.max(
+      ACTION_CARD_MIN_HEIGHT,
+      ACTION_CARD_BASE_HEIGHT + action.measurements.length * ACTION_MEASUREMENT_HEIGHT,
+    )
     if (y + needed > 282) {
       document.addPage()
       y = addPageHeading(document, 'Recorded action evidence', 'Continued')

@@ -297,9 +297,10 @@ h2 {
   max-width: 760px;
   margin-bottom: 26px;
   color: var(--blue-deep);
-  font-size: clamp(3.4rem, 6vw, 5.5rem);
+  font-size: clamp(3.35rem, 5.7vw, 5.25rem);
   font-weight: 650;
-  line-height: 0.98;
+  line-height: 1.08;
+  text-wrap: balance;
 }
 
 .hero-copy > p {
@@ -648,10 +649,10 @@ h2 {
   grid-column: 1 / -1;
   grid-template-columns: minmax(260px, 0.85fr) minmax(430px, 1.35fr) minmax(190px, auto);
   align-items: center;
-  gap: 30px;
+  gap: 24px;
   border: 1px solid #c8d9e7;
   border-radius: 8px;
-  padding: 28px 30px;
+  padding: 24px 28px;
   background: white;
   box-shadow: var(--shadow-soft);
 }
@@ -704,8 +705,9 @@ h2 {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 9px;
-  padding: 7px 12px;
+  min-height: 62px;
+  gap: 10px;
+  padding: 12px 14px;
   color: #748290;
 }
 
@@ -714,20 +716,23 @@ h2 {
 }
 
 .guided-flow li svg {
+  width: 22px;
+  height: 22px;
   flex: 0 0 auto;
 }
 
 .guided-flow li > span {
   display: grid;
   min-width: 0;
-  gap: 2px;
-  font-size: 0.71rem;
-  line-height: 1.3;
+  gap: 3px;
+  font-size: 0.82rem;
+  line-height: 1.4;
 }
 
 .guided-flow li strong {
   color: #536575;
-  font-size: 0.76rem;
+  font-size: 0.9rem;
+  line-height: 1.25;
   white-space: nowrap;
 }
 
@@ -2319,7 +2324,7 @@ footer p {
   .masthead nav { justify-self: end; }
   .help-link { display: none; }
   .hero-inner { min-height: 520px; grid-template-columns: 1fr minmax(300px, .7fr); gap: 40px; }
-  .hero h1 { font-size: clamp(3rem, 6vw, 4.4rem); }
+  .hero h1 { font-size: clamp(2.95rem, 5.8vw, 4.2rem); }
   .face-orbit { width: 300px; }
   .hero-stat { right: auto; }
   .preparation-section { gap: 54px; }
@@ -2345,7 +2350,7 @@ footer p {
   .masthead nav { display: none; }
   .hero-inner { min-height: auto; grid-template-columns: 1fr; }
   .hero-copy { padding-block: 70px 30px; }
-  .hero h1 { font-size: clamp(3.05rem, 12vw, 4.6rem); }
+  .hero h1 { font-size: clamp(2.8rem, 10.8vw, 4.2rem); }
   .hero-visual { min-height: 430px; gap: 26px; }
   .face-orbit { width: min(310px, 74vw); }
   .hero-stat { right: auto; bottom: auto; transform: none; }
@@ -2416,7 +2421,7 @@ footer p {
   .product-mark small { font-size: .63rem; }
   .motion-mark { width: 38px; height: 38px; }
   .hero-copy { padding-top: 56px; }
-  .hero h1 { font-size: clamp(2.8rem, 14vw, 3.8rem); }
+  .hero h1 { font-size: clamp(2.55rem, 12vw, 3.5rem); }
   .hero-copy > p { font-size: 1.25rem; }
   .hero-visual { min-height: 380px; gap: 24px; }
   .face-orbit { width: min(270px, 74vw); }
@@ -2443,7 +2448,7 @@ footer p {
     font-size: .74rem;
   }
   .guided-flow { gap: 0; }
-  .guided-flow li { padding: 10px 8px; }
+  .guided-flow li { padding: 12px 10px; }
   .guided-control-action .button { width: 100%; min-width: 0; }
   .capture-card, .voice-guide { margin-inline: -2px; border-radius: 7px; padding: 22px; }
   .workspace.is-guided-active .capture-card { padding: 9px; }
@@ -2825,8 +2830,8 @@ footer p {
 .measurement-unit-note {
   margin: -10px 0 20px;
   color: var(--muted);
-  font-size: .82rem;
-  line-height: 1.55;
+  font-size: .95rem;
+  line-height: 1.6;
 }
 
 .evidence-legend {
@@ -2850,13 +2855,14 @@ footer p {
 
 .evidence-legend strong {
   color: var(--blue-dark);
-  font-size: .78rem;
+  font-size: .9rem;
+  line-height: 1.35;
 }
 
 .evidence-legend span {
   color: var(--muted);
-  font-size: .72rem;
-  line-height: 1.45;
+  font-size: .84rem;
+  line-height: 1.55;
 }
 
 .evidence-grid {
@@ -2916,14 +2922,15 @@ footer p {
 }
 
 .evidence-copy {
-  padding: 22px;
+  padding: 24px;
 }
 
 .evidence-copy h3 {
   margin: 0;
   color: var(--blue-deep);
   font-family: var(--display);
-  font-size: 1.35rem;
+  font-size: 1.5rem;
+  line-height: 1.2;
 }
 
 .evidence-action-heading {
@@ -2940,7 +2947,7 @@ footer p {
 
 .evidence-action-heading > span {
   color: var(--muted);
-  font-size: .66rem;
+  font-size: .8rem;
   font-weight: 700;
   letter-spacing: .04em;
   text-align: right;
@@ -2949,7 +2956,7 @@ footer p {
 
 .evidence-action-heading > strong {
   color: var(--green);
-  font-size: .75rem;
+  font-size: .88rem;
   text-align: right;
 }
 
@@ -2968,14 +2975,14 @@ footer p {
   display: grid;
   gap: 3px;
   color: var(--muted);
-  font-size: .72rem;
+  font-size: .9rem;
   font-weight: 650;
   line-height: 1.35;
 }
 
 .evidence-copy dt > span {
   color: var(--blue);
-  font-size: .63rem;
+  font-size: .78rem;
   font-weight: 800;
   letter-spacing: .055em;
   text-transform: uppercase;
@@ -2986,21 +2993,23 @@ footer p {
   gap: 3px;
   margin: 5px 0 0;
   color: var(--ink);
-  font-size: .95rem;
+  font-size: 1.08rem;
   font-weight: 750;
+  font-variant-numeric: tabular-nums;
 }
 
 .evidence-copy dd span {
   color: var(--muted);
-  font-size: .68rem;
+  font-size: .84rem;
   font-weight: 550;
+  line-height: 1.45;
 }
 
 .evidence-copy dd small {
   color: var(--ink-soft);
-  font-size: .7rem;
+  font-size: .86rem;
   font-weight: 500;
-  line-height: 1.4;
+  line-height: 1.5;
 }
 
 .report-definition-list {

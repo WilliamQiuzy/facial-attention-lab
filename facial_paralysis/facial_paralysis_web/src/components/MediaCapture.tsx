@@ -308,7 +308,7 @@ export function MediaCapturePanel({
             <label className="button button-secondary" htmlFor={timelineInputId}>
               {uploadedTimeline ? 'Replace action timeline' : 'Add action timeline'}
             </label>
-            <span>{uploadedTimelineName ?? 'Required for Shared V9 inference'}</span>
+            <span>{uploadedTimelineName ?? 'Required for guided analysis'}</span>
           </div> : null}
         </div>
       ) : (

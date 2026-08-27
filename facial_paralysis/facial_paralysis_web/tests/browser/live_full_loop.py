@@ -227,7 +227,7 @@ def run(
         page.on("pageerror", lambda error: page_errors.append(str(error)))
         try:
             page.goto(base_url, wait_until="networkidle")
-            expect(page.get_by_text("Research endpoint ready", exact=True)).to_be_visible(
+            expect(page.get_by_text("Analysis endpoint ready", exact=True)).to_be_visible(
                 timeout=15_000
             )
             page.keyboard.press("Tab")
@@ -289,6 +289,11 @@ def run(
                 expect(page.get_by_text("Side-to-side difference", exact=True).first).to_be_visible()
                 expect(page.get_by_text("Change from neutral", exact=True).first).to_be_visible()
                 expect(page.get_by_text("Action tracking", exact=True).first).to_be_visible()
+                evidence_type = page.locator(".evidence-copy dl > div").first.evaluate(
+                    "element => ({ label: parseFloat(getComputedStyle(element.querySelector('dt')).fontSize), kind: parseFloat(getComputedStyle(element.querySelector('dt > span')).fontSize), normalized: parseFloat(getComputedStyle(element.querySelector('dd > span')).fontSize), explanation: parseFloat(getComputedStyle(element.querySelector('dd > small')).fontSize) })"
+                )
+                if evidence_type["label"] < 14 or evidence_type["kind"] < 12 or evidence_type["normalized"] < 13 or evidence_type["explanation"] < 13:
+                    raise AssertionError(f"evidence supporting text is too small: {evidence_type}")
                 expect(page.get_by_role("heading", name="Clinical scale status")).to_have_count(0)
                 expect(page.get_by_text("Validated response provenance", exact=True)).to_have_count(0)
                 expect(page.get_by_role("heading", name="Interpretation limits")).to_have_count(0)
@@ -297,6 +302,9 @@ def run(
                 expect(page.get_by_text("MediaPipe 478-point facial landmarks", exact=False)).to_be_visible()
                 if page.locator(".report-clinical-note svg").get_attribute("width") != "28":
                     raise AssertionError("clinical-review icon is not the approved 28px size")
+                report_text = page.locator("body").inner_text().lower()
+                if "shared v9" in report_text or "blv9-009" in report_text or "target release" in report_text:
+                    raise AssertionError("the internal model release is visible in the report")
                 expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
                 expect(page.get_by_role("button", name="Save PDF")).to_be_visible()
                 expect(page.get_by_text("PDF includes the recorded evidence images", exact=False)).to_be_visible()

@@ -239,6 +239,19 @@ def _assert_core_page(page: Page) -> None:
     body_text = page.locator("body").inner_text().lower()
     if "house-brackmann" in body_text or "heatmap" in body_text:
         raise AssertionError("unsupported clinical grade or spatial heatmap language is visible")
+    if "shared v9" in body_text or "blv9-009" in body_text or "target release" in body_text:
+        raise AssertionError("the internal model release is visible in the product interface")
+
+    hero_type = page.locator("#hero-title").evaluate(
+        "element => ({ fontSize: parseFloat(getComputedStyle(element).fontSize), lineHeight: parseFloat(getComputedStyle(element).lineHeight) })"
+    )
+    if hero_type["lineHeight"] < hero_type["fontSize"] * 1.05:
+        raise AssertionError(f"hero title lines are too tight: {hero_type}")
+    guided_type = page.locator(".guided-flow li").first.evaluate(
+        "element => { const label = element.querySelector('strong'); const detail = element.querySelector('span'); const icon = element.querySelector('svg').getBoundingClientRect(); return { label: parseFloat(getComputedStyle(label).fontSize), detail: parseFloat(getComputedStyle(detail).fontSize), iconWidth: icon.width, iconHeight: icon.height }; }"
+    )
+    if guided_type["label"] < 14 or guided_type["detail"] < 13 or min(guided_type["iconWidth"], guided_type["iconHeight"]) < 21:
+        raise AssertionError(f"guided-flow labels or icons are too small: {guided_type}")
 
     page.evaluate("document.activeElement?.blur()")
     page.keyboard.press("Tab")
@@ -274,7 +287,7 @@ def _show_demonstration_result(page: Page) -> None:
     demo_button.click()
 
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_be_visible()
-    expect(page.get_by_role("heading", name="Shared V9 movement summary")).to_be_visible()
+    expect(page.get_by_role("heading", name="Movement summary")).to_be_visible()
     expect(page.get_by_role("heading", name="Demonstration probability layout")).to_be_visible()
     expect(page.get_by_role("heading", name="Eye region")).to_be_visible()
     expect(page.get_by_role("heading", name="Mouth region")).to_be_visible()
@@ -298,7 +311,7 @@ def _assert_demonstration_and_reset(page: Page) -> None:
 
     page.get_by_role("button", name="Start a new session").click()
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_have_count(0)
-    expect(page.get_by_role("heading", name="Shared V9 movement summary")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Movement summary")).to_have_count(0)
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_have_count(0)
     expect(page.get_by_label("Choose LifeLink Face video")).to_have_value("")
     expect(page.get_by_text("Choose a LifeLink Face recording", exact=True)).to_be_visible()
@@ -317,7 +330,7 @@ def _assert_reload_drops_session_state(page: Page) -> None:
     expect(page.get_by_label("Choose LifeLink Face video")).to_have_value("")
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_have_count(0)
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_have_count(0)
-    expect(page.get_by_role("heading", name="Shared V9 movement summary")).to_have_count(0)
+    expect(page.get_by_role("heading", name="Movement summary")).to_have_count(0)
     expect(page.get_by_text("Choose a LifeLink Face recording", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="Preview demonstration results")).to_be_disabled()
     expect(page.locator(".workflow-rail .is-active strong")).to_have_text("Prepare")

@@ -270,16 +270,16 @@ export function GuidedCaptureWorkspace({
 
         <ol className="guided-flow" aria-label="Guided recording sequence">
           <li className={camera.status === 'ready' || guidedActive || sessionPhase === 'complete' ? 'is-ready' : ''}>
-            <Camera aria-hidden="true" size={18} /><span><strong>Camera</strong>Starts first</span>
+            <Camera aria-hidden="true" size={22} /><span><strong>Camera</strong>Starts first</span>
           </li>
           <li className={sessionPhase === 'guiding' || sessionPhase === 'finalizing' || sessionPhase === 'complete' ? 'is-ready' : ''}>
-            <Volume2 aria-hidden="true" size={18} /><span><strong>Voice cue</strong>Plays aloud</span>
+            <Volume2 aria-hidden="true" size={22} /><span><strong>Voice cue</strong>Plays aloud</span>
           </li>
           <li className={voice.phase === 'holding' || sessionPhase === 'finalizing' || sessionPhase === 'complete' ? 'is-ready' : ''}>
-            <Clock3 aria-hidden="true" size={18} /><span><strong>3-second hold</strong>Timed automatically</span>
+            <Clock3 aria-hidden="true" size={22} /><span><strong>3-second hold</strong>Timed automatically</span>
           </li>
           <li className={sessionPhase === 'complete' ? 'is-ready' : ''}>
-            <Check aria-hidden="true" size={18} /><span><strong>Auto finish</strong>Video appears below</span>
+            <Check aria-hidden="true" size={22} /><span><strong>Auto finish</strong>Video appears below</span>
           </li>
         </ol>
 

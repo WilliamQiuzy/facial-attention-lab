@@ -120,7 +120,7 @@ describe('Shared V9 inference contract', () => {
         preprocessing: 'faces-to-shared-v9/v1',
       }),
     })
-    await expect(checkResearchEndpoint('/api/v1/facial-paralysis/infer', fetcher)).rejects.toThrow(/does not match the pinned Shared V9 release/i)
+    await expect(checkResearchEndpoint('/api/v1/facial-paralysis/infer', fetcher)).rejects.toThrow(/does not match the required deployment/i)
   })
 
   it('reports readiness transport and HTTP failures without exposing server text', async () => {

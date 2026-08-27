@@ -11,7 +11,6 @@ import { createDemonstrationResult } from './model/demonstration'
 import {
   analyzeRecording,
   checkResearchEndpoint,
-  EXPECTED_CANDIDATE_ID,
   InferenceContractError,
   type CaptureTimelineDraft,
   type RecordingSource,
@@ -243,7 +242,7 @@ export function App({
             <div className="hero-copy">
               <span className="eyebrow">Facial movement assessment · Research prototype</span>
               <h1 id="hero-title">Capture the full facial movement story.</h1>
-              <p>Guide a standardized FACES recording, bring in a LifeLink Face video, and review the one binary research output the current Shared V9 model supports.</p>
+              <p>Guide a standardized FACES recording, bring in a LifeLink Face video, and review one consistent facial-movement classification output.</p>
               <a className="button button-primary hero-action" href="#capture">Start a capture <ArrowRight aria-hidden="true" size={19} /></a>
             </div>
             <div className="hero-visual" aria-label="Seven- or eight-step facial movement protocol overview">
@@ -282,10 +281,10 @@ export function App({
 
         <section className="analysis-section" id="analysis" aria-labelledby="analysis-title">
           <div className="analysis-copy">
-            <span className="eyebrow">Research analysis</span>
+            <span className="eyebrow">Movement analysis</span>
             <h2 id="analysis-title">Validate the path before any result appears.</h2>
-            <p>The server verifies the capture timeline, extracts paired MediaPipe geometry, and runs the pinned Shared V9 ensemble.</p>
-            <div className="model-chip"><ShieldCheck aria-hidden="true" size={18} /><span><strong>Target release</strong>{EXPECTED_CANDIDATE_ID} · Shared V9</span></div>
+            <p>The server verifies the capture timeline, extracts paired MediaPipe geometry, and validates the analysis response before it appears.</p>
+            <div className="model-chip"><ShieldCheck aria-hidden="true" size={18} /><span><strong>Analysis pipeline</strong>Timeline, geometry, and response checks</span></div>
           </div>
           <div className="analysis-actions-card">
             {researchResult ? (
@@ -306,9 +305,9 @@ export function App({
             ) : apiEndpoint ? (
               <>
                 {endpointState === 'ready' ? (
-                  <div className="endpoint-state"><span className="status-dot is-online" /><span><strong>Research endpoint ready</strong>Pinned Shared V9 readiness verified</span></div>
+                  <div className="endpoint-state"><span className="status-dot is-online" /><span><strong>Analysis endpoint ready</strong>Readiness and response validation verified</span></div>
                 ) : endpointState === 'checking' ? (
-                  <div className="endpoint-state"><span className="status-dot is-checking" /><span><strong>Checking research endpoint</strong>Recording remains locked until Shared V9 is ready</span></div>
+                  <div className="endpoint-state"><span className="status-dot is-checking" /><span><strong>Checking analysis endpoint</strong>Recording remains locked until the endpoint is ready</span></div>
                 ) : (
                   <div className="endpoint-state endpoint-state-retry"><span className="status-dot is-error" /><span><strong>Research endpoint unavailable</strong>Do not begin a patient recording yet</span><button className="text-action" type="button" onClick={() => setEndpointCheckAttempt((value) => value + 1)}>Retry endpoint check</button></div>
                 )}
@@ -342,7 +341,7 @@ export function App({
 
             {!researchResult && !recording ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Add a recording to continue.</p> : null}
             {!researchResult && recording && reanimatedSmileApplicable === null ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Resolve conditional step 8 in the voice guide.</p> : null}
-            {!researchResult && recording && !captureTimeline ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Shared V9 requires the guided capture timeline; uploaded videos need an authenticated timeline sidecar.</p> : null}
+            {!researchResult && recording && !captureTimeline ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Analysis requires the guided capture timeline; uploaded videos need an authenticated timeline sidecar.</p> : null}
             {!researchResult && recording && reanimatedSmileApplicable === false ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Step 8 is marked unavailable; analysis will use the six completed active movements without imputation.</p> : null}
             {!researchResult && analysisError ? <p className="inline-alert" role="alert">{analysisError}</p> : null}
             {!researchResult && analysisState === 'error' && !analysisRetryAllowed ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> This recording cannot be resubmitted. Clear it, correct the capture, and record the guided sequence again.</p> : null}

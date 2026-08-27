@@ -242,7 +242,7 @@ function DemonstrationResults({ result, onReset }: { result: DemonstrationResult
         <div><strong>{result.provenanceLabel}</strong><span>Interface preview values only. No model processed this video.</span></div>
       </div>
       <div className="results-heading">
-        <div><span className="eyebrow">Interface demonstration</span><h2 id="results-title">Shared V9 movement summary</h2><p>Preview the result layout only. These values were not produced by a model.</p></div>
+        <div><span className="eyebrow">Interface demonstration</span><h2 id="results-title">Movement summary</h2><p>Preview the result layout only. These values were not produced by a model.</p></div>
         <button className="button button-secondary" type="button" onClick={onReset}>Start a new session</button>
       </div>
       <div className="probability-card">
@@ -351,7 +351,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
         <div className="evidence-legend" aria-label="Measurement guide"><div><strong>Side-to-side difference</strong><span>Smaller means the two sides were more alike in this recording.</span></div><div><strong>Change from neutral</strong><span>Amount of geometric movement relative to the resting baseline.</span></div><div><strong>Tracking completeness</strong><span>How many of the 32 evenly sampled points contained usable paired face tracking.</span></div></div>
         <div className="evidence-grid">{result.reportEvidence.actions.map((action, actionIndex) => (
           <article className="evidence-card" key={action.id}>
-            <div className="evidence-frame">{frames[action.id] ? <img src={frames[action.id] ?? undefined} alt={`${ACTION_LABELS[action.id]} recorded context at ${(action.contextFrameMs / 1_000).toFixed(1)} seconds`} /> : <div className="frame-fallback" role="img" aria-label={`${ACTION_LABELS[action.id]} context frame unavailable`}><ScanFace aria-hidden="true" size={30} /><span>Recorded context frame unavailable</span></div>}<span>{(action.contextFrameMs / 1_000).toFixed(1)} s</span></div>
+            <div className="evidence-frame">{frames[action.id] ? <img src={frames[action.id] ?? undefined} alt={`${ACTION_LABELS[action.id]} recorded context at ${(action.contextFrameMs / 1_000).toFixed(1)} seconds`} width="640" height="480" loading="lazy" decoding="async" /> : <div className="frame-fallback" role="img" aria-label={`${ACTION_LABELS[action.id]} context frame unavailable`}><ScanFace aria-hidden="true" size={30} /><span>Recorded context frame unavailable</span></div>}<span>{(action.contextFrameMs / 1_000).toFixed(1)} s</span></div>
             <div className="evidence-copy"><div className="evidence-action-heading"><h3>{ACTION_LABELS[action.id]}</h3><span>Action tracking</span><strong>{result.quality.actions[actionIndex].validSamples} of 32 points ({Math.round(result.quality.actions[actionIndex].validSamples / 32 * 100)}%)</strong></div><dl>{action.observations.map((observation) => { const presentation = measurementPresentation(observation.metric, observation.value); return <div key={observation.metric}><dt><span>{presentation.kind}</span>{presentation.label}</dt><dd>{presentation.primaryValue}<span>{presentation.normalizedValue}</span><small>{presentation.explanation}</small></dd></div> })}</dl></div>
           </article>
         ))}</div>

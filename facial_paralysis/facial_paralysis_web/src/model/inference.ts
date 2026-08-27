@@ -561,7 +561,7 @@ export async function checkResearchEndpoint(
     || ready.ensemble_members !== 3
     || ready.preprocessing !== EXPECTED_PREPROCESSING_VERSION
   ) {
-    throw new InferenceContractError('The research endpoint does not match the pinned Shared V9 release.')
+    throw new InferenceContractError('The analysis endpoint does not match the required deployment.')
   }
 }
 

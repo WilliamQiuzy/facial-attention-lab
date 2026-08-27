@@ -114,8 +114,8 @@ describe('App', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '#analysis')
   })
-  it('uses an internal clinical-review product message without the old negative boundary block', () => {
-    render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+  it('uses an internal clinical-review product message without exposing the model release', () => {
+    const { container } = render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /capture the full facial movement story/i })).toBeInTheDocument()
     expect(screen.getByText(/FACES protocol · Source script v0.01/i)).toBeInTheDocument()
@@ -125,6 +125,9 @@ describe('App', () => {
     expect(screen.queryByText(/Eye or mouth severity, House-Brackmann/i)).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Designed to support clinician review.' })).toBeInTheDocument()
     expect(screen.getByText(/FACES AI summarizes standardized facial movement recordings/i)).toBeInTheDocument()
+    expect(screen.getByText('Analysis pipeline')).toBeInTheDocument()
+    expect(screen.getByText(/timeline, geometry, and response checks/i)).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/BLV9-009|Shared V9|Target release/i)
     expect(screen.queryByText(/heatmap/i)).not.toBeInTheDocument()
   })
 
@@ -139,6 +142,7 @@ describe('App', () => {
     expect(screen.getByText('DEMONSTRATION - NOT MODEL OUTPUT')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent(/no model processed this video/i)
     expect(screen.getByText('Demonstration probability layout')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Movement summary' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Eye region' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Mouth region' })).toBeInTheDocument()
     expect(screen.queryByText('Binary model output')).not.toBeInTheDocument()
@@ -374,12 +378,12 @@ describe('App', () => {
       .mockResolvedValueOnce(undefined)
     render(<App apiEndpoint="https://research.example.test/infer" checkEndpoint={checkEndpoint} />)
 
-    expect(screen.getByText(/checking research endpoint/i)).toBeInTheDocument()
+    expect(screen.getByText(/checking analysis endpoint/i)).toBeInTheDocument()
     expect(await screen.findByText(/research endpoint unavailable/i)).toBeInTheDocument()
-    expect(screen.queryByText(/research endpoint ready/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/analysis endpoint ready/i)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /retry endpoint check/i }))
-    expect(await screen.findByText(/research endpoint ready/i)).toBeInTheDocument()
+    expect(await screen.findByText(/analysis endpoint ready/i)).toBeInTheDocument()
     expect(checkEndpoint).toHaveBeenCalledTimes(2)
   })
 })
