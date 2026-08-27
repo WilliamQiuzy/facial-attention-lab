@@ -235,6 +235,48 @@ def _assert_core_page(page: Page) -> None:
     ).to_be_visible()
     expect(page.get_by_role("tab", name="Upload from LifeLink")).to_be_visible()
     expect(page.get_by_role("tab", name="Use this device")).to_be_visible()
+    tabs = page.get_by_role("tab")
+    expect(tabs.nth(0)).to_have_text("Use this device")
+    expect(tabs.nth(0)).to_have_attribute("aria-selected", "true")
+    expect(tabs.nth(1)).to_have_text("Upload from LifeLink")
+
+    capture_layout = page.evaluate(
+        """() => {
+          const box = selector => {
+            const rect = document.querySelector(selector).getBoundingClientRect()
+            return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
+          }
+          return {
+            viewportWidth: window.innerWidth,
+            guidance: box('#protocol'),
+            capture: box('.capture-card'),
+            controls: box('.guided-session-control'),
+          }
+        }"""
+    )
+    guidance = capture_layout["guidance"]
+    capture = capture_layout["capture"]
+    controls = capture_layout["controls"]
+    if capture_layout["viewportWidth"] > 1080:
+        if guidance["left"] >= capture["left"] or abs(guidance["top"] - capture["top"]) > 2:
+            raise AssertionError(f"guidance is not left of capture: {capture_layout}")
+    elif guidance["bottom"] > capture["top"] + 2:
+        raise AssertionError(f"guidance is not above capture in the responsive layout: {capture_layout}")
+    if controls["top"] < max(guidance["bottom"], capture["bottom"]) - 2:
+        raise AssertionError(f"recording controls are not below guidance and capture: {capture_layout}")
+
+    instruction_palette = page.locator(".guided-flow li").first.evaluate(
+        """element => {
+          const rgb = getComputedStyle(element).color.match(/\\d+(?:\\.\\d+)?/g).map(Number)
+          const label = element.querySelector('strong')
+          const labelRgb = getComputedStyle(label).color.match(/\\d+(?:\\.\\d+)?/g).map(Number)
+          return { rgb, labelRgb }
+        }"""
+    )
+    if instruction_palette["rgb"][2] - instruction_palette["rgb"][0] < 40:
+        raise AssertionError(f"instruction details lost their muted blue palette: {instruction_palette}")
+    if instruction_palette["labelRgb"][2] - instruction_palette["labelRgb"][0] < 40:
+        raise AssertionError(f"instruction labels lost their blue palette: {instruction_palette}")
 
     body_text = page.locator("body").inner_text().lower()
     if "house-brackmann" in body_text or "heatmap" in body_text:
@@ -271,6 +313,7 @@ def _assert_core_page(page: Page) -> None:
 
 
 def _upload_synthetic_video(page: Page) -> None:
+    page.get_by_role("tab", name="Upload from LifeLink").click()
     file_input = page.get_by_label("Choose LifeLink Face video")
     file_input.set_input_files(SYNTHETIC_UPLOAD)
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_be_visible()
@@ -313,8 +356,12 @@ def _assert_demonstration_and_reset(page: Page) -> None:
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_have_count(0)
     expect(page.get_by_role("heading", name="Movement summary")).to_have_count(0)
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_have_count(0)
-    expect(page.get_by_label("Choose LifeLink Face video")).to_have_value("")
-    expect(page.get_by_text("Choose a LifeLink Face recording", exact=True)).to_be_visible()
+    expect(page.get_by_label("Choose LifeLink Face video")).to_have_count(0)
+    expect(page.get_by_role("tab", name="Use this device")).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("button", name="Enable front camera")).to_be_visible()
+    reset_color = page.locator(".guided-flow li").first.evaluate("element => getComputedStyle(element).color")
+    if reset_color != "rgb(85, 122, 155)":
+        raise AssertionError(f"new-session instructions changed away from muted blue: {reset_color}")
     expect(page.get_by_role("button", name="Preview demonstration results")).to_be_disabled()
     expect(page.locator(".workflow-rail .is-active strong")).to_have_text("Prepare")
     _assert_no_page_overflow(page, "reset state")
@@ -327,11 +374,12 @@ def _assert_reload_drops_session_state(page: Page) -> None:
     page.reload(wait_until="domcontentloaded")
     page.wait_for_load_state("networkidle")
 
-    expect(page.get_by_label("Choose LifeLink Face video")).to_have_value("")
+    expect(page.get_by_label("Choose LifeLink Face video")).to_have_count(0)
     expect(page.get_by_text(SYNTHETIC_UPLOAD["name"], exact=True)).to_have_count(0)
     expect(page.get_by_text("DEMONSTRATION - NOT MODEL OUTPUT", exact=True)).to_have_count(0)
     expect(page.get_by_role("heading", name="Movement summary")).to_have_count(0)
-    expect(page.get_by_text("Choose a LifeLink Face recording", exact=True)).to_be_visible()
+    expect(page.get_by_role("tab", name="Use this device")).to_have_attribute("aria-selected", "true")
+    expect(page.get_by_role("button", name="Enable front camera")).to_be_visible()
     expect(page.get_by_role("button", name="Preview demonstration results")).to_be_disabled()
     expect(page.locator(".workflow-rail .is-active strong")).to_have_text("Prepare")
     _assert_no_page_overflow(page, "reload without session persistence")
@@ -354,8 +402,11 @@ def _prepare_guided_camera(page: Page, include_step_8: bool = False) -> None:
     upload_tab = page.get_by_role("tab", name="Upload from LifeLink")
     camera_tab = page.get_by_role("tab", name="Use this device")
 
-    upload_tab.focus()
+    camera_tab.focus()
     page.keyboard.press("ArrowRight")
+    expect(upload_tab).to_be_focused()
+    expect(upload_tab).to_have_attribute("aria-selected", "true")
+    page.keyboard.press("ArrowLeft")
     expect(camera_tab).to_be_focused()
     page.wait_for_timeout(100)
     focus_style = _focus_style(page, '[role="tab"][aria-selected="true"]')

@@ -60,6 +60,35 @@ describe('GuidedCaptureWorkspace', () => {
     })
   })
 
+  it('defaults to this device, puts guidance left, and places recording controls below', () => {
+    const { container } = render(
+      <GuidedCaptureWorkspace
+        reanimatedSmileApplicable={false}
+        onReanimatedSmileApplicableChange={vi.fn()}
+        onRecordingChange={vi.fn()}
+      />,
+    )
+
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual([
+      'Use this device',
+      'Upload from LifeLink',
+    ])
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Start guided recording' })).toBeVisible()
+
+    const workspace = container.querySelector('.workspace')
+    const guidance = container.querySelector('#protocol')
+    const capture = container.querySelector('.capture-card')
+    const recordingControls = container.querySelector('.guided-session-control')
+    expect(workspace).not.toBeNull()
+    expect(Array.from(workspace?.children ?? [])).toEqual([
+      guidance,
+      capture,
+      recordingControls,
+    ])
+  })
+
   it('locks a patient recording until the pinned model endpoint is ready', async () => {
     const user = userEvent.setup()
     render(

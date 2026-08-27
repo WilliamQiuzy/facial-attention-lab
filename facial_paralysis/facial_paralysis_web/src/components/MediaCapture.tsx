@@ -62,7 +62,7 @@ function isSupportedVideo(file: File): boolean {
 }
 
 export function MediaCapture({ onRecordingChange }: MediaCaptureProps) {
-  const [mode, setMode] = useState<CaptureMode>('upload')
+  const [mode, setMode] = useState<CaptureMode>('camera')
   const camera = useCameraRecorder()
   return (
     <MediaCapturePanel
@@ -142,9 +142,9 @@ export function MediaCapturePanel({
     if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
       nextMode = currentMode === 'upload' ? 'camera' : 'upload'
     } else if (event.key === 'Home') {
-      nextMode = 'upload'
-    } else if (event.key === 'End') {
       nextMode = 'camera'
+    } else if (event.key === 'End') {
+      nextMode = 'upload'
     }
     if (!nextMode) return
     event.preventDefault()
@@ -234,21 +234,6 @@ export function MediaCapturePanel({
 
       <div className="source-tabs" role="tablist" aria-label="Recording source">
         <button
-          ref={uploadTabRef}
-          id={uploadTabId}
-          type="button"
-          role="tab"
-          aria-selected={mode === 'upload'}
-          aria-controls={uploadPanelId}
-          tabIndex={mode === 'upload' ? 0 : -1}
-          disabled={guidedActive}
-          className={mode === 'upload' ? 'source-tab is-selected' : 'source-tab'}
-          onClick={() => switchMode('upload')}
-          onKeyDown={(event) => handleTabKeyDown(event, 'upload')}
-        >
-          <UploadCloud aria-hidden="true" size={19} /> Upload from LifeLink
-        </button>
-        <button
           ref={cameraTabRef}
           id={cameraTabId}
           type="button"
@@ -262,6 +247,21 @@ export function MediaCapturePanel({
           onKeyDown={(event) => handleTabKeyDown(event, 'camera')}
         >
           <Camera aria-hidden="true" size={19} /> Use this device
+        </button>
+        <button
+          ref={uploadTabRef}
+          id={uploadTabId}
+          type="button"
+          role="tab"
+          aria-selected={mode === 'upload'}
+          aria-controls={uploadPanelId}
+          tabIndex={mode === 'upload' ? 0 : -1}
+          disabled={guidedActive}
+          className={mode === 'upload' ? 'source-tab is-selected' : 'source-tab'}
+          onClick={() => switchMode('upload')}
+          onKeyDown={(event) => handleTabKeyDown(event, 'upload')}
+        >
+          <UploadCloud aria-hidden="true" size={19} /> Upload from LifeLink
         </button>
       </div>
 

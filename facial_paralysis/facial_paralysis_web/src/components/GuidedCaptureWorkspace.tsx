@@ -57,7 +57,7 @@ export function GuidedCaptureWorkspace({
 }: GuidedCaptureWorkspaceProps) {
   const camera = useCameraRecorder()
   const voice = useGuidedVoiceSequence()
-  const [mode, setMode] = useState<CaptureMode>('upload')
+  const [mode, setMode] = useState<CaptureMode>('camera')
   const [sessionPhase, setSessionPhase] = useState<GuidedSessionPhase>('idle')
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [cancelledMessage, setCancelledMessage] = useState<string | null>(null)
@@ -134,13 +134,13 @@ export function GuidedCaptureWorkspace({
     if (!guidedActive) return
     const workspace = workspaceRef.current
     if (!workspace) return
-    const target = window.innerWidth <= 560
-      ? workspace.querySelector<HTMLElement>('.patient-guidance')
-      : workspace
-    target?.scrollIntoView?.({
-      block: window.innerWidth <= 560 ? 'end' : 'start',
+    workspace.scrollIntoView?.({
+      block: window.innerWidth <= 560 ? 'center' : 'start',
       behavior: 'auto',
     })
+    if (window.innerWidth <= 560) {
+      window.scrollBy?.({ top: -64, behavior: 'auto' })
+    }
   }, [guidedActive])
 
   useEffect(() => {
@@ -256,6 +256,38 @@ export function GuidedCaptureWorkspace({
 
   return (
     <div ref={workspaceRef} className={`workspace ${guidedActive ? 'is-guided-active' : ''}`}>
+      <div id="protocol" className={guidedActive ? 'is-guided-hidden' : undefined}>
+        <VoiceGuide
+          reanimatedSmileApplicable={reanimatedSmileApplicable}
+          onReanimatedSmileApplicableChange={onReanimatedSmileApplicableChange}
+          guidedActive={guidedActive}
+          guidedVoice={voice}
+          applicabilityLocked={mode === 'camera' && camera.status === 'recorded'}
+        />
+      </div>
+
+      {guidedActive ? (
+        <PatientMovementGuide
+          step={patientStep}
+          stepIndex={patientStepIndex}
+          phase={patientGuidePhase}
+          countdown={voice.countdown}
+          completedStepIndexes={voice.completedStepIndexes}
+          reanimatedSmileApplicable={reanimatedSmileApplicable === true}
+        />
+      ) : null}
+
+      <MediaCapturePanel
+        camera={camera}
+        mode={mode}
+        onModeChange={changeMode}
+        onRecordingChange={onRecordingChange}
+        recordingControls="guided"
+        guidedActive={guidedActive}
+        reportCameraRecording={false}
+        showCameraError={!sessionError}
+      />
+
       <section className={`guided-session-control ${guidedActive ? 'is-active' : ''}`} aria-labelledby="guided-session-title">
         <div className="guided-control-copy">
           <span className="eyebrow">One guided capture</span>
@@ -304,37 +336,6 @@ export function GuidedCaptureWorkspace({
         </div>
         {sessionError ? <p className="inline-alert guided-session-error" role="alert">{sessionError}</p> : null}
       </section>
-
-      {guidedActive ? (
-        <PatientMovementGuide
-          step={patientStep}
-          stepIndex={patientStepIndex}
-          phase={patientGuidePhase}
-          countdown={voice.countdown}
-          completedStepIndexes={voice.completedStepIndexes}
-          reanimatedSmileApplicable={reanimatedSmileApplicable === true}
-        />
-      ) : null}
-
-      <MediaCapturePanel
-        camera={camera}
-        mode={mode}
-        onModeChange={changeMode}
-        onRecordingChange={onRecordingChange}
-        recordingControls="guided"
-        guidedActive={guidedActive}
-        reportCameraRecording={false}
-        showCameraError={!sessionError}
-      />
-      <div id="protocol" className={guidedActive ? 'is-guided-hidden' : undefined}>
-        <VoiceGuide
-          reanimatedSmileApplicable={reanimatedSmileApplicable}
-          onReanimatedSmileApplicableChange={onReanimatedSmileApplicableChange}
-          guidedActive={guidedActive}
-          guidedVoice={voice}
-          applicabilityLocked={mode === 'camera' && camera.status === 'recorded'}
-        />
-      </div>
     </div>
   )
 }

@@ -10,6 +10,7 @@ const readyEndpoint = vi.fn().mockResolvedValue(undefined)
 const pendingEndpoint = vi.fn(() => new Promise<void>(() => undefined))
 
 async function uploadVideo(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
   const file = new File(['synthetic-video'], 'faces-session.webm', { type: 'video/webm' })
   await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
   return file
@@ -178,7 +179,8 @@ describe('App', () => {
 
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
     expect(screen.queryByText('DEMONSTRATION - NOT MODEL OUTPUT')).not.toBeInTheDocument()
-    expect(screen.getByText('Choose a LifeLink Face recording')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Enable front camera' })).toBeVisible()
   })
 
   it('offers an explicit clear action before analysis or results exist', async () => {
@@ -195,7 +197,8 @@ describe('App', () => {
     await user.click(clearButton)
 
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
-    expect(screen.getByText('Choose a LifeLink Face recording')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Enable front camera' })).toBeVisible()
   })
 
   it('avoids smooth scrolling on reset when reduced motion is requested', async () => {

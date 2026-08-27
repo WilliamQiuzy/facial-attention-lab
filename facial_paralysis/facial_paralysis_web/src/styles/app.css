@@ -647,6 +647,7 @@ h2 {
   display: grid;
   overflow: hidden;
   grid-column: 1 / -1;
+  grid-row: 2;
   grid-template-columns: minmax(260px, 0.85fr) minmax(430px, 1.35fr) minmax(190px, auto);
   align-items: center;
   gap: 24px;
@@ -708,7 +709,7 @@ h2 {
   min-height: 62px;
   gap: 10px;
   padding: 12px 14px;
-  color: #748290;
+  color: #557a9b;
 }
 
 .guided-flow li + li {
@@ -730,7 +731,7 @@ h2 {
 }
 
 .guided-flow li strong {
-  color: #536575;
+  color: #365f82;
   font-size: 0.9rem;
   line-height: 1.25;
   white-space: nowrap;
@@ -789,7 +790,10 @@ h2 {
 .workspace.is-guided-active .guided-session-control {
   position: sticky;
   z-index: 30;
-  top: 12px;
+  top: auto;
+  bottom: 12px;
+  grid-column: 1 / -1;
+  grid-row: 2;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
   padding: 16px 20px;
@@ -814,8 +818,8 @@ h2 {
 
 .workspace.is-guided-active .capture-card {
   min-height: 0;
-  grid-column: 1;
-  grid-row: 2;
+  grid-column: 2;
+  grid-row: 1;
   padding: 14px;
 }
 
@@ -834,8 +838,8 @@ h2 {
   display: grid;
   min-width: 0;
   min-height: 428px;
-  grid-column: 2;
-  grid-row: 2;
+  grid-column: 1;
+  grid-row: 1;
   grid-template-rows: auto 1fr auto;
   gap: 18px;
   overflow: hidden;
@@ -2329,6 +2333,7 @@ footer p {
   .hero-stat { right: auto; }
   .preparation-section { gap: 54px; }
   .workspace { grid-template-columns: 1fr; }
+  .guided-session-control { grid-row: 3; }
   .guided-session-control { grid-template-columns: minmax(250px, .9fr) minmax(430px, 1.5fr); }
   .guided-control-action { grid-column: 1 / -1; justify-content: flex-start; }
   .guided-control-action .button { width: auto; min-width: 230px; }
@@ -2336,7 +2341,8 @@ footer p {
   .capture-card, .voice-guide { min-height: auto; }
   .workspace.is-guided-active { grid-template-columns: 1fr; }
   .workspace.is-guided-active .capture-card { grid-column: 1; grid-row: 2; }
-  .patient-guidance { min-height: 0; grid-column: 1; grid-row: 3; }
+  .workspace.is-guided-active .guided-session-control { grid-row: 3; }
+  .patient-guidance { min-height: 0; grid-column: 1; grid-row: 1; }
   .analysis-section { grid-template-columns: 1fr 420px; gap: 48px; }
   .provenance-card dl { grid-template-columns: 1fr 1fr; }
 }
@@ -2365,9 +2371,10 @@ footer p {
   .guided-flow li:nth-child(n + 3) { border-top: 1px solid var(--line); }
   .workspace.is-guided-active { grid-template-columns: 1fr; gap: 12px; }
   .workspace.is-guided-active .guided-session-control {
-    top: 8px;
+    top: auto;
+    bottom: 8px;
     grid-column: 1;
-    grid-row: 1;
+    grid-row: 3;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 14px;
     padding: 13px 15px;
@@ -2386,7 +2393,7 @@ footer p {
   .patient-guidance {
     min-height: 0;
     grid-column: 1;
-    grid-row: 3;
+    grid-row: 1;
     gap: 12px;
     padding: 16px 18px;
   }

@@ -10,10 +10,15 @@ describe('MediaCapture', () => {
     return file
   }
 
+  async function openUpload(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
+  }
+
   it('accepts a supported LifeLink Face video and shows session-only metadata', async () => {
     const user = userEvent.setup()
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
 
     const file = new File(['synthetic-video'], 'livelink-session.mp4', { type: 'video/mp4' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
@@ -27,6 +32,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup()
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
     const video = new File(['video'], 'livelink-session.mp4', { type: 'video/mp4' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), video)
     const ids = [
@@ -65,6 +71,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup()
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
     const video = new File(['video'], 'seven-step.mp4', { type: 'video/mp4' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), video)
     const ids = [
@@ -103,6 +110,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup()
     const revoke = vi.mocked(URL.revokeObjectURL)
     const { unmount } = render(<MediaCapture onRecordingChange={vi.fn()} />)
+    await openUpload(user)
     const first = new File(['first'], 'first.mp4', { type: 'video/mp4' })
     const second = new File(['second'], 'second.mp4', { type: 'video/mp4' })
     const input = screen.getByLabelText('Choose LifeLink Face video')
@@ -119,6 +127,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup({ applyAccept: false })
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
 
     const file = new File(['image'], 'portrait.png', { type: 'image/png' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
@@ -131,6 +140,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup({ applyAccept: false })
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
 
     const valid = new File(['video'], 'first-session.mp4', { type: 'video/mp4' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), valid)
@@ -149,6 +159,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup()
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
     const file = withReportedSize(
       new File(['bounded'], 'session.mp4', { type: 'video/mp4' }),
       size,
@@ -165,6 +176,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup()
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
     const file = withReportedSize(
       new File(['bounded'], 'boundary.webm', { type: 'video/webm' }),
       512 * 1024 * 1024,
@@ -183,6 +195,7 @@ describe('MediaCapture', () => {
     const user = userEvent.setup({ applyAccept: false })
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
+    await openUpload(user)
 
     await user.upload(
       screen.getByLabelText('Choose LifeLink Face video'),
@@ -199,12 +212,12 @@ describe('MediaCapture', () => {
 
     const uploadTab = screen.getByRole('tab', { name: 'Upload from LifeLink' })
     const cameraTab = screen.getByRole('tab', { name: 'Use this device' })
-    uploadTab.focus()
+    cameraTab.focus()
     await user.keyboard('{ArrowRight}')
 
-    expect(cameraTab).toHaveFocus()
-    expect(cameraTab).toHaveAttribute('aria-selected', 'true')
-    expect(cameraTab).toHaveAttribute('aria-controls')
+    expect(uploadTab).toHaveFocus()
+    expect(uploadTab).toHaveAttribute('aria-selected', 'true')
+    expect(uploadTab).toHaveAttribute('aria-controls')
   })
 
   it('surfaces camera permission denial without hiding the upload path', async () => {

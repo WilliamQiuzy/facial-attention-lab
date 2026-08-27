@@ -45,7 +45,7 @@ export function App({
   checkEndpoint = checkResearchEndpoint,
 }: AppProps) {
   const [recording, setRecording] = useState<File | null>(null)
-  const [recordingSource, setRecordingSource] = useState<RecordingSource>('livelink-upload')
+  const [recordingSource, setRecordingSource] = useState<RecordingSource>('browser-camera')
   const [captureTimeline, setCaptureTimeline] = useState<CaptureTimelineDraft | null>(null)
   const [reanimatedSmileApplicable, setReanimatedSmileApplicable] = useState<boolean | null>(null)
   const [authorizedEndpoint, setAuthorizedEndpoint] = useState(false)
@@ -181,6 +181,7 @@ export function App({
     analysisGenerationRef.current += 1
     inFlightRef.current = false
     setRecording(null)
+    setRecordingSource('browser-camera')
     setResult(null)
     setAnalysisError(null)
     setAnalysisRetryAllowed(true)
