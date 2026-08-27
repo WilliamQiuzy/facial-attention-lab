@@ -96,7 +96,7 @@ def _stub_response(steps: int) -> dict[str, object]:
         ("mouth_corner_vertical_asymmetry_iod", "mouth_corner_vertical_change_from_rest_iod"),
     )[:count]
     return {
-        "schema_version": "facial-paralysis-shared-v9-inference/v2",
+        "schema_version": "facial-paralysis-shared-v9-inference/v3",
         "model": {
             "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
             "candidate_id": "BLV9-009",
@@ -139,9 +139,17 @@ def _stub_response(steps: int) -> dict[str, object]:
             "normalization": "original_view_centered_eye_axis_aligned_interocular_scaled",
             "interpretation": "measured_movement_observation_not_causal_or_severity",
             "context_frame_method": "registered_hold_midpoint_not_model_selected",
+            "attribution": {
+                "method": "integrated_gradients_shared_action_tokens",
+                "baseline": "within_recording_neutral_clinical_zero_dense_response",
+                "scope": "action_region_model_influence_not_landmark_causality",
+                "integration_steps": 32,
+                "max_completeness_error": 0.005,
+            },
             "actions": [
                 {
                     "id": action_id,
+                    "region": "brow" if index == 0 else "eye" if index < 3 else "mouth",
                     "context_frame_ms": index * 4_000 + 6_000,
                     "observations": [
                         {
@@ -151,6 +159,20 @@ def _stub_response(steps: int) -> dict[str, object]:
                         }
                         for metric_index, metric in enumerate(action_metrics)
                     ],
+                    "model_influence": {
+                        "status": "unavailable",
+                        "reason": "stability_gate_failed",
+                    } if index == 5 else {
+                        "status": "stable",
+                        "direction": "toward_class_0" if index == 2 else "toward_class_1",
+                        "strength": "strong" if index < 2 else "moderate" if index < 4 else "smaller",
+                        "relative_magnitude": round(max(0.1, 1.0 - index * 0.15), 3),
+                    },
+                    "stability": {
+                        "ensemble_sign_agreement": 2 if index == 5 else 3,
+                        "mirror_consistent": index != 5,
+                        "temporal_checks_passed": 1 if index == 5 else 2,
+                    },
                 }
                 for index, (action_id, action_metrics) in enumerate(zip(ids, metrics))
             ],
@@ -289,6 +311,12 @@ def run(
                 expect(page.get_by_text("Side-to-side difference", exact=True).first).to_be_visible()
                 expect(page.get_by_text("Change from neutral", exact=True).first).to_be_visible()
                 expect(page.get_by_text("Action tracking", exact=True).first).to_be_visible()
+                expect(page.get_by_text("Measured movement", exact=False).first).to_be_visible()
+                expect(page.get_by_text("Model influence", exact=False).first).to_be_visible()
+                expect(page.get_by_text("Stability checks", exact=False).first).to_be_visible()
+                expect(page.get_by_text("moved the MEEI facial-movement score upward", exact=False).first).to_be_visible()
+                expect(page.get_by_text("moved the MEEI facial-movement score downward", exact=False).first).to_be_visible()
+                expect(page.get_by_text("No stable model influence to report for this action.", exact=True)).to_be_visible()
                 evidence_type = page.locator(".evidence-copy dl > div").first.evaluate(
                     "element => ({ label: parseFloat(getComputedStyle(element.querySelector('dt')).fontSize), kind: parseFloat(getComputedStyle(element.querySelector('dt > span')).fontSize), normalized: parseFloat(getComputedStyle(element.querySelector('dd > span')).fontSize), explanation: parseFloat(getComputedStyle(element.querySelector('dd > small')).fontSize) })"
                 )
@@ -306,7 +334,8 @@ def run(
                 if "shared v9" in report_text or "blv9-009" in report_text or "target release" in report_text:
                     raise AssertionError("the internal model release is visible in the report")
                 expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
-                expect(page.get_by_role("button", name="Save PDF")).to_be_visible()
+                save_pdf = page.get_by_role("button", name="Save PDF")
+                expect(save_pdf).to_be_visible()
                 expect(page.get_by_text("PDF includes the recorded evidence images", exact=False)).to_be_visible()
                 action_boxes = page.locator(".report-action-control .button").evaluate_all(
                     "buttons => buttons.map(button => { const box = button.getBoundingClientRect(); return { top: box.top, left: box.left, width: box.width, height: box.height } })"
@@ -324,18 +353,19 @@ def run(
                 )
                 if len(action_boxes) != 3 or desktop_misaligned or mobile_misaligned or max(box["height"] for box in action_boxes) - min(box["height"] for box in action_boxes) > 1:
                     raise AssertionError(f"report actions are not aligned: {action_boxes}")
+                expect(page.locator(".evidence-frame img")).to_have_count(
+                    7 if steps == 8 else 6,
+                    timeout=20_000,
+                )
+                expect(save_pdf).to_be_enabled(timeout=20_000)
                 with page.expect_download() as pdf_download_info:
-                    page.get_by_role("button", name="Save PDF").click()
+                    save_pdf.click()
                 report_pdf_download = pdf_download_info.value
                 if report_pdf_download.suggested_filename != "faces-research-movement-report.pdf":
                     raise AssertionError("Save PDF did not directly download the fixed report filename")
                 if pdf is not None:
                     pdf.parent.mkdir(parents=True, exist_ok=True)
                     report_pdf_download.save_as(str(pdf))
-                expect(page.locator(".evidence-frame img")).to_have_count(
-                    7 if steps == 8 else 6,
-                    timeout=20_000,
-                )
                 report_url_audit = page.evaluate("({ created: window.__objectUrlAudit.created, revoked: window.__objectUrlAudit.revoked, live: window.__objectUrlAudit.live.size })")
                 if report_url_audit != {
                     "created": baseline_url_audit["created"] + 2,
@@ -441,7 +471,7 @@ def main() -> None:
     parser.add_argument(
         "--stub-success",
         action="store_true",
-        help="exercise the browser report using a strict synthetic v2 response",
+        help="exercise the browser report using a strict synthetic v3 response",
     )
     parser.add_argument("--viewport-width", type=int, default=1_440)
     parser.add_argument("--viewport-height", type=int, default=1_000)

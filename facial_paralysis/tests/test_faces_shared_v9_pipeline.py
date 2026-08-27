@@ -80,6 +80,41 @@ def _payloads(
     )
 
 
+def _explained_prediction(action_names: tuple[str, ...]):
+    return {
+        "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
+        "protocol": "cue_aligned_action",
+        "probability": 0.73,
+        "member_probabilities": [0.71, 0.74, 0.74],
+        "predicted_class": 1,
+        "threshold": 0.5,
+        "attribution": {
+            "schema_version": "shared_v9_action_token_attribution/v1",
+            "method": "integrated_gradients_shared_action_tokens",
+            "baseline": "within_recording_neutral_clinical_zero_dense_response",
+            "integration_steps": 32,
+            "max_completeness_error": 0.005,
+            "actions": [
+                {
+                    "action_code": ACTION_VOCAB.index(action),
+                    "mean_logit_contribution": 0.3 - index * 0.04,
+                    "relative_magnitude": abs(0.3 - index * 0.04) / 0.3,
+                    "ensemble_sign_agreement": 3,
+                    "mirror_consistent": True,
+                    "temporal_checks_passed": 2,
+                    "stable": True,
+                    "direction": "toward_class_1",
+                    "strength": (
+                        "strong" if index < 3 else
+                        "moderate" if index < 6 else "smaller"
+                    ),
+                }
+                for index, action in enumerate(action_names)
+            ],
+        },
+    }
+
+
 def test_capture_evidence_binds_video_timeline_and_medical_action_map(c: Check):
     video, manifest, timeline = _payloads()
     evidence = parse_capture_evidence(video, manifest, timeline)
@@ -147,14 +182,9 @@ def test_gateway_response_exposes_only_v9_binary_research_output(c: Check):
         pair_valid_mask=stream[4],
         source_fps=stream[5],
     )
-    prediction = {
-        "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
-        "protocol": "cue_aligned_action",
-        "probability": 0.73,
-        "member_probabilities": [0.71, 0.74, 0.74],
-        "predicted_class": 1,
-        "threshold": 0.5,
-    }
+    prediction = _explained_prediction(
+        tuple(name for _faces, name in FACES_TO_V9_ACTIONS)
+    )
     response = build_gateway_response(
         prediction,
         evidence=evidence,
@@ -179,14 +209,48 @@ def test_gateway_response_exposes_only_v9_binary_research_output(c: Check):
     )
     c.eq(len(response["report_evidence"]["actions"]), 7)
     c.eq(
+        response["report_evidence"]["attribution"]["method"],
+        "integrated_gradients_shared_action_tokens",
+    )
+    c.eq(
+        response["report_evidence"]["actions"][0]["model_influence"],
+        {
+            "status": "stable",
+            "direction": "toward_class_1",
+            "strength": "strong",
+            "relative_magnitude": 1.0,
+        },
+    )
+    c.eq(response["report_evidence"]["actions"][0]["region"], "brow")
+    c.eq(response["report_evidence"]["actions"][1]["region"], "eye")
+    c.eq(response["report_evidence"]["actions"][3]["region"], "mouth")
+    c.eq(
         response["report_evidence"]["actions"][0]["context_frame_ms"],
         6_000,
     )
     c.eq(response["clinical_use_eligible"], False)
     serialized = json.dumps(response, sort_keys=True).lower()
+    c.true("mean_logit_contribution" not in serialized)
     c.true("house-brackmann" not in serialized)
     for forbidden in ("affected_side", "abnormal", "regional_severity", "caused", "contributed"):
         c.true(forbidden not in serialized)
+
+    forged = _explained_prediction(
+        tuple(name for _faces, name in FACES_TO_V9_ACTIONS)
+    )
+    forged["attribution"]["actions"][0]["ensemble_sign_agreement"] = 2
+    c.raises(
+        lambda: build_gateway_response(
+            forged,
+            evidence=evidence,
+            valid_samples_per_action=prepared.valid_samples_per_action,
+            descriptive_evidence_per_action=prepared.descriptive_evidence_per_action,
+            preprocessing_version="faces-to-shared-v9/v1",
+            face_landmarker_sha256="6" * 64,
+        ),
+        ValueError,
+        "stable influence requires every frozen stability gate",
+    )
 
 
 def _mesh_stream(evidence):
@@ -266,6 +330,23 @@ def test_action_pipeline_builds_exact_v9_tensor_contract_and_keeps_flat_actions(
         dtype=np.int64,
     )
     c.true(np.array_equal(prepared.arrays["action_codes"], expected_codes))
+    c.eq(prepared.neutral_clinical_original.shape, (7, 110))
+    c.eq(prepared.neutral_clinical_mirrored.shape, (7, 110))
+    c.eq(prepared.neutral_clinical_original.dtype, np.dtype(np.float32))
+    c.eq(prepared.neutral_clinical_mirrored.dtype, np.dtype(np.float32))
+    c.true(np.isfinite(prepared.neutral_clinical_original).all())
+    c.true(np.isfinite(prepared.neutral_clinical_mirrored).all())
+    c.true(not prepared.neutral_clinical_original.flags.writeable)
+    c.true(not prepared.neutral_clinical_mirrored.flags.writeable)
+    for action_index in range(1, 7):
+        c.true(np.array_equal(
+            prepared.neutral_clinical_original[0],
+            prepared.neutral_clinical_original[action_index],
+        ))
+        c.true(np.array_equal(
+            prepared.neutral_clinical_mirrored[0],
+            prepared.neutral_clinical_mirrored[action_index],
+        ))
     validated = validate_request_arrays("cue_aligned_action", prepared.arrays)
     c.eq(validated["clinical_original"].shape, (1, 7, 110))
     c.eq(validated["dense_original"].shape, (1, 7, 32, 478, 3))
@@ -300,14 +381,7 @@ def test_action_pipeline_omits_optional_action_without_zero_imputation(c: Check)
     c.eq(validated["clinical_original"].shape, (1, 6, 110))
     c.true(ACTION_VOCAB.index("SMILE_FULL") not in set(expected_codes.tolist()))
 
-    prediction = {
-        "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
-        "protocol": "cue_aligned_action",
-        "probability": 0.73,
-        "member_probabilities": [0.71, 0.74, 0.74],
-        "predicted_class": 1,
-        "threshold": 0.5,
-    }
+    prediction = _explained_prediction(expected_names)
     response = build_gateway_response(
         prediction,
         evidence=evidence,

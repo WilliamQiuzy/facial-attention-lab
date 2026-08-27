@@ -18,6 +18,10 @@ from src.deployment.shared_v9_research_release import (
     RESEARCH_MODEL_ID,
     load_release,
 )
+from src.deployment.shared_v9_attribution import (
+    explain_prediction,
+    load_attribution_request_npz,
+)
 
 
 def create_app(release_root: Path, *, device: str) -> FastAPI:
@@ -59,6 +63,29 @@ def create_app(release_root: Path, *, device: str) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid model input") from exc
         return asdict(prediction)
+
+    @app.post("/v1/explain/{protocol}")
+    async def explain(protocol: str, request: Request):
+        if protocol != "cue_aligned_action":
+            raise HTTPException(status_code=404, detail="unknown attribution protocol")
+        if request.headers.get("content-type") != "application/octet-stream":
+            raise HTTPException(status_code=415, detail="binary NPZ is required")
+        payload = await _bounded_body(request)
+        try:
+            arrays, neutral_original, neutral_mirrored = (
+                load_attribution_request_npz(payload, protocol=protocol)
+            )
+            explained = explain_prediction(
+                predictor,
+                protocol,
+                arrays,
+                neutral_original,
+                neutral_mirrored,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid attribution input") from exc
+        result = asdict(explained)
+        return {**result["prediction"], "attribution": result["attribution"]}
 
     return app
 

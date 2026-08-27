@@ -96,14 +96,33 @@ function acceptedResult(includeOptional = true): ResearchInferenceResult {
       normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled',
       interpretation: 'measured_movement_observation_not_causal_or_severity',
       contextFrameMethod: 'registered_hold_midpoint_not_model_selected',
+      attribution: {
+        method: 'integrated_gradients_shared_action_tokens',
+        baseline: 'within_recording_neutral_clinical_zero_dense_response',
+        scope: 'action_region_model_influence_not_landmark_causality',
+        integrationSteps: 32,
+        maxCompletenessError: 0.005,
+      },
       actions: ids.slice(0, count).map((id, index) => ({
         id,
+        region: (index === 0 ? 'brow' : index < 3 ? 'eye' : 'mouth') as 'brow' | 'eye' | 'mouth',
         contextFrameMs: index * 4_000 + 6_000,
         observations: metrics[index].map((metric, metricIndex) => ({
           metric,
           value: 0.01 * (metricIndex + 1),
           unit: 'interocular_distance' as const,
         })),
+        modelInfluence: {
+          status: 'stable' as const,
+          direction: 'toward_class_1' as const,
+          strength: (index < 2 ? 'strong' : index < 4 ? 'moderate' : 'smaller') as 'strong' | 'moderate' | 'smaller',
+          relativeMagnitude: Math.max(0.1, 1 - index * 0.15),
+        },
+        stability: {
+          ensembleSignAgreement: 3,
+          mirrorConsistent: true,
+          temporalChecksPassed: 2,
+        },
       })),
     },
     clinicalUseEligible: false,

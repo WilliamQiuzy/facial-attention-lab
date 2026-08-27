@@ -29,7 +29,7 @@ const timeline = (includeOptional = true): CaptureTimelineDraft => ({
 })
 
 const response = (includeOptional = true) => ({
-  schema_version: 'facial-paralysis-shared-v9-inference/v2',
+  schema_version: 'facial-paralysis-shared-v9-inference/v3',
   model: {
     model_id: EXPECTED_MODEL_ID,
     candidate_id: 'BLV9-009',
@@ -69,8 +69,16 @@ const response = (includeOptional = true) => ({
     normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled',
     interpretation: 'measured_movement_observation_not_causal_or_severity',
     context_frame_method: 'registered_hold_midpoint_not_model_selected',
+    attribution: {
+      method: 'integrated_gradients_shared_action_tokens',
+      baseline: 'within_recording_neutral_clinical_zero_dense_response',
+      scope: 'action_region_model_influence_not_landmark_causality',
+      integration_steps: 32,
+      max_completeness_error: 0.005,
+    },
     actions: actionIds.slice(1, includeOptional ? 8 : 7).map((id, index) => ({
       id,
+      region: index === 0 ? 'brow' : index < 3 ? 'eye' : 'mouth',
       context_frame_ms: index * 4_000 + 6_000,
       observations: ([
         ['brow_height_asymmetry_iod', 'brow_height_change_from_rest_iod'],
@@ -85,6 +93,20 @@ const response = (includeOptional = true) => ({
         value: 0.01 * (metricIndex + 1),
         unit: 'interocular_distance',
       })),
+      model_influence: index === 6 ? {
+        status: 'unavailable',
+        reason: 'stability_gate_failed',
+      } : {
+        status: 'stable',
+        direction: index === 2 ? 'toward_class_0' : 'toward_class_1',
+        strength: index < 2 ? 'strong' : index < 4 ? 'moderate' : 'smaller',
+        relative_magnitude: Math.max(0.1, 1 - index * 0.15),
+      },
+      stability: {
+        ensemble_sign_agreement: index === 6 ? 2 : 3,
+        mirror_consistent: index !== 6,
+        temporal_checks_passed: index === 6 ? 1 : 2,
+      },
     })),
   },
   clinical_use_eligible: false,
@@ -141,6 +163,12 @@ describe('Shared V9 inference contract', () => {
     expect(parsed.prediction.probability).toBe(0.73)
     expect(parsed.quality.actions).toHaveLength(7)
     expect(parsed.reportEvidence.actions[0].observations[1].metric).toBe('brow_height_change_from_rest_iod')
+    expect(parsed.reportEvidence.actions[0].modelInfluence).toMatchObject({
+      status: 'stable', direction: 'toward_class_1', strength: 'strong',
+    })
+    expect(parsed.reportEvidence.actions[6].modelInfluence).toEqual({
+      status: 'unavailable', reason: 'stability_gate_failed',
+    })
     expect(parsed.clinicalUseEligible).toBe(false)
   })
 
@@ -188,6 +216,14 @@ describe('Shared V9 inference contract', () => {
     const wrongMetric = response()
     wrongMetric.report_evidence.actions[0].observations[0].metric = 'affected_side'
     expect(() => parseInferenceResponse(wrongMetric)).toThrow(/metric/i)
+
+    const fabricatedStable = response()
+    fabricatedStable.report_evidence.actions[0].stability.ensemble_sign_agreement = 2
+    expect(() => parseInferenceResponse(fabricatedStable)).toThrow(/stable/i)
+
+    const rawLogit = response()
+    ;(rawLogit.report_evidence.actions[0].model_influence as Record<string, unknown>).raw_logit = 1.5
+    expect(() => parseInferenceResponse(rawLogit)).toThrow(/unknown/i)
   })
 
   it('hashes exact video bytes and posts the manifest plus external timeline', async () => {

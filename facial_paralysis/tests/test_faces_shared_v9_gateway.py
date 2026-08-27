@@ -16,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from _testlib import Check, run_all  # noqa: E402
-from test_faces_shared_v9_pipeline import _mesh_stream, _payloads  # noqa: E402
+from test_faces_shared_v9_pipeline import (  # noqa: E402
+    _explained_prediction,
+    _mesh_stream,
+    _payloads,
+)
 from src.deployment.faces_shared_v9_gateway import (  # noqa: E402
     FACE_LANDMARKER_SHA256,
     GatewayPreparedCapture,
@@ -25,7 +29,10 @@ from src.deployment.faces_shared_v9_gateway import (  # noqa: E402
     create_app,
 )
 from src.deployment import faces_shared_v9_gateway as gateway_module  # noqa: E402
-from src.deployment.shared_v8_release import validate_request_arrays  # noqa: E402
+from src.deployment.shared_v9_attribution import (  # noqa: E402
+    load_attribution_request_npz,
+)
+from src.models.dense_clinical_shared_encoder_v1 import ACTION_VOCAB  # noqa: E402
 from src.preprocessing.faces_shared_v9_pipeline import (  # noqa: E402
     build_v9_action_arrays,
     parse_capture_evidence,
@@ -55,17 +62,13 @@ def _processor(video, filename, manifest, timeline):
 
 
 def _inference(payload: bytes):
-    with np.load(io.BytesIO(payload), allow_pickle=False) as saved:
-        arrays = {name: np.array(saved[name], copy=True) for name in saved.files}
-    validate_request_arrays("cue_aligned_action", arrays)
-    return {
-        "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
-        "protocol": "cue_aligned_action",
-        "probability": 0.73,
-        "member_probabilities": [0.71, 0.74, 0.74],
-        "predicted_class": 1,
-        "threshold": 0.5,
-    }
+    arrays, neutral_original, neutral_mirrored = load_attribution_request_npz(
+        payload, protocol="cue_aligned_action"
+    )
+    c_actions = tuple(ACTION_VOCAB[int(code)] for code in arrays["action_codes"])
+    assert neutral_original.shape == (len(c_actions), 110)
+    assert neutral_mirrored.shape == (len(c_actions), 110)
+    return _explained_prediction(c_actions)
 
 
 def _client(inference=_inference):
@@ -203,6 +206,10 @@ def test_gateway_health_ready_and_exact_multipart_inference(c: Check):
     c.eq(response.json()["model"]["candidate_id"], "BLV9-009")
     c.eq(response.json()["quality"]["actions_used"], 7)
     c.eq(response.json()["prediction"]["probability"], 0.73)
+    c.eq(
+        response.json()["report_evidence"]["actions"][0]["model_influence"]["status"],
+        "stable",
+    )
     c.true("capture.mp4" not in response.text)
 
 
@@ -520,21 +527,18 @@ def test_shared_v9_http_client_uses_closed_internal_routes(c: Check):
             })
         c.eq(request.get_header("Content-type"), "application/octet-stream")
         c.eq(request.data, b"npz")
-        return _Response({
-            "model_id": "broad_literature_shared_v9_blv9_009_ensemble",
-            "protocol": "cue_aligned_action",
-            "probability": 0.73,
-            "member_probabilities": [0.71, 0.74, 0.74],
-            "predicted_class": 1,
-            "threshold": 0.5,
-        })
+        return _Response(_explained_prediction((
+            "BROW_RAISE", "EYE_GENTLE", "EYE_FORCEFUL",
+            "SMILE_GENTLE", "LIP_PUCKER", "SHOW_BOTTOM_TEETH",
+            "SMILE_FULL",
+        )))
 
     client = SharedV9HttpClient("http://shared-v9:8080", opener=opener)
     c.eq(client.ready()["candidate_id"], "BLV9-009")
     c.eq(client.infer(b"npz")["probability"], 0.73)
     c.eq([item[0].full_url for item in requests], [
         "http://shared-v9:8080/readyz",
-        "http://shared-v9:8080/v1/predict/cue_aligned_action",
+        "http://shared-v9:8080/v1/explain/cue_aligned_action",
     ])
     c.true(all(item[1] == 10.0 for item in requests))
 

@@ -31,7 +31,7 @@ from src.preprocessing.faces_shared_v9_pipeline import (
     build_gateway_response,
     build_v9_action_arrays,
     decode_capture_samples,
-    encode_v9_request_npz,
+    encode_v9_attribution_request_npz,
     extract_paired_meshes,
     parse_capture_evidence,
 )
@@ -253,7 +253,7 @@ class SharedV9HttpClient:
         if type(payload) is not bytes or not payload:
             raise ValueError("Shared V9 request must be nonempty exact bytes")
         request = urllib.request.Request(
-            f"{self._base_url}/v1/predict/cue_aligned_action",
+            f"{self._base_url}/v1/explain/cue_aligned_action",
             data=payload,
             method="POST",
             headers={
@@ -552,7 +552,7 @@ def create_app(
                 detail={"code": "gateway_unavailable"},
             )
         try:
-            request_payload = encode_v9_request_npz(prepared.prepared.arrays)
+            request_payload = encode_v9_attribution_request_npz(prepared.prepared)
             prediction = await run_in_threadpool(inference_client, request_payload)
             response = build_gateway_response(
                 prediction,

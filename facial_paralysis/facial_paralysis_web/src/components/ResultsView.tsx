@@ -45,6 +45,18 @@ const METRIC_LABELS: Readonly<Record<string, string>> = {
   mouth_open_change_from_rest_iod: 'Mouth-opening change from rest',
 }
 
+const REGION_LABELS = {
+  brow: 'Brow region',
+  eye: 'Eye region',
+  mouth: 'Mouth region',
+} as const
+
+const INFLUENCE_STRENGTH_LABELS = {
+  strong: 'Strong relative influence',
+  moderate: 'Moderate relative influence',
+  smaller: 'Smaller relative influence',
+} as const
+
 function score(value: number): string {
   return `${Math.round(value * 100)} / 100`
 }
@@ -282,11 +294,26 @@ function ResearchReport({ result, recording, onBack, onReset }: {
     const valid = result.quality.actions[index].validSamples
     return {
       title: ACTION_LABELS[action.id],
+      region: REGION_LABELS[action.region],
       contextSeconds: `${(action.contextFrameMs / 1_000).toFixed(1)} seconds`,
       tracking: `${valid} of 32 points (${Math.round(valid / 32 * 100)}%)`,
       imageDataUrl: frames[action.id] ?? null,
       measurements: action.observations.map((observation) =>
         measurementPresentation(observation.metric, observation.value)),
+      influence: action.modelInfluence.status === 'stable' ? {
+        status: 'stable',
+        strength: INFLUENCE_STRENGTH_LABELS[action.modelInfluence.strength],
+        direction: `This ${REGION_LABELS[action.region].toLowerCase()} action signal moved the MEEI facial-movement score ${action.modelInfluence.direction === 'toward_class_1' ? 'upward' : 'downward'}.`,
+        relative: `${Math.round(action.modelInfluence.relativeMagnitude * 100)}% relative to the strongest action-level influence magnitude in this recording.`,
+      } : {
+        status: 'unavailable',
+        explanation: 'The direction is hidden because the consistency checks did not all agree.',
+      },
+      stability: [
+        `${action.stability.ensembleSignAgreement} of 3 model members`,
+        `Mirror view: ${action.stability.mirrorConsistent ? 'passed' : 'did not agree'}`,
+        `${action.stability.temporalChecksPassed} of 2 timing shifts`,
+      ],
     }
   })
 
@@ -346,13 +373,36 @@ function ResearchReport({ result, recording, onBack, onReset }: {
 
       <section className="report-section" aria-labelledby="evidence-title">
         <div className="section-heading"><span className="region-icon"><FileSearch aria-hidden="true" size={22} /></span><div><h2 id="evidence-title">Recorded action evidence</h2><p>Each context image is taken at the registered midpoint of its three-second hold. It is recorded context, not a frame selected by the model.</p></div></div>
-        <p className="measurement-boundary"><ShieldCheck aria-hidden="true" size={18} /><strong>Measured movement observation — not a cause of the model score or a clinical severity grade.</strong></p>
+        <p className="measurement-boundary"><ShieldCheck aria-hidden="true" size={20} /><strong>Three separate evidence layers: what was measured, how each action moved the model score, and whether that influence was stable.</strong></p>
         <p className="measurement-unit-note">These observations are calculated from MediaPipe 478-point facial landmarks sampled during each registered hold and compared with the neutral baseline. Measurements are scaled to the same eye-to-eye reference width: 1.0% corresponds to a normalized ratio of 0.010.</p>
-        <div className="evidence-legend" aria-label="Measurement guide"><div><strong>Side-to-side difference</strong><span>Smaller means the two sides were more alike in this recording.</span></div><div><strong>Change from neutral</strong><span>Amount of geometric movement relative to the resting baseline.</span></div><div><strong>Tracking completeness</strong><span>How many of the 32 evenly sampled points contained usable paired face tracking.</span></div></div>
+        <div className="evidence-legend evidence-layer-legend" aria-label="Evidence layer guide"><div><strong><span>1</span> Measured movement</strong><span>Geometry observed during the registered hold.</span></div><div><strong><span>2</span> Model influence</strong><span>Direction and relative strength at the shared action-token layer.</span></div><div><strong><span>3</span> Stability checks</strong><span>Agreement across model members, mirrored input, and timing shifts.</span></div></div>
         <div className="evidence-grid">{result.reportEvidence.actions.map((action, actionIndex) => (
           <article className="evidence-card" key={action.id}>
             <div className="evidence-frame">{frames[action.id] ? <img src={frames[action.id] ?? undefined} alt={`${ACTION_LABELS[action.id]} recorded context at ${(action.contextFrameMs / 1_000).toFixed(1)} seconds`} width="640" height="480" loading="lazy" decoding="async" /> : <div className="frame-fallback" role="img" aria-label={`${ACTION_LABELS[action.id]} context frame unavailable`}><ScanFace aria-hidden="true" size={30} /><span>Recorded context frame unavailable</span></div>}<span>{(action.contextFrameMs / 1_000).toFixed(1)} s</span></div>
-            <div className="evidence-copy"><div className="evidence-action-heading"><h3>{ACTION_LABELS[action.id]}</h3><span>Action tracking</span><strong>{result.quality.actions[actionIndex].validSamples} of 32 points ({Math.round(result.quality.actions[actionIndex].validSamples / 32 * 100)}%)</strong></div><dl>{action.observations.map((observation) => { const presentation = measurementPresentation(observation.metric, observation.value); return <div key={observation.metric}><dt><span>{presentation.kind}</span>{presentation.label}</dt><dd>{presentation.primaryValue}<span>{presentation.normalizedValue}</span><small>{presentation.explanation}</small></dd></div> })}</dl></div>
+            <div className="evidence-copy">
+              <div className="evidence-action-heading"><div><h3>{ACTION_LABELS[action.id]}</h3><p>{REGION_LABELS[action.region]}</p></div><span>Action tracking</span><strong>{result.quality.actions[actionIndex].validSamples} of 32 points ({Math.round(result.quality.actions[actionIndex].validSamples / 32 * 100)}%)</strong></div>
+              <section className="evidence-layer evidence-layer-measurement" aria-label={`${ACTION_LABELS[action.id]} measured movement`}>
+                <h4><span>1</span> Measured movement</h4>
+                <dl>{action.observations.map((observation) => { const presentation = measurementPresentation(observation.metric, observation.value); return <div key={observation.metric}><dt><span>{presentation.kind}</span>{presentation.label}</dt><dd>{presentation.primaryValue}<span>{presentation.normalizedValue}</span><small>{presentation.explanation}</small></dd></div> })}</dl>
+              </section>
+              <section className="evidence-layer evidence-layer-influence" aria-label={`${ACTION_LABELS[action.id]} model influence`}>
+                <h4><span>2</span> Model influence</h4>
+                {action.modelInfluence.status === 'stable' ? (
+                  <div className="influence-result">
+                    <strong>{INFLUENCE_STRENGTH_LABELS[action.modelInfluence.strength]}</strong>
+                    <p>This {REGION_LABELS[action.region].toLowerCase()} action signal moved the MEEI facial-movement score {action.modelInfluence.direction === 'toward_class_1' ? 'upward' : 'downward'}.</p>
+                    <div className="influence-meter" role="img" aria-label={`${Math.round(action.modelInfluence.relativeMagnitude * 100)} percent of the strongest action-level influence magnitude in this recording`}><span style={{ width: `${Math.max(4, action.modelInfluence.relativeMagnitude * 100)}%` }} /></div>
+                    <small>{Math.round(action.modelInfluence.relativeMagnitude * 100)}% relative to the strongest action-level influence magnitude in this recording.</small>
+                  </div>
+                ) : (
+                  <div className="influence-unavailable"><strong>No stable model influence to report for this action.</strong><p>The direction is hidden because the consistency checks did not all agree.</p></div>
+                )}
+              </section>
+              <section className="evidence-layer evidence-layer-stability" aria-label={`${ACTION_LABELS[action.id]} stability checks`}>
+                <h4><span>3</span> Stability checks</h4>
+                <div className="stability-checks"><span className={action.stability.ensembleSignAgreement === 3 ? 'passed' : 'not-passed'}>{action.stability.ensembleSignAgreement} of 3 model members</span><span className={action.stability.mirrorConsistent ? 'passed' : 'not-passed'}>Mirror view {action.stability.mirrorConsistent ? 'passed' : 'did not agree'}</span><span className={action.stability.temporalChecksPassed === 2 ? 'passed' : 'not-passed'}>{action.stability.temporalChecksPassed} of 2 timing shifts</span></div>
+              </section>
+            </div>
           </article>
         ))}</div>
       </section>

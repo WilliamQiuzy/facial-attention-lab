@@ -15,10 +15,23 @@ export interface PdfMeasurement {
 
 export interface PdfActionEvidence {
   readonly title: string
+  readonly region: string
   readonly contextSeconds: string
   readonly tracking: string
   readonly imageDataUrl: string | null
   readonly measurements: readonly PdfMeasurement[]
+  readonly influence:
+    | {
+      readonly status: 'stable'
+      readonly strength: string
+      readonly direction: string
+      readonly relative: string
+    }
+    | {
+      readonly status: 'unavailable'
+      readonly explanation: string
+    }
+  readonly stability: readonly string[]
 }
 
 export interface ResearchReportPdfData {
@@ -43,9 +56,10 @@ const COLORS = {
 } as const
 
 const PDF_FONT = 'SourceSans3'
-const ACTION_CARD_BASE_HEIGHT = 37
+const ACTION_CARD_BASE_HEIGHT = 43
 const ACTION_MEASUREMENT_HEIGHT = 23.5
-const ACTION_CARD_MIN_HEIGHT = 88
+const ACTION_CARD_MIN_HEIGHT = 90
+const ACTION_ATTRIBUTION_HEIGHT = 44
 
 function fontBase64(dataUrl: string): string {
   const marker = ';base64,'
@@ -100,29 +114,32 @@ function drawAction(
   const cardHeight = Math.max(
     ACTION_CARD_MIN_HEIGHT,
     ACTION_CARD_BASE_HEIGHT + action.measurements.length * ACTION_MEASUREMENT_HEIGHT,
-  )
+  ) + ACTION_ATTRIBUTION_HEIGHT
+  const attributionY = y + cardHeight - ACTION_ATTRIBUTION_HEIGHT
   document.setDrawColor(...COLORS.line)
   document.setFillColor(249, 251, 253)
   document.roundedRect(14, y, 182, cardHeight, 2.5, 2.5, 'FD')
   wrappedText(document, action.title, 20, y + 10, 92, 12, COLORS.blueDark, 'bold')
   wrappedText(document, `Tracking: ${action.tracking}`, 120, y + 9.5, 68, 10, COLORS.muted)
+  wrappedText(document, action.region, 20, y + 17, 54, 9.2, COLORS.muted, 'bold')
+  wrappedText(document, '1  MEASURED MOVEMENT', 82, y + 18, 92, 8.8, COLORS.blue, 'bold')
 
   if (action.imageDataUrl) {
     try {
-      document.addImage(action.imageDataUrl, 'JPEG', 20, y + 17, 54, 38, undefined, 'FAST')
+      document.addImage(action.imageDataUrl, 'JPEG', 20, y + 23, 54, 36, undefined, 'FAST')
     } catch {
       document.setFillColor(232, 239, 245)
-      document.rect(20, y + 17, 54, 38, 'F')
-      wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 9, COLORS.muted)
+      document.rect(20, y + 23, 54, 36, 'F')
+      wrappedText(document, 'Recorded context image unavailable', 25, y + 39, 44, 9, COLORS.muted)
     }
   } else {
     document.setFillColor(232, 239, 245)
-    document.rect(20, y + 17, 54, 38, 'F')
-    wrappedText(document, 'Recorded context image unavailable', 25, y + 34, 44, 9, COLORS.muted)
+    document.rect(20, y + 23, 54, 36, 'F')
+    wrappedText(document, 'Recorded context image unavailable', 25, y + 39, 44, 9, COLORS.muted)
   }
-  wrappedText(document, `Registered hold midpoint: ${action.contextSeconds}`, 20, y + 62, 54, 9.2, COLORS.muted)
+  wrappedText(document, `Registered hold midpoint: ${action.contextSeconds}`, 20, y + 66, 54, 9.2, COLORS.muted)
 
-  let measurementY = y + 21
+  let measurementY = y + 28
   for (const measurement of action.measurements) {
     wrappedText(document, measurement.kind, 82, measurementY, 63, 9.5, [64, 86, 108], 'bold')
     wrappedText(document, measurement.label, 82, measurementY + 6.7, 62, 10, COLORS.ink)
@@ -130,6 +147,23 @@ function drawAction(
     wrappedText(document, measurement.normalizedValue, 147, measurementY + 13, 41, 9.3, COLORS.muted)
     wrappedText(document, measurement.explanation, 82, measurementY + 16, 106, 9.3, COLORS.muted, 'normal', 1.35)
     measurementY += ACTION_MEASUREMENT_HEIGHT
+  }
+
+  document.setDrawColor(...COLORS.line)
+  document.line(20, attributionY, 190, attributionY)
+  wrappedText(document, '2  MODEL INFLUENCE', 20, attributionY + 9, 104, 8.8, COLORS.blue, 'bold')
+  if (action.influence.status === 'stable') {
+    wrappedText(document, action.influence.strength, 20, attributionY + 17, 104, 10.5, COLORS.blueDark, 'bold')
+    wrappedText(document, action.influence.direction, 20, attributionY + 24, 104, 9.4, COLORS.ink, 'normal', 1.35)
+    wrappedText(document, action.influence.relative, 20, attributionY + 35, 104, 8.8, COLORS.muted, 'normal', 1.3)
+  } else {
+    wrappedText(document, 'No stable model influence to report.', 20, attributionY + 18, 104, 10.3, COLORS.blueDark, 'bold')
+    wrappedText(document, action.influence.explanation, 20, attributionY + 27, 104, 9, COLORS.muted, 'normal', 1.35)
+  }
+  wrappedText(document, '3  STABILITY CHECKS', 132, attributionY + 9, 56, 8.8, COLORS.blue, 'bold')
+  let stabilityY = attributionY + 17
+  for (const line of action.stability) {
+    stabilityY = wrappedText(document, line, 132, stabilityY, 56, 9.1, COLORS.ink, 'normal', 1.3) + 2
   }
   return y + cardHeight + 7
 }
@@ -179,7 +213,7 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
   y = addPageHeading(
     document,
     'Recorded action evidence',
-    'Context images and descriptive geometry from each registered three-second hold',
+    'Recorded context, measured movement, model influence, and stability checks',
   )
   y = wrappedText(
     document,
@@ -197,7 +231,7 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
     const needed = Math.max(
       ACTION_CARD_MIN_HEIGHT,
       ACTION_CARD_BASE_HEIGHT + action.measurements.length * ACTION_MEASUREMENT_HEIGHT,
-    )
+    ) + ACTION_ATTRIBUTION_HEIGHT
     if (y + needed > 282) {
       document.addPage()
       y = addPageHeading(document, 'Recorded action evidence', 'Continued')

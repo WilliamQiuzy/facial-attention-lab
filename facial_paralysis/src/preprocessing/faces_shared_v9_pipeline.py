@@ -17,7 +17,10 @@ import numpy as np
 
 from .dense_bilateral_action_v1 import normalize_dense_landmarks
 from .clinical_landmarks import clinical_landmark_features
-from .shared_clinical_tokens_v1 import dense_action_token_bag
+from .shared_clinical_tokens_v1 import (
+    dense_action_token_bag,
+    neutral_clinical_token_pair,
+)
 from .script_action_segmentation_v1 import (
     FACES_ACTION_ORDER,
     FACES_SCRIPT_VERSION,
@@ -30,7 +33,7 @@ from .script_action_segmentation_v1 import (
 
 CAPTURE_MANIFEST_SCHEMA = "faces-v9-capture-manifest/v1"
 CAPTURE_PROTOCOL_VERSION = "FACES-v0.01"
-GATEWAY_RESPONSE_SCHEMA = "facial-paralysis-shared-v9-inference/v2"
+GATEWAY_RESPONSE_SCHEMA = "facial-paralysis-shared-v9-inference/v3"
 PREPROCESSING_VERSION = "faces-to-shared-v9/v1"
 SHARED_V9_MODEL_ID = "broad_literature_shared_v9_blv9_009_ensemble"
 SHARED_V9_CANDIDATE_ID = "BLV9-009"
@@ -46,6 +49,18 @@ FACES_TO_V9_ACTIONS = (
     ("lower_teeth_show", "SHOW_BOTTOM_TEETH"),
     ("reanimated_smile", "SMILE_FULL"),
 )
+_ACTION_REGIONS = {
+    "eyebrow_raise": "brow",
+    "gentle_eye_closure": "eye",
+    "tight_eye_squeeze": "eye",
+    "relaxed_smile": "mouth",
+    "lip_pucker": "mouth",
+    "lower_teeth_show": "mouth",
+    "reanimated_smile": "mouth",
+}
+_ATTRIBUTION_SCHEMA = "shared_v9_action_token_attribution/v1"
+_ATTRIBUTION_METHOD = "integrated_gradients_shared_action_tokens"
+_ATTRIBUTION_BASELINE = "within_recording_neutral_clinical_zero_dense_response"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SOURCES = frozenset({"browser-camera", "livelink-upload"})
 _VIDEO_SUFFIXES = frozenset({".mov", ".mp4", ".m4v", ".avi", ".webm"})
@@ -154,6 +169,8 @@ class CaptureEvidence:
 @dataclass(frozen=True)
 class PreparedV9Request:
     arrays: dict[str, np.ndarray]
+    neutral_clinical_original: np.ndarray
+    neutral_clinical_mirrored: np.ndarray
     valid_samples_per_action: tuple[int, ...]
     descriptive_evidence_per_action: tuple["DescriptiveActionEvidence", ...]
 
@@ -744,6 +761,14 @@ def build_v9_action_arrays(
         fps=float(source_fps),
         action_names=action_names,
     )
+    neutral_original, neutral_mirrored = neutral_clinical_token_pair(
+        original_baseline,
+        mirrored_baseline,
+        baseline_valid,
+        baseline.source_frame_indices,
+        fps=float(source_fps),
+        action_count=len(active),
+    )
     codes = np.asarray([ACTION_VOCAB.index(name) for name in action_names], dtype=np.int64)
     arrays = {
         "clinical_original": bag.clinical_original.astype(np.float32),
@@ -771,6 +796,8 @@ def build_v9_action_arrays(
     )
     return PreparedV9Request(
         arrays=frozen,
+        neutral_clinical_original=neutral_original,
+        neutral_clinical_mirrored=neutral_mirrored,
         valid_samples_per_action=counts,
         descriptive_evidence_per_action=descriptive,
     )
@@ -790,6 +817,42 @@ def encode_v9_request_npz(arrays: Mapping[str, np.ndarray]) -> bytes:
     return buffer.getvalue()
 
 
+def encode_v9_attribution_request_npz(prepared: PreparedV9Request) -> bytes:
+    """Serialize the prepared score tensors plus its authenticated neutral baseline."""
+    if not isinstance(prepared, PreparedV9Request):
+        raise ValueError("prepared V9 request is required")
+    expected = {
+        "clinical_original", "clinical_mirrored", "dense_original",
+        "dense_mirrored", "dense_valid_mask", "dense_available",
+        "dense_timestamps", "action_mask", "action_codes",
+    }
+    actions = prepared.arrays.get("action_codes")
+    if (
+        type(prepared.arrays) is not dict
+        or set(prepared.arrays) != expected
+        or type(actions) is not np.ndarray
+        or actions.ndim != 1
+        or prepared.neutral_clinical_original.shape != (actions.size, 110)
+        or prepared.neutral_clinical_mirrored.shape != (actions.size, 110)
+        or prepared.neutral_clinical_original.dtype != np.dtype(np.float32)
+        or prepared.neutral_clinical_mirrored.dtype != np.dtype(np.float32)
+        or not np.isfinite(prepared.neutral_clinical_original).all()
+        or not np.isfinite(prepared.neutral_clinical_mirrored).all()
+    ):
+        raise ValueError("prepared attribution request differs from the closed schema")
+    buffer = io.BytesIO()
+    np.savez_compressed(
+        buffer,
+        **prepared.arrays,
+        neutral_clinical_original=prepared.neutral_clinical_original,
+        neutral_clinical_mirrored=prepared.neutral_clinical_mirrored,
+    )
+    payload = buffer.getvalue()
+    if not payload or len(payload) > 16 * 1024 * 1024:
+        raise ValueError("prepared attribution request exceeds the transport bound")
+    return payload
+
+
 def _probability(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a finite probability")
@@ -797,6 +860,112 @@ def _probability(value: object, name: str) -> float:
     if not math.isfinite(result) or not 0.0 <= result <= 1.0:
         raise ValueError(f"{name} must be a finite probability")
     return result
+
+
+def _finite_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be finite")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must be finite")
+    return result
+
+
+def _validated_attribution(
+    value: object,
+    present_actions: tuple[tuple[str, str], ...],
+) -> tuple[dict[str, object], ...]:
+    if type(value) is not dict or set(value) != {
+        "schema_version", "method", "baseline", "integration_steps",
+        "max_completeness_error", "actions",
+    }:
+        raise ValueError("V9 attribution fields differ from the closed schema")
+    maximum_error = _finite_number(
+        value["max_completeness_error"], "max_completeness_error"
+    )
+    rows = value["actions"]
+    if (
+        value["schema_version"] != _ATTRIBUTION_SCHEMA
+        or value["method"] != _ATTRIBUTION_METHOD
+        or value["baseline"] != _ATTRIBUTION_BASELINE
+        or value["integration_steps"] != 32
+        or type(value["integration_steps"]) is not int
+        or maximum_error < 0.0
+        or type(rows) is not list
+        or len(rows) != len(present_actions)
+    ):
+        raise ValueError("V9 attribution provenance or action count drifted")
+    expected_keys = {
+        "action_code", "mean_logit_contribution", "relative_magnitude",
+        "ensemble_sign_agreement", "mirror_consistent",
+        "temporal_checks_passed", "stable", "direction", "strength",
+    }
+    normalized = []
+    means = []
+    for index, (row, (_action, v9_action)) in enumerate(zip(rows, present_actions)):
+        if type(row) is not dict or set(row) != expected_keys:
+            raise ValueError("V9 action attribution fields drifted")
+        mean = _finite_number(
+            row["mean_logit_contribution"],
+            f"attribution.actions[{index}].mean_logit_contribution",
+        )
+        relative = _finite_number(
+            row["relative_magnitude"],
+            f"attribution.actions[{index}].relative_magnitude",
+        )
+        if (
+            type(row["action_code"]) is not int
+            or row["action_code"] != ACTION_VOCAB.index(v9_action)
+            or not 0.0 <= relative <= 1.0 + 1e-7
+            or type(row["ensemble_sign_agreement"]) is not int
+            or not 0 <= row["ensemble_sign_agreement"] <= 3
+            or type(row["mirror_consistent"]) is not bool
+            or type(row["temporal_checks_passed"]) is not int
+            or not 0 <= row["temporal_checks_passed"] <= 2
+            or type(row["stable"]) is not bool
+        ):
+            raise ValueError("V9 action attribution values drifted")
+        if row["stable"]:
+            expected_direction = "toward_class_1" if mean > 0.0 else "toward_class_0"
+            expected_strength = (
+                "strong" if relative >= 0.67 else
+                "moderate" if relative >= 0.33 else "smaller"
+            )
+            if (
+                row["direction"] not in {"toward_class_0", "toward_class_1"}
+                or row["strength"] not in {"strong", "moderate", "smaller"}
+                or row["direction"] != expected_direction
+                or row["strength"] != expected_strength
+                or abs(mean) < 0.01
+                or relative < 0.05
+                or row["ensemble_sign_agreement"] != 3
+                or not row["mirror_consistent"]
+                or row["temporal_checks_passed"] != 2
+                or maximum_error > 0.02
+            ):
+                raise ValueError("stable V9 influence did not pass every gate")
+        elif (
+            row["direction"] != "not_reported"
+            or row["strength"] != "not_reported"
+        ):
+            raise ValueError("unstable V9 influence cannot expose a direction")
+        means.append(mean)
+        normalized.append({
+            "mean": mean,
+            "relative": relative,
+            "agreement": row["ensemble_sign_agreement"],
+            "mirror": row["mirror_consistent"],
+            "temporal": row["temporal_checks_passed"],
+            "stable": row["stable"],
+            "direction": row["direction"],
+            "strength": row["strength"],
+        })
+    maximum = max((abs(value) for value in means), default=0.0)
+    for row in normalized:
+        expected = 0.0 if maximum <= 0.0 else abs(row["mean"]) / maximum
+        if abs(row["relative"] - expected) > 1e-6:
+            raise ValueError("V9 relative influence is inconsistent")
+    return tuple(normalized)
 
 
 def build_gateway_response(
@@ -813,7 +982,7 @@ def build_gateway_response(
         raise ValueError("validated capture evidence is required")
     if type(prediction) is not dict or set(prediction) != {
         "model_id", "protocol", "probability", "member_probabilities",
-        "predicted_class", "threshold",
+        "predicted_class", "threshold", "attribution",
     }:
         raise ValueError("V9 prediction fields differ from the closed schema")
     if (
@@ -841,6 +1010,9 @@ def build_gateway_response(
     ):
         raise ValueError("V9 aggregate probability is inconsistent")
     present_actions = _present_v9_actions(evidence)
+    attribution_rows = _validated_attribution(
+        prediction["attribution"], present_actions
+    )
     if (
         type(valid_samples_per_action) is not tuple
         or len(valid_samples_per_action) != len(present_actions)
@@ -855,8 +1027,8 @@ def build_gateway_response(
     ):
         raise ValueError("descriptive evidence must align with every active action")
     evidence_rows = []
-    for (action, _v9_action), item in zip(
-        present_actions, descriptive_evidence_per_action
+    for (action, _v9_action), item, attribution in zip(
+        present_actions, descriptive_evidence_per_action, attribution_rows
     ):
         timing = by_action[action]
         expected_midpoint = (timing.hold_start_ms + timing.hold_end_ms) // 2
@@ -876,8 +1048,21 @@ def build_gateway_response(
             )
         ):
             raise ValueError("descriptive evidence differs from the closed action contract")
+        if attribution["stable"]:
+            model_influence = {
+                "status": "stable",
+                "direction": attribution["direction"],
+                "strength": attribution["strength"],
+                "relative_magnitude": round(attribution["relative"], 6),
+            }
+        else:
+            model_influence = {
+                "status": "unavailable",
+                "reason": "stability_gate_failed",
+            }
         evidence_rows.append({
             "id": action,
+            "region": _ACTION_REGIONS[action],
             "context_frame_ms": item.context_frame_ms,
             "observations": [
                 {
@@ -887,6 +1072,12 @@ def build_gateway_response(
                 }
                 for observation in item.observations
             ],
+            "model_influence": model_influence,
+            "stability": {
+                "ensemble_sign_agreement": attribution["agreement"],
+                "mirror_consistent": attribution["mirror"],
+                "temporal_checks_passed": attribution["temporal"],
+            },
         })
     action_rows = [
         {
@@ -946,6 +1137,15 @@ def build_gateway_response(
             "context_frame_method": (
                 "registered_hold_midpoint_not_model_selected"
             ),
+            "attribution": {
+                "method": _ATTRIBUTION_METHOD,
+                "baseline": _ATTRIBUTION_BASELINE,
+                "scope": "action_region_model_influence_not_landmark_causality",
+                "integration_steps": 32,
+                "max_completeness_error": round(float(
+                    prediction["attribution"]["max_completeness_error"]
+                ), 6),
+            },
             "actions": evidence_rows,
         },
         "clinical_use_eligible": False,
@@ -971,6 +1171,7 @@ __all__ = [
     "build_v9_action_arrays",
     "decode_capture_samples",
     "encode_v9_request_npz",
+    "encode_v9_attribution_request_npz",
     "extract_paired_meshes",
     "parse_capture_evidence",
 ]

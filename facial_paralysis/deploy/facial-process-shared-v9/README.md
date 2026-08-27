@@ -99,7 +99,7 @@ failures retain the same page-scoped recording for retry. Capture-quality
 failures retain the preview and explain why a new recording is required.
 
 The success response has schema
-`facial-paralysis-shared-v9-inference/v2`. It contains only:
+`facial-paralysis-shared-v9-inference/v3`. It contains only:
 
 - pinned model/release identity;
 - pinned preprocessing and MediaPipe identity;
@@ -109,10 +109,16 @@ The success response has schema
   probability;
 - finite, inter-eye-normalized descriptive brow, eye, and mouth movement
   observations for each registered action hold;
+- action-level Integrated Gradients influence at the shared action-token layer,
+  compared with the same recording's neutral clinical geometry and a zero
+  dense-response baseline. Direction is released only when all three ensemble
+  members agree and exact mirror plus two one-checkpoint timing perturbations
+  pass; otherwise the action is explicitly marked unavailable;
 - `clinical_use_eligible: false`.
 
-No raw landmarks, video path, patient identifier, HB grade, regional severity,
-or patient label is returned. Context frames are decoded only from the
+The influence is action-region level; it is not a pointwise landmark heatmap
+or an affected-side claim. No raw landmarks, video path, patient identifier,
+HB grade, regional severity, or patient label is returned. Context frames are decoded only from the
 page-scoped browser recording at registered hold midpoints; the server never
 returns or persists images.
 

@@ -11,6 +11,7 @@ from _testlib import run_all
 from test_shared_v9_research_release import _models, _provenance, _request
 
 from src.deployment.shared_v9_research_release import write_release
+from src.deployment.shared_v9_attribution import encode_attribution_request_npz
 from src.deployment.shared_v9_service import create_app, encode_request_npz
 
 
@@ -101,6 +102,57 @@ def test_v9_service_rejects_transport_and_archive_drift(c):
             headers={"content-type": "application/octet-stream"},
         )
         c.eq(unknown.status_code, 404)
+    finally:
+        temporary.cleanup()
+
+
+def test_v9_service_explains_cue_aligned_actions_without_changing_prediction(c):
+    temporary, client = _client()
+    try:
+        request = _request("cue_aligned_action")
+        actions = request["clinical_original"].shape[0]
+        neutral_original = np.zeros((actions, 110), dtype=np.float32)
+        neutral_mirrored = np.zeros((actions, 110), dtype=np.float32)
+        explain_payload = encode_attribution_request_npz(
+            "cue_aligned_action",
+            request,
+            neutral_original,
+            neutral_mirrored,
+        )
+        explained = client.post(
+            "/v1/explain/cue_aligned_action",
+            content=explain_payload,
+            headers={"content-type": "application/octet-stream"},
+        )
+        predicted = client.post(
+            "/v1/predict/cue_aligned_action",
+            content=encode_request_npz("cue_aligned_action", request),
+            headers={"content-type": "application/octet-stream"},
+        )
+        c.eq(explained.status_code, 200)
+        c.eq(predicted.status_code, 200)
+        body = explained.json()
+        c.eq(set(body), {
+            "model_id", "protocol", "probability", "member_probabilities",
+            "predicted_class", "threshold", "attribution",
+        })
+        c.eq({key: body[key] for key in predicted.json()}, predicted.json())
+        c.eq(body["attribution"]["schema_version"], "shared_v9_action_token_attribution/v1")
+        c.eq(body["attribution"]["method"], "integrated_gradients_shared_action_tokens")
+        c.eq(len(body["attribution"]["actions"]), actions)
+
+        malformed = client.post(
+            "/v1/explain/cue_aligned_action",
+            content=b"PK\x03\x04",
+            headers={"content-type": "application/octet-stream"},
+        )
+        c.eq(malformed.status_code, 400)
+        wrong_protocol = client.post(
+            "/v1/explain/scripted_three_action",
+            content=explain_payload,
+            headers={"content-type": "application/octet-stream"},
+        )
+        c.eq(wrong_protocol.status_code, 404)
     finally:
         temporary.cleanup()
 

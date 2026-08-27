@@ -1,6 +1,6 @@
 import { FACES_PROTOCOL, FACES_PROTOCOL_VERSION, type FacesActionId } from '../protocol/facesProtocol'
 
-export const INFERENCE_SCHEMA_VERSION = 'facial-paralysis-shared-v9-inference/v2' as const
+export const INFERENCE_SCHEMA_VERSION = 'facial-paralysis-shared-v9-inference/v3' as const
 export const MANIFEST_SCHEMA_VERSION = 'faces-v9-capture-manifest/v1' as const
 export const TIMELINE_SCHEMA_VERSION = 'faces-action-timeline/v1' as const
 export const SCRIPT_VERSION = 'faces-script/24-004956-v1' as const
@@ -76,14 +76,38 @@ export interface ResearchInferenceResult {
     readonly normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled'
     readonly interpretation: 'measured_movement_observation_not_causal_or_severity'
     readonly contextFrameMethod: 'registered_hold_midpoint_not_model_selected'
+    readonly attribution: {
+      readonly method: 'integrated_gradients_shared_action_tokens'
+      readonly baseline: 'within_recording_neutral_clinical_zero_dense_response'
+      readonly scope: 'action_region_model_influence_not_landmark_causality'
+      readonly integrationSteps: 32
+      readonly maxCompletenessError: number
+    }
     readonly actions: readonly {
       readonly id: Exclude<FacesActionId, 'repose'>
+      readonly region: 'brow' | 'eye' | 'mouth'
       readonly contextFrameMs: number
       readonly observations: readonly {
         readonly metric: string
         readonly value: number
         readonly unit: 'interocular_distance'
       }[]
+      readonly modelInfluence:
+        | {
+          readonly status: 'stable'
+          readonly direction: 'toward_class_0' | 'toward_class_1'
+          readonly strength: 'strong' | 'moderate' | 'smaller'
+          readonly relativeMagnitude: number
+        }
+        | {
+          readonly status: 'unavailable'
+          readonly reason: 'stability_gate_failed'
+        }
+      readonly stability: {
+        readonly ensembleSignAgreement: number
+        readonly mirrorConsistent: boolean
+        readonly temporalChecksPassed: number
+      }
     }[]
   }
   readonly clinicalUseEligible: false
@@ -167,6 +191,7 @@ const ACTION_EVIDENCE_METRICS = [
   ['mouth_corner_vertical_asymmetry_iod', 'lower_lip_change_from_rest_iod', 'mouth_open_change_from_rest_iod'],
   ['mouth_corner_vertical_asymmetry_iod', 'mouth_corner_vertical_change_from_rest_iod'],
 ] as const
+const ACTION_REGIONS = ['brow', 'eye', 'eye', 'mouth', 'mouth', 'mouth', 'mouth'] as const
 
 export function parseInferenceResponse(value: unknown): ResearchInferenceResult {
   const root = recordAt(value, 'response')
@@ -258,7 +283,7 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
   const reportEvidence = recordAt(root.report_evidence, 'report_evidence')
   exactKeys(
     reportEvidence,
-    ['normalization', 'interpretation', 'context_frame_method', 'actions'],
+    ['normalization', 'interpretation', 'context_frame_method', 'attribution', 'actions'],
     'report_evidence',
   )
   exact(
@@ -276,14 +301,41 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
     'registered_hold_midpoint_not_model_selected',
     'report_evidence.context_frame_method',
   )
+  const attribution = recordAt(reportEvidence.attribution, 'report_evidence.attribution')
+  exactKeys(attribution, [
+    'method', 'baseline', 'scope', 'integration_steps', 'max_completeness_error',
+  ], 'report_evidence.attribution')
+  exact(
+    attribution.method,
+    'integrated_gradients_shared_action_tokens',
+    'report_evidence.attribution.method',
+  )
+  exact(
+    attribution.baseline,
+    'within_recording_neutral_clinical_zero_dense_response',
+    'report_evidence.attribution.baseline',
+  )
+  exact(
+    attribution.scope,
+    'action_region_model_influence_not_landmark_causality',
+    'report_evidence.attribution.scope',
+  )
+  exact(attribution.integration_steps, 32, 'report_evidence.attribution.integration_steps')
+  const maxCompletenessError = nonnegativeFinite(
+    attribution.max_completeness_error,
+    'report_evidence.attribution.max_completeness_error',
+  )
   if (!Array.isArray(reportEvidence.actions) || reportEvidence.actions.length !== actionCount) {
     contractError('report_evidence.actions', `expected ${actionCount} action evidence rows`)
   }
   const evidenceActions = reportEvidence.actions.map((raw, index) => {
     const path = `report_evidence.actions[${index}]`
     const row = recordAt(raw, path)
-    exactKeys(row, ['id', 'context_frame_ms', 'observations'], path)
+    exactKeys(row, [
+      'id', 'region', 'context_frame_ms', 'observations', 'model_influence', 'stability',
+    ], path)
     exact(row.id, actions[index].id, `${path}.id`)
+    exact(row.region, ACTION_REGIONS[index], `${path}.region`)
     const contextFrameMs = integer(row.context_frame_ms, `${path}.context_frame_ms`)
     const expectedMidpoint = (actions[index].holdStartMs + actions[index].holdEndMs) / 2
     if (contextFrameMs !== expectedMidpoint) {
@@ -305,7 +357,74 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
         unit: 'interocular_distance' as const,
       }
     })
-    return { id: actions[index].id, contextFrameMs, observations }
+    const stability = recordAt(row.stability, `${path}.stability`)
+    exactKeys(stability, [
+      'ensemble_sign_agreement', 'mirror_consistent', 'temporal_checks_passed',
+    ], `${path}.stability`)
+    const ensembleSignAgreement = integer(
+      stability.ensemble_sign_agreement,
+      `${path}.stability.ensemble_sign_agreement`,
+    )
+    if (ensembleSignAgreement > 3) {
+      contractError(`${path}.stability.ensemble_sign_agreement`, 'cannot exceed three')
+    }
+    if (typeof stability.mirror_consistent !== 'boolean') {
+      contractError(`${path}.stability.mirror_consistent`, 'expected a boolean')
+    }
+    const temporalChecksPassed = integer(
+      stability.temporal_checks_passed,
+      `${path}.stability.temporal_checks_passed`,
+    )
+    if (temporalChecksPassed > 2) {
+      contractError(`${path}.stability.temporal_checks_passed`, 'cannot exceed two')
+    }
+    const rawInfluence = recordAt(row.model_influence, `${path}.model_influence`)
+    let modelInfluence: ResearchInferenceResult['reportEvidence']['actions'][number]['modelInfluence']
+    if (rawInfluence.status === 'stable') {
+      exactKeys(rawInfluence, [
+        'status', 'direction', 'strength', 'relative_magnitude',
+      ], `${path}.model_influence`)
+      if (
+        ensembleSignAgreement !== 3
+        || stability.mirror_consistent !== true
+        || temporalChecksPassed !== 2
+        || maxCompletenessError > 0.02
+      ) {
+        contractError(`${path}.model_influence`, 'stable influence did not pass every check')
+      }
+      if (rawInfluence.direction !== 'toward_class_0' && rawInfluence.direction !== 'toward_class_1') {
+        contractError(`${path}.model_influence.direction`, 'expected a permitted score direction')
+      }
+      if (rawInfluence.strength !== 'strong' && rawInfluence.strength !== 'moderate' && rawInfluence.strength !== 'smaller') {
+        contractError(`${path}.model_influence.strength`, 'expected a permitted relative strength')
+      }
+      modelInfluence = {
+        status: 'stable',
+        direction: rawInfluence.direction,
+        strength: rawInfluence.strength,
+        relativeMagnitude: probability(
+          rawInfluence.relative_magnitude,
+          `${path}.model_influence.relative_magnitude`,
+        ),
+      }
+    } else {
+      exactKeys(rawInfluence, ['status', 'reason'], `${path}.model_influence`)
+      exact(rawInfluence.status, 'unavailable', `${path}.model_influence.status`)
+      exact(rawInfluence.reason, 'stability_gate_failed', `${path}.model_influence.reason`)
+      modelInfluence = { status: 'unavailable', reason: 'stability_gate_failed' }
+    }
+    return {
+      id: actions[index].id,
+      region: ACTION_REGIONS[index],
+      contextFrameMs,
+      observations,
+      modelInfluence,
+      stability: {
+        ensembleSignAgreement,
+        mirrorConsistent: stability.mirror_consistent,
+        temporalChecksPassed,
+      },
+    }
   })
 
   return {
@@ -343,6 +462,13 @@ export function parseInferenceResponse(value: unknown): ResearchInferenceResult 
       normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled',
       interpretation: 'measured_movement_observation_not_causal_or_severity',
       contextFrameMethod: 'registered_hold_midpoint_not_model_selected',
+      attribution: {
+        method: 'integrated_gradients_shared_action_tokens',
+        baseline: 'within_recording_neutral_clinical_zero_dense_response',
+        scope: 'action_region_model_influence_not_landmark_causality',
+        integrationSteps: 32,
+        maxCompletenessError,
+      },
       actions: evidenceActions,
     },
     clinicalUseEligible: false,

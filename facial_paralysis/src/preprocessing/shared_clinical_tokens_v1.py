@@ -295,6 +295,70 @@ def _clinical_token_from_dense(
     )
 
 
+def neutral_clinical_token_pair(
+    original_baseline: np.ndarray,
+    mirrored_baseline: np.ndarray,
+    baseline_valid: np.ndarray,
+    baseline_frame_indices: np.ndarray,
+    *,
+    fps: float,
+    action_count: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the repeated absolute-clinical neutral baseline for attribution.
+
+    The dense response baseline is exactly zero elsewhere.  This helper only
+    supplies the absolute 110D clinical geometry measured during the
+    authenticated neutral-repose hold, separately for the original and true
+    flip-and-redetect views.
+    """
+    original = np.asarray(original_baseline)
+    mirrored = np.asarray(mirrored_baseline)
+    valid = np.asarray(baseline_valid)
+    indices = np.asarray(baseline_frame_indices)
+    if (
+        original.shape != (ACTION_TOKEN_FRAMES, DENSE_POINT_COUNT, 3)
+        or mirrored.shape != original.shape
+        or original.dtype not in {np.dtype(np.float32), np.dtype(np.float64)}
+        or mirrored.dtype not in {np.dtype(np.float32), np.dtype(np.float64)}
+        or valid.shape != (ACTION_TOKEN_FRAMES,)
+        or valid.dtype != np.dtype(bool)
+        or indices.shape != (ACTION_TOKEN_FRAMES,)
+        or indices.dtype != np.dtype(np.int64)
+        or int(valid.sum()) < 26
+        or isinstance(fps, bool)
+        or not isinstance(fps, (int, float))
+        or not np.isfinite(float(fps))
+        or float(fps) <= 0.0
+        or type(action_count) is not int
+        or action_count < 1
+    ):
+        raise ValueError("neutral clinical baseline differs from the closed contract")
+    if (
+        not np.isfinite(original[valid]).all()
+        or not np.isfinite(mirrored[valid]).all()
+        or np.any(indices[valid] < 0)
+    ):
+        raise ValueError("neutral clinical baseline contains invalid supported values")
+    original_dense, target_times = _collapse_and_interpolate(
+        original[valid], indices[valid], float(fps)
+    )
+    mirrored_dense, mirrored_times = _collapse_and_interpolate(
+        mirrored[valid], indices[valid], float(fps)
+    )
+    if not np.array_equal(target_times, mirrored_times):
+        raise AssertionError("paired neutral views changed their time grid")
+    original_token = _clinical_token_from_dense(original_dense, target_times)
+    mirrored_token = _clinical_token_from_dense(mirrored_dense, target_times)
+    return (
+        _immutable(np.repeat(original_token[None, :], action_count, axis=0).astype(
+            np.float32, copy=False
+        )),
+        _immutable(np.repeat(mirrored_token[None, :], action_count, axis=0).astype(
+            np.float32, copy=False
+        )),
+    )
+
+
 def dense_action_token_bag(
     original_actions: np.ndarray,
     mirrored_actions: np.ndarray,
@@ -381,5 +445,6 @@ __all__ = [
     "CLINICAL_TOKEN_DIM",
     "ClinicalActionBag",
     "dense_action_token_bag",
+    "neutral_clinical_token_pair",
     "palsynet_window_token_bag",
 ]

@@ -70,7 +70,7 @@ sessions use `capture_event_log`; audited historical imports may retain
 
 ## Output boundary
 
-The accepted response is `facial-paralysis-shared-v9-inference/v1` and is
+The accepted response is `facial-paralysis-shared-v9-inference/v3` and is
 fail-closed on model identity, release-manifest hash, preprocessing identity,
 action order, tracking support, ensemble arithmetic, and threshold.
 
@@ -79,10 +79,14 @@ The interface shows:
 - one MEEI facial-palsy-versus-healthy-control classification score;
 - the frozen 0.5-threshold research class;
 - recorded action context frames and descriptive movement geometry;
+- action-region model influence computed at the shared action-token layer,
+  released only after three-member, true-mirror, and two timing-shift checks;
 - plain-language action and face-tracking coverage.
 
-The report's **Save PDF** flow generates and directly downloads a PDF containing
-the recorded action context images and an identifiable-media warning, without
+Each evidence card and PDF action page keeps three layers separate: measured
+movement, model influence, and stability checks. Unstable influence is hidden
+rather than assigned a direction. The report's **Save PDF** flow generates and
+directly downloads a PDF containing the recorded action context images and an identifiable-media warning, without
 opening the browser print dialog. **Download recorded video** exports the
 exact page-scoped source file to the current device with a fixed filename that
 does not reuse a potentially identifying upload name. Both are local browser

@@ -63,14 +63,36 @@ function result(includeOptional: boolean): ResearchInferenceResult {
       normalization: 'original_view_centered_eye_axis_aligned_interocular_scaled',
       interpretation: 'measured_movement_observation_not_causal_or_severity',
       contextFrameMethod: 'registered_hold_midpoint_not_model_selected',
+      attribution: {
+        method: 'integrated_gradients_shared_action_tokens',
+        baseline: 'within_recording_neutral_clinical_zero_dense_response',
+        scope: 'action_region_model_influence_not_landmark_causality',
+        integrationSteps: 32,
+        maxCompletenessError: 0.005,
+      },
       actions: ids.slice(0, count).map((id, index) => ({
         id,
+        region: (index === 0 ? 'brow' : index < 3 ? 'eye' : 'mouth') as 'brow' | 'eye' | 'mouth',
         contextFrameMs: index * 4_000 + 6_000,
         observations: metrics[index].map((metric, metricIndex) => ({
           metric,
           value: 0.01 * (metricIndex + 1),
           unit: 'interocular_distance' as const,
         })),
+        modelInfluence: index === 5 ? {
+          status: 'unavailable' as const,
+          reason: 'stability_gate_failed' as const,
+        } : {
+          status: 'stable' as const,
+          direction: (index === 2 ? 'toward_class_0' : 'toward_class_1') as 'toward_class_0' | 'toward_class_1',
+          strength: (index < 2 ? 'strong' : index < 4 ? 'moderate' : 'smaller') as 'strong' | 'moderate' | 'smaller',
+          relativeMagnitude: Math.max(0.1, 1 - index * 0.15),
+        },
+        stability: {
+          ensembleSignAgreement: index === 5 ? 2 : 3,
+          mirrorConsistent: index !== 5,
+          temporalChecksPassed: index === 5 ? 1 : 2,
+        },
       })),
     },
     clinicalUseEligible: false,
@@ -115,7 +137,7 @@ describe('Research Movement Report', () => {
     expect(screen.queryByText(/auditable movement observations/i)).not.toBeInTheDocument()
     expect(screen.getByText(/measurements are scaled to the same eye-to-eye reference width/i)).toBeInTheDocument()
     expect(screen.queryByText(/no clinical normal range or severity meaning/i)).not.toBeInTheDocument()
-    expect(screen.getByText(/measured movement observation — not a cause/i)).toBeInTheDocument()
+    expect(screen.getByText(/three separate evidence layers/i)).toBeInTheDocument()
     expect(screen.getAllByText('Side-to-side difference').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Change from neutral').length).toBeGreaterThan(0)
     expect(screen.getAllByText(/1\.0% of eye-to-eye width/i).length).toBeGreaterThan(0)
@@ -123,6 +145,13 @@ describe('Research Movement Report', () => {
     expect(screen.getByText('26 of 32 points (81%)')).toBeInTheDocument()
     expect(screen.getByText('Brow-height change from rest')).toBeInTheDocument()
     expect(screen.getByText('Lower-lip movement from rest')).toBeInTheDocument()
+    expect(screen.getAllByText('Measured movement').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Model influence').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Stability checks').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/moved the MEEI facial-movement score upward/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/moved the MEEI facial-movement score downward/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/no stable model influence to report for this action/i)).toBeInTheDocument()
+    expect(screen.getAllByText(/3 of 3 model members/i).length).toBeGreaterThan(0)
     expect(screen.getAllByText('Recorded context frame unavailable')).toHaveLength(6)
     expect(screen.getByRole('heading', { name: 'Recording coverage' })).toBeInTheDocument()
     expect(screen.getByText('Neutral baseline + all 6 active movements')).toBeInTheDocument()
