@@ -23,10 +23,16 @@ type GuidedSessionPhase =
 
 interface GuidedCaptureWorkspaceProps {
   readonly endpointReady?: boolean
+  readonly journeyStage?: GuidedJourneyStage
   readonly reanimatedSmileApplicable: boolean | null
   readonly onReanimatedSmileApplicableChange: (applicable: boolean) => void
   readonly onRecordingChange: RecordingChangeHandler
+  readonly onSetupReadyChange?: (ready: boolean) => void
+  readonly onCaptureModeChange?: (mode: CaptureMode) => void
+  readonly onGuidedActiveChange?: (active: boolean) => void
 }
+
+export type GuidedJourneyStage = 'prepare' | 'setup' | 'record' | 'review'
 
 interface CapturePlanSnapshot {
   readonly captureId: string
@@ -51,9 +57,13 @@ function snapshotCapturePlan(
 
 export function GuidedCaptureWorkspace({
   endpointReady = true,
+  journeyStage,
   reanimatedSmileApplicable,
   onReanimatedSmileApplicableChange,
   onRecordingChange,
+  onSetupReadyChange,
+  onCaptureModeChange,
+  onGuidedActiveChange,
 }: GuidedCaptureWorkspaceProps) {
   const camera = useCameraRecorder()
   const voice = useGuidedVoiceSequence()
@@ -70,19 +80,39 @@ export function GuidedCaptureWorkspace({
   const workspaceRef = useRef<HTMLDivElement | null>(null)
 
   const guidedActive = sessionPhase === 'starting' || sessionPhase === 'guiding' || sessionPhase === 'finalizing'
+  const journeyEnabled = journeyStage !== undefined
+  const setupReady = endpointReady
+    && mode === 'camera'
+    && camera.status === 'ready'
+    && reanimatedSmileApplicable !== null
+    && voice.supported
+  const showVoiceGuide = !journeyEnabled || journeyStage === 'prepare'
+  const showCapture = !journeyEnabled || journeyStage !== 'prepare'
+  const showSessionControl = !journeyEnabled || journeyStage === 'setup' || journeyStage === 'record'
+  const recordingStartAllowed = !journeyEnabled || journeyStage === 'record'
 
   const changeMode = useCallback((nextMode: CaptureMode) => {
     if (runLockedRef.current) return
     setMode(nextMode)
+    onCaptureModeChange?.(nextMode)
     setSessionPhase('idle')
     setSessionError(null)
     setCancelledMessage(null)
-  }, [])
+  }, [onCaptureModeChange])
+
+  useEffect(() => {
+    onSetupReadyChange?.(setupReady)
+  }, [onSetupReadyChange, setupReady])
+
+  useEffect(() => {
+    onGuidedActiveChange?.(guidedActive)
+  }, [guidedActive, onGuidedActiveChange])
 
   const startGuidedRecording = () => {
     if (
       runLockedRef.current ||
       mode !== 'camera' ||
+      !recordingStartAllowed ||
       camera.status !== 'ready' ||
       reanimatedSmileApplicable === null ||
       !voice.supported
@@ -243,7 +273,7 @@ export function GuidedCaptureWorkspace({
     statusText = 'Wait for the research endpoint readiness check before starting a patient recording.'
   }
 
-  const canStart = endpointReady && mode === 'camera' && camera.status === 'ready' && reanimatedSmileApplicable !== null && voice.supported
+  const canStart = setupReady && recordingStartAllowed
   const patientStepIndex = voice.activeStepIndex ?? 0
   const patientStep = FACES_PROTOCOL[patientStepIndex]
   const patientGuidePhase: PatientGuidePhase = sessionPhase === 'starting'
@@ -255,8 +285,11 @@ export function GuidedCaptureWorkspace({
         : 'speaking'
 
   return (
-    <div ref={workspaceRef} className={`workspace ${guidedActive ? 'is-guided-active' : ''}`}>
-      <div id="protocol" className={guidedActive ? 'is-guided-hidden' : undefined}>
+    <div
+      ref={workspaceRef}
+      className={`workspace ${guidedActive ? 'is-guided-active' : ''} ${journeyStage ? `is-journey-${journeyStage}` : ''}`}
+    >
+      {showVoiceGuide ? <div id="protocol" className={guidedActive ? 'is-guided-hidden' : undefined}>
         <VoiceGuide
           reanimatedSmileApplicable={reanimatedSmileApplicable}
           onReanimatedSmileApplicableChange={onReanimatedSmileApplicableChange}
@@ -264,7 +297,7 @@ export function GuidedCaptureWorkspace({
           guidedVoice={voice}
           applicabilityLocked={mode === 'camera' && camera.status === 'recorded'}
         />
-      </div>
+      </div> : null}
 
       {guidedActive ? (
         <PatientMovementGuide
@@ -275,9 +308,20 @@ export function GuidedCaptureWorkspace({
           completedStepIndexes={voice.completedStepIndexes}
           reanimatedSmileApplicable={reanimatedSmileApplicable === true}
         />
+      ) : journeyStage === 'record' ? (
+        <section className="record-ready-guide" aria-labelledby="record-ready-title">
+          <span className="eyebrow">Automatic recording</span>
+          <h2 id="record-ready-title">Ready for your guided recording</h2>
+          <p>Keep your face in the frame. Voice cues and the seven- or eight-step sequence advance automatically after you start.</p>
+          <div className="record-ready-points" aria-label="Recording reminders">
+            <span><Check aria-hidden="true" size={18} /> No instruction clicks</span>
+            <span><Clock3 aria-hidden="true" size={18} /> Timed three-second holds</span>
+            <span><Volume2 aria-hidden="true" size={18} /> Voice and screen stay synchronized</span>
+          </div>
+        </section>
       ) : null}
 
-      <MediaCapturePanel
+      {showCapture ? <MediaCapturePanel
         camera={camera}
         mode={mode}
         onModeChange={changeMode}
@@ -286,12 +330,12 @@ export function GuidedCaptureWorkspace({
         guidedActive={guidedActive}
         reportCameraRecording={false}
         showCameraError={!sessionError}
-      />
+      /> : null}
 
-      <section className={`guided-session-control ${guidedActive ? 'is-active' : ''}`} aria-labelledby="guided-session-title">
+      {showSessionControl ? <section className={`guided-session-control ${guidedActive ? 'is-active' : ''}`} aria-labelledby="guided-session-title">
         <div className="guided-control-copy">
-          <span className="eyebrow">One guided capture</span>
-          <h2 id="guided-session-title">Record and coach in one continuous flow.</h2>
+          <span className="eyebrow">{journeyStage === 'setup' ? 'Camera setup' : 'One guided capture'}</span>
+          <h2 id="guided-session-title">{journeyStage === 'setup' ? 'Confirm the camera before recording.' : 'Record and coach in one continuous flow.'}</h2>
           <p
             role={sessionPhase === 'complete' ? 'status' : undefined}
             aria-live={guidedActive ? 'off' : 'polite'}
@@ -328,6 +372,12 @@ export function GuidedCaptureWorkspace({
             </button>
           ) : sessionPhase === 'complete' && camera.status === 'recorded' ? (
             <span className="guided-complete-mark"><Check aria-hidden="true" size={18} /> Recording complete</span>
+          ) : journeyStage === 'setup' ? (
+            setupReady ? (
+              <span className="guided-complete-mark"><Check aria-hidden="true" size={18} /> Camera setup complete</span>
+            ) : (
+              <span className="guided-setup-pending">Finish camera setup and the Step 8 choice above.</span>
+            )
           ) : (
             <button className="button button-primary" type="button" disabled={!canStart} onClick={startGuidedRecording}>
               <span className="record-dot" /> Start guided recording
@@ -335,7 +385,7 @@ export function GuidedCaptureWorkspace({
           )}
         </div>
         {sessionError ? <p className="inline-alert guided-session-error" role="alert">{sessionError}</p> : null}
-      </section>
+      </section> : null}
     </div>
   )
 }

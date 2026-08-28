@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
@@ -10,6 +10,9 @@ const readyEndpoint = vi.fn().mockResolvedValue(undefined)
 const pendingEndpoint = vi.fn(() => new Promise<void>(() => undefined))
 
 async function uploadVideo(user: ReturnType<typeof userEvent.setup>) {
+  if (!screen.queryByRole('tab', { name: 'Upload from LifeLink' })) {
+    await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
+  }
   await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
   const file = new File(['synthetic-video'], 'faces-session.webm', { type: 'video/webm' })
   await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
@@ -134,6 +137,51 @@ describe('App', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '#analysis')
   })
+
+  it('presents a five-stage linear journey instead of one long capture page', async () => {
+    const user = userEvent.setup()
+    render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+
+    const journey = screen.getByRole('navigation', { name: 'Assessment journey' })
+    const primaryNavigation = screen.getByRole('navigation', { name: 'Primary navigation' })
+    expect(within(primaryNavigation).getByRole('link', { name: 'Guided journey' })).toHaveAttribute('href', '#journey')
+    expect(within(primaryNavigation).queryByRole('link', { name: 'Capture' })).not.toBeInTheDocument()
+    expect(within(primaryNavigation).queryByRole('link', { name: 'Protocol' })).not.toBeInTheDocument()
+    expect(within(primaryNavigation).queryByRole('link', { name: 'Analysis' })).not.toBeInTheDocument()
+    expect(within(journey).getAllByRole('listitem')).toHaveLength(5)
+    expect(within(journey).getByText('Prepare').closest('li')).toHaveAttribute('aria-current', 'step')
+    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Validate the path before any result appears.' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
+
+    expect(within(journey).getByText('Set up').closest('li')).toHaveAttribute('aria-current', 'step')
+    expect(screen.getByRole('heading', { name: 'Set up the camera' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('button', { name: 'Back to preparation' })).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
+    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
+  })
+
+  it('moves keyboard focus and scroll only when the major journey stage changes', async () => {
+    const user = userEvent.setup()
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
+    render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+
+    await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
+
+    const heading = screen.getByRole('heading', { name: 'Set up the camera' })
+    expect(heading).toHaveFocus()
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' })
+  })
   it('uses an internal clinical-review product message without exposing the model release', () => {
     const { container } = render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()
@@ -179,8 +227,8 @@ describe('App', () => {
 
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
     expect(screen.queryByText('DEMONSTRATION - NOT MODEL OUTPUT')).not.toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Enable front camera' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
   })
 
   it('offers an explicit clear action before analysis or results exist', async () => {
@@ -197,8 +245,8 @@ describe('App', () => {
     await user.click(clearButton)
 
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Enable front camera' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
   })
 
   it('avoids smooth scrolling on reset when reduced motion is requested', async () => {
@@ -300,7 +348,7 @@ describe('App', () => {
 
     await waitFor(() => expect(screen.getByText('replacement.webm')).toBeInTheDocument())
     expect(screen.queryByText('Accepted research inference')).not.toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: /include step 8/i })).not.toBeChecked()
+    expect(screen.getByRole('heading', { name: 'Review the recording and run analysis' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Run research analysis' })).toBeDisabled()
   })
 
@@ -400,7 +448,7 @@ describe('App', () => {
       .mockResolvedValueOnce(undefined)
     render(<App apiEndpoint="https://research.example.test/infer" checkEndpoint={checkEndpoint} />)
 
-    expect(screen.getByText(/checking analysis endpoint/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
     expect(await screen.findByText(/research endpoint unavailable/i)).toBeInTheDocument()
     expect(screen.queryByText(/analysis endpoint ready/i)).not.toBeInTheDocument()
 

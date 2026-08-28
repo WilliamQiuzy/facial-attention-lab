@@ -16,9 +16,8 @@ export function AppHeader({ showResearchStrip = true }: { showResearchStrip?: bo
             <span><strong>FACES</strong><small>Research Capture</small></span>
           </a>
           <nav aria-label="Primary navigation">
-            <a href="#capture">Capture</a>
-            <a href="#protocol">Protocol</a>
-            <a href="#analysis">Analysis</a>
+            <a href="#journey">Guided journey</a>
+            <a href="#research-boundary">Clinical review</a>
           </nav>
           <a className="help-link" href="#research-boundary"><CircleHelp aria-hidden="true" size={18} /> About this prototype</a>
         </div>

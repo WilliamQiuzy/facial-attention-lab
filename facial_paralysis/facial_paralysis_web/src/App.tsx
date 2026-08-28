@@ -1,4 +1,4 @@
-import { ArrowRight, Camera, Check, LockKeyhole, ShieldCheck, Sparkles } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Camera, Check, LockKeyhole, ShieldCheck, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from './components/AppHeader'
@@ -29,6 +29,8 @@ interface AppProps {
   readonly checkEndpoint?: EndpointCheckFunction
 }
 
+type JourneyStep = 1 | 2 | 3 | 4 | 5
+
 function capturePreparation() {
   return [
     'Front camera at eye level and about arm’s length away',
@@ -54,6 +56,10 @@ export function App({
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [analysisRetryAllowed, setAnalysisRetryAllowed] = useState(true)
   const [sessionKey, setSessionKey] = useState(0)
+  const [journeyStep, setJourneyStep] = useState<JourneyStep>(1)
+  const [captureSetupReady, setCaptureSetupReady] = useState(false)
+  const [captureMode, setCaptureMode] = useState<'upload' | 'camera'>('camera')
+  const [guidedRecordingActive, setGuidedRecordingActive] = useState(false)
   const [endpointState, setEndpointState] = useState<'checking' | 'ready' | 'unavailable' | 'unconfigured'>(
     apiEndpoint ? 'checking' : 'unconfigured',
   )
@@ -61,6 +67,7 @@ export function App({
   const [reportRoute, setReportRoute] = useState(() => window.location.hash === '#research-report')
   const analysisGenerationRef = useRef(0)
   const inFlightRef = useRef(false)
+  const journeyPanelRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const updateRoute = () => setReportRoute(window.location.hash === '#research-report')
@@ -92,9 +99,18 @@ export function App({
     return () => { active = false }
   }, [apiEndpoint, checkEndpoint, endpointCheckAttempt])
 
-  const currentStep: 1 | 2 | 3 | 4 = result ? 4 : analysisState === 'running' ? 3 : recording ? 2 : 1
   const preparationItems = useMemo(capturePreparation, [])
   const researchResult = result?.mode === 'research-inference' ? result : null
+
+  useEffect(() => {
+    if (reportRoute) return
+    const panel = journeyPanelRef.current
+    if (!panel) return
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    panel.scrollIntoView?.({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' })
+    const heading = panel.querySelector<HTMLElement>('[data-journey-heading]')
+    heading?.focus({ preventScroll: true })
+  }, [journeyStep, reportRoute])
 
   const handleRecordingChange = useCallback((
     file: File | null,
@@ -111,6 +127,7 @@ export function App({
     setAnalysisState('idle')
     setAuthorizedEndpoint(false)
     setCaptureTimeline(options?.timeline ?? null)
+    setJourneyStep(file ? 4 : 2)
     if (options?.preserveProtocolChoice) {
       if (typeof options.reanimatedSmileApplicable === 'boolean') {
         setReanimatedSmileApplicable(options.reanimatedSmileApplicable)
@@ -156,6 +173,7 @@ export function App({
       if (analysisGenerationRef.current !== generation) return
       setResult(accepted)
       setAnalysisState('succeeded')
+      setJourneyStep(5)
     } catch (error) {
       if (analysisGenerationRef.current !== generation) return
       setAnalysisState('error')
@@ -175,6 +193,7 @@ export function App({
     setAnalysisRetryAllowed(true)
     setAnalysisState('idle')
     setResult(createDemonstrationResult(recording))
+    setJourneyStep(5)
   }
 
   const reset = () => {
@@ -189,6 +208,10 @@ export function App({
     setAuthorizedEndpoint(false)
     setReanimatedSmileApplicable(null)
     setCaptureTimeline(null)
+    setJourneyStep(1)
+    setCaptureSetupReady(false)
+    setCaptureMode('camera')
+    setGuidedRecordingActive(false)
     setReportRoute(false)
     window.history.replaceState(null, '', '#top')
     setSessionKey((current) => current + 1)
@@ -206,6 +229,11 @@ export function App({
     setReportRoute(false)
   }
 
+  const handleGuidedActiveChange = useCallback((active: boolean) => {
+    setGuidedRecordingActive(active)
+    if (active) setJourneyStep(3)
+  }, [])
+
   const confirmAndReset = () => {
     if (
       result?.mode === 'research-inference'
@@ -213,6 +241,18 @@ export function App({
     ) return
     reset()
   }
+
+  const endpointStatusPanel = apiEndpoint ? (
+    endpointState === 'ready' ? (
+      <div className="endpoint-state"><span className="status-dot is-online" /><span><strong>Analysis endpoint ready</strong>Readiness and response validation verified</span></div>
+    ) : endpointState === 'checking' ? (
+      <div className="endpoint-state"><span className="status-dot is-checking" /><span><strong>Checking analysis endpoint</strong>Recording remains locked until the endpoint is ready</span></div>
+    ) : (
+      <div className="endpoint-state endpoint-state-retry"><span className="status-dot is-error" /><span><strong>Research endpoint unavailable</strong>Do not begin a patient recording yet</span><button className="text-action" type="button" onClick={() => setEndpointCheckAttempt((value) => value + 1)}>Retry endpoint check</button></div>
+    )
+  ) : (
+    <div className="endpoint-state"><span className="status-dot" /><span><strong>Research endpoint not configured</strong>Add a vetted HTTPS endpoint to enable model inference</span></div>
+  )
 
   return (
     <div className="app" id="top">
@@ -238,49 +278,84 @@ export function App({
           )
         ) : null}
         <div hidden={reportRoute} aria-hidden={reportRoute ? 'true' : undefined}>
-        <section className="hero" aria-labelledby="hero-title">
-          <div className="hero-inner">
-            <div className="hero-copy">
-              <span className="eyebrow">Facial movement assessment · Research prototype</span>
-              <h1 id="hero-title">Capture the full facial movement story.</h1>
-              <p>Guide a standardized FACES recording, bring in a LifeLink Face video, and review one consistent facial-movement classification output.</p>
-              <a className="button button-primary hero-action" href="#capture">Start a capture <ArrowRight aria-hidden="true" size={19} /></a>
-            </div>
-            <div className="hero-visual" aria-label="Seven- or eight-step facial movement protocol overview">
-              <div className="face-orbit" aria-hidden="true">
-                <span className="face-outline"><i className="eye-left" /><i className="eye-right" /><i className="mouth-line" /></span>
-                {['01','02','03','04','05','06','07','08'].map((label) => <b key={label}>{label}</b>)}
-              </div>
-              <div className="hero-stat"><strong>7–8</strong><span>guided movements<br />3-second holds</span></div>
-            </div>
-          </div>
-        </section>
-
-        <section className="workflow-section" aria-label="Current workflow stage">
-          <WorkflowRail current={currentStep} />
-        </section>
-
-        <section className="preparation-section">
+        <section className="journey-hero" aria-labelledby="hero-title">
           <div>
-            <span className="eyebrow">Before recording</span>
-            <h2>A consistent setup makes every visit more useful.</h2>
-            <p>{FACES_PREPARATION[0]}</p>
+            <span className="eyebrow">Guided facial movement assessment</span>
+            <h1 id="hero-title">Capture the full facial movement story.</h1>
+            <p>One clear stage at a time—from preparation to a reviewable report.</p>
           </div>
-          <ul>
-            {preparationItems.map((item) => <li key={item}><span><Check aria-hidden="true" size={17} /></span>{item}</li>)}
-          </ul>
+          <div className="journey-hero-badge" aria-label="Seven- or eight-step automatic movement sequence">
+            <strong>7–8</strong><span>guided movements<br />automatic timing</span>
+          </div>
         </section>
 
-        <div id="capture" key={sessionKey}>
-          <GuidedCaptureWorkspace
-            endpointReady={demonstrationEnabled || endpointState === 'ready'}
-            reanimatedSmileApplicable={reanimatedSmileApplicable}
-            onReanimatedSmileApplicableChange={handleReanimatedSmileApplicableChange}
-            onRecordingChange={handleRecordingChange}
-          />
-        </div>
+        <div className="journey-shell" id="journey">
+          <section className="workflow-section" aria-label="Current workflow stage">
+            <WorkflowRail current={journeyStep} />
+          </section>
 
-        <section className="analysis-section" id="analysis" aria-labelledby="analysis-title">
+          <div className="journey-panel" ref={journeyPanelRef}>
+            {journeyStep === 1 ? (
+              <header className="journey-stage-heading">
+                <span className="journey-stage-kicker">Step 1 of 5 · Prepare</span>
+                <h2 data-journey-heading tabIndex={-1}>Prepare for a consistent capture</h2>
+                <p>Review the room setup and preview each facial movement before turning on the camera.</p>
+              </header>
+            ) : journeyStep === 2 ? (
+              <header className="journey-stage-heading">
+                <span className="journey-stage-kicker">Step 2 of 5 · Set up</span>
+                <h2 data-journey-heading tabIndex={-1}>Set up the camera</h2>
+                <p>Use this device by default, confirm framing, and keep the same protocol choice you reviewed.</p>
+              </header>
+            ) : journeyStep === 3 ? (
+              <header className="journey-stage-heading">
+                <span className="journey-stage-kicker">Step 3 of 5 · Record</span>
+                <h2 data-journey-heading tabIndex={-1}>Complete the automatic recording</h2>
+                <p>After Start, voice cues advance the full sequence. No Next button is needed during facial movements.</p>
+              </header>
+            ) : journeyStep === 4 ? (
+              <header className="journey-stage-heading">
+                <span className="journey-stage-kicker">Step 4 of 5 · Analyze</span>
+                <h2 data-journey-heading tabIndex={-1}>Review the recording and run analysis</h2>
+                <p>Confirm the retained video and endpoint before sending one analysis request.</p>
+              </header>
+            ) : (
+              <header className="journey-stage-heading">
+                <span className="journey-stage-kicker">Step 5 of 5 · Report</span>
+                <h2 data-journey-heading tabIndex={-1}>Your report is ready</h2>
+                <p>The completed result is locked for this browser session.</p>
+              </header>
+            )}
+
+            <section className="preparation-section journey-preparation" hidden={journeyStep !== 1}>
+              <div>
+                <span className="eyebrow">Before recording</span>
+                <h3>A consistent setup makes every visit more useful.</h3>
+                <p>{FACES_PREPARATION[0]}</p>
+              </div>
+              <ul>
+                {preparationItems.map((item) => <li key={item}><span><Check aria-hidden="true" size={17} /></span>{item}</li>)}
+              </ul>
+            </section>
+
+            <div id="capture" key={sessionKey} hidden={journeyStep === 5}>
+              <GuidedCaptureWorkspace
+                journeyStage={journeyStep === 1 ? 'prepare' : journeyStep === 2 ? 'setup' : journeyStep === 3 ? 'record' : 'review'}
+                endpointReady={demonstrationEnabled || endpointState === 'ready'}
+                reanimatedSmileApplicable={reanimatedSmileApplicable}
+                onReanimatedSmileApplicableChange={handleReanimatedSmileApplicableChange}
+                onRecordingChange={handleRecordingChange}
+                onSetupReadyChange={setCaptureSetupReady}
+                onCaptureModeChange={setCaptureMode}
+                onGuidedActiveChange={handleGuidedActiveChange}
+              />
+            </div>
+
+            {journeyStep === 2 || journeyStep === 4 ? (
+              <div className="journey-endpoint-status">{endpointStatusPanel}</div>
+            ) : null}
+
+            <section className="analysis-section" hidden={journeyStep !== 4} id="analysis" aria-labelledby="analysis-title">
           <div className="analysis-copy">
             <span className="eyebrow">Movement analysis</span>
             <h2 id="analysis-title">Validate the path before any result appears.</h2>
@@ -305,13 +380,6 @@ export function App({
               </div>
             ) : apiEndpoint ? (
               <>
-                {endpointState === 'ready' ? (
-                  <div className="endpoint-state"><span className="status-dot is-online" /><span><strong>Analysis endpoint ready</strong>Readiness and response validation verified</span></div>
-                ) : endpointState === 'checking' ? (
-                  <div className="endpoint-state"><span className="status-dot is-checking" /><span><strong>Checking analysis endpoint</strong>Recording remains locked until the endpoint is ready</span></div>
-                ) : (
-                  <div className="endpoint-state endpoint-state-retry"><span className="status-dot is-error" /><span><strong>Research endpoint unavailable</strong>Do not begin a patient recording yet</span><button className="text-action" type="button" onClick={() => setEndpointCheckAttempt((value) => value + 1)}>Retry endpoint check</button></div>
-                )}
                 <div className="privacy-warning"><LockKeyhole aria-hidden="true" size={21} /><p><strong>Facial video is identifiable.</strong> Send it only to an authorized research endpoint under the approved protocol.</p></div>
                 <label className="authorization-check">
                   <input type="checkbox" checked={authorizedEndpoint} onChange={(event) => setAuthorizedEndpoint(event.target.checked)} />
@@ -330,7 +398,7 @@ export function App({
                 </div>
               </>
             ) : (
-              <div className="endpoint-state"><span className="status-dot" /><span><strong>Research endpoint not configured</strong>Add a vetted HTTPS endpoint to enable model inference</span></div>
+              <div className="analysis-hint">Configure the analysis endpoint before running this recording.</div>
             )}
 
             {!researchResult && demonstrationEnabled ? (
@@ -347,9 +415,63 @@ export function App({
             {!researchResult && analysisError ? <p className="inline-alert" role="alert">{analysisError}</p> : null}
             {!researchResult && analysisState === 'error' && !analysisRetryAllowed ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> This recording cannot be resubmitted. Clear it, correct the capture, and record the guided sequence again.</p> : null}
           </div>
-        </section>
+            </section>
 
-        {result?.mode === 'demonstration' ? <ResultsView result={result} onReset={reset} /> : null}
+            <div className="journey-report-stage" hidden={journeyStep !== 5}>
+              {researchResult ? (
+                <div className="report-ready-card" role="status" aria-live="polite">
+                  <Check aria-hidden="true" size={24} />
+                  <div>
+                    <strong>Analysis report ready</strong>
+                    <p>Open the complete report, download the recorded video, or begin a new browser session.</p>
+                    <div className="analysis-button-stack">
+                      <a className="button button-primary button-wide" href="#research-report" onClick={(event) => { event.preventDefault(); openReport() }}>
+                        View full research report <ArrowRight aria-hidden="true" size={18} />
+                      </a>
+                      {recording ? <RecordingDownloadButton recording={recording} /> : null}
+                      <button className="button button-secondary button-wide" type="button" onClick={confirmAndReset}>Start a new session</button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {result?.mode === 'demonstration' ? <ResultsView result={result} onReset={reset} /> : null}
+            </div>
+
+            {journeyStep === 3 && guidedRecordingActive ? null : <nav className="journey-actions" aria-label="Journey controls">
+              {journeyStep === 1 ? (
+                <>
+                  <span className="journey-action-note">Review the movements at your own pace.</span>
+                  <button className="button button-primary journey-next" type="button" onClick={() => setJourneyStep(2)}>
+                    Continue to camera setup <ArrowRight aria-hidden="true" size={20} />
+                  </button>
+                </>
+              ) : journeyStep === 2 ? (
+                <>
+                  <button className="button button-secondary" type="button" onClick={() => setJourneyStep(1)}>
+                    <ArrowLeft aria-hidden="true" size={20} /> Back to preparation
+                  </button>
+                  <span className="journey-action-note">
+                    {captureMode === 'upload' ? 'Upload a complete session to continue.' : captureSetupReady ? 'Camera and protocol choice are ready.' : 'Enable the camera and resolve Step 8 to continue.'}
+                  </span>
+                  <button className="button button-primary journey-next" type="button" disabled={captureMode !== 'camera' || !captureSetupReady} onClick={() => setJourneyStep(3)}>
+                    Continue to recording <ArrowRight aria-hidden="true" size={20} />
+                  </button>
+                </>
+              ) : journeyStep === 3 ? (
+                <>
+                  <button className="button button-secondary" type="button" disabled={guidedRecordingActive} onClick={() => setJourneyStep(2)}>
+                    <ArrowLeft aria-hidden="true" size={20} /> Back to camera setup
+                  </button>
+                  <span className="journey-action-note">{guidedRecordingActive ? 'Recording is automatic. Follow the voice and screen.' : 'Start when you are comfortably positioned.'}</span>
+                </>
+              ) : journeyStep === 4 ? (
+                <span className="journey-action-note">Run the analysis above, or use Record again in the video panel.</span>
+              ) : (
+                <span className="journey-action-note">Report complete · no further scrolling is required.</span>
+              )}
+            </nav>}
+          </div>
+        </div>
 
         <section className="research-boundary clinical-workflow-note" id="research-boundary">
           <span className="eyebrow">Clinical review</span>

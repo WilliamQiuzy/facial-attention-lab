@@ -60,6 +60,57 @@ describe('GuidedCaptureWorkspace', () => {
     })
   })
 
+  it('shows only the content needed for each major journey stage', () => {
+    const props = {
+      reanimatedSmileApplicable: false as const,
+      onReanimatedSmileApplicableChange: vi.fn(),
+      onRecordingChange: vi.fn(),
+    }
+    const { rerender } = render(
+      <GuidedCaptureWorkspace {...props} journeyStage="prepare" />,
+    )
+
+    expect(screen.getByRole('heading', { name: 'Keep every movement consistent' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start guided recording' })).not.toBeInTheDocument()
+
+    rerender(<GuidedCaptureWorkspace {...props} journeyStage="setup" />)
+    expect(screen.queryByRole('heading', { name: 'Keep every movement consistent' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('button', { name: 'Start guided recording' })).not.toBeInTheDocument()
+
+    rerender(
+      <GuidedCaptureWorkspace
+        {...props}
+        reanimatedSmileApplicable={null}
+        journeyStage="setup"
+      />,
+    )
+    expect(screen.queryByRole('button', { name: 'Start guided recording' })).not.toBeInTheDocument()
+
+    rerender(<GuidedCaptureWorkspace {...props} journeyStage="record" />)
+    expect(screen.getByRole('heading', { name: 'Ready for your guided recording' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Start guided recording' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Previous instruction' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Next instruction' })).not.toBeInTheDocument()
+  })
+
+  it('reports when camera setup is ready without starting the recording', async () => {
+    const onSetupReadyChange = vi.fn()
+    render(
+      <GuidedCaptureWorkspace
+        journeyStage="setup"
+        reanimatedSmileApplicable={false}
+        onReanimatedSmileApplicableChange={vi.fn()}
+        onRecordingChange={vi.fn()}
+        onSetupReadyChange={onSetupReadyChange}
+      />,
+    )
+
+    await waitFor(() => expect(onSetupReadyChange).toHaveBeenLastCalledWith(true))
+    expect(mocks.camera.startRecording).not.toHaveBeenCalled()
+  })
+
   it('defaults to this device, puts guidance left, and places recording controls below', () => {
     const { container } = render(
       <GuidedCaptureWorkspace
