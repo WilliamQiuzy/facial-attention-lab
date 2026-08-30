@@ -168,6 +168,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
     expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
+    expect(screen.getByRole('main')).toHaveAttribute('tabindex', '-1')
   })
 
   it('moves keyboard focus and scroll only when the major journey stage changes', async () => {
@@ -179,6 +180,9 @@ describe('App', () => {
     })
     vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
     render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+
+    expect(document.activeElement).toBe(document.body)
+    expect(scrollIntoView).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))

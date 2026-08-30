@@ -36,6 +36,29 @@ pnpm build
 pnpm dev
 ```
 
+## Release acceptance
+
+The active browser release gate is defined by
+`tests/browser/acceptance_manifest.json`; the runner fails at the first missing
+or broken required suite and writes a machine-readable report. Generate a
+non-clinical fake-camera fixture outside the repository, then run the deployed
+candidate through the full gate:
+
+```bash
+ffmpeg -f lavfi -i testsrc2=size=320x240:rate=5 -t 40 -pix_fmt yuv420p \
+  -y /tmp/faces-nonclinical-camera.y4m
+uv run --with playwright python tests/browser/run_release_acceptance.py \
+  --base-url http://127.0.0.1:8081 \
+  --camera-file /tmp/faces-nonclinical-camera.y4m
+```
+
+This executes unit/build checks, the five-stage journey and recovery matrix,
+upload/network failures, Chromium/Firefox/WebKit responsive checks,
+keyboard/accessibility checks, real seven- and eight-step `MediaRecorder`
+loops, report/PDF/video downloads, and one request through the deployed real
+gateway/model boundary. Passing is engineering acceptance of the web workflow;
+it is not clinical validation of model performance.
+
 The default API path is `/api/v1/facial-paralysis/infer`. An explicit
 `VITE_FACIAL_PARALYSIS_API_URL` may override it for an authorized HTTPS
 research endpoint; localhost HTTP is accepted for development only.

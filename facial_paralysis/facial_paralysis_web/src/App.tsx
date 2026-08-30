@@ -68,6 +68,7 @@ export function App({
   const analysisGenerationRef = useRef(0)
   const inFlightRef = useRef(false)
   const journeyPanelRef = useRef<HTMLDivElement | null>(null)
+  const journeyFocusReadyRef = useRef(false)
 
   useEffect(() => {
     const updateRoute = () => setReportRoute(window.location.hash === '#research-report')
@@ -104,6 +105,10 @@ export function App({
 
   useEffect(() => {
     if (reportRoute) return
+    if (!journeyFocusReadyRef.current) {
+      journeyFocusReadyRef.current = true
+      return
+    }
     const panel = journeyPanelRef.current
     if (!panel) return
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
@@ -259,7 +264,7 @@ export function App({
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <AppHeader showResearchStrip={!reportRoute} />
 
-      <main id="main-content">
+      <main id="main-content" tabIndex={-1}>
         {reportRoute ? (
           result?.mode === 'research-inference' && recording ? (
             <ResultsView

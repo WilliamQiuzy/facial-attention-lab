@@ -347,6 +347,50 @@ describe('Shared V9 inference contract', () => {
     })).rejects.toThrow('Research endpoint returned HTTP 422. No result was accepted.')
   })
 
+  it('retains the recording after an unknown server failure without exposing its payload', async () => {
+    const file = new File(['synthetic'], 'faces.webm', { type: 'video/webm' })
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: async () => JSON.stringify({ detail: { private_path: '/patient/name/video.mov' } }),
+    })
+
+    const failure = analyzeRecording(file, {
+      endpoint: '/api/v1/facial-paralysis/infer',
+      recordingSource: 'browser-camera',
+      reanimatedSmileApplicable: false,
+      timeline: timeline(false),
+      fetcher,
+    }).catch((error: unknown) => error)
+
+    await expect(failure).resolves.toMatchObject({
+      message: 'Research endpoint returned HTTP 500. No result was accepted.',
+      retryable: true,
+    })
+  })
+
+  it('retains the recording when a successful HTTP response fails strict validation', async () => {
+    const file = new File(['synthetic'], 'faces.webm', { type: 'video/webm' })
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ private_path: '/patient/name/video.mov' }),
+    })
+
+    const failure = analyzeRecording(file, {
+      endpoint: '/api/v1/facial-paralysis/infer',
+      recordingSource: 'browser-camera',
+      reanimatedSmileApplicable: false,
+      timeline: timeline(false),
+      fetcher,
+    }).catch((error: unknown) => error)
+
+    await expect(failure).resolves.toMatchObject({
+      message: 'The analysis response did not pass validation. The same recording is still available; wait briefly and retry.',
+      retryable: true,
+    })
+  })
+
   it.each([
     [400, 'invalid_capture_request', /recording request was incomplete.*same recording/i],
     [400, 'video_required', /no video data was received.*same recording/i],

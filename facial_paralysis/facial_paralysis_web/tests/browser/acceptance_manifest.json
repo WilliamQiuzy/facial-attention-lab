@@ -1,0 +1,73 @@
+{
+  "schema_version": "facial-process-web-acceptance/v1",
+  "candidate_route": "five-stage-faces-journey",
+  "required_suites": [
+    {
+      "id": "unit-build",
+      "level": "unit",
+      "cases": ["P01", "P06", "E01", "R04", "R05", "U05", "T02", "A06", "S01"],
+      "commands": [["pnpm", "test:run"], ["pnpm", "build"]]
+    },
+    {
+      "id": "wizard",
+      "level": "browser-mocked",
+      "script": "wizard_acceptance.py",
+      "cases": ["P01", "C01", "R02", "R03", "X03"]
+    },
+    {
+      "id": "journey-edges",
+      "level": "browser-mocked",
+      "script": "journey_edge_acceptance.py",
+      "cases": ["P02", "P03", "P04", "P05", "E02", "C02", "C03", "C07", "R01", "R02", "R03", "S01", "S03"]
+    },
+    {
+      "id": "source-recovery",
+      "level": "browser-mocked",
+      "script": "capture_source_recovery_acceptance.py",
+      "cases": ["C04", "C05", "C06", "U01"]
+    },
+    {
+      "id": "upload-network",
+      "level": "browser-mocked",
+      "script": "upload_network_edge_acceptance.py",
+      "cases": ["U01", "U02", "U03", "U04", "T01", "T03", "T04", "A01", "A03", "A04", "A05"]
+    },
+    {
+      "id": "responsive",
+      "level": "cross-browser",
+      "script": "responsive_capture_acceptance.py",
+      "cases": ["C08", "X03", "S03"]
+    },
+    {
+      "id": "accessibility-runtime",
+      "level": "cross-browser",
+      "script": "accessibility_runtime_acceptance.py",
+      "cases": ["X01", "X02", "X03", "X04", "S03"]
+    },
+    {
+      "id": "live-seven-report",
+      "level": "browser-live-mocked-model",
+      "script": "live_full_loop.py",
+      "camera_required": true,
+      "arguments": ["--steps", "7", "--expected", "accepted", "--stub-success", "--screenshot", "/tmp/faces-release-live-7.png", "--pdf", "/tmp/faces-release-live-7.pdf"],
+      "cases": ["R06", "A02", "O01", "O02", "O03", "O04", "S01", "S02", "S03"]
+    },
+    {
+      "id": "live-eight-report",
+      "level": "browser-live-mocked-model",
+      "script": "live_full_loop.py",
+      "camera_required": true,
+      "arguments": ["--steps", "8", "--expected", "accepted", "--stub-success", "--screenshot", "/tmp/faces-release-live-8.png", "--pdf", "/tmp/faces-release-live-8.pdf"],
+      "cases": ["R07", "A02", "O01", "O02", "O03", "O04", "S01", "S02", "S03"]
+    },
+    {
+      "id": "live-real-backend",
+      "level": "browser-live-real-model",
+      "script": "live_full_loop.py",
+      "camera_required": true,
+      "real_backend": true,
+      "arguments": ["--steps", "7", "--expected", "capture-rejected", "--screenshot", "/tmp/faces-release-real-backend.png"],
+      "cases": ["A04", "S02", "S03"]
+    }
+  ]
+}

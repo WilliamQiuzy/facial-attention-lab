@@ -130,6 +130,7 @@ describe('GuidedCaptureWorkspace', () => {
     expect(screen.getByRole('status')).toHaveTextContent(
       'This browser cannot play the guided voice sequence.',
     )
+    expect(screen.getAllByText(/This browser cannot play the guided voice sequence/)).toHaveLength(1)
   })
 
   it('provides an explicit return to the live camera after switching to upload', async () => {

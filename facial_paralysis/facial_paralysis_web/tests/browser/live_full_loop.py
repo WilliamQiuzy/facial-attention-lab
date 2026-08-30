@@ -195,7 +195,7 @@ def run(
 ) -> None:
     if not camera_file.is_file() or camera_file.suffix.casefold() != ".y4m":
         raise ValueError("camera fixture must be one existing Y4M file")
-    if steps not in {7, 8} or expected not in {"accepted", "tracking-rejected"}:
+    if steps not in {7, 8} or expected not in {"accepted", "tracking-rejected", "capture-rejected"}:
         raise ValueError("steps/expected differ from the closed test matrix")
     if stub_success and expected != "accepted":
         raise ValueError("stub success is valid only for the accepted report path")
@@ -249,9 +249,9 @@ def run(
         page.on("pageerror", lambda error: page_errors.append(str(error)))
         try:
             page.goto(base_url, wait_until="networkidle")
-            expect(page.get_by_text("Analysis endpoint ready", exact=True)).to_be_visible(
-                timeout=15_000
-            )
+            expect(
+                page.get_by_role("heading", name="Prepare for a consistent capture")
+            ).to_be_visible(timeout=15_000)
             page.keyboard.press("Tab")
             skip_focus = page.evaluate(
                 "({ activeClass: document.activeElement?.className, width: getComputedStyle(document.activeElement).width, clipPath: getComputedStyle(document.activeElement).clipPath })"
@@ -259,19 +259,29 @@ def run(
             if skip_focus["activeClass"] != "skip-link" or skip_focus["width"] == "1px" or skip_focus["clipPath"] != "none":
                 raise AssertionError(f"keyboard-focused skip link was not revealed: {skip_focus}")
 
-            page.get_by_role("tab", name="Use this device").click()
-            page.get_by_role("button", name="Enable front camera").click()
-            start = page.get_by_role("button", name="Start guided recording")
-            expect(start).to_be_visible(timeout=10_000)
             choice = "Include Step 8" if steps == 8 else "Step 8 not applicable"
             page.get_by_role("radio", name=choice).check()
+            page.get_by_role("button", name="Continue to camera setup").click()
+            expect(page.get_by_text("Analysis endpoint ready", exact=True)).to_be_visible(
+                timeout=15_000
+            )
+            expect(page.get_by_role("tab", name="Use this device")).to_have_attribute(
+                "aria-selected", "true"
+            )
+            page.get_by_role("button", name="Enable front camera").click()
+            continue_to_recording = page.get_by_role(
+                "button", name="Continue to recording"
+            )
+            expect(continue_to_recording).to_be_enabled(timeout=10_000)
+            continue_to_recording.click()
+            start = page.get_by_role("button", name="Start guided recording")
+            expect(start).to_be_visible(timeout=10_000)
             expect(start).to_be_enabled()
             start.click()
 
             expect(
-                page.get_by_text(
-                    "Guided recording complete. Review the video below before analysis.",
-                    exact=True,
+                page.get_by_role(
+                    "heading", name="Review the recording and run analysis"
                 )
             ).to_be_visible(timeout=50_000)
             expect(page.get_by_label("Recorded camera preview")).to_be_visible()
@@ -284,7 +294,7 @@ def run(
                 run_button.click()
 
             if expected == "accepted":
-                expect(page.get_by_text("Research report ready", exact=True)).to_be_visible(
+                expect(page.get_by_text("Analysis report ready", exact=True)).to_be_visible(
                     timeout=120_000
                 )
                 expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
@@ -402,8 +412,23 @@ def run(
             else:
                 alert = page.get_by_role("alert")
                 expect(alert).to_be_visible(timeout=120_000)
-                expect(alert).to_contain_text("Face tracking was insufficient")
-                expect(alert).to_contain_text("of 26 required samples")
+                alert_text = alert.inner_text()
+                if expected == "tracking-rejected":
+                    if "Face tracking was insufficient" not in alert_text or "of 26 required samples" not in alert_text:
+                        raise AssertionError(f"expected a tracking rejection, received: {alert_text}")
+                elif not any(
+                    message in alert_text
+                    for message in (
+                        "Face tracking was insufficient",
+                        "video frame rate is too low",
+                        "video dimensions are not supported",
+                        "video timing did not match",
+                        "video could not be decoded reliably",
+                        "Facial geometry could not be measured reliably",
+                        "recording did not pass the preprocessing checks",
+                    )
+                ):
+                    raise AssertionError(f"unrecognized capture rejection: {alert_text}")
                 expect(page.get_by_label("Recorded camera preview")).to_be_visible()
                 expect(
                     page.get_by_role("button", name="Clear recording and start over")
@@ -415,7 +440,7 @@ def run(
                 raise AssertionError("PDF acceptance is valid only for an accepted report")
             if expected == "accepted":
                 page.get_by_role("link", name="Back to session summary").click()
-                expect(page.get_by_text("Research report ready", exact=True)).to_be_visible()
+                expect(page.get_by_text("Analysis report ready", exact=True)).to_be_visible()
                 summary_url_audit = page.evaluate("({ created: window.__objectUrlAudit.created, revoked: window.__objectUrlAudit.revoked, live: window.__objectUrlAudit.live.size })")
                 if summary_url_audit != {
                     "created": report_url_audit["created"],
@@ -445,7 +470,7 @@ def run(
                 message
                 for message in console_errors
                 if not (
-                    expected == "tracking-rejected"
+                    expected in {"tracking-rejected", "capture-rejected"}
                     and "server responded with a status of 422" in message
                 )
             ]
@@ -464,7 +489,7 @@ def main() -> None:
     parser.add_argument("--camera-file", required=True, type=Path)
     parser.add_argument("--steps", required=True, type=int, choices=(7, 8))
     parser.add_argument(
-        "--expected", required=True, choices=("accepted", "tracking-rejected")
+        "--expected", required=True, choices=("accepted", "tracking-rejected", "capture-rejected")
     )
     parser.add_argument("--screenshot", required=True, type=Path)
     parser.add_argument("--pdf", type=Path)

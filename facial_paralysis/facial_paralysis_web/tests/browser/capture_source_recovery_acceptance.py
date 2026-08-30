@@ -71,7 +71,7 @@ def _run_case(browser: Browser, width: int, height: int, include_step_8: bool) -
     _prepare(page, include_step_8)
     _enable_camera(page)
 
-    for _ in range(3):
+    for _ in range(5):
         page.get_by_role("tab", name="Upload from LifeLink").click()
         expect(page.get_by_role("button", name="Continue to recording")).to_have_count(0)
         expect(page.get_by_role("button", name="Return to live camera")).to_be_enabled()
@@ -115,7 +115,7 @@ def main() -> None:
                 _run_case(browser, width, height, include_step_8)
         browser.close()
 
-    print(f"PASS camera/upload recovery acceptance at {BASE_URL}: 4 cases, 12 recovery loops")
+    print(f"PASS camera/upload recovery acceptance at {BASE_URL}: 4 cases, 20 recovery loops")
 
 
 if __name__ == "__main__":

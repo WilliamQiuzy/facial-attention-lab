@@ -278,6 +278,7 @@ export function GuidedCaptureWorkspace({
   }
 
   const canStart = setupReady && recordingStartAllowed
+  const showsSetupRequirement = journeyStage === 'setup' && !setupReady
   const patientStepIndex = voice.activeStepIndex ?? 0
   const patientStep = FACES_PROTOCOL[patientStepIndex]
   const patientGuidePhase: PatientGuidePhase = sessionPhase === 'starting'
@@ -341,7 +342,7 @@ export function GuidedCaptureWorkspace({
           <span className="eyebrow">{journeyStage === 'setup' ? 'Camera setup' : 'One guided capture'}</span>
           <h2 id="guided-session-title">{journeyStage === 'setup' ? 'Confirm the camera before recording.' : 'Record and coach in one continuous flow.'}</h2>
           <p
-            role={sessionPhase === 'complete' ? 'status' : undefined}
+            role={sessionPhase === 'complete' || showsSetupRequirement ? 'status' : undefined}
             aria-live={guidedActive ? 'off' : 'polite'}
           >
             {statusText}
@@ -382,7 +383,7 @@ export function GuidedCaptureWorkspace({
             setupReady ? (
               <span className="guided-complete-mark"><Check aria-hidden="true" size={18} /> Camera setup complete</span>
             ) : (
-              <span className="guided-setup-pending" role="status" aria-live="polite">{statusText}</span>
+              <span className="guided-setup-pending">Setup requirement pending</span>
             )
           ) : (
             <button className="button button-primary" type="button" disabled={!canStart} onClick={startGuidedRecording}>

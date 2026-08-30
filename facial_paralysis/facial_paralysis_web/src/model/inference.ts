@@ -611,7 +611,10 @@ async function endpointFailure(response: Response): Promise<Error> {
   } catch {
     // Preserve the generic fail-closed message for malformed or unknown errors.
   }
-  return new Error(`Research endpoint returned HTTP ${response.status}. No result was accepted.`)
+  return new InferenceContractError(
+    `Research endpoint returned HTTP ${response.status}. No result was accepted.`,
+    response.status >= 500,
+  )
 }
 
 function validateEndpoint(endpoint: string): string {
@@ -866,5 +869,14 @@ export async function analyzeRecording(file: File, options: AnalyzeRecordingOpti
     clearTimeout(timeout)
   }
   if (!response.ok) throw await endpointFailure(response as Response)
-  return parseInferenceResponse(await response.json())
+  let payload: unknown
+  try {
+    payload = await response.json()
+    return parseInferenceResponse(payload)
+  } catch {
+    throw new InferenceContractError(
+      'The analysis response did not pass validation. The same recording is still available; wait briefly and retry.',
+      true,
+    )
+  }
 }
