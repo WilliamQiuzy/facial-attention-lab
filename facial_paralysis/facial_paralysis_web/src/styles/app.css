@@ -783,6 +783,21 @@ h2 {
   font-weight: 750;
 }
 
+.guided-setup-pending {
+  display: inline-flex;
+  max-width: 260px;
+  align-items: center;
+  border: 1px solid #d7b464;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff9eb;
+  color: #6b4c0a;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: left;
+}
+
 .guided-session-error {
   margin: -10px 0 0;
   grid-column: 1 / -1;

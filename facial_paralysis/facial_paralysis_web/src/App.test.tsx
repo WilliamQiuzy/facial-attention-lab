@@ -11,6 +11,7 @@ const pendingEndpoint = vi.fn(() => new Promise<void>(() => undefined))
 
 async function uploadVideo(user: ReturnType<typeof userEvent.setup>) {
   if (!screen.queryByRole('tab', { name: 'Upload from LifeLink' })) {
+    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
   }
   await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
@@ -154,6 +155,9 @@ describe('App', () => {
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Validate the path before any result appears.' })).not.toBeInTheDocument()
 
+    expect(screen.getByRole('button', { name: 'Choose Step 8 above to continue' })).toBeDisabled()
+    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
+    expect(screen.getByRole('button', { name: 'Continue to camera setup' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
 
     expect(within(journey).getByText('Set up').closest('li')).toHaveAttribute('aria-current', 'step')
@@ -176,6 +180,7 @@ describe('App', () => {
     vi.spyOn(window, 'matchMedia').mockReturnValue({ matches: true } as MediaQueryList)
     render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
 
+    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
 
     const heading = screen.getByRole('heading', { name: 'Set up the camera' })
@@ -448,6 +453,7 @@ describe('App', () => {
       .mockResolvedValueOnce(undefined)
     render(<App apiEndpoint="https://research.example.test/infer" checkEndpoint={checkEndpoint} />)
 
+    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
     expect(await screen.findByText(/research endpoint unavailable/i)).toBeInTheDocument()
     expect(screen.queryByText(/analysis endpoint ready/i)).not.toBeInTheDocument()

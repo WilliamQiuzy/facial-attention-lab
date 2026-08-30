@@ -97,7 +97,9 @@ def _run_viewport(page: Page, label: str, width: int, height: int) -> None:
     expect(page.get_by_role("heading", name="Prepare for a consistent capture")).to_be_visible()
     expect(page.get_by_role("tab", name="Use this device")).to_have_count(0)
     expect(page.locator(".analysis-section")).to_be_hidden()
+    expect(page.get_by_role("button", name="Choose Step 8 above to continue")).to_be_disabled()
     page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    expect(page.get_by_role("button", name="Continue to camera setup")).to_be_enabled()
     _assert_journey_controls_in_view(page, f"{label} prepare")
     _assert_no_overflow(page, f"{label} prepare")
     _screenshot(page, f"{label}-step-1-prepare")
@@ -165,6 +167,7 @@ def main() -> None:
         reduced = browser.new_context(reduced_motion="reduce", permissions=["camera"])
         reduced_page = reduced.new_page()
         _prepare(reduced_page)
+        reduced_page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
         reduced_page.get_by_role("button", name="Continue to camera setup").click()
         calls = reduced_page.evaluate("window.__journeyScrollCalls")
         if not any(call.get("options", {}).get("behavior") == "auto" for call in calls):

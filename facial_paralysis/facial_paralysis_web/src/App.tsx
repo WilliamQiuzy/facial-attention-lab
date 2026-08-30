@@ -440,9 +440,18 @@ export function App({
             {journeyStep === 3 && guidedRecordingActive ? null : <nav className="journey-actions" aria-label="Journey controls">
               {journeyStep === 1 ? (
                 <>
-                  <span className="journey-action-note">Review the movements at your own pace.</span>
-                  <button className="button button-primary journey-next" type="button" onClick={() => setJourneyStep(2)}>
-                    Continue to camera setup <ArrowRight aria-hidden="true" size={20} />
+                  <span className="journey-action-note">
+                    {reanimatedSmileApplicable === null
+                      ? 'Choose whether Step 8 applies before camera setup.'
+                      : 'Review the movements at your own pace.'}
+                  </span>
+                  <button
+                    className="button button-primary journey-next"
+                    type="button"
+                    disabled={reanimatedSmileApplicable === null}
+                    onClick={() => setJourneyStep(2)}
+                  >
+                    {reanimatedSmileApplicable === null ? 'Choose Step 8 above to continue' : 'Continue to camera setup'} <ArrowRight aria-hidden="true" size={20} />
                   </button>
                 </>
               ) : journeyStep === 2 ? (
@@ -451,7 +460,7 @@ export function App({
                     <ArrowLeft aria-hidden="true" size={20} /> Back to preparation
                   </button>
                   <span className="journey-action-note">
-                    {captureMode === 'upload' ? 'Upload a complete session to continue.' : captureSetupReady ? 'Camera and protocol choice are ready.' : 'Enable the camera and resolve Step 8 to continue.'}
+                    {captureMode === 'upload' ? 'Upload a complete session to continue.' : captureSetupReady ? 'Camera and protocol choice are ready.' : 'Complete the setup requirement shown above to continue.'}
                   </span>
                   <button className="button button-primary journey-next" type="button" disabled={captureMode !== 'camera' || !captureSetupReady} onClick={() => setJourneyStep(3)}>
                     Continue to recording <ArrowRight aria-hidden="true" size={20} />

@@ -111,6 +111,27 @@ describe('GuidedCaptureWorkspace', () => {
     expect(mocks.camera.startRecording).not.toHaveBeenCalled()
   })
 
+  it('names the exact remaining setup requirement instead of leaving a disabled mystery button', () => {
+    const props = {
+      journeyStage: 'setup' as const,
+      onReanimatedSmileApplicableChange: vi.fn(),
+      onRecordingChange: vi.fn(),
+    }
+    const { rerender } = render(
+      <GuidedCaptureWorkspace {...props} reanimatedSmileApplicable={null} />,
+    )
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Camera is ready. Return to preparation and choose whether Step 8 applies.',
+    )
+
+    mocks.voice.supported = false
+    rerender(<GuidedCaptureWorkspace {...props} reanimatedSmileApplicable={false} />)
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'This browser cannot play the guided voice sequence.',
+    )
+  })
+
   it('defaults to this device, puts guidance left, and places recording controls below', () => {
     const { container } = render(
       <GuidedCaptureWorkspace
@@ -167,7 +188,7 @@ describe('GuidedCaptureWorkspace', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Use this device' }))
     expect(screen.getByRole('button', { name: 'Start guided recording' })).toBeDisabled()
-    expect(screen.getByText(/resolve step 8/i)).toBeInTheDocument()
+    expect(screen.getByText(/choose whether step 8 applies/i)).toBeInTheDocument()
 
     rerender(
       <GuidedCaptureWorkspace

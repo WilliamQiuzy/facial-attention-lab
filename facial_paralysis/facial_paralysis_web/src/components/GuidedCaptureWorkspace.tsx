@@ -251,11 +251,15 @@ export function GuidedCaptureWorkspace({
 
   let statusText = 'Upload a LifeLink recording, or choose this device for a voice-guided capture.'
   if (mode === 'camera' && (camera.status === 'idle' || camera.status === 'error')) {
-    statusText = 'Enable the front camera, then resolve Step 8 before starting.'
+    statusText = 'Enable the front camera to continue.'
   } else if (mode === 'camera' && camera.status === 'requesting') {
     statusText = 'Waiting for camera permission…'
   } else if (mode === 'camera' && camera.status === 'ready' && reanimatedSmileApplicable === null) {
-    statusText = 'Camera ready. Resolve Step 8 below to unlock the complete guided recording.'
+    statusText = journeyStage === 'setup'
+      ? 'Camera is ready. Return to preparation and choose whether Step 8 applies.'
+      : 'Camera is ready. Choose whether Step 8 applies before recording.'
+  } else if (mode === 'camera' && camera.status === 'ready' && !voice.supported) {
+    statusText = 'This browser cannot play the guided voice sequence. Use a browser with speech support or upload a complete session.'
   } else if (mode === 'camera' && camera.status === 'ready') {
     statusText = `Ready for ${reanimatedSmileApplicable ? 8 : 7} guided movements. Recording and voice will start together.`
   }
@@ -376,7 +380,7 @@ export function GuidedCaptureWorkspace({
             setupReady ? (
               <span className="guided-complete-mark"><Check aria-hidden="true" size={18} /> Camera setup complete</span>
             ) : (
-              <span className="guided-setup-pending">Finish camera setup and the Step 8 choice above.</span>
+              <span className="guided-setup-pending" role="status" aria-live="polite">{statusText}</span>
             )
           ) : (
             <button className="button button-primary" type="button" disabled={!canStart} onClick={startGuidedRecording}>
