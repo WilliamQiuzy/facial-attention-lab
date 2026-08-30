@@ -132,7 +132,11 @@ describe('MediaCapture', () => {
     const file = new File(['image'], 'portrait.png', { type: 'image/png' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
 
-    expect(onRecordingChange).toHaveBeenCalledWith(null, 'livelink-upload')
+    expect(onRecordingChange).toHaveBeenCalledWith(
+      null,
+      'livelink-upload',
+      { preserveProtocolChoice: true },
+    )
     expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
   })
 
@@ -147,7 +151,11 @@ describe('MediaCapture', () => {
     const invalid = new File(['image'], 'different-patient.png', { type: 'image/png' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), invalid)
 
-    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'livelink-upload')
+    expect(onRecordingChange).toHaveBeenLastCalledWith(
+      null,
+      'livelink-upload',
+      { preserveProtocolChoice: true },
+    )
     expect(screen.queryByText('first-session.mp4')).not.toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
   })
@@ -167,7 +175,11 @@ describe('MediaCapture', () => {
 
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), file)
 
-    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'livelink-upload')
+    expect(onRecordingChange).toHaveBeenLastCalledWith(
+      null,
+      'livelink-upload',
+      { preserveProtocolChoice: true },
+    )
     expect(screen.getByRole('alert')).toHaveTextContent(message)
     expect(screen.queryByText('session.mp4')).not.toBeInTheDocument()
   })
@@ -202,7 +214,11 @@ describe('MediaCapture', () => {
       new File([contents], name, { type }),
     )
 
-    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'livelink-upload')
+    expect(onRecordingChange).toHaveBeenLastCalledWith(
+      null,
+      'livelink-upload',
+      { preserveProtocolChoice: true },
+    )
     expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
   })
 

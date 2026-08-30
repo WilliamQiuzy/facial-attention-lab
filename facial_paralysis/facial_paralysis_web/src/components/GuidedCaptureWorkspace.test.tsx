@@ -132,6 +132,28 @@ describe('GuidedCaptureWorkspace', () => {
     )
   })
 
+  it('provides an explicit return to the live camera after switching to upload', async () => {
+    const user = userEvent.setup()
+    const onCaptureModeChange = vi.fn()
+    render(
+      <GuidedCaptureWorkspace
+        journeyStage="setup"
+        reanimatedSmileApplicable={false}
+        onReanimatedSmileApplicableChange={vi.fn()}
+        onRecordingChange={vi.fn()}
+        onCaptureModeChange={onCaptureModeChange}
+      />,
+    )
+
+    await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
+    const returnToCamera = screen.getByRole('button', { name: 'Return to live camera' })
+    expect(returnToCamera).toBeEnabled()
+    await user.click(returnToCamera)
+
+    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
+    expect(onCaptureModeChange).toHaveBeenLastCalledWith('camera')
+  })
+
   it('defaults to this device, puts guidance left, and places recording controls below', () => {
     const { container } = render(
       <GuidedCaptureWorkspace

@@ -460,11 +460,13 @@ export function App({
                     <ArrowLeft aria-hidden="true" size={20} /> Back to preparation
                   </button>
                   <span className="journey-action-note">
-                    {captureMode === 'upload' ? 'Upload a complete session to continue.' : captureSetupReady ? 'Camera and protocol choice are ready.' : 'Complete the setup requirement shown above to continue.'}
+                    {captureMode === 'upload' ? 'Choose a video above, or return to the live camera.' : captureSetupReady ? 'Camera and protocol choice are ready.' : 'Complete the setup requirement shown above to continue.'}
                   </span>
-                  <button className="button button-primary journey-next" type="button" disabled={captureMode !== 'camera' || !captureSetupReady} onClick={() => setJourneyStep(3)}>
-                    Continue to recording <ArrowRight aria-hidden="true" size={20} />
-                  </button>
+                  {captureMode === 'camera' ? (
+                    <button className="button button-primary journey-next" type="button" disabled={!captureSetupReady} onClick={() => setJourneyStep(3)}>
+                      Continue to recording <ArrowRight aria-hidden="true" size={20} />
+                    </button>
+                  ) : null}
                 </>
               ) : journeyStep === 3 ? (
                 <>

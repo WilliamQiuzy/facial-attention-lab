@@ -365,7 +365,9 @@ export function GuidedCaptureWorkspace({
 
         <div className="guided-control-action">
           {mode !== 'camera' ? (
-            <p>Choose <strong>Use this device</strong> below to begin camera setup.</p>
+            <button className="button button-primary" type="button" onClick={() => changeMode('camera')}>
+              <Camera aria-hidden="true" size={18} /> Return to live camera
+            </button>
           ) : camera.status === 'idle' || camera.status === 'error' ? (
             <button className="button button-primary" type="button" onClick={camera.enableCamera}>
               <Camera aria-hidden="true" size={18} /> Enable front camera

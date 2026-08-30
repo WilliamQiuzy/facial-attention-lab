@@ -121,6 +121,16 @@ def _run_viewport(page: Page, label: str, width: int, height: int) -> None:
 
     page.get_by_role("button", name="Enable front camera").click()
     expect(page.get_by_role("button", name="Continue to recording")).to_be_enabled(timeout=10_000)
+
+    page.get_by_role("tab", name="Upload from LifeLink").click()
+    expect(page.get_by_role("button", name="Continue to recording")).to_have_count(0)
+    expect(page.get_by_role("button", name="Return to live camera")).to_be_enabled()
+    _screenshot(page, "desktop-step-2-upload-recovery")
+    page.get_by_role("button", name="Return to live camera").click()
+    expect(page.get_by_role("tab", name="Use this device")).to_have_attribute("aria-selected", "true")
+    page.get_by_role("button", name="Enable front camera").click()
+    expect(page.get_by_role("button", name="Continue to recording")).to_be_enabled(timeout=10_000)
+
     page.get_by_role("button", name="Continue to recording").click()
     _assert_stage(page, 3, "Record")
     expect(page.get_by_role("heading", name="Ready for your guided recording")).to_be_visible()

@@ -187,6 +187,23 @@ describe('App', () => {
     expect(heading).toHaveFocus()
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' })
   })
+
+  it('does not trap the user or erase the Step 8 choice after switching from camera setup to upload', async () => {
+    const user = userEvent.setup()
+    render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+
+    const step8NotApplicable = screen.getByRole('radio', { name: /step 8 not applicable/i })
+    await user.click(step8NotApplicable)
+    await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
+    await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
+
+    expect(screen.getByRole('button', { name: 'Return to live camera' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Continue to recording' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
+    expect(screen.getByRole('radio', { name: /step 8 not applicable/i })).toBeChecked()
+  })
+
   it('uses an internal clinical-review product message without exposing the model release', () => {
     const { container } = render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()

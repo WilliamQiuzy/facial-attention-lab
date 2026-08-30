@@ -130,7 +130,11 @@ export function MediaCapturePanel({
     onModeChange(nextMode)
     setUploadError(null)
     const file = nextMode === 'upload' ? uploadedFile : camera.recordingFile
-    onRecordingChange(file, nextMode === 'upload' ? 'livelink-upload' : 'browser-camera')
+    onRecordingChange(
+      file,
+      nextMode === 'upload' ? 'livelink-upload' : 'browser-camera',
+      { preserveProtocolChoice: true },
+    )
   }
 
   const handleTabKeyDown = (
@@ -160,7 +164,7 @@ export function MediaCapturePanel({
       setUploadedTimeline(null)
       setUploadedTimelineName(null)
       setUploadError('Choose a supported video file: MOV, MP4, M4V, AVI, or WebM.')
-      onRecordingChange(null, 'livelink-upload')
+      onRecordingChange(null, 'livelink-upload', { preserveProtocolChoice: true })
       return
     }
     if (file.size < 1 || file.size > MAX_VIDEO_BYTES) {
@@ -172,7 +176,7 @@ export function MediaCapturePanel({
           ? 'The selected video is empty. Choose a complete FACES recording.'
           : 'The selected video is larger than 512 MB. Choose an approved compressed copy.',
       )
-      onRecordingChange(null, 'livelink-upload')
+      onRecordingChange(null, 'livelink-upload', { preserveProtocolChoice: true })
       return
     }
     setUploadError(null)
