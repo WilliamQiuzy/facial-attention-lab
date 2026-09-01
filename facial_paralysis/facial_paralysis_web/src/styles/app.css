@@ -648,12 +648,16 @@ h2 {
   overflow: hidden;
   grid-column: 1 / -1;
   grid-row: 2;
-  grid-template-columns: minmax(260px, 0.85fr) minmax(430px, 1.35fr) minmax(190px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(210px, auto);
+  grid-template-areas:
+    "copy action"
+    "flow flow";
   align-items: center;
-  gap: 24px;
+  column-gap: 32px;
+  row-gap: 20px;
   border: 1px solid #c8d9e7;
   border-radius: 8px;
-  padding: 24px 28px;
+  padding: 24px 28px 26px;
   background: white;
   box-shadow: var(--shadow-soft);
 }
@@ -682,6 +686,10 @@ h2 {
   letter-spacing: -0.02em;
 }
 
+.guided-control-copy {
+  grid-area: copy;
+}
+
 .guided-control-copy .eyebrow {
   margin: 0;
 }
@@ -695,9 +703,14 @@ h2 {
 
 .guided-flow {
   display: grid;
+  grid-area: flow;
   margin: 0;
   padding: 0;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--blue-line);
+  border-radius: 7px;
+  background: var(--blue-pale);
   list-style: none;
 }
 
@@ -706,10 +719,10 @@ h2 {
   display: flex;
   min-width: 0;
   align-items: center;
-  min-height: 62px;
-  gap: 10px;
-  padding: 12px 14px;
-  color: #557a9b;
+  min-height: 78px;
+  gap: 12px;
+  padding: 14px clamp(16px, 2vw, 28px);
+  color: #2c6fa3;
 }
 
 .guided-flow li + li {
@@ -728,25 +741,31 @@ h2 {
   gap: 3px;
   font-size: 0.82rem;
   line-height: 1.4;
+  overflow-wrap: normal;
 }
 
 .guided-flow li strong {
-  color: #365f82;
+  color: #124f7f;
   font-size: 0.9rem;
   line-height: 1.25;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .guided-flow li.is-ready {
-  color: var(--blue);
+  color: #2c6fa3;
 }
 
 .guided-flow li.is-ready strong {
-  color: var(--blue-dark);
+  color: #124f7f;
+}
+
+.guided-flow li.is-ready svg {
+  color: var(--blue);
 }
 
 .guided-control-action {
   display: flex;
+  grid-area: action;
   min-width: 190px;
   justify-content: flex-end;
 }
@@ -795,6 +814,7 @@ h2 {
   grid-column: 1 / -1;
   grid-row: 2;
   grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "copy action";
   gap: 18px;
   padding: 16px 20px;
 }
@@ -2334,10 +2354,10 @@ footer p {
   .preparation-section { gap: 54px; }
   .workspace { grid-template-columns: 1fr; }
   .guided-session-control { grid-row: 3; }
-  .guided-session-control { grid-template-columns: minmax(250px, .9fr) minmax(430px, 1.5fr); }
-  .guided-control-action { grid-column: 1 / -1; justify-content: flex-start; }
+  .guided-session-control { grid-template-columns: minmax(0, 1fr) auto; }
+  .guided-control-action { justify-content: flex-end; }
   .guided-control-action .button { width: auto; min-width: 230px; }
-  .guided-control-action > p { max-width: none; text-align: left; }
+  .guided-control-action > p { max-width: 260px; }
   .capture-card, .voice-guide { min-height: auto; }
   .workspace.is-guided-active { grid-template-columns: 1fr; }
   .workspace.is-guided-active .capture-card { grid-column: 1; grid-row: 2; }
@@ -2364,8 +2384,17 @@ footer p {
   .workflow-rail li { min-height: 92px; padding-inline: 14px; }
   .workflow-rail li > span:last-child small { display: none; }
   .preparation-section { margin-top: 70px; grid-template-columns: 1fr; gap: 28px; }
-  .guided-session-control { grid-template-columns: 1fr; gap: 22px; padding: 26px; }
-  .guided-control-action { grid-column: auto; }
+  .guided-session-control {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "copy"
+      "flow"
+      "action";
+    gap: 22px;
+    padding: 26px;
+  }
+  .guided-control-action { justify-content: flex-start; }
+  .guided-control-action > p { max-width: none; text-align: left; }
   .guided-flow { grid-template-columns: 1fr 1fr; }
   .guided-flow li:nth-child(3) { border-left: 0; }
   .guided-flow li:nth-child(n + 3) { border-top: 1px solid var(--line); }
@@ -2376,6 +2405,7 @@ footer p {
     grid-column: 1;
     grid-row: 3;
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "copy action";
     gap: 14px;
     padding: 13px 15px;
   }
@@ -2455,7 +2485,12 @@ footer p {
     font-size: .74rem;
   }
   .guided-flow { gap: 0; }
-  .guided-flow li { padding: 12px 10px; }
+  .guided-flow li {
+    min-height: 108px;
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 14px 12px;
+  }
   .guided-control-action .button { width: 100%; min-width: 0; }
   .capture-card, .voice-guide { margin-inline: -2px; border-radius: 7px; padding: 22px; }
   .workspace.is-guided-active .capture-card { padding: 9px; }

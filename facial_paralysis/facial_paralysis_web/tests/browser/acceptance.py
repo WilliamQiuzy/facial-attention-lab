@@ -360,8 +360,8 @@ def _assert_demonstration_and_reset(page: Page) -> None:
     expect(page.get_by_role("tab", name="Use this device")).to_have_attribute("aria-selected", "true")
     expect(page.get_by_role("button", name="Enable front camera")).to_be_visible()
     reset_color = page.locator(".guided-flow li").first.evaluate("element => getComputedStyle(element).color")
-    if reset_color != "rgb(85, 122, 155)":
-        raise AssertionError(f"new-session instructions changed away from muted blue: {reset_color}")
+    if reset_color != "rgb(44, 111, 163)":
+        raise AssertionError(f"new-session instructions changed away from accessible blue: {reset_color}")
     expect(page.get_by_role("button", name="Preview demonstration results")).to_be_disabled()
     expect(page.locator(".workflow-rail .is-active strong")).to_have_text("Prepare")
     _assert_no_page_overflow(page, "reset state")
