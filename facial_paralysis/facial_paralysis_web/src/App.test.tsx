@@ -150,7 +150,7 @@ describe('App', () => {
     expect(within(primaryNavigation).queryByRole('link', { name: 'Protocol' })).not.toBeInTheDocument()
     expect(within(primaryNavigation).queryByRole('link', { name: 'Analysis' })).not.toBeInTheDocument()
     expect(within(journey).getAllByRole('listitem')).toHaveLength(5)
-    expect(within(journey).getByText('Prepare').closest('li')).toHaveAttribute('aria-current', 'step')
+    expect(within(journey).getByRole('listitem', { name: 'Step 1 of 5, Prepare, current step' })).toHaveAttribute('aria-current', 'step')
     expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Validate the path before any result appears.' })).not.toBeInTheDocument()
@@ -160,7 +160,7 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Continue to camera setup' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
 
-    expect(within(journey).getByText('Set up').closest('li')).toHaveAttribute('aria-current', 'step')
+    expect(within(journey).getByRole('listitem', { name: 'Step 2 of 5, Set up, current step' })).toHaveAttribute('aria-current', 'step')
     expect(screen.getByRole('heading', { name: 'Set up the camera' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('button', { name: 'Back to preparation' })).toBeVisible()

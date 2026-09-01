@@ -39,6 +39,12 @@
       "cases": ["C08", "X03", "S03"]
     },
     {
+      "id": "workflow-readability",
+      "level": "browser-responsive",
+      "script": "workflow_readability_acceptance.py",
+      "cases": ["X05", "S03"]
+    },
+    {
       "id": "accessibility-runtime",
       "level": "cross-browser",
       "script": "accessibility_runtime_acceptance.py",

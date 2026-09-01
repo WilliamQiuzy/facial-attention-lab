@@ -2627,8 +2627,49 @@ footer p {
 }
 
 .journey-progress .workflow-rail li {
-  min-height: 98px;
-  padding-inline: clamp(12px, 1.8vw, 24px);
+  min-height: 112px;
+  gap: 16px;
+  padding-inline: clamp(16px, 1.8vw, 24px);
+  color: var(--ink-soft);
+}
+
+.journey-progress .workflow-number {
+  width: 40px;
+  height: 40px;
+  border-color: var(--muted);
+  font-size: .95rem;
+  line-height: 1;
+}
+
+.journey-progress .workflow-rail li > span:last-child {
+  gap: 6px;
+  min-width: 0;
+}
+
+.journey-progress .workflow-rail strong {
+  color: #2f4a62;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.journey-progress .workflow-rail small {
+  color: #405b72;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.journey-progress .workflow-rail li.is-active strong {
+  color: var(--blue-dark);
+}
+
+.journey-progress .workflow-rail li.is-active small {
+  color: #124f7f;
+}
+
+.workflow-current-summary {
+  display: none;
 }
 
 .journey-panel {
@@ -2846,6 +2887,55 @@ footer p {
   margin-left: auto;
 }
 
+@media (max-width: 959px) {
+  .journey-progress .workflow-rail li > span:last-child small {
+    display: none;
+  }
+
+  .workflow-current-summary {
+    display: grid;
+    width: var(--content);
+    margin-inline: auto;
+    align-items: center;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "step title"
+      "step detail";
+    column-gap: 16px;
+    border-top: 1px solid var(--blue-line);
+    padding: 15px 18px 17px;
+    background: var(--blue-pale);
+  }
+
+  .workflow-current-summary > span {
+    grid-area: step;
+    border-radius: 999px;
+    padding: 8px 11px;
+    background: var(--blue);
+    color: white;
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+    line-height: 1.35;
+    white-space: nowrap;
+  }
+
+  .workflow-current-summary > strong {
+    grid-area: title;
+    color: var(--blue-deep);
+    font-size: 1.125rem;
+    line-height: 1.4;
+  }
+
+  .workflow-current-summary > small {
+    grid-area: detail;
+    color: #344f66;
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+}
+
 @media (max-width: 900px) {
   .journey-hero {
     min-height: 0;
@@ -2864,13 +2954,14 @@ footer p {
 
   .journey-progress .workflow-rail li {
     min-width: 0;
-    min-height: 82px;
+    min-height: 96px;
     justify-content: center;
-    padding-inline: 8px;
+    gap: 10px;
+    padding-inline: 6px;
   }
 
-  .journey-progress .workflow-rail li > span:last-child small {
-    display: none;
+  .journey-progress .workflow-rail strong {
+    font-size: 1rem;
   }
 
   .journey-panel .analysis-section {
@@ -2904,17 +2995,22 @@ footer p {
   }
 
   .journey-progress .workflow-rail li {
-    min-height: 66px;
+    min-height: 72px;
     padding: 8px 4px;
   }
 
   .journey-progress .workflow-number {
-    width: 38px;
-    height: 38px;
+    width: 40px;
+    height: 40px;
   }
 
   .journey-progress .workflow-rail li > span:last-child {
     display: none;
+  }
+
+  .workflow-current-summary {
+    width: 100%;
+    padding-inline: 16px;
   }
 
   .journey-panel {

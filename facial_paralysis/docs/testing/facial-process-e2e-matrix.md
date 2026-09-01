@@ -63,6 +63,7 @@ This matrix is the release contract for the five-stage FACES capture journey. A 
 | X02 | Live announcements | Blocking/recovery status is exposed through ARIA live/status semantics | `accessibility_runtime_acceptance.py` |
 | X03 | Touch/viewport | Critical controls are at least 48 px and remain in the viewport | `responsive_capture_acceptance.py`, `accessibility_runtime_acceptance.py` |
 | X04 | Reduced motion/high contrast | Navigation does not force smooth motion; controls remain visible | `accessibility_runtime_acceptance.py` |
+| X05 | Older-adult workflow readability | Five-stage progress keeps ≥17 px desktop titles, ≥16 px details, ≥7:1 text contrast, visible narrow-screen current-step context, and 40 px markers without overflow | `workflow_readability_acceptance.py`, WorkflowRail unit tests |
 
 ## Required execution matrix
 
