@@ -18,7 +18,7 @@
       "id": "journey-edges",
       "level": "browser-mocked",
       "script": "journey_edge_acceptance.py",
-      "cases": ["P02", "P03", "P04", "P05", "E02", "C02", "C03", "C07", "R01", "R02", "R03", "S01", "S03"]
+      "cases": ["P02", "P03", "P04", "P05", "P07", "E02", "C02", "C03", "C07", "R01", "R02", "R03", "S01", "S03"]
     },
     {
       "id": "source-recovery",

@@ -243,6 +243,33 @@ def _case_direct_report_and_mobile(browser: Browser, base_url: str) -> None:
     context.close()
 
 
+def _case_back_from_analysis(browser: Browser, base_url: str) -> None:
+    context = browser.new_context()
+    page, console_errors, page_errors = _new_page(context)
+    _route_ready(page)
+    page.goto(base_url, wait_until="networkidle")
+    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    page.get_by_role("button", name="Continue to camera setup").click()
+    page.get_by_role("tab", name="Upload from LifeLink").click()
+    page.get_by_label("Choose LifeLink Face video").set_input_files(
+        {
+            "name": "faces-back-navigation.webm",
+            "mimeType": "video/webm",
+            "buffer": b"non-clinical-navigation-fixture",
+        }
+    )
+    expect(page.get_by_role("heading", name="Review the recording and run analysis")).to_be_visible()
+    page.get_by_role("button", name="Back to recording").click()
+    expect(page.get_by_role("heading", name="Complete the automatic recording")).to_be_visible()
+    expect(page.get_by_text("faces-back-navigation.webm", exact=True)).to_be_visible()
+    page.get_by_role("button", name="Back to camera setup").click()
+    expect(page.get_by_role("heading", name="Set up the camera")).to_be_visible()
+    page.get_by_role("button", name="Back to preparation").click()
+    expect(page.get_by_role("heading", name="Prepare for a consistent capture")).to_be_visible()
+    _assert_clean_runtime(page, console_errors, page_errors)
+    context.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:8081")
@@ -262,10 +289,11 @@ def main() -> None:
             _case_speech_unavailable(browser, base_url)
             _case_active_recording_lock(browser, base_url)
             _case_direct_report_and_mobile(browser, base_url)
+            _case_back_from_analysis(browser, base_url)
         finally:
             browser.close()
 
-    print("PASS journey edge acceptance: 7 cases")
+    print("PASS journey edge acceptance: 8 cases")
 
 
 if __name__ == "__main__":

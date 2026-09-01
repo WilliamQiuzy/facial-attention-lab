@@ -208,6 +208,38 @@ describe('App', () => {
     expect(screen.getByRole('radio', { name: /step 8 not applicable/i })).toBeChecked()
   })
 
+  it('returns from analysis through recording and setup without discarding the retained video', async () => {
+    const user = userEvent.setup()
+    render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+    await uploadVideo(user)
+
+    expect(screen.getByRole('heading', { name: 'Review the recording and run analysis' })).toBeVisible()
+    expect(screen.getByText('faces-session.webm')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back to recording' }))
+
+    expect(screen.getByRole('heading', { name: 'Complete the automatic recording' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Upload from LifeLink' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('faces-session.webm')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back to camera setup' }))
+    expect(screen.getByRole('heading', { name: 'Set up the camera' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
+    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+  })
+
+  it('blocks backward navigation only while an analysis request is in flight', async () => {
+    const user = userEvent.setup()
+    const analyze = vi.fn(() => new Promise<ResearchInferenceResult>(() => undefined))
+    render(<App apiEndpoint="https://research.example.test/infer" analyze={analyze} checkEndpoint={readyEndpoint} />)
+    await uploadVideo(user)
+    await uploadTimeline(user)
+    await user.click(screen.getByRole('checkbox', { name: /authorized research endpoint/i }))
+
+    const back = screen.getByRole('button', { name: 'Back to recording' })
+    expect(back).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Run research analysis' }))
+    expect(back).toBeDisabled()
+  })
+
   it('uses an internal clinical-review product message without exposing the model release', () => {
     const { container } = render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()

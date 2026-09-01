@@ -481,7 +481,21 @@ export function App({
                   <span className="journey-action-note">{guidedRecordingActive ? 'Recording is automatic. Follow the voice and screen.' : 'Start when you are comfortably positioned.'}</span>
                 </>
               ) : journeyStep === 4 ? (
-                <span className="journey-action-note">Run the analysis above, or use Record again in the video panel.</span>
+                <>
+                  <button
+                    className="button button-secondary"
+                    type="button"
+                    disabled={analysisState === 'running'}
+                    onClick={() => setJourneyStep(3)}
+                  >
+                    <ArrowLeft aria-hidden="true" size={20} /> Back to recording
+                  </button>
+                  <span className="journey-action-note">
+                    {analysisState === 'running'
+                      ? 'Analysis is in progress. Stay on this step until the request finishes.'
+                      : 'The current recording stays available until you choose Record again.'}
+                  </span>
+                </>
               ) : (
                 <span className="journey-action-note">Report complete · no further scrolling is required.</span>
               )}

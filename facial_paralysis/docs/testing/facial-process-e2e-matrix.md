@@ -19,6 +19,7 @@ This matrix is the release contract for the five-stage FACES capture journey. A 
 | P04 | Back/forward repeatedly | No choice, file, or stage becomes inconsistent | `journey_edge_acceptance.py` |
 | P05 | Refresh before recording | Session returns to a clean Prepare state | `journey_edge_acceptance.py` |
 | P06 | Voice preview start/stop | Controls recover without an alert or active speech | VoiceGuide unit tests |
+| P07 | Completed recording → earlier stages | Step 4 returns through Record, Setup, and Prepare while retaining the recording until the user explicitly records again | App unit tests, `journey_edge_acceptance.py` |
 | E01 | Readiness delayed | Setup remains blocked and exposes a waiting state | App unit tests |
 | E02 | Readiness fails then recovers | Retry performs a new readiness request and unlocks setup | `upload_network_edge_acceptance.py` |
 | C01 | Camera permission granted | Preview becomes ready and Continue unlocks | `wizard_acceptance.py` |
