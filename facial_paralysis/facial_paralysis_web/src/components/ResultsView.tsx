@@ -329,7 +329,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
         recordingCoverage: [
           `Neutral baseline plus all ${result.quality.actionsUsed} active movements were included.`,
           `Face tracking ranged from ${minimumValidSamples} to ${maximumValidSamples} usable points out of 32 per movement.`,
-          `Optional Step 8 was ${result.quality.optionalActionsUnavailable.length ? 'not part of this session' : 'included'}.`,
+          `The optional reanimation smile was ${result.quality.optionalActionsUnavailable.length ? 'not part of this session' : 'included'}.`,
         ],
         actions: pdfActions,
         clinicalReviewNote: 'Review the movement score together with the recorded action images and source video in the context of the clinical assessment.',
@@ -409,7 +409,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
 
       <section className="report-section compact recording-coverage" aria-labelledby="quality-title">
         <h2 id="quality-title">Recording coverage</h2>
-        <dl className="report-definition-list"><div><dt>Recorded steps included in this score</dt><dd>Neutral baseline + all {result.quality.actionsUsed} active movements</dd></div><div><dt>Face tracking coverage</dt><dd>{minimumValidSamples}–{maximumValidSamples} usable of 32 checkpoints per movement</dd></div><div><dt>Optional Step 8</dt><dd>{result.quality.optionalActionsUnavailable.length ? 'Not part of this session' : 'Included'}</dd></div></dl>
+        <dl className="report-definition-list"><div><dt>Recorded steps included in this score</dt><dd>Neutral baseline + all {result.quality.actionsUsed} active movements</dd></div><div><dt>Face tracking coverage</dt><dd>{minimumValidSamples}–{maximumValidSamples} usable of 32 checkpoints per movement</dd></div><div><dt>Optional reanimation smile</dt><dd>{result.quality.optionalActionsUnavailable.length ? 'Not part of this session' : 'Included'}</dd></div></dl>
         <div className="coverage-explanation"><p><ShieldCheck aria-hidden="true" size={19} />All {result.quality.actionsUsed + 1} recorded steps in this session were used: one neutral baseline and {result.quality.actionsUsed} active movements.</p><p>Each active movement is checked at 32 evenly spaced time points; the range above shows how many had usable face tracking. The neutral recording provides the resting baseline used for movement-change measurements.</p></div>
       </section>
 

@@ -57,7 +57,7 @@ def _keyboard_case(engine_name: str, engine: BrowserType, base_url: str) -> None
     page.keyboard.press("Enter")
     expect(page.get_by_role("main")).to_be_focused()
 
-    choice = page.get_by_role("radio", name="Step 8 not applicable", exact=False)
+    choice = page.get_by_role("radio", name="No — standard assessment", exact=False)
     choice.focus()
     page.keyboard.press("Space")
     expect(choice).to_be_checked()
@@ -96,7 +96,7 @@ def _mobile_touch_case(engine: BrowserType, base_url: str) -> None:
     )
     page = context.new_page()
     console_errors, page_errors = _prepare(page, base_url)
-    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    page.get_by_role("radio", name="No — standard assessment", exact=False).check()
 
     targets = page.locator(
         '.journey-actions button:visible, input[type="radio"] + span, .source-tab:visible'
@@ -131,7 +131,7 @@ def _contrast_and_motion_case(engine: BrowserType, base_url: str) -> None:
         """
     )
     console_errors, page_errors = _prepare(page, base_url)
-    choice = page.get_by_role("radio", name="Step 8 not applicable", exact=False)
+    choice = page.get_by_role("radio", name="No — standard assessment", exact=False)
     choice.focus()
     page.keyboard.press("Space")
     next_button = page.get_by_role("button", name="Continue to camera setup")

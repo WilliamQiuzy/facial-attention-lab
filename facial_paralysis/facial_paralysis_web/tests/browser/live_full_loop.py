@@ -250,7 +250,7 @@ def run(
         try:
             page.goto(base_url, wait_until="networkidle")
             expect(
-                page.get_by_role("heading", name="Prepare for a consistent capture")
+                page.get_by_role("heading", name="Before recording")
             ).to_be_visible(timeout=15_000)
             page.keyboard.press("Tab")
             skip_focus = page.evaluate(
@@ -259,7 +259,7 @@ def run(
             if skip_focus["activeClass"] != "skip-link" or skip_focus["width"] == "1px" or skip_focus["clipPath"] != "none":
                 raise AssertionError(f"keyboard-focused skip link was not revealed: {skip_focus}")
 
-            choice = "Include Step 8" if steps == 8 else "Step 8 not applicable"
+            choice = "Yes — include reanimation smile" if steps == 8 else "No — standard assessment"
             page.get_by_role("radio", name=choice).check()
             page.get_by_role("button", name="Continue to camera setup").click()
             expect(page.get_by_text("Analysis endpoint ready", exact=True)).to_be_visible(

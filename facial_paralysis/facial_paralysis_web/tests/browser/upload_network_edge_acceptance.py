@@ -76,7 +76,7 @@ def _open_upload(page: Page, base_url: str) -> None:
         lambda route: route.fulfill(status=200, json=READY_RESPONSE),
     )
     page.goto(base_url, wait_until="networkidle")
-    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    page.get_by_role("radio", name="No — standard assessment", exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     expect(page.get_by_text("Analysis endpoint ready", exact=True)).to_be_visible()
     page.get_by_role("tab", name="Upload from LifeLink").click()

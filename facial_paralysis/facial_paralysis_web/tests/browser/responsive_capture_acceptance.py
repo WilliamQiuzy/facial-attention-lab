@@ -22,8 +22,8 @@ VIEWPORTS = (
 
 def _open_setup(page: Page) -> None:
     page.goto(BASE_URL, wait_until="networkidle")
-    expect(page.get_by_role("button", name="Choose Step 8 above to continue")).to_be_disabled()
-    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    expect(page.get_by_role("button", name="Choose the reanimation-smile option above to continue")).to_be_disabled()
+    page.get_by_role("radio", name="No — standard assessment", exact=False).check()
     expect(page.get_by_role("button", name="Continue to camera setup")).to_be_enabled()
     page.get_by_role("button", name="Continue to camera setup").click()
     page.get_by_role("heading", name="Set up the camera").wait_for(state="visible")

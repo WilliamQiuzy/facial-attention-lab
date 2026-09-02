@@ -49,7 +49,7 @@ def _new_page(context, *, init_script: str | None = None) -> tuple[Page, list[st
 def _choose_and_open_setup(page: Page, base_url: str, include_step_8: bool = False) -> None:
     _route_ready(page)
     page.goto(base_url, wait_until="networkidle")
-    choice = "Include step 8" if include_step_8 else "Step 8 not applicable"
+    choice = "Yes — include reanimation smile" if include_step_8 else "No — standard assessment"
     page.get_by_role("radio", name=choice, exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     expect(page.get_by_role("heading", name="Set up the camera")).to_be_visible()
@@ -72,21 +72,21 @@ def _case_initial_navigation(browser: Browser, base_url: str) -> None:
     expect(page.locator("#main-content")).to_be_focused()
 
     continue_button = page.get_by_role(
-        "button", name="Choose Step 8 above to continue"
+        "button", name="Choose the reanimation-smile option above to continue"
     )
     expect(continue_button).to_be_disabled()
-    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    page.get_by_role("radio", name="No — standard assessment", exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     expect(page.get_by_role("heading", name="Set up the camera")).to_be_focused()
     page.get_by_role("button", name="Back to preparation").click()
     expect(
-        page.get_by_role("radio", name="Step 8 not applicable", exact=False)
+        page.get_by_role("radio", name="No — standard assessment", exact=False)
     ).to_be_checked()
 
     page.reload(wait_until="networkidle")
-    expect(page.get_by_role("button", name="Choose Step 8 above to continue")).to_be_disabled()
-    expect(page.get_by_role("radio", name="Step 8 not applicable", exact=False)).not_to_be_checked()
-    expect(page.get_by_role("radio", name="Include step 8", exact=False)).not_to_be_checked()
+    expect(page.get_by_role("button", name="Choose the reanimation-smile option above to continue")).to_be_disabled()
+    expect(page.get_by_role("radio", name="No — standard assessment", exact=False)).not_to_be_checked()
+    expect(page.get_by_role("radio", name="Yes — include reanimation smile", exact=False)).not_to_be_checked()
     _assert_clean_runtime(page, console_errors, page_errors)
     context.close()
 
@@ -106,7 +106,7 @@ def _case_endpoint_retry(browser: Browser, base_url: str) -> None:
 
     page.route("**/api/v1/facial-paralysis/ready", readiness)
     page.goto(base_url, wait_until="networkidle")
-    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    page.get_by_role("radio", name="No — standard assessment", exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     expect(page.get_by_text("Research endpoint unavailable", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="Continue to recording")).to_be_disabled()
@@ -233,7 +233,7 @@ def _case_direct_report_and_mobile(browser: Browser, base_url: str) -> None:
     expect(page.get_by_role("heading", name="Report not retained")).to_be_visible()
     expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
     page.get_by_role("link", name="Return to research analysis").click()
-    expect(page.get_by_role("heading", name="Prepare for a consistent capture")).to_be_visible()
+    expect(page.get_by_role("heading", name="Before recording")).to_be_visible()
     overflow = page.evaluate(
         "Math.max(document.body.scrollWidth, document.documentElement.scrollWidth) - innerWidth"
     )
@@ -248,7 +248,7 @@ def _case_back_from_analysis(browser: Browser, base_url: str) -> None:
     page, console_errors, page_errors = _new_page(context)
     _route_ready(page)
     page.goto(base_url, wait_until="networkidle")
-    page.get_by_role("radio", name="Step 8 not applicable", exact=False).check()
+    page.get_by_role("radio", name="No — standard assessment", exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     page.get_by_role("tab", name="Upload from LifeLink").click()
     page.get_by_label("Choose LifeLink Face video").set_input_files(
@@ -265,7 +265,7 @@ def _case_back_from_analysis(browser: Browser, base_url: str) -> None:
     page.get_by_role("button", name="Back to camera setup").click()
     expect(page.get_by_role("heading", name="Set up the camera")).to_be_visible()
     page.get_by_role("button", name="Back to preparation").click()
-    expect(page.get_by_role("heading", name="Prepare for a consistent capture")).to_be_visible()
+    expect(page.get_by_role("heading", name="Before recording")).to_be_visible()
     _assert_clean_runtime(page, console_errors, page_errors)
     context.close()
 

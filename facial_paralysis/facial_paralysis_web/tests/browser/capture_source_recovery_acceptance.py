@@ -46,7 +46,7 @@ def _prepare(page: Page, include_step_8: bool) -> None:
         """
     )
     page.goto(BASE_URL, wait_until="networkidle")
-    choice = "Include step 8" if include_step_8 else "Step 8 not applicable"
+    choice = "Yes — include reanimation smile" if include_step_8 else "No — standard assessment"
     page.get_by_role("radio", name=choice, exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     expect(page.get_by_role("heading", name="Set up the camera")).to_be_visible()
@@ -99,7 +99,7 @@ def _run_case(browser: Browser, width: int, height: int, include_step_8: bool) -
     page.get_by_role("button", name="Return to live camera").click()
 
     page.get_by_role("button", name="Back to preparation").click()
-    choice = "Include step 8" if include_step_8 else "Step 8 not applicable"
+    choice = "Yes — include reanimation smile" if include_step_8 else "No — standard assessment"
     expect(page.get_by_role("radio", name=choice, exact=False)).to_be_checked()
     context.close()
 

@@ -13,13 +13,14 @@ This matrix is the release contract for the five-stage FACES capture journey. A 
 
 | ID | User state or transition | Required assertion | Evidence suite |
 |---|---|---|---|
-| P01 | First load, Step 8 unanswered | Camera setup cannot be entered; the missing choice is named | `wizard_acceptance.py`, App unit tests |
-| P02 | Step 8 not applicable | Seven-step choice persists through preparation/setup navigation | `journey_edge_acceptance.py` |
-| P03 | Include Step 8 | Eight-step choice persists through preparation/setup navigation | `journey_edge_acceptance.py` |
+| P01 | First load, optional reanimation-smile choice unanswered | Camera setup cannot be entered; the missing choice is named | `wizard_acceptance.py`, App unit tests |
+| P02 | Standard assessment without reanimation smile | Seven-step choice persists through preparation/setup navigation | `journey_edge_acceptance.py` |
+| P03 | Include reanimation smile after facial reanimation surgery | Eight-step choice persists through preparation/setup navigation | `journey_edge_acceptance.py` |
 | P04 | Back/forward repeatedly | No choice, file, or stage becomes inconsistent | `journey_edge_acceptance.py` |
 | P05 | Refresh before recording | Session returns to a clean Prepare state | `journey_edge_acceptance.py` |
 | P06 | Voice preview start/stop | Controls recover without an alert or active speech | VoiceGuide unit tests |
 | P07 | Completed recording → earlier stages | Step 4 returns through Record, Setup, and Prepare while retaining the recording until the user explicitly records again | App unit tests, `journey_edge_acceptance.py` |
+| P08 | Clinician first load | Redundant hero copy is absent; four setup checks and the clinically named reanimation-smile choice begin in the first useful viewport | `doctor_feedback_acceptance.py`, App and VoiceGuide unit tests |
 | E01 | Readiness delayed | Setup remains blocked and exposes a waiting state | App unit tests |
 | E02 | Readiness fails then recovers | Retry performs a new readiness request and unlocks setup | `upload_network_edge_acceptance.py` |
 | C01 | Camera permission granted | Preview becomes ready and Continue unlocks | `wizard_acceptance.py` |
@@ -64,6 +65,7 @@ This matrix is the release contract for the five-stage FACES capture journey. A 
 | X03 | Touch/viewport | Critical controls are at least 48 px and remain in the viewport | `responsive_capture_acceptance.py`, `accessibility_runtime_acceptance.py` |
 | X04 | Reduced motion/high contrast | Navigation does not force smooth motion; controls remain visible | `accessibility_runtime_acceptance.py` |
 | X05 | Older-adult workflow readability | Five-stage progress keeps ≥17 px desktop titles, ≥16 px details, ≥7:1 text contrast, visible narrow-screen current-step context, and 40 px markers without overflow | `workflow_readability_acceptance.py`, WorkflowRail unit tests |
+| X06 | Persistent stage orientation | Five-stage progress remains pinned to the viewport top across desktop, tablet, and mobile without horizontal overflow | `doctor_feedback_acceptance.py` |
 
 ## Required execution matrix
 

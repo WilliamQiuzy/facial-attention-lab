@@ -11,7 +11,7 @@ const pendingEndpoint = vi.fn(() => new Promise<void>(() => undefined))
 
 async function uploadVideo(user: ReturnType<typeof userEvent.setup>) {
   if (!screen.queryByRole('tab', { name: 'Upload from LifeLink' })) {
-    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
+    await user.click(screen.getByRole('radio', { name: /no — standard assessment/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
   }
   await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
@@ -151,12 +151,12 @@ describe('App', () => {
     expect(within(primaryNavigation).queryByRole('link', { name: 'Analysis' })).not.toBeInTheDocument()
     expect(within(journey).getAllByRole('listitem')).toHaveLength(5)
     expect(within(journey).getByRole('listitem', { name: 'Step 1 of 5, Prepare, current step' })).toHaveAttribute('aria-current', 'step')
-    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Validate the path before any result appears.' })).not.toBeInTheDocument()
 
-    expect(screen.getByRole('button', { name: 'Choose Step 8 above to continue' })).toBeDisabled()
-    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
+    expect(screen.getByRole('button', { name: 'Choose the reanimation-smile option above to continue' })).toBeDisabled()
+    await user.click(screen.getByRole('radio', { name: /no — standard assessment/i }))
     expect(screen.getByRole('button', { name: 'Continue to camera setup' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
 
@@ -166,9 +166,23 @@ describe('App', () => {
     expect(screen.getByRole('button', { name: 'Back to preparation' })).toBeVisible()
 
     await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
-    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
     expect(screen.getByRole('main')).toHaveAttribute('tabindex', '-1')
+  })
+
+  it('keeps the first screen focused on setup and the required clinical choice', () => {
+    render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
+
+    expect(screen.queryByRole('heading', { name: 'Capture the full facial movement story.' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
+    expect(screen.getByRole('list', { name: 'Before recording checklist' })).toBeVisible()
+    expect(screen.getByRole('group', {
+      name: 'Should this assessment include a reanimation smile?',
+    })).toBeVisible()
+    expect(screen.getByRole('button', {
+      name: 'Choose the reanimation-smile option above to continue',
+    })).toBeDisabled()
   })
 
   it('moves keyboard focus and scroll only when the major journey stage changes', async () => {
@@ -184,7 +198,7 @@ describe('App', () => {
     expect(document.activeElement).toBe(document.body)
     expect(scrollIntoView).not.toHaveBeenCalled()
 
-    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
+    await user.click(screen.getByRole('radio', { name: /no — standard assessment/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
 
     const heading = screen.getByRole('heading', { name: 'Set up the camera' })
@@ -192,11 +206,11 @@ describe('App', () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' })
   })
 
-  it('does not trap the user or erase the Step 8 choice after switching from camera setup to upload', async () => {
+  it('does not trap the user or erase the reanimation-smile choice after switching from camera setup to upload', async () => {
     const user = userEvent.setup()
     render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
 
-    const step8NotApplicable = screen.getByRole('radio', { name: /step 8 not applicable/i })
+    const step8NotApplicable = screen.getByRole('radio', { name: /no — standard assessment/i })
     await user.click(step8NotApplicable)
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
     await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
@@ -205,7 +219,7 @@ describe('App', () => {
     expect(screen.queryByRole('button', { name: 'Continue to recording' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
-    expect(screen.getByRole('radio', { name: /step 8 not applicable/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /no — standard assessment/i })).toBeChecked()
   })
 
   it('returns from analysis through recording and setup without discarding the retained video', async () => {
@@ -223,7 +237,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Back to camera setup' }))
     expect(screen.getByRole('heading', { name: 'Set up the camera' })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Back to preparation' }))
-    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
   })
 
   it('blocks backward navigation only while an analysis request is in flight', async () => {
@@ -243,7 +257,7 @@ describe('App', () => {
   it('uses an internal clinical-review product message without exposing the model release', () => {
     const { container } = render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: /capture the full facial movement story/i })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeInTheDocument()
     expect(screen.getByText(/FACES protocol · Source script v0.01/i)).toBeInTheDocument()
     expect(screen.queryByText(/IRB/i)).not.toBeInTheDocument()
     expect(screen.queryByText('Interpretation boundary')).not.toBeInTheDocument()
@@ -285,7 +299,7 @@ describe('App', () => {
 
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
     expect(screen.queryByText('DEMONSTRATION - NOT MODEL OUTPUT')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
   })
 
@@ -303,7 +317,7 @@ describe('App', () => {
     await user.click(clearButton)
 
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
-    expect(screen.getByRole('heading', { name: 'Prepare for a consistent capture' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
   })
 
@@ -506,7 +520,7 @@ describe('App', () => {
       .mockResolvedValueOnce(undefined)
     render(<App apiEndpoint="https://research.example.test/infer" checkEndpoint={checkEndpoint} />)
 
-    await user.click(screen.getByRole('radio', { name: /step 8 not applicable/i }))
+    await user.click(screen.getByRole('radio', { name: /no — standard assessment/i }))
     await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
     expect(await screen.findByText(/research endpoint unavailable/i)).toBeInTheDocument()
     expect(screen.queryByText(/analysis endpoint ready/i)).not.toBeInTheDocument()

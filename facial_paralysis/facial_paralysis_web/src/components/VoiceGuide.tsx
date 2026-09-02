@@ -11,10 +11,63 @@ interface VoiceGuideProps {
   readonly onReanimatedSmileApplicableChange: (applicable: boolean) => void
   readonly guidedActive?: boolean
   readonly applicabilityLocked?: boolean
+  readonly showApplicabilityControl?: boolean
   readonly guidedVoice?: Pick<
     GuidedVoiceSequenceState,
     'phase' | 'activeStepIndex' | 'countdown' | 'completedStepIndexes'
   >
+}
+
+interface ReanimationSmileChoiceProps {
+  readonly value: boolean | null
+  readonly onChange: (applicable: boolean) => void
+  readonly disabled?: boolean
+  readonly prominent?: boolean
+}
+
+export function ReanimationSmileChoice({
+  value,
+  onChange,
+  disabled = false,
+  prominent = false,
+}: ReanimationSmileChoiceProps) {
+  const applicabilityName = useId()
+  const applicabilityLegendId = useId()
+  const applicabilityDescriptionId = useId()
+
+  return (
+    <fieldset
+      className={`applicability-control ${prominent ? 'is-prominent' : ''}`}
+      disabled={disabled}
+      aria-labelledby={applicabilityLegendId}
+      aria-describedby={applicabilityDescriptionId}
+    >
+      <legend>
+        <strong id={applicabilityLegendId}>Should this assessment include a reanimation smile?</strong>
+        <span id={applicabilityDescriptionId}>Choose Yes only when the patient has undergone facial reanimation surgery and the surgically restored smile is part of today’s examination.</span>
+      </legend>
+      <div className="applicability-options">
+        <label>
+          <input
+            type="radio"
+            name={applicabilityName}
+            checked={value === false}
+            onChange={() => onChange(false)}
+          />
+          <span><strong>No — standard assessment</strong>Use the standard 7 movements without a reanimation smile.</span>
+        </label>
+        <label>
+          <input
+            type="radio"
+            name={applicabilityName}
+            checked={value === true}
+            onChange={() => onChange(true)}
+          />
+          <span><strong>Yes — include reanimation smile</strong>Add one final 3-second attempt of the patient’s surgically restored smile.</span>
+        </label>
+      </div>
+    </fieldset>
+  )
 }
 
 export function VoiceGuide({
@@ -22,10 +75,10 @@ export function VoiceGuide({
   onReanimatedSmileApplicableChange,
   guidedActive = false,
   applicabilityLocked = false,
+  showApplicabilityControl = true,
   guidedVoice,
 }: VoiceGuideProps) {
   const [stepIndex, setStepIndex] = useState(0)
-  const applicabilityName = useId()
   const {
     speaking: manualSpeaking,
     countdown: manualCountdown,
@@ -62,6 +115,14 @@ export function VoiceGuide({
         <span className="protocol-pill">Protocol v0.01</span>
       </div>
 
+      {showApplicabilityControl ? (
+        <ReanimationSmileChoice
+          value={reanimatedSmileApplicable}
+          onChange={onReanimatedSmileApplicableChange}
+          disabled={guidedActive || applicabilityLocked}
+        />
+      ) : null}
+
       <div className="protocol-progress" aria-label="FACES protocol progress">
         {FACES_PROTOCOL.map((item, index) => (
           <button
@@ -74,7 +135,7 @@ export function VoiceGuide({
             key={item.id}
             type="button"
             aria-label={item.optional && reanimatedSmileApplicable === false
-              ? `Step ${index + 1} not applicable: ${item.title}`
+              ? `Optional reanimation smile not included: ${item.title}`
               : `Go to step ${index + 1}: ${item.title}`}
             aria-current={index === displayedStepIndex ? 'step' : undefined}
             disabled={guidedActive}
@@ -101,7 +162,7 @@ export function VoiceGuide({
         ) : null}
         {step.optional && reanimatedSmileApplicable === null ? (
           <div className="unresolved-note">
-            Resolve the clinician choice below before research analysis.
+            Choose whether to include the optional reanimation smile before analysis.
           </div>
         ) : null}
         {countdown !== null ? (
@@ -150,32 +211,6 @@ export function VoiceGuide({
 
       {error ? <p className="inline-alert" role="alert">{error}</p> : null}
 
-      <fieldset className="applicability-control" disabled={guidedActive || applicabilityLocked}>
-        <legend>
-          <strong>Resolve conditional step 8</strong>
-          <span>Choose one option for this recording before research analysis.</span>
-        </legend>
-        <div className="applicability-options">
-          <label>
-            <input
-              type="radio"
-              name={applicabilityName}
-              checked={reanimatedSmileApplicable === false}
-              onChange={() => onReanimatedSmileApplicableChange(false)}
-            />
-            <span><strong>Step 8 not applicable</strong>No facial reanimation movement is expected.</span>
-          </label>
-          <label>
-            <input
-              type="radio"
-              name={applicabilityName}
-              checked={reanimatedSmileApplicable === true}
-              onChange={() => onReanimatedSmileApplicableChange(true)}
-            />
-            <span><strong>Include step 8</strong>Facial reanimation surgery applies to this recording.</span>
-          </label>
-        </div>
-      </fieldset>
     </section>
   )
 }

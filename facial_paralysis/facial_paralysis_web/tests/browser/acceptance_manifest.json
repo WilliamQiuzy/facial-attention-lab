@@ -45,6 +45,12 @@
       "cases": ["X05", "S03"]
     },
     {
+      "id": "clinician-navigation",
+      "level": "cross-browser",
+      "script": "doctor_feedback_acceptance.py",
+      "cases": ["P08", "X06", "S03"]
+    },
+    {
       "id": "accessibility-runtime",
       "level": "cross-browser",
       "script": "accessibility_runtime_acceptance.py",

@@ -7,6 +7,7 @@ import type { RecordingChangeOptions } from './components/MediaCapture'
 import { RecordingDownloadButton } from './components/RecordingDownloadButton'
 import { ResultsView, type DisplayResult } from './components/ResultsView'
 import { WorkflowRail } from './components/WorkflowRail'
+import { ReanimationSmileChoice } from './components/VoiceGuide'
 import { createDemonstrationResult } from './model/demonstration'
 import {
   analyzeRecording,
@@ -16,7 +17,6 @@ import {
   type RecordingSource,
   type ResearchInferenceResult,
 } from './model/inference'
-import { FACES_PREPARATION } from './protocol/facesProtocol'
 import './styles/app.css'
 
 type AnalyzeFunction = typeof analyzeRecording
@@ -283,62 +283,53 @@ export function App({
           )
         ) : null}
         <div hidden={reportRoute} aria-hidden={reportRoute ? 'true' : undefined}>
-        <section className="journey-hero" aria-labelledby="hero-title">
-          <div>
-            <span className="eyebrow">Guided facial movement assessment</span>
-            <h1 id="hero-title">Capture the full facial movement story.</h1>
-            <p>One clear stage at a time—from preparation to a reviewable report.</p>
-          </div>
-          <div className="journey-hero-badge" aria-label="Seven- or eight-step automatic movement sequence">
-            <strong>7–8</strong><span>guided movements<br />automatic timing</span>
-          </div>
-        </section>
-
         <div className="journey-shell" id="journey">
           <section className="workflow-section" aria-label="Current workflow stage">
             <WorkflowRail current={journeyStep} />
           </section>
 
-          <div className="journey-panel" ref={journeyPanelRef}>
+          <div className={`journey-panel is-step-${journeyStep}`} ref={journeyPanelRef}>
             {journeyStep === 1 ? (
-              <header className="journey-stage-heading">
-                <span className="journey-stage-kicker">Step 1 of 5 · Prepare</span>
-                <h2 data-journey-heading tabIndex={-1}>Prepare for a consistent capture</h2>
-                <p>Review the room setup and preview each facial movement before turning on the camera.</p>
+              <header className="journey-stage-heading journey-stage-heading-compact">
+                <h1 data-journey-heading tabIndex={-1}>Before recording</h1>
               </header>
             ) : journeyStep === 2 ? (
               <header className="journey-stage-heading">
                 <span className="journey-stage-kicker">Step 2 of 5 · Set up</span>
-                <h2 data-journey-heading tabIndex={-1}>Set up the camera</h2>
+                <h1 data-journey-heading tabIndex={-1}>Set up the camera</h1>
                 <p>Use this device by default, confirm framing, and keep the same protocol choice you reviewed.</p>
               </header>
             ) : journeyStep === 3 ? (
               <header className="journey-stage-heading">
                 <span className="journey-stage-kicker">Step 3 of 5 · Record</span>
-                <h2 data-journey-heading tabIndex={-1}>Complete the automatic recording</h2>
+                <h1 data-journey-heading tabIndex={-1}>Complete the automatic recording</h1>
                 <p>After Start, voice cues advance the full sequence. No Next button is needed during facial movements.</p>
               </header>
             ) : journeyStep === 4 ? (
               <header className="journey-stage-heading">
                 <span className="journey-stage-kicker">Step 4 of 5 · Analyze</span>
-                <h2 data-journey-heading tabIndex={-1}>Review the recording and run analysis</h2>
+                <h1 data-journey-heading tabIndex={-1}>Review the recording and run analysis</h1>
                 <p>Confirm the retained video and endpoint before sending one analysis request.</p>
               </header>
             ) : (
               <header className="journey-stage-heading">
                 <span className="journey-stage-kicker">Step 5 of 5 · Report</span>
-                <h2 data-journey-heading tabIndex={-1}>Your report is ready</h2>
+                <h1 data-journey-heading tabIndex={-1}>Your report is ready</h1>
                 <p>The completed result is locked for this browser session.</p>
               </header>
             )}
 
+            {journeyStep === 1 ? (
+              <ReanimationSmileChoice
+                value={reanimatedSmileApplicable}
+                onChange={handleReanimatedSmileApplicableChange}
+                disabled={Boolean(recording)}
+                prominent
+              />
+            ) : null}
+
             <section className="preparation-section journey-preparation" hidden={journeyStep !== 1}>
-              <div>
-                <span className="eyebrow">Before recording</span>
-                <h3>A consistent setup makes every visit more useful.</h3>
-                <p>{FACES_PREPARATION[0]}</p>
-              </div>
-              <ul>
+              <ul aria-label="Before recording checklist">
                 {preparationItems.map((item) => <li key={item}><span><Check aria-hidden="true" size={17} /></span>{item}</li>)}
               </ul>
             </section>
@@ -414,9 +405,9 @@ export function App({
             ) : null}
 
             {!researchResult && !recording ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Add a recording to continue.</p> : null}
-            {!researchResult && recording && reanimatedSmileApplicable === null ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Resolve conditional step 8 in the voice guide.</p> : null}
+            {!researchResult && recording && reanimatedSmileApplicable === null ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Choose whether this assessment includes a reanimation smile.</p> : null}
             {!researchResult && recording && !captureTimeline ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Analysis requires the guided capture timeline; uploaded videos need an authenticated timeline sidecar.</p> : null}
-            {!researchResult && recording && reanimatedSmileApplicable === false ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> Step 8 is marked unavailable; analysis will use the six completed active movements without imputation.</p> : null}
+            {!researchResult && recording && reanimatedSmileApplicable === false ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> The optional reanimation smile was not included; analysis will use the six completed active movements without imputation.</p> : null}
             {!researchResult && analysisError ? <p className="inline-alert" role="alert">{analysisError}</p> : null}
             {!researchResult && analysisState === 'error' && !analysisRetryAllowed ? <p className="analysis-hint"><Camera aria-hidden="true" size={17} /> This recording cannot be resubmitted. Clear it, correct the capture, and record the guided sequence again.</p> : null}
           </div>
@@ -447,7 +438,7 @@ export function App({
                 <>
                   <span className="journey-action-note">
                     {reanimatedSmileApplicable === null
-                      ? 'Choose whether Step 8 applies before camera setup.'
+                      ? 'Choose whether this assessment includes a reanimation smile.'
                       : 'Review the movements at your own pace.'}
                   </span>
                   <button
@@ -456,7 +447,7 @@ export function App({
                     disabled={reanimatedSmileApplicable === null}
                     onClick={() => setJourneyStep(2)}
                   >
-                    {reanimatedSmileApplicable === null ? 'Choose Step 8 above to continue' : 'Continue to camera setup'} <ArrowRight aria-hidden="true" size={20} />
+                    {reanimatedSmileApplicable === null ? 'Choose the reanimation-smile option above to continue' : 'Continue to camera setup'} <ArrowRight aria-hidden="true" size={20} />
                   </button>
                 </>
               ) : journeyStep === 2 ? (

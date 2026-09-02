@@ -122,7 +122,7 @@ describe('GuidedCaptureWorkspace', () => {
     )
 
     expect(screen.getByRole('status')).toHaveTextContent(
-      'Camera is ready. Return to preparation and choose whether Step 8 applies.',
+      'Camera is ready. Return to preparation and choose whether to include a reanimation smile.',
     )
 
     mocks.voice.supported = false
@@ -199,7 +199,7 @@ describe('GuidedCaptureWorkspace', () => {
     expect(screen.getByText(/wait for the research endpoint readiness check/i)).toBeInTheDocument()
   })
 
-  it('requires a ready camera and explicit step-8 choice before combined start', async () => {
+  it('requires a ready camera and explicit reanimation-smile choice before combined start', async () => {
     const user = userEvent.setup()
     const { rerender } = render(
       <GuidedCaptureWorkspace
@@ -211,7 +211,7 @@ describe('GuidedCaptureWorkspace', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Use this device' }))
     expect(screen.getByRole('button', { name: 'Start guided recording' })).toBeDisabled()
-    expect(screen.getByText(/choose whether step 8 applies/i)).toBeInTheDocument()
+    expect(screen.getByText(/choose whether to include a reanimation smile/i)).toBeInTheDocument()
 
     rerender(
       <GuidedCaptureWorkspace

@@ -256,8 +256,8 @@ export function GuidedCaptureWorkspace({
     statusText = 'Waiting for camera permission…'
   } else if (mode === 'camera' && camera.status === 'ready' && reanimatedSmileApplicable === null) {
     statusText = journeyStage === 'setup'
-      ? 'Camera is ready. Return to preparation and choose whether Step 8 applies.'
-      : 'Camera is ready. Choose whether Step 8 applies before recording.'
+      ? 'Camera is ready. Return to preparation and choose whether to include a reanimation smile.'
+      : 'Camera is ready. Choose whether to include a reanimation smile before recording.'
   } else if (mode === 'camera' && camera.status === 'ready' && !voice.supported) {
     statusText = 'This browser cannot play the guided voice sequence. Use a browser with speech support or upload a complete session.'
   } else if (mode === 'camera' && camera.status === 'ready') {
@@ -301,6 +301,7 @@ export function GuidedCaptureWorkspace({
           guidedActive={guidedActive}
           guidedVoice={voice}
           applicabilityLocked={mode === 'camera' && camera.status === 'recorded'}
+          showApplicabilityControl={!journeyEnabled}
         />
       </div> : null}
 

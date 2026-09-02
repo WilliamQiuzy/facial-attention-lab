@@ -518,8 +518,13 @@ h2 {
 }
 
 .workflow-section {
+  position: sticky;
+  z-index: 45;
+  top: 0;
   border-block: 1px solid #dce4ea;
-  background: white;
+  background: rgba(255, 255, 255, .98);
+  box-shadow: 0 8px 24px rgba(13, 35, 64, .08);
+  backdrop-filter: blur(12px);
 }
 
 .workflow-rail {
@@ -2559,62 +2564,6 @@ footer p {
   color: var(--green);
 }
 
-/* A/B candidate: a calm, linear journey for users who find long-page scrolling difficult. */
-.journey-hero {
-  display: flex;
-  width: var(--content);
-  min-height: 250px;
-  margin-inline: auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 48px;
-  padding-block: 54px 42px;
-}
-
-.journey-hero > div:first-child {
-  max-width: 760px;
-}
-
-.journey-hero h1 {
-  max-width: 760px;
-  margin: 10px 0 14px;
-  color: var(--blue-deep);
-  font-size: clamp(2.6rem, 5.4vw, 4.7rem);
-  line-height: 1.08;
-}
-
-.journey-hero p {
-  margin: 0;
-  color: var(--ink-soft);
-  font-size: 1.16rem;
-  line-height: 1.6;
-}
-
-.journey-hero-badge {
-  display: flex;
-  min-width: 230px;
-  align-items: center;
-  gap: 18px;
-  border-left: 4px solid var(--blue);
-  padding: 20px 22px;
-  background: var(--blue-pale);
-  color: var(--blue-deep);
-}
-
-.journey-hero-badge strong {
-  font-family: var(--display);
-  font-size: 3.15rem;
-  line-height: 1;
-}
-
-.journey-hero-badge span {
-  font-size: .82rem;
-  font-weight: 750;
-  line-height: 1.45;
-  letter-spacing: .035em;
-  text-transform: uppercase;
-}
-
 .journey-shell {
   padding-bottom: 150px;
   background:
@@ -2627,9 +2576,9 @@ footer p {
 }
 
 .journey-progress .workflow-rail li {
-  min-height: 112px;
+  min-height: 84px;
   gap: 16px;
-  padding-inline: clamp(16px, 1.8vw, 24px);
+  padding-inline: clamp(12px, 1.5vw, 20px);
   color: var(--ink-soft);
 }
 
@@ -2675,11 +2624,11 @@ footer p {
 .journey-panel {
   width: var(--content);
   min-height: 540px;
-  scroll-margin-top: 18px;
-  margin: 40px auto 0;
+  scroll-margin-top: 104px;
+  margin: 22px auto 0;
   border: 1px solid #cbdbe7;
   border-radius: 16px;
-  padding: clamp(24px, 4vw, 52px);
+  padding: clamp(24px, 3vw, 42px);
   background: rgba(255, 255, 255, .98);
   box-shadow: 0 24px 70px rgba(13, 35, 64, .1);
 }
@@ -2700,14 +2649,20 @@ footer p {
   text-transform: uppercase;
 }
 
-.journey-stage-heading h2 {
+.journey-stage-heading h1 {
   margin-bottom: 12px;
   color: var(--blue-deep);
   font-size: clamp(2.2rem, 4vw, 3.45rem);
 }
 
-.journey-stage-heading h2:focus {
+.journey-stage-heading h1:focus {
   outline: none;
+}
+
+.journey-stage-heading h1:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid var(--blue);
+  outline-offset: 6px;
 }
 
 .journey-stage-heading p {
@@ -2717,18 +2672,34 @@ footer p {
   line-height: 1.65;
 }
 
-.journey-preparation {
-  width: 100%;
-  margin: 0 auto 28px;
-  gap: clamp(32px, 6vw, 80px);
+.journey-stage-heading-compact {
+  max-width: none;
+  margin-bottom: 18px;
+  text-align: left;
 }
 
-.journey-preparation h3 {
-  margin-bottom: 14px;
-  color: var(--blue-deep);
-  font-family: var(--display);
-  font-size: clamp(1.7rem, 3vw, 2.35rem);
-  line-height: 1.18;
+.journey-stage-heading-compact h1 {
+  margin: 0;
+  font-size: clamp(1.85rem, 3vw, 2.45rem);
+  line-height: 1.15;
+}
+
+.journey-preparation {
+  display: block;
+  width: 100%;
+  margin: 0 auto 22px;
+}
+
+.journey-preparation ul {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: clamp(18px, 3vw, 36px);
+}
+
+.journey-preparation li {
+  min-height: 54px;
+  padding: 8px 4px;
+  font-size: 1rem;
+  line-height: 1.45;
 }
 
 .journey-panel .workspace {
@@ -2745,6 +2716,58 @@ footer p {
 .workspace.is-journey-prepare #protocol {
   width: min(100%, 900px);
   margin-inline: auto;
+}
+
+.workspace.is-journey-prepare .voice-guide {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  padding: clamp(22px, 3vw, 30px);
+}
+
+.workspace.is-journey-prepare .section-heading-row h2 {
+  margin-bottom: 12px;
+}
+
+.applicability-control.is-prominent {
+  width: min(100%, 900px);
+  margin: 0 auto 22px;
+  border: 1px solid #b9d1e4;
+  border-radius: 10px;
+  padding: 18px;
+  background: #f6faff;
+}
+
+.applicability-control.is-prominent legend {
+  gap: 6px;
+  padding-inline: 4px;
+  font-size: .95rem;
+  line-height: 1.5;
+}
+
+.applicability-control.is-prominent legend strong {
+  font-size: 1.12rem;
+  line-height: 1.35;
+}
+
+.applicability-control.is-prominent .applicability-options label {
+  min-height: 74px;
+  padding: 14px;
+}
+
+.applicability-control.is-prominent .applicability-options input {
+  width: 20px;
+  height: 20px;
+}
+
+.applicability-control.is-prominent .applicability-options span {
+  font-size: .88rem;
+  line-height: 1.45;
+}
+
+.applicability-control.is-prominent .applicability-options span strong {
+  font-size: .98rem;
+  line-height: 1.35;
 }
 
 .workspace.is-journey-setup .capture-card,
@@ -2903,7 +2926,7 @@ footer p {
       "step detail";
     column-gap: 16px;
     border-top: 1px solid var(--blue-line);
-    padding: 15px 18px 17px;
+    padding: 10px 18px 12px;
     background: var(--blue-pale);
   }
 
@@ -2937,15 +2960,6 @@ footer p {
 }
 
 @media (max-width: 900px) {
-  .journey-hero {
-    min-height: 0;
-    padding-block: 42px 32px;
-  }
-
-  .journey-hero-badge {
-    min-width: 190px;
-  }
-
   .journey-progress .workflow-rail {
     width: 100%;
     grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -2954,7 +2968,7 @@ footer p {
 
   .journey-progress .workflow-rail li {
     min-width: 0;
-    min-height: 96px;
+    min-height: 72px;
     justify-content: center;
     gap: 10px;
     padding-inline: 6px;
@@ -2970,33 +2984,9 @@ footer p {
 }
 
 @media (max-width: 620px) {
-  .journey-hero {
-    display: grid;
-    gap: 24px;
-    padding-block: 34px 26px;
-  }
-
-  .journey-hero h1 {
-    font-size: clamp(2.35rem, 12vw, 3.35rem);
-  }
-
-  .journey-hero p {
-    font-size: 1rem;
-  }
-
-  .journey-hero-badge {
-    min-width: 0;
-    width: 100%;
-    padding: 15px 18px;
-  }
-
-  .journey-hero-badge strong {
-    font-size: 2.5rem;
-  }
-
   .journey-progress .workflow-rail li {
-    min-height: 72px;
-    padding: 8px 4px;
+    min-height: 60px;
+    padding: 6px 4px;
   }
 
   .journey-progress .workflow-number {
@@ -3016,7 +3006,8 @@ footer p {
   .journey-panel {
     width: calc(100% - 20px);
     min-height: 500px;
-    margin-top: 22px;
+    scroll-margin-top: 126px;
+    margin-top: 14px;
     border-radius: 12px;
     padding: 24px 16px 18px;
   }
@@ -3026,8 +3017,16 @@ footer p {
     text-align: left;
   }
 
-  .journey-stage-heading h2 {
+  .journey-stage-heading h1 {
     font-size: clamp(2rem, 10vw, 2.7rem);
+  }
+
+  .journey-stage-heading-compact {
+    margin-bottom: 14px;
+  }
+
+  .journey-stage-heading-compact h1 {
+    font-size: 1.85rem;
   }
 
   .journey-stage-heading p {
@@ -3036,6 +3035,43 @@ footer p {
 
   .journey-preparation {
     margin-top: 0;
+  }
+
+  .journey-preparation ul {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 12px;
+  }
+
+  .journey-preparation li {
+    min-height: 78px;
+    align-items: flex-start;
+    padding-block: 10px;
+    font-size: .95rem;
+  }
+
+  .journey-preparation li span {
+    width: 26px;
+    height: 26px;
+  }
+
+  .workspace.is-journey-prepare .voice-guide {
+    padding: 20px 14px;
+  }
+
+  .workspace.is-journey-prepare .section-heading-row {
+    gap: 10px;
+  }
+
+  .workspace.is-journey-prepare .section-heading-row h2 {
+    font-size: 1.55rem;
+  }
+
+  .applicability-control.is-prominent {
+    padding: 14px;
+  }
+
+  .applicability-control.is-prominent .applicability-options {
+    grid-template-columns: 1fr;
   }
 
   .journey-panel .workspace {

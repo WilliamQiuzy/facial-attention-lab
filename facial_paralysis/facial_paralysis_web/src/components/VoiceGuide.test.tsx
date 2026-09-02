@@ -99,14 +99,33 @@ describe('VoiceGuide', () => {
       />,
     )
 
-    const applicable = screen.getByRole('radio', { name: /include step 8/i })
-    const notApplicable = screen.getByRole('radio', { name: /step 8 not applicable/i })
+    const applicable = screen.getByRole('radio', { name: /yes — include reanimation smile/i })
+    const notApplicable = screen.getByRole('radio', { name: /no — standard assessment/i })
     expect(applicable).not.toBeChecked()
     expect(notApplicable).not.toBeChecked()
     await user.click(applicable)
     expect(onChange).toHaveBeenCalledWith(true)
     await user.click(notApplicable)
     expect(onChange).toHaveBeenCalledWith(false)
+  })
+
+  it('names the optional movement clinically instead of exposing an unexplained step number', () => {
+    render(
+      <VoiceGuide
+        reanimatedSmileApplicable={null}
+        onReanimatedSmileApplicableChange={vi.fn()}
+      />,
+    )
+
+    const choice = screen.getByRole('group', {
+      name: 'Should this assessment include a reanimation smile?',
+    })
+    expect(choice).toHaveTextContent(
+      'Choose Yes only when the patient has undergone facial reanimation surgery',
+    )
+    expect(screen.getByRole('radio', { name: /no — standard assessment/i })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: /yes — include reanimation smile/i })).toBeEnabled()
+    expect(choice).not.toHaveTextContent(/step 8/i)
   })
 
   it('distinguishes a skipped conditional step from an incomplete guided step', () => {
@@ -125,7 +144,7 @@ describe('VoiceGuide', () => {
     )
 
     expect(screen.getByText('Step 7 of 7')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /step 8 not applicable/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /optional reanimation smile not included/i })).toBeDisabled()
     expect(screen.getByText(/automatic sequence/i)).toHaveTextContent(
       'No instruction clicks are needed',
     )
