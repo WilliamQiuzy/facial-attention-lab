@@ -1,0 +1,57 @@
+.camera-preflight {
+  padding: 15px 17px;
+  color: #234b4d;
+  background: #f1f7f6;
+  border: 1px solid #cddfdd;
+  border-radius: 14px;
+  text-align: left;
+}
+
+.camera-preflight__message {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.camera-preflight__icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.camera-preflight__message strong {
+  display: block;
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.camera-preflight__message p {
+  margin: 3px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.camera-preflight small {
+  display: block;
+  margin-top: 9px;
+  color: #4c6565;
+  font-size: 0.79rem;
+  line-height: 1.5;
+}
+
+.camera-preflight[data-hint='light'],
+.camera-preflight[data-hint='closer'],
+.camera-preflight[data-hint='center'],
+.camera-preflight[data-hint='no-face'],
+.camera-preflight[data-hint='one-face'] {
+  color: #624b25;
+  background: #fcf8ee;
+  border-color: #e8ddbf;
+}
+
+.camera-preflight[data-hint='light'] small,
+.camera-preflight[data-hint='closer'] small,
+.camera-preflight[data-hint='center'] small,
+.camera-preflight[data-hint='no-face'] small,
+.camera-preflight[data-hint='one-face'] small {
+  color: #6d624d;
+}

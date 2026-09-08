@@ -53,7 +53,7 @@ def _prepare(page: Page, include_step_8: bool) -> None:
 
 
 def _enable_camera(page: Page) -> None:
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     expect(page.get_by_role("button", name="Continue to recording")).to_be_enabled(timeout=10_000)
 
 
@@ -79,7 +79,7 @@ def _run_case(browser: Browser, width: int, height: int, include_step_8: bool) -
 
         page.get_by_role("button", name="Return to live camera").click()
         expect(page.get_by_role("tab", name="Use this device")).to_have_attribute("aria-selected", "true")
-        expect(page.get_by_role("button", name="Enable front camera")).to_be_enabled()
+        expect(page.get_by_role("button", name="Enable camera", exact=True)).to_be_enabled()
         _enable_camera(page)
 
     page.get_by_role("tab", name="Upload from LifeLink").click()

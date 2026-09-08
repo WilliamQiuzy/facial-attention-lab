@@ -75,6 +75,18 @@ describe('FACES protocol source fidelity', () => {
     ])
   })
 
+  it('separates live action and release cues without changing the source instructions', () => {
+    for (const step of FACES_PROTOCOL) {
+      expect(step.actionCue).toMatch(/Hold now\.$/)
+      expect(step.actionCue).not.toMatch(/then (open|relax)|for 3 seconds/)
+      expect(step.releaseCue).toBe(
+        step.id === 'gentle_eye_closure' || step.id === 'tight_eye_squeeze'
+          ? 'Open your eyes and relax.'
+          : 'Relax.',
+      )
+    }
+  })
+
   it('preserves both source completion messages', () => {
     expect(FACES_COMPLETION).toEqual([
       'You’ve completed all the steps—great work!',

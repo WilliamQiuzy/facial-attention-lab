@@ -16,6 +16,8 @@ import {
   type RecordingSource,
 } from '../model/inference'
 import type { FacesActionId } from '../protocol/facesProtocol'
+import { useRecordingGuard, type RequestRecordingChange } from './RecordingGuard'
+import { CameraPreflight } from './CameraPreflight'
 
 const SUPPORTED_EXTENSIONS = ['.mov', '.mp4', '.avi', '.m4v', '.webm']
 
@@ -48,6 +50,9 @@ interface MediaCapturePanelProps extends MediaCaptureProps {
   readonly preserveProtocolChoiceOnCameraRecording?: boolean
   readonly reportCameraRecording?: boolean
   readonly showCameraError?: boolean
+  readonly onRequestChange?: RequestRecordingChange
+  readonly hideEnableCamera?: boolean
+  readonly previewVisible?: boolean
 }
 
 function formatBytes(bytes: number): string {
@@ -84,6 +89,9 @@ export function MediaCapturePanel({
   preserveProtocolChoiceOnCameraRecording = false,
   reportCameraRecording = true,
   showCameraError = true,
+  onRequestChange,
+  hideEnableCamera = false,
+  previewVisible = true,
 }: MediaCapturePanelProps) {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -95,10 +103,14 @@ export function MediaCapturePanel({
   const sourceId = useId()
   const uploadTabRef = useRef<HTMLButtonElement | null>(null)
   const cameraTabRef = useRef<HTMLButtonElement | null>(null)
+  const timelineGenerationRef = useRef(0)
+  useEffect(() => () => { timelineGenerationRef.current += 1 }, [])
   const uploadTabId = `${sourceId}-upload-tab`
   const cameraTabId = `${sourceId}-camera-tab`
   const uploadPanelId = `${sourceId}-upload-panel`
   const cameraPanelId = `${sourceId}-camera-panel`
+  const localGuard = useRecordingGuard(mode === 'upload' ? uploadedFile : camera.recordingFile)
+  const requestChange = onRequestChange ?? localGuard.requestChange
 
   useEffect(() => {
     const file = mode === 'upload' ? uploadedFile : camera.recordingFile
@@ -123,15 +135,22 @@ export function MediaCapturePanel({
 
   const switchMode = (nextMode: CaptureMode) => {
     if (nextMode === mode || guidedActive) return
+    requestChange(() => applyMode(nextMode), 'Change recording source?')
+  }
+
+  const applyMode = (nextMode: CaptureMode) => {
+    timelineGenerationRef.current += 1
     if (nextMode === 'upload') {
       camera.closeCamera()
       camera.resetRecording()
     }
     onModeChange(nextMode)
     setUploadError(null)
-    const file = nextMode === 'upload' ? uploadedFile : camera.recordingFile
+    setUploadedFile(null)
+    setUploadedTimeline(null)
+    setUploadedTimelineName(null)
     onRecordingChange(
-      file,
+      null,
       nextMode === 'upload' ? 'livelink-upload' : 'browser-camera',
       { preserveProtocolChoice: true },
     )
@@ -160,25 +179,24 @@ export function MediaCapturePanel({
   const selectFile = (file: File | undefined) => {
     if (!file) return
     if (!isSupportedVideo(file)) {
-      setUploadedFile(null)
-      setUploadedTimeline(null)
-      setUploadedTimelineName(null)
       setUploadError('Choose a supported video file: MOV, MP4, M4V, AVI, or WebM.')
-      onRecordingChange(null, 'livelink-upload', { preserveProtocolChoice: true })
+      if (!uploadedFile) onRecordingChange(null, 'livelink-upload', { preserveProtocolChoice: true })
       return
     }
     if (file.size < 1 || file.size > MAX_VIDEO_BYTES) {
-      setUploadedFile(null)
-      setUploadedTimeline(null)
-      setUploadedTimelineName(null)
       setUploadError(
         file.size < 1
           ? 'The selected video is empty. Choose a complete FACES recording.'
           : 'The selected video is larger than 512 MB. Choose an approved compressed copy.',
       )
-      onRecordingChange(null, 'livelink-upload', { preserveProtocolChoice: true })
+      if (!uploadedFile) onRecordingChange(null, 'livelink-upload', { preserveProtocolChoice: true })
       return
     }
+    requestChange(() => applyFile(file), 'Replace the current recording?')
+  }
+
+  const applyFile = (file: File) => {
+    timelineGenerationRef.current += 1
     setUploadError(null)
     setUploadedFile(file)
     setUploadedTimeline(null)
@@ -188,11 +206,9 @@ export function MediaCapturePanel({
 
   const selectTimeline = async (file: File | undefined) => {
     if (!file || !uploadedFile) return
+    const generation = ++timelineGenerationRef.current
     if (file.size < 1 || file.size > 256 * 1024 || !file.name.toLowerCase().endsWith('.json')) {
-      setUploadedTimeline(null)
-      setUploadedTimelineName(null)
       setUploadError('Choose a bounded JSON FACES action timeline.')
-      onRecordingChange(uploadedFile, 'livelink-upload')
       return
     }
     try {
@@ -204,6 +220,7 @@ export function MediaCapturePanel({
             reader.onload = () => resolve(String(reader.result ?? ''))
             reader.readAsText(file)
           })
+      if (generation !== timelineGenerationRef.current) return
       const timeline = parseCaptureTimelineSidecar(source)
       setUploadedTimeline(timeline)
       setUploadedTimelineName(file.name)
@@ -214,24 +231,23 @@ export function MediaCapturePanel({
         timeline,
       })
     } catch (error) {
-      setUploadedTimeline(null)
-      setUploadedTimelineName(null)
+      if (generation !== timelineGenerationRef.current) return
       setUploadError(error instanceof Error ? error.message : 'Timeline was not accepted.')
-      onRecordingChange(uploadedFile, 'livelink-upload')
     }
   }
 
   const resetCameraRecording = () => {
-    camera.resetRecording()
-    onRecordingChange(null, 'browser-camera')
+    requestChange(() => {
+      camera.resetRecording()
+      onRecordingChange(null, 'browser-camera', { preserveProtocolChoice: true })
+    }, 'Record again?')
   }
 
   return (
     <section className="capture-card" aria-labelledby="capture-title">
       <div className="section-heading-row">
         <div>
-          <span className="eyebrow">Capture source</span>
-          <h2 id="capture-title">Bring in one complete session</h2>
+          <h2 id="capture-title">{mode === 'camera' ? 'Camera preview' : 'Upload a recorded session'}</h2>
         </div>
         <span className="session-badge">Session only</span>
       </div>
@@ -271,19 +287,23 @@ export function MediaCapturePanel({
 
       {mode === 'upload' ? (
         <div className="upload-panel" role="tabpanel" id={uploadPanelId} aria-labelledby={uploadTabId}>
+          <button className="button button-secondary" type="button" onClick={() => switchMode('camera')}>
+            <Camera aria-hidden="true" size={18} /> Return to live camera
+          </button>
           <input
             className="visually-hidden"
             id={inputId}
             type="file"
             accept="video/quicktime,video/mp4,video/x-msvideo,video/webm,.mov,.mp4,.m4v,.avi,.webm"
             aria-label="Choose LifeLink Face video"
-            onChange={(event) => selectFile(event.target.files?.[0])}
+            onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; selectFile(file) }}
           />
           {!uploadedFile ? (
             <label className="drop-zone" htmlFor={inputId}>
               <span className="upload-icon"><FileVideo2 aria-hidden="true" size={28} /></span>
               <strong>Choose a LifeLink Face recording</strong>
-              <span>MOV, MP4, M4V, AVI or WebM · one FACES protocol session</span>
+              <span>MOV, MP4, M4V, AVI or WebM · up to 512 MB</span>
+              <span>You need the video and its matching FACES action timeline (.json). The timeline identifies when each movement was recorded.</span>
               <span className="button button-primary button-as-label">Browse video</span>
             </label>
           ) : (
@@ -307,7 +327,7 @@ export function MediaCapturePanel({
               type="file"
               accept="application/json,.json"
               aria-label="Choose FACES action timeline"
-              onChange={(event) => void selectTimeline(event.target.files?.[0])}
+              onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void selectTimeline(file) }}
             />
             <label className="button button-secondary" htmlFor={timelineInputId}>
               {uploadedTimeline ? 'Replace action timeline' : 'Add action timeline'}
@@ -338,8 +358,9 @@ export function MediaCapturePanel({
             ) : null}
             {camera.status === 'recording' ? <span className="recording-indicator"><i /> Recording</span> : null}
           </div>
+          <CameraPreflight videoRef={camera.videoRef} active={previewVisible && camera.status === 'ready' && !guidedActive} />
           <div className="camera-actions">
-            {camera.status === 'idle' || camera.status === 'error' ? (
+            {!hideEnableCamera && (camera.status === 'idle' || camera.status === 'error') ? (
               <button className="button button-primary" type="button" onClick={camera.enableCamera}>
                 <Camera aria-hidden="true" size={18} /> Enable camera
               </button>
@@ -355,7 +376,7 @@ export function MediaCapturePanel({
               </button>
             ) : null}
             {recordingControls === 'guided' && camera.status === 'ready' ? (
-              <p className="camera-control-note">Camera ready · start the guided flow above</p>
+              <p className="camera-control-note">Camera ready. Follow the next action at the bottom of the page.</p>
             ) : null}
             {recordingControls === 'guided' && guidedActive && (camera.status === 'starting' || camera.status === 'recording') ? (
               <p className="camera-control-note">Camera and voice guidance are linked</p>
@@ -376,6 +397,7 @@ export function MediaCapturePanel({
       <p className="privacy-footnote">
         Recording bytes are kept in this browser session only until you refresh or close the page.
       </p>
+      {localGuard.dialog}
     </section>
   )
 }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 
 from playwright.sync_api import Browser, Page, expect, sync_playwright
 
@@ -192,7 +193,7 @@ def _case_retryable_server_failures(browser: Browser, base_url: str) -> None:
     _upload_video(page)
     _upload_timeline(page, _sidecar(steps=7))
     _authorize(page)
-    run = page.get_by_role("button", name="Run research analysis")
+    run = page.get_by_role("button", name=re.compile(r"^(Run research analysis|Retry this recording)$"))
 
     run.click()
     expect(page.get_by_role("alert")).to_have_text(
@@ -245,6 +246,17 @@ def _case_nonretryable_capture_rejection(browser: Browser, base_url: str) -> Non
     )
     if attempts != 1:
         raise AssertionError(f"permanent rejection was resubmitted: {attempts}")
+    page.get_by_role("button", name="Clear recording and start over").click()
+    guard = page.get_by_role("dialog", name="Start a new session?")
+    expect(guard).to_be_visible()
+    expect(guard.get_by_role("button", name="Keep current recording")).to_be_focused()
+    guard.get_by_role("button", name="Keep current recording").click()
+    expect(guard).to_have_count(0)
+    expect(page.get_by_role("button", name="Download recorded video")).to_be_enabled()
+    page.get_by_role("button", name="Clear recording and start over").click()
+    guard.get_by_role("button", name="Discard and continue").click()
+    expect(page.get_by_role("heading", name="Before recording")).to_be_visible()
+    expect(page.get_by_role("button", name="Download recorded video")).to_have_count(0)
     _assert_runtime(console_errors, page_errors, expected_statuses=(422,))
     context.close()
 

@@ -52,7 +52,7 @@ describe('guided voice sequence', () => {
     vi.useRealTimers()
   })
 
-  it('runs steps 1 through 7 in order and completes after each three-second hold', () => {
+  it('runs seven movements with action, exact hold, and audible release before advancing', () => {
     const { result } = renderHook(() => useGuidedVoiceSequence())
 
     act(() => result.current.start(false))
@@ -62,11 +62,19 @@ describe('guided voice sequence', () => {
     expect(utterances[0].text).toContain('Keep your face relaxed')
 
     for (let stepIndex = 0; stepIndex < 7; stepIndex += 1) {
-      act(() => utterances[stepIndex].onend?.())
+      expect(utterances[stepIndex * 2].text).toMatch(/Hold now\.$/)
+      expect(utterances[stepIndex * 2].text).not.toMatch(/then (open|relax)/)
+      act(() => utterances[stepIndex * 2].onend?.())
       expect(result.current.phase).toBe('holding')
       expect(result.current.countdown).toBe(3)
 
       act(() => vi.advanceTimersByTime(3_000))
+      expect(result.current.phase).toBe('releasing')
+      expect(result.current.activeStepIndex).toBe(stepIndex)
+      expect(utterances[stepIndex * 2 + 1].text).toBe(
+        stepIndex === 2 || stepIndex === 3 ? 'Open your eyes and relax.' : 'Relax.',
+      )
+      act(() => utterances[stepIndex * 2 + 1].onend?.())
 
       if (stepIndex < 6) {
         expect(result.current.phase).toBe('speaking')
@@ -74,7 +82,7 @@ describe('guided voice sequence', () => {
       }
     }
 
-    expect(speak).toHaveBeenCalledTimes(7)
+    expect(speak).toHaveBeenCalledTimes(14)
     expect(result.current.phase).toBe('complete')
     expect(result.current.completedStepIndexes).toEqual([0, 1, 2, 3, 4, 5, 6])
   })
@@ -89,12 +97,13 @@ describe('guided voice sequence', () => {
 
     act(() => result.current.start(true))
     for (let stepIndex = 0; stepIndex < 8; stepIndex += 1) {
-      act(() => utterances[stepIndex].onend?.())
+      act(() => utterances[stepIndex * 2].onend?.())
       act(() => vi.advanceTimersByTime(3_000))
+      act(() => utterances[stepIndex * 2 + 1].onend?.())
     }
 
-    expect(speak).toHaveBeenCalledTimes(8)
-    expect(utterances[7].text).toContain('reanimation surgery')
+    expect(speak).toHaveBeenCalledTimes(16)
+    expect(utterances[14].text).toContain('reanimated smile')
     expect(result.current.completedStepIndexes).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
     expect(result.current.phase).toBe('complete')
   })
@@ -105,22 +114,30 @@ describe('guided voice sequence', () => {
     act(() => result.current.start(true, recordingOrigin))
 
     for (let stepIndex = 0; stepIndex < 8; stepIndex += 1) {
-      act(() => utterances[stepIndex].onend?.())
+      act(() => vi.advanceTimersByTime(500))
+      act(() => utterances[stepIndex * 2].onend?.())
       act(() => vi.advanceTimersByTime(3_000))
+      act(() => vi.advanceTimersByTime(400))
+      act(() => utterances[stepIndex * 2 + 1].onend?.())
     }
 
     expect(result.current.timeline?.actions).toHaveLength(8)
     expect(result.current.timeline?.actions[0]).toMatchObject({
       id: 'repose',
       promptStartMs: 0,
-      holdStartMs: 0,
-      holdEndMs: 3_000,
-      completionMs: 3_000,
+      holdStartMs: 500,
+      holdEndMs: 3_500,
+      completionMs: 3_900,
     })
     expect(result.current.timeline?.actions[7].id).toBe('reanimated_smile')
     expect(result.current.timeline?.recordingDurationMs).toBeGreaterThanOrEqual(
       result.current.timeline?.actions[7].completionMs ?? Infinity,
     )
+    for (const row of result.current.timeline?.actions ?? []) {
+      expect(row.holdEndMs - row.holdStartMs).toBe(3_000)
+      expect(row.promptStartMs).toBeLessThanOrEqual(row.holdStartMs)
+      expect(row.completionMs).toBeLessThanOrEqual(result.current.timeline!.recordingDurationMs)
+    }
   })
 
   it('does not advance a hold before its monotonic three-second deadline', () => {
@@ -135,8 +152,8 @@ describe('guided voice sequence', () => {
     expect(speak).toHaveBeenCalledTimes(1)
 
     act(() => vi.advanceTimersByTime(1))
-    expect(result.current.phase).toBe('speaking')
-    expect(result.current.activeStepIndex).toBe(1)
+    expect(result.current.phase).toBe('releasing')
+    expect(result.current.activeStepIndex).toBe(0)
     expect(speak).toHaveBeenCalledTimes(2)
   })
 
@@ -149,8 +166,48 @@ describe('guided voice sequence', () => {
       utterances[0].onend?.()
     })
     act(() => vi.advanceTimersByTime(3_000))
+    act(() => {
+      utterances[1].onend?.()
+      utterances[1].onend?.()
+    })
 
     expect(result.current.activeStepIndex).toBe(1)
+    expect(speak).toHaveBeenCalledTimes(3)
+  })
+
+  it('ignores late release callbacks after cancellation and does not publish a timeline', () => {
+    const { result } = renderHook(() => useGuidedVoiceSequence())
+    act(() => result.current.start(false))
+    act(() => utterances[0].onend?.())
+    act(() => vi.advanceTimersByTime(3_000))
+    const staleRelease = utterances[1]
+    expect(staleRelease?.text).toBe('Relax.')
+    act(() => result.current.cancel())
+    act(() => {
+      staleRelease.onend?.()
+      staleRelease.onerror?.()
+      vi.advanceTimersByTime(30_000)
+    })
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.timeline).toBeNull()
+    expect(speak).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['error', 'timeout'] as const)('fails safely when the release cue has a %s', (failure) => {
+    const { result } = renderHook(() => useGuidedVoiceSequence())
+    act(() => result.current.start(false))
+    act(() => utterances[0].onend?.())
+    act(() => vi.advanceTimersByTime(3_000))
+    expect(utterances[1]?.text).toBe('Relax.')
+    act(() => {
+      if (failure === 'error') utterances[1].onerror?.()
+      else vi.advanceTimersByTime(30_000)
+    })
+    act(() => utterances[1].onend?.())
+    expect(result.current.phase).toBe('error')
+    expect(result.current.error).toMatch(/release cue/i)
+    expect(result.current.timeline).toBeNull()
+    expect(result.current.completedStepIndexes).toEqual([])
     expect(speak).toHaveBeenCalledTimes(2)
   })
 

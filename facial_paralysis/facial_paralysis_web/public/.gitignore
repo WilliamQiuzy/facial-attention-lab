@@ -1,0 +1,17 @@
+# Only reviewed, versioned preflight runtime/model artifacts belong here.
+/*
+!/.gitignore
+!/preflight/
+/preflight/*
+!/preflight/README.md
+!/preflight/SHA256SUMS
+!/preflight/LICENSE-Apache-2.0.txt
+!/preflight/blaze_face_short_range_v1.tflite
+!/preflight/preflight.worker.js
+!/preflight/mediapipe-0.10.32/
+/preflight/mediapipe-0.10.32/*
+!/preflight/mediapipe-0.10.32/vision_wasm_internal.js
+!/preflight/mediapipe-0.10.32/vision_wasm_internal.wasm
+!/preflight/mediapipe-0.10.32/vision_wasm_nosimd_internal.js
+!/preflight/mediapipe-0.10.32/vision_wasm_nosimd_internal.wasm
+!/preflight/mediapipe-0.10.32/vision_bundle.cjs.js

@@ -2,8 +2,7 @@ import type { jsPDF as JsPdfDocument } from 'jspdf'
 
 import sourceSansRegular from '../assets/fonts/SourceSans3-Regular.ttf?inline'
 import sourceSansSemibold from '../assets/fonts/SourceSans3-Semibold.ttf?inline'
-
-export const RESEARCH_REPORT_PDF_FILENAME = 'faces-research-movement-report.pdf'
+import { getSessionFilename } from './sessionIdentity'
 
 export interface PdfMeasurement {
   readonly label: string
@@ -250,16 +249,19 @@ export async function buildResearchReportPdf(data: ResearchReportPdfData): Promi
   return new Blob([bytes], { type: 'application/pdf' })
 }
 
-export async function downloadResearchReportPdf(data: ResearchReportPdfData): Promise<void> {
+export async function downloadResearchReportPdf(data: ResearchReportPdfData, recording: File): Promise<void> {
   const blob = await buildResearchReportPdf(data)
   const objectUrl = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = objectUrl
-  anchor.download = RESEARCH_REPORT_PDF_FILENAME
+  anchor.download = getSessionFilename(recording, 'report')
   anchor.rel = 'noopener'
   anchor.hidden = true
-  document.body.append(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+  try {
+    document.body.append(anchor)
+    anchor.click()
+  } finally {
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+  }
 }

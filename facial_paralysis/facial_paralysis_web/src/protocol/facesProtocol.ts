@@ -15,6 +15,9 @@ export interface FacesProtocolStep {
   readonly title: string
   readonly shortLabel: string
   readonly instruction: string
+  /** Live execution cues surround the exact hold; instruction preserves the source protocol. */
+  readonly actionCue: string
+  readonly releaseCue: string
   readonly holdSeconds: 3
   readonly optional: boolean
 }
@@ -33,6 +36,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Repose',
     instruction:
       'Look straight ahead. Keep your face relaxed. Don’t smile or frown. Hold this position for 3 seconds.',
+    actionCue: 'Look straight ahead. Keep your face relaxed. Don’t smile or frown. Hold now.',
+    releaseCue: 'Relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -42,6 +47,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Brows',
     instruction:
       'Raise your eyebrows as high as you can. Hold for 3 seconds, then relax.',
+    actionCue: 'Raise your eyebrows as high as you can. Hold now.',
+    releaseCue: 'Relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -51,6 +58,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Gentle close',
     instruction:
       "Close your eyes gently, like you're falling asleep. Hold for 3 seconds, then open your eyes.",
+    actionCue: "Close your eyes gently, like you're falling asleep. Hold now.",
+    releaseCue: 'Open your eyes and relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -60,6 +69,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Tight close',
     instruction:
       'Close your eyes as tightly as possible, using your facial muscles. Hold for 3 seconds, then open.',
+    actionCue: 'Close your eyes as tightly as possible, using your facial muscles. Hold now.',
+    releaseCue: 'Open your eyes and relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -69,6 +80,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Smile',
     instruction:
       'Smile gently without showing teeth. Hold for 3 seconds, then relax.',
+    actionCue: 'Smile gently without showing teeth. Hold now.',
+    releaseCue: 'Relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -78,6 +91,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Pucker',
     instruction:
       "Purse your lips like you're going to whistle or give a kiss. Hold for 3 seconds, then relax.",
+    actionCue: "Purse your lips like you're going to whistle or give a kiss. Hold now.",
+    releaseCue: 'Relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -87,6 +102,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Lower teeth',
     instruction:
       'Open your mouth and pull your lower lip down to show your bottom teeth. Hold for 3 seconds, then relax.',
+    actionCue: 'Open your mouth and pull your lower lip down to show your bottom teeth. Hold now.',
+    releaseCue: 'Relax.',
     holdSeconds: 3,
     optional: false,
   },
@@ -96,6 +113,8 @@ export const FACES_PROTOCOL: readonly FacesProtocolStep[] = [
     shortLabel: 'Reanimated smile',
     instruction:
       'If you’ve had facial reanimation surgery, please attempt your reanimated smile now. Hold for 3 seconds, then relax.',
+    actionCue: 'Please attempt your reanimated smile. Hold now.',
+    releaseCue: 'Relax.',
     holdSeconds: 3,
     optional: true,
   },

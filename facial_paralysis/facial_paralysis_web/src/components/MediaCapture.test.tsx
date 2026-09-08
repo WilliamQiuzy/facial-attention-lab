@@ -117,6 +117,8 @@ describe('MediaCapture', () => {
 
     await user.upload(input, first)
     await user.upload(input, second)
+    expect(screen.getByRole('dialog')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
     expect(revoke).toHaveBeenCalledWith('blob:faces-test')
     const callsBeforeUnmount = revoke.mock.calls.length
     unmount()
@@ -140,7 +142,25 @@ describe('MediaCapture', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
   })
 
-  it('clears the previous recording when an invalid replacement is selected', async () => {
+  it('can select the same replacement again after choosing to keep the original', async () => {
+    const user = userEvent.setup()
+    const changed = vi.fn()
+    render(<MediaCapture onRecordingChange={changed} />)
+    await openUpload(user)
+    const first = new File(['first'], 'first.mp4', { type: 'video/mp4' })
+    const second = new File(['second'], 'second.mp4', { type: 'video/mp4' })
+    const input = screen.getByLabelText('Choose LifeLink Face video')
+    await user.upload(input, first)
+    await user.upload(input, second)
+    await user.click(screen.getByRole('button', { name: 'Keep current recording' }))
+    expect(screen.getByText('first.mp4')).toBeVisible()
+    await user.upload(input, second)
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
+    expect(changed).toHaveBeenLastCalledWith(second, 'livelink-upload')
+    expect(screen.getByText('second.mp4')).toBeVisible()
+  })
+
+  it('preserves the previous recording when an invalid replacement is selected', async () => {
     const user = userEvent.setup({ applyAccept: false })
     const onRecordingChange = vi.fn()
     render(<MediaCapture onRecordingChange={onRecordingChange} />)
@@ -152,11 +172,10 @@ describe('MediaCapture', () => {
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), invalid)
 
     expect(onRecordingChange).toHaveBeenLastCalledWith(
-      null,
+      valid,
       'livelink-upload',
-      { preserveProtocolChoice: true },
     )
-    expect(screen.queryByText('first-session.mp4')).not.toBeInTheDocument()
+    expect(screen.getByText('first-session.mp4')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(/supported video/i)
   })
 

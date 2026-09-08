@@ -56,6 +56,7 @@ def _assert_geometry(page: Page, label: str, width: int, height: int) -> None:
             return { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }
           })
           return {
+            setup: Boolean(element.closest('.is-journey-setup')),
             stage: { width: stage.width, height: stage.height },
             guide: { width: parseFloat(guide.width), height: parseFloat(guide.height) },
             objectFit: video.objectFit,
@@ -70,7 +71,7 @@ def _assert_geometry(page: Page, label: str, width: int, height: int) -> None:
 
     stage_ratio = metrics["stage"]["width"] / metrics["stage"]["height"]
     portrait_phone = width <= 560 and height > width
-    expected_ratio = 3 / 4 if portrait_phone else 4 / 3
+    expected_ratio = 1 if metrics["setup"] and width <= 620 else 3 / 4 if portrait_phone else 4 / 3
     if abs(stage_ratio - expected_ratio) > 0.04:
         raise AssertionError(
             f"{label}: camera frame ratio {stage_ratio:.3f} is not stable at {expected_ratio:.3f}"
@@ -104,7 +105,8 @@ def _assert_geometry(page: Page, label: str, width: int, height: int) -> None:
         raise AssertionError(f"{label}: page has horizontal overflow")
     if width <= 560:
         navigation = metrics["navigation"]
-        if navigation is None or navigation["height"] > 96:
+        maximum_navigation_height = 96 if height <= 560 else 160
+        if navigation is None or navigation["height"] > maximum_navigation_height:
             raise AssertionError(f"{label}: mobile journey controls obscure too much content: {navigation}")
         for index, first in enumerate(metrics["navigationButtons"]):
             for second in metrics["navigationButtons"][index + 1 :]:

@@ -254,6 +254,62 @@ describe('App', () => {
     expect(back).toBeDisabled()
   })
 
+  it('retains upload and timeline across preparation and protects a changed movement plan', async () => {
+    const user = userEvent.setup()
+    render(<App checkEndpoint={readyEndpoint} />)
+    await uploadVideo(user)
+    await uploadTimeline(user, false)
+    await user.click(screen.getByRole('button', { name: 'Return to Prepare' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to camera setup' }))
+    expect(screen.getByText('faces-session.webm')).toBeVisible()
+    expect(screen.getByText('faces-session.timeline.json')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Return to Prepare' }))
+    await user.click(screen.getByRole('radio', { name: /yes — include reanimation smile/i }))
+    await user.click(screen.getByRole('button', { name: 'Keep current recording' }))
+    expect(screen.getByRole('radio', { name: /no — standard assessment/i })).toBeChecked()
+    await user.click(screen.getByRole('radio', { name: /yes — include reanimation smile/i }))
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
+    expect(screen.getByRole('radio', { name: /yes — include reanimation smile/i })).toBeChecked()
+    expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
+  })
+
+  it('protects source changes and clears old media only after confirmation', async () => {
+    const user = userEvent.setup()
+    render(<App checkEndpoint={readyEndpoint} />)
+    await uploadVideo(user)
+    await user.click(screen.getByRole('button', { name: 'Return to live camera' }))
+    await user.click(screen.getByRole('button', { name: 'Keep current recording' }))
+    expect(screen.getByText('faces-session.webm')).toBeVisible()
+    await user.click(screen.getByRole('tab', { name: 'Use this device' }))
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
+    expect(screen.getByRole('tab', { name: 'Use this device' })).toHaveAttribute('aria-selected', 'true')
+    await user.click(screen.getByRole('tab', { name: 'Upload from LifeLink' }))
+    expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
+  })
+
+  it('protects reload only while a recording exists and supports visited history steps', async () => {
+    const user = userEvent.setup()
+    render(<App checkEndpoint={readyEndpoint} />)
+    const initial = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(initial)
+    expect(initial.defaultPrevented).toBe(false)
+    await uploadVideo(user)
+    const retained = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(retained)
+    expect(retained.defaultPrevented).toBe(true)
+    act(() => {
+      window.history.replaceState({}, '', '#step-1')
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Return to Analyze' }))
+    await user.click(screen.getByRole('button', { name: 'Clear recording and start over' }))
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
+    const cleared = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(cleared)
+    expect(cleared.defaultPrevented).toBe(false)
+  })
+
   it('uses an internal clinical-review product message without exposing the model release', () => {
     const { container } = render(<App demonstrationEnabled checkEndpoint={pendingEndpoint} />)
     expect(screen.getByText('Research use only')).toBeInTheDocument()
@@ -297,6 +353,8 @@ describe('App', () => {
 
     await user.click(screen.getByRole('button', { name: 'Start a new session' }))
 
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
+
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
     expect(screen.queryByText('DEMONSTRATION - NOT MODEL OUTPUT')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
@@ -316,6 +374,11 @@ describe('App', () => {
 
     await user.click(clearButton)
 
+    await user.click(screen.getByRole('button', { name: 'Keep current recording' }))
+    expect(screen.getByText('faces-session.webm')).toBeInTheDocument()
+    await user.click(clearButton)
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
+
     expect(screen.queryByText('faces-session.webm')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Before recording' })).toBeVisible()
     expect(screen.queryByRole('tab', { name: 'Use this device' })).not.toBeInTheDocument()
@@ -328,6 +391,7 @@ describe('App', () => {
     await uploadVideo(user)
     await user.click(screen.getByRole('button', { name: 'Preview demonstration results' }))
     await user.click(screen.getByRole('button', { name: 'Start a new session' }))
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
 
     expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'auto' })
   })
@@ -416,6 +480,7 @@ describe('App', () => {
 
     const replacement = new File(['replacement'], 'replacement.webm', { type: 'video/webm' })
     await user.upload(screen.getByLabelText('Choose LifeLink Face video'), replacement)
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
     resolveAnalysis?.(acceptedResult())
 
     await waitFor(() => expect(screen.getByText('replacement.webm')).toBeInTheDocument())
@@ -459,6 +524,11 @@ describe('App', () => {
     expect(screen.queryByText('Not collected')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Run research analysis' })).not.toBeInTheDocument()
     expect(document.title).toMatch(/research movement report/i)
+
+    await user.click(within(screen.getByRole('list', { name: 'Strongest stable action influences' })).getByRole('link', { name: 'Eyebrow raise' }))
+    expect(window.location.hash).toBe('#research-report')
+    expect(screen.getByRole('heading', { name: /research movement report/i })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'All evidence for Eyebrow raise' })).toHaveAttribute('aria-expanded', 'true')
 
     await user.click(screen.getByRole('link', { name: /back to session summary/i }))
     expect(screen.getByText('faces-session.webm')).toBeInTheDocument()

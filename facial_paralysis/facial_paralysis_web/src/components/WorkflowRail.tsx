@@ -2,6 +2,9 @@ import { Check } from 'lucide-react'
 
 interface WorkflowRailProps {
   readonly current: 1 | 2 | 3 | 4 | 5
+  readonly onNavigate?: (step: 1 | 2 | 3 | 4 | 5) => void
+  readonly availableSteps?: readonly number[]
+  readonly locked?: boolean
 }
 
 const steps = [
@@ -12,7 +15,7 @@ const steps = [
   ['Report', 'Open the result'],
 ] as const
 
-export function WorkflowRail({ current }: WorkflowRailProps) {
+export function WorkflowRail({ current, onNavigate, availableSteps = [], locked = false }: WorkflowRailProps) {
   const [currentTitle, currentDescription] = steps[current - 1]
 
   return (
@@ -30,6 +33,7 @@ export function WorkflowRail({ current }: WorkflowRailProps) {
               aria-current={active ? 'step' : undefined}
               aria-label={`Step ${number} of 5, ${title}, ${status}`}
             >
+              {onNavigate && availableSteps.includes(number) && number !== current ? <button className="workflow-step-link" type="button" disabled={locked} aria-label={`Return to ${title}`} onClick={() => onNavigate(number)} /> : null}
               <span className="workflow-number">{completed ? <Check aria-hidden="true" size={17} /> : number}</span>
               <span><strong>{title}</strong><small>{description}</small></span>
             </li>
@@ -41,6 +45,10 @@ export function WorkflowRail({ current }: WorkflowRailProps) {
         <strong>{currentTitle}</strong>
         <small>{currentDescription}</small>
       </div>
+      <details className="workflow-compact-menu">
+        <summary><strong>{current}/5 · {currentTitle}</strong><span>All steps</span></summary>
+        <div>{steps.map(([title], index) => <button type="button" key={title} disabled={locked || !availableSteps.includes(index + 1) || current === index + 1} aria-current={current === index + 1 ? 'step' : undefined} onClick={(event) => { onNavigate?.((index + 1) as 1 | 2 | 3 | 4 | 5); event.currentTarget.closest('details')?.removeAttribute('open') }}>{index + 1}. {title}{current === index + 1 ? ' · Current' : ''}</button>)}</div>
+      </details>
     </nav>
   )
 }

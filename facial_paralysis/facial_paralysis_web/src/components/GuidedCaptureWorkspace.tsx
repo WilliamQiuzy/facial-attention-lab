@@ -11,6 +11,14 @@ import {
 } from './MediaCapture'
 import { PatientMovementGuide, type PatientGuidePhase } from './PatientMovementGuide'
 import { VoiceGuide } from './VoiceGuide'
+import type { RequestRecordingChange } from './RecordingGuard'
+
+export interface CaptureSetupControl {
+  readonly status: ReturnType<typeof useCameraRecorder>['status']
+  readonly voiceSupported: boolean
+  readonly enableCamera: () => Promise<void>
+  readonly startRecording: () => void
+}
 
 type GuidedSessionPhase =
   | 'idle'
@@ -30,6 +38,8 @@ interface GuidedCaptureWorkspaceProps {
   readonly onSetupReadyChange?: (ready: boolean) => void
   readonly onCaptureModeChange?: (mode: CaptureMode) => void
   readonly onGuidedActiveChange?: (active: boolean) => void
+  readonly onSetupControlChange?: (control: CaptureSetupControl) => void
+  readonly onRequestChange?: RequestRecordingChange
 }
 
 export type GuidedJourneyStage = 'prepare' | 'setup' | 'record' | 'review'
@@ -64,6 +74,8 @@ export function GuidedCaptureWorkspace({
   onSetupReadyChange,
   onCaptureModeChange,
   onGuidedActiveChange,
+  onSetupControlChange,
+  onRequestChange,
 }: GuidedCaptureWorkspaceProps) {
   const camera = useCameraRecorder()
   const voice = useGuidedVoiceSequence()
@@ -108,7 +120,7 @@ export function GuidedCaptureWorkspace({
     onGuidedActiveChange?.(guidedActive)
   }, [guidedActive, onGuidedActiveChange])
 
-  const startGuidedRecording = () => {
+  const startGuidedRecording = useCallback(() => {
     if (
       runLockedRef.current ||
       mode !== 'camera' ||
@@ -129,7 +141,17 @@ export function GuidedCaptureWorkspace({
     setCancelledMessage(null)
     setSessionPhase('starting')
     camera.startRecording()
-  }
+  }, [camera.status, camera.startRecording, mode, reanimatedSmileApplicable, recordingStartAllowed, voice.supported])
+
+  // The fixed footer may still hold the setup snapshot on the first record-stage
+  // click. Dispatch through the current render's guard, never the old stage.
+  const startGuidedRecordingRef = useRef(startGuidedRecording)
+  startGuidedRecordingRef.current = startGuidedRecording
+  const startFromJourneyControl = useCallback(() => startGuidedRecordingRef.current(), [])
+
+  useEffect(() => {
+    onSetupControlChange?.({ status: camera.status, voiceSupported: voice.supported, enableCamera: camera.enableCamera, startRecording: startFromJourneyControl })
+  }, [camera.status, camera.enableCamera, voice.supported, onSetupControlChange, startFromJourneyControl])
 
   const stopAndDiscard = useCallback(() => {
     if (!runLockedRef.current) return
@@ -265,11 +287,12 @@ export function GuidedCaptureWorkspace({
   }
   if (sessionPhase === 'starting') statusText = 'Starting the video recorder before the first voice instruction…'
   if (sessionPhase === 'guiding' && voice.phase === 'speaking') {
-    statusText = `Recording · Step ${(voice.activeStepIndex ?? 0) + 1} · Voice instruction playing`
+    statusText = `Recording · Movement ${(voice.activeStepIndex ?? 0) + 1} · Voice instruction playing`
   }
   if (sessionPhase === 'guiding' && voice.phase === 'holding') {
-    statusText = `Recording · Step ${(voice.activeStepIndex ?? 0) + 1} · Hold steady for ${voice.countdown ?? 1} seconds`
+    statusText = `Recording · Movement ${(voice.activeStepIndex ?? 0) + 1} · Hold steady for ${voice.countdown ?? 1} seconds`
   }
+  if (sessionPhase === 'guiding' && voice.phase === 'releasing') statusText = 'You can relax. Listen for the next movement.'
   if (sessionPhase === 'finalizing') statusText = 'All guided movements are complete. Finalizing the video…'
   if (sessionPhase === 'complete') statusText = 'Guided recording complete. Review the video below before analysis.'
   if (sessionPhase === 'cancelled' && cancelledMessage) statusText = cancelledMessage
@@ -287,6 +310,8 @@ export function GuidedCaptureWorkspace({
       ? 'finalizing'
       : voice.phase === 'holding'
         ? 'holding'
+        : voice.phase === 'releasing'
+          ? 'releasing'
         : 'speaking'
 
   return (
@@ -327,7 +352,7 @@ export function GuidedCaptureWorkspace({
         </section>
       ) : null}
 
-      {showCapture ? <MediaCapturePanel
+      <div className="capture-workspace-slot" hidden={!showCapture}><MediaCapturePanel
         camera={camera}
         mode={mode}
         onModeChange={changeMode}
@@ -336,7 +361,10 @@ export function GuidedCaptureWorkspace({
         guidedActive={guidedActive}
         reportCameraRecording={false}
         showCameraError={!sessionError}
-      /> : null}
+        onRequestChange={onRequestChange}
+        hideEnableCamera={journeyEnabled && Boolean(onSetupControlChange)}
+        previewVisible={showCapture}
+      /></div>
 
       {showSessionControl ? <section className={`guided-session-control ${guidedActive ? 'is-active' : ''}`} aria-labelledby="guided-session-title">
         <div className="guided-control-copy">
@@ -365,12 +393,8 @@ export function GuidedCaptureWorkspace({
           </li>
         </ol>
 
-        <div className="guided-control-action">
-          {mode !== 'camera' ? (
-            <button className="button button-primary" type="button" onClick={() => changeMode('camera')}>
-              <Camera aria-hidden="true" size={18} /> Return to live camera
-            </button>
-          ) : camera.status === 'idle' || camera.status === 'error' ? (
+        <div className="guided-control-action" hidden={Boolean(onSetupControlChange) && mode === 'camera' && !guidedActive}>
+          {mode !== 'camera' ? null : camera.status === 'idle' || camera.status === 'error' ? (
             <button className="button button-primary" type="button" onClick={camera.enableCamera}>
               <Camera aria-hidden="true" size={18} /> Enable front camera
             </button>

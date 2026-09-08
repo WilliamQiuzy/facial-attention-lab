@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   },
   voice: {
     supported: true,
-    phase: 'idle' as 'idle' | 'speaking' | 'holding' | 'complete' | 'error',
+    phase: 'idle' as 'idle' | 'speaking' | 'holding' | 'releasing' | 'complete' | 'error',
     activeStepIndex: null as number | null,
     countdown: null as number | null,
     completedStepIndexes: [] as number[],
@@ -35,7 +35,8 @@ vi.mock('../hooks/useCameraRecorder', () => ({
   useCameraRecorder: () => mocks.camera,
 }))
 
-vi.mock('../hooks/useGuidedVoiceSequence', () => ({
+vi.mock('../hooks/useGuidedVoiceSequence', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../hooks/useGuidedVoiceSequence')>(),
   useGuidedVoiceSequence: () => mocks.voice,
 }))
 
@@ -111,6 +112,23 @@ describe('GuidedCaptureWorkspace', () => {
     expect(mocks.camera.startRecording).not.toHaveBeenCalled()
   })
 
+  it('uses current recording-stage readiness even through the setup control callback', () => {
+    const control = vi.fn()
+    const props = {
+      reanimatedSmileApplicable: false as const,
+      onReanimatedSmileApplicableChange: vi.fn(),
+      onRecordingChange: vi.fn(),
+      onSetupControlChange: control,
+    }
+    const { rerender } = render(<GuidedCaptureWorkspace {...props} journeyStage="setup" />)
+    const start = control.mock.calls.at(-1)![0].startRecording
+    act(() => start())
+    expect(mocks.camera.startRecording).not.toHaveBeenCalled()
+    rerender(<GuidedCaptureWorkspace {...props} journeyStage="record" />)
+    act(() => { start(); start() })
+    expect(mocks.camera.startRecording).toHaveBeenCalledTimes(1)
+  })
+
   it('names the exact remaining setup requirement instead of leaving a disabled mystery button', () => {
     const props = {
       journeyStage: 'setup' as const,
@@ -121,13 +139,13 @@ describe('GuidedCaptureWorkspace', () => {
       <GuidedCaptureWorkspace {...props} reanimatedSmileApplicable={null} />,
     )
 
-    expect(screen.getByRole('status')).toHaveTextContent(
+    expect(document.querySelector('.guided-control-copy [role="status"]')).toHaveTextContent(
       'Camera is ready. Return to preparation and choose whether to include a reanimation smile.',
     )
 
     mocks.voice.supported = false
     rerender(<GuidedCaptureWorkspace {...props} reanimatedSmileApplicable={false} />)
-    expect(screen.getByRole('status')).toHaveTextContent(
+    expect(document.querySelector('.guided-control-copy [role="status"]')).toHaveTextContent(
       'This browser cannot play the guided voice sequence.',
     )
     expect(screen.getAllByText(/This browser cannot play the guided voice sequence/)).toHaveLength(1)
@@ -174,7 +192,7 @@ describe('GuidedCaptureWorkspace', () => {
 
     const workspace = container.querySelector('.workspace')
     const guidance = container.querySelector('#protocol')
-    const capture = container.querySelector('.capture-card')
+    const capture = container.querySelector('.capture-workspace-slot')
     const recordingControls = container.querySelector('.guided-session-control')
     expect(workspace).not.toBeNull()
     expect(Array.from(workspace?.children ?? [])).toEqual([
@@ -286,7 +304,7 @@ describe('GuidedCaptureWorkspace', () => {
         }),
       )
     })
-    expect(screen.getByRole('status')).toHaveTextContent(/recording complete/i)
+    expect(document.querySelector('.guided-control-copy [role="status"]')).toHaveTextContent(/recording complete/i)
   })
 
   it('keeps an automatic visual and text cue visible throughout recording', async () => {
@@ -309,7 +327,7 @@ describe('GuidedCaptureWorkspace', () => {
     const patientGuide = await screen.findByRole('region', {
       name: 'Patient movement guidance',
     })
-    expect(within(patientGuide).getByText('Step 2 of 7')).toBeInTheDocument()
+    expect(within(patientGuide).getByText('Movement 2 of 7')).toBeInTheDocument()
     expect(
       within(patientGuide).getByRole('heading', { name: 'Eyebrow Raise' }),
     ).toBeInTheDocument()

@@ -24,9 +24,11 @@ def _route_ready(page: Page) -> None:
 
 
 def _assert_clean_runtime(page: Page, console_errors: list[str], page_errors: list[str]) -> None:
-    if console_errors or page_errors:
+    # MediaPipe's WASM runtime writes this single informational line to stderr.
+    errors = [message for message in console_errors if message != "INFO: Created TensorFlow Lite XNNPACK delegate for CPU."]
+    if errors or page_errors:
         raise AssertionError(
-            f"browser runtime errors: console={console_errors}, page={page_errors}"
+            f"browser runtime errors: console={errors}, page={page_errors}"
         )
 
 
@@ -109,7 +111,8 @@ def _case_endpoint_retry(browser: Browser, base_url: str) -> None:
     page.get_by_role("radio", name="No — standard assessment", exact=False).check()
     page.get_by_role("button", name="Continue to camera setup").click()
     expect(page.get_by_text("Research endpoint unavailable", exact=True)).to_be_visible()
-    expect(page.get_by_role("button", name="Continue to recording")).to_be_disabled()
+    expect(page.get_by_role("button", name="Continue to recording")).to_have_count(0)
+    expect(page.get_by_role("button", name="Enable camera", exact=True)).to_be_enabled()
     page.get_by_role("button", name="Retry endpoint check").click()
     expect(page.get_by_text("Analysis endpoint ready", exact=True)).to_be_visible()
     if attempts != 2:
@@ -135,7 +138,7 @@ def _case_permission_denied(browser: Browser, base_url: str) -> None:
         """,
     )
     _choose_and_open_setup(page, base_url)
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     alert = page.get_by_role("alert")
     expect(alert).to_contain_text("Camera permission was denied")
     expect(alert).not_to_contain_text("private device label")
@@ -157,7 +160,7 @@ def _case_camera_missing(browser: Browser, base_url: str) -> None:
         """,
     )
     _choose_and_open_setup(page, base_url)
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     alert = page.get_by_role("alert")
     expect(alert).to_contain_text("No front-facing camera was found")
     expect(alert).not_to_contain_text("private device label")
@@ -176,7 +179,7 @@ def _case_speech_unavailable(browser: Browser, base_url: str) -> None:
         """,
     )
     _choose_and_open_setup(page, base_url)
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     expect(page.get_by_text("This browser cannot play the guided voice sequence", exact=False)).to_be_visible()
     expect(page.get_by_role("button", name="Continue to recording")).to_be_disabled()
     expect(page.get_by_role("tab", name="Upload from LifeLink")).to_be_enabled()
@@ -203,7 +206,7 @@ def _case_active_recording_lock(browser: Browser, base_url: str) -> None:
         """,
     )
     _choose_and_open_setup(page, base_url, include_step_8=True)
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     next_button = page.get_by_role("button", name="Continue to recording")
     expect(next_button).to_be_enabled(timeout=10_000)
     next_button.click()

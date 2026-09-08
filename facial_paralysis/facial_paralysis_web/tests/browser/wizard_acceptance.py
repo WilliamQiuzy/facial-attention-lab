@@ -111,7 +111,8 @@ def _run_viewport(page: Page, label: str, width: int, height: int) -> None:
     expect(page.locator(".journey-preparation")).to_be_hidden()
     expect(page.locator(".analysis-section")).to_be_hidden()
     expect(page.get_by_role("button", name="Back to preparation")).to_be_visible()
-    expect(page.get_by_role("button", name="Continue to recording")).to_be_disabled()
+    expect(page.get_by_role("button", name="Continue to recording")).to_have_count(0)
+    expect(page.get_by_role("button", name="Enable camera", exact=True)).to_be_enabled()
     _assert_journey_controls_in_view(page, f"{label} setup")
     _assert_no_overflow(page, f"{label} setup")
     _screenshot(page, f"{label}-step-2-setup")
@@ -119,7 +120,7 @@ def _run_viewport(page: Page, label: str, width: int, height: int) -> None:
     if label != "desktop":
         return
 
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     expect(page.get_by_role("button", name="Continue to recording")).to_be_enabled(timeout=10_000)
 
     page.get_by_role("tab", name="Upload from LifeLink").click()
@@ -128,7 +129,7 @@ def _run_viewport(page: Page, label: str, width: int, height: int) -> None:
     _screenshot(page, "desktop-step-2-upload-recovery")
     page.get_by_role("button", name="Return to live camera").click()
     expect(page.get_by_role("tab", name="Use this device")).to_have_attribute("aria-selected", "true")
-    page.get_by_role("button", name="Enable front camera").click()
+    page.get_by_role("button", name="Enable camera", exact=True).click()
     expect(page.get_by_role("button", name="Continue to recording")).to_be_enabled(timeout=10_000)
 
     page.get_by_role("button", name="Continue to recording").click()

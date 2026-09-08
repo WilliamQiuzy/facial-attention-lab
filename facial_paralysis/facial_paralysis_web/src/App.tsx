@@ -2,12 +2,13 @@ import { ArrowLeft, ArrowRight, Camera, Check, LockKeyhole, ShieldCheck, Sparkle
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { AppHeader } from './components/AppHeader'
-import { GuidedCaptureWorkspace } from './components/GuidedCaptureWorkspace'
+import { GuidedCaptureWorkspace, type CaptureSetupControl } from './components/GuidedCaptureWorkspace'
 import type { RecordingChangeOptions } from './components/MediaCapture'
 import { RecordingDownloadButton } from './components/RecordingDownloadButton'
 import { ResultsView, type DisplayResult } from './components/ResultsView'
 import { WorkflowRail } from './components/WorkflowRail'
-import { ReanimationSmileChoice } from './components/VoiceGuide'
+import { ReanimationSmileChoice, VoiceSoundTest } from './components/VoiceGuide'
+import { useRecordingGuard } from './components/RecordingGuard'
 import { createDemonstrationResult } from './model/demonstration'
 import {
   analyzeRecording,
@@ -18,6 +19,7 @@ import {
   type ResearchInferenceResult,
 } from './model/inference'
 import './styles/app.css'
+import './styles/journeyUx.css'
 
 type AnalyzeFunction = typeof analyzeRecording
 type EndpointCheckFunction = typeof checkResearchEndpoint
@@ -56,7 +58,9 @@ export function App({
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [analysisRetryAllowed, setAnalysisRetryAllowed] = useState(true)
   const [sessionKey, setSessionKey] = useState(0)
-  const [journeyStep, setJourneyStep] = useState<JourneyStep>(1)
+  const [journeyStep, setJourneyStepState] = useState<JourneyStep>(1)
+  const [setupControl, setSetupControl] = useState<CaptureSetupControl | null>(null)
+  const [analysisElapsed, setAnalysisElapsed] = useState(0)
   const [captureSetupReady, setCaptureSetupReady] = useState(false)
   const [captureMode, setCaptureMode] = useState<'upload' | 'camera'>('camera')
   const [guidedRecordingActive, setGuidedRecordingActive] = useState(false)
@@ -69,9 +73,37 @@ export function App({
   const inFlightRef = useRef(false)
   const journeyPanelRef = useRef<HTMLDivElement | null>(null)
   const journeyFocusReadyRef = useRef(false)
+  const visitedStepRef = useRef(1)
+  visitedStepRef.current = Math.max(visitedStepRef.current, journeyStep)
+  const recordingGuard = useRecordingGuard(recording)
+  const canVisit = (step: number) => step <= visitedStepRef.current && (
+    step === 1 || (step === 2 && (reanimatedSmileApplicable !== null || Boolean(recording)))
+    || (step === 3 && (captureSetupReady || Boolean(recording)))
+    || (step === 4 && Boolean(recording)) || (step === 5 && Boolean(result))
+  )
+  const navigationRef = useRef({ step: journeyStep, locked: false, canVisit })
+  navigationRef.current = { step: journeyStep, locked: guidedRecordingActive || analysisState === 'running', canVisit }
+  const setJourneyStep = useCallback((step: JourneyStep) => {
+    setJourneyStepState(step)
+    if (window.location.hash !== `#step-${step}`) window.history.pushState({ facesStep: step }, '', `#step-${step}`)
+  }, [])
 
   useEffect(() => {
-    const updateRoute = () => setReportRoute(window.location.hash === '#research-report')
+    const updateRoute = () => {
+      const navigation = navigationRef.current
+      if (navigation.locked) {
+        window.history.replaceState({ facesStep: navigation.step }, '', `#step-${navigation.step}`)
+        return
+      }
+      setReportRoute(window.location.hash === '#research-report')
+      const requested = /^#step-([1-5])$/.exec(window.location.hash)
+      if (requested) {
+        const step = Number(requested[1]) as JourneyStep
+        if (navigation.canVisit(step)) setJourneyStepState(step)
+        else window.history.replaceState({ facesStep: navigation.step }, '', `#step-${navigation.step}`)
+      }
+    }
+    if (window.location.hash !== '#research-report') window.history.replaceState({ facesStep: 1 }, '', '#step-1')
     window.addEventListener('hashchange', updateRoute)
     window.addEventListener('popstate', updateRoute)
     return () => {
@@ -79,6 +111,21 @@ export function App({
       window.removeEventListener('popstate', updateRoute)
     }
   }, [])
+
+  useEffect(() => {
+    if (!recording && !guidedRecordingActive) return
+    const protect = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', protect)
+    return () => window.removeEventListener('beforeunload', protect)
+  }, [recording, guidedRecordingActive])
+
+  useEffect(() => {
+    if (analysisState !== 'running') return
+    const startedAt = Date.now()
+    setAnalysisElapsed(0)
+    const timer = window.setInterval(() => setAnalysisElapsed(Math.floor((Date.now() - startedAt) / 1_000)), 1_000)
+    return () => window.clearInterval(timer)
+  }, [analysisState])
 
   useEffect(() => {
     document.title = reportRoute
@@ -140,7 +187,7 @@ export function App({
     } else {
       setReanimatedSmileApplicable(null)
     }
-  }, [])
+  }, [setJourneyStep])
 
   const handleReanimatedSmileApplicableChange = useCallback((applicable: boolean) => {
     analysisGenerationRef.current += 1
@@ -213,12 +260,14 @@ export function App({
     setAuthorizedEndpoint(false)
     setReanimatedSmileApplicable(null)
     setCaptureTimeline(null)
-    setJourneyStep(1)
+    visitedStepRef.current = 1
+    setJourneyStepState(1)
     setCaptureSetupReady(false)
+    setSetupControl(null)
     setCaptureMode('camera')
     setGuidedRecordingActive(false)
     setReportRoute(false)
-    window.history.replaceState(null, '', '#top')
+    window.history.replaceState({ facesStep: 1 }, '', '#step-1')
     setSessionKey((current) => current + 1)
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     window.scrollTo?.({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' })
@@ -230,7 +279,7 @@ export function App({
   }
 
   const closeReport = () => {
-    window.history.pushState({ report: false }, '', '#analysis')
+    window.history.pushState({ facesStep: 5 }, '', '#step-5')
     setReportRoute(false)
   }
 
@@ -239,13 +288,23 @@ export function App({
     if (active) setJourneyStep(3)
   }, [])
 
-  const confirmAndReset = () => {
-    if (
-      result?.mode === 'research-inference'
-      && !window.confirm('Start a new session? This deletes the current browser recording and research report.')
-    ) return
-    reset()
+  const confirmAndReset = () => recordingGuard.requestChange(reset, 'Start a new session?')
+  const changeProtocol = (applicable: boolean) => {
+    if (applicable === reanimatedSmileApplicable) return
+    recordingGuard.requestChange(() => {
+      if (recording) reset()
+      handleReanimatedSmileApplicableChange(applicable)
+    }, 'Change the movement plan and record again?')
   }
+  const navigateToStep = (step: JourneyStep) => {
+    if (!navigationRef.current.locked && canVisit(step)) setJourneyStep(step)
+  }
+  const setupNote = recording ? 'Your complete recording is available to review.'
+    : setupControl?.status === 'requesting' ? 'Choose Allow in the browser camera prompt.'
+    : !setupControl || setupControl.status === 'idle' || setupControl.status === 'error' ? 'Enable your camera to check the framing.'
+    : !setupControl.voiceSupported ? 'Voice guidance is unavailable in this browser. Try a browser with speech support.'
+    : endpointState !== 'ready' && !demonstrationEnabled ? 'The analysis service must be ready before recording.'
+    : 'Camera ready. Check the framing, then continue.'
 
   const endpointStatusPanel = apiEndpoint ? (
     endpointState === 'ready' ? (
@@ -285,7 +344,7 @@ export function App({
         <div hidden={reportRoute} aria-hidden={reportRoute ? 'true' : undefined}>
         <div className="journey-shell" id="journey">
           <section className="workflow-section" aria-label="Current workflow stage">
-            <WorkflowRail current={journeyStep} />
+            <WorkflowRail current={journeyStep} onNavigate={navigateToStep} availableSteps={[1, 2, 3, 4, 5].filter(canVisit)} locked={guidedRecordingActive || analysisState === 'running'} />
           </section>
 
           <div className={`journey-panel is-step-${journeyStep}`} ref={journeyPanelRef}>
@@ -295,9 +354,8 @@ export function App({
               </header>
             ) : journeyStep === 2 ? (
               <header className="journey-stage-heading">
-                <span className="journey-stage-kicker">Step 2 of 5 · Set up</span>
                 <h1 data-journey-heading tabIndex={-1}>Set up the camera</h1>
-                <p>Use this device by default, confirm framing, and keep the same protocol choice you reviewed.</p>
+                <p>Position your face in the guide, then continue.</p>
               </header>
             ) : journeyStep === 3 ? (
               <header className="journey-stage-heading">
@@ -322,8 +380,7 @@ export function App({
             {journeyStep === 1 ? (
               <ReanimationSmileChoice
                 value={reanimatedSmileApplicable}
-                onChange={handleReanimatedSmileApplicableChange}
-                disabled={Boolean(recording)}
+                onChange={changeProtocol}
                 prominent
               />
             ) : null}
@@ -333,6 +390,7 @@ export function App({
                 {preparationItems.map((item) => <li key={item}><span><Check aria-hidden="true" size={17} /></span>{item}</li>)}
               </ul>
             </section>
+            {journeyStep === 1 ? <VoiceSoundTest /> : null}
 
             <div id="capture" key={sessionKey} hidden={journeyStep === 5}>
               <GuidedCaptureWorkspace
@@ -344,6 +402,8 @@ export function App({
                 onSetupReadyChange={setCaptureSetupReady}
                 onCaptureModeChange={setCaptureMode}
                 onGuidedActiveChange={handleGuidedActiveChange}
+                onSetupControlChange={setSetupControl}
+                onRequestChange={recordingGuard.requestChange}
               />
             </div>
 
@@ -354,8 +414,8 @@ export function App({
             <section className="analysis-section" hidden={journeyStep !== 4} id="analysis" aria-labelledby="analysis-title">
           <div className="analysis-copy">
             <span className="eyebrow">Movement analysis</span>
-            <h2 id="analysis-title">Validate the path before any result appears.</h2>
-            <p>The server verifies the capture timeline, extracts paired MediaPipe geometry, and validates the analysis response before it appears.</p>
+            <h2 id="analysis-title">Review and analyze your recording</h2>
+            <p>Check that each movement is visible in the video. Your recording remains here while the analysis runs.</p>
             <div className="model-chip"><ShieldCheck aria-hidden="true" size={18} /><span><strong>Analysis pipeline</strong>Timeline, geometry, and response checks</span></div>
           </div>
           <div className="analysis-actions-card">
@@ -383,11 +443,12 @@ export function App({
                 </label>
                 <div className="analysis-button-stack">
                   <button className="button button-primary button-wide" type="button" disabled={endpointState !== 'ready' || !recording || !authorizedEndpoint || !captureTimeline || reanimatedSmileApplicable === null || analysisState === 'running' || (analysisState === 'error' && !analysisRetryAllowed)} onClick={runResearchAnalysis}>
-                    {analysisState === 'running' ? <><span className="spinner" /> Validating response…</> : analysisState === 'error' && !analysisRetryAllowed ? <>New recording required</> : <>Run research analysis <ArrowRight aria-hidden="true" size={18} /></>}
+                    {analysisState === 'running' ? <><span className="spinner" /> Analyzing recording…</> : analysisState === 'error' && !analysisRetryAllowed ? <>New recording required</> : analysisState === 'error' ? <>Retry this recording <ArrowRight aria-hidden="true" size={18} /></> : <>Run research analysis <ArrowRight aria-hidden="true" size={18} /></>}
                   </button>
+                  {analysisState === 'running' ? <p className="analysis-progress" role="status">Analysis is in progress. <span aria-live="off">{analysisElapsed} seconds elapsed.</span> Keep this page open; your recording stays available.</p> : null}
                   {recording ? <RecordingDownloadButton recording={recording} /> : null}
                   {recording ? (
-                    <button className="button button-secondary button-wide" type="button" disabled={analysisState === 'running'} onClick={reset}>
+                    <button className="button button-secondary button-wide" type="button" disabled={analysisState === 'running'} onClick={confirmAndReset}>
                       Clear recording and start over
                     </button>
                   ) : null}
@@ -430,7 +491,7 @@ export function App({
                   </div>
                 </div>
               ) : null}
-              {result?.mode === 'demonstration' ? <ResultsView result={result} onReset={reset} /> : null}
+              {result?.mode === 'demonstration' ? <ResultsView result={result} onReset={confirmAndReset} /> : null}
             </div>
 
             {journeyStep === 3 && guidedRecordingActive ? null : <nav className="journey-actions" aria-label="Journey controls">
@@ -447,7 +508,7 @@ export function App({
                     disabled={reanimatedSmileApplicable === null}
                     onClick={() => setJourneyStep(2)}
                   >
-                    {reanimatedSmileApplicable === null ? 'Choose the reanimation-smile option above to continue' : 'Continue to camera setup'} <ArrowRight aria-hidden="true" size={20} />
+                      {reanimatedSmileApplicable === null ? 'Choose the reanimation-smile option above to continue' : 'Continue to camera setup'} <ArrowRight aria-hidden="true" size={20} />
                   </button>
                 </>
               ) : journeyStep === 2 ? (
@@ -456,12 +517,14 @@ export function App({
                     <ArrowLeft aria-hidden="true" size={20} /> Back to preparation
                   </button>
                   <span className="journey-action-note">
-                    {captureMode === 'upload' ? 'Choose a video above, or return to the live camera.' : captureSetupReady ? 'Camera and protocol choice are ready.' : 'Complete the setup requirement shown above to continue.'}
+                    {captureMode === 'upload' ? 'Choose the video and its matching action timeline.' : setupNote}
                   </span>
                   {captureMode === 'camera' ? (
-                    <button className="button button-primary journey-next" type="button" disabled={!captureSetupReady} onClick={() => setJourneyStep(3)}>
-                      Continue to recording <ArrowRight aria-hidden="true" size={20} />
-                    </button>
+                    recording ? <button className="button button-primary journey-next" type="button" onClick={() => setJourneyStep(4)}>Review recording <ArrowRight aria-hidden="true" size={20} /></button>
+                    : !setupControl || setupControl.status === 'idle' || setupControl.status === 'error' ? <button className="button button-primary journey-next" type="button" onClick={() => { void setupControl?.enableCamera() }}>Enable camera <Camera aria-hidden="true" size={20} /></button>
+                    : setupControl.status === 'requesting' ? <button className="button button-primary journey-next" type="button" disabled>Allow camera access…</button>
+                    : endpointState === 'unavailable' && !demonstrationEnabled ? <button className="button button-primary journey-next" type="button" onClick={() => setEndpointCheckAttempt(value => value + 1)}>Retry connection</button>
+                    : <button className="button button-primary journey-next" type="button" disabled={!captureSetupReady} onClick={() => setJourneyStep(3)}>Continue to recording <ArrowRight aria-hidden="true" size={20} /></button>
                   ) : null}
                 </>
               ) : journeyStep === 3 ? (
@@ -470,6 +533,7 @@ export function App({
                     <ArrowLeft aria-hidden="true" size={20} /> Back to camera setup
                   </button>
                   <span className="journey-action-note">{guidedRecordingActive ? 'Recording is automatic. Follow the voice and screen.' : 'Start when you are comfortably positioned.'}</span>
+                  {recording ? <button className="button button-primary journey-next" type="button" onClick={() => setJourneyStep(4)}>Review recording</button> : captureMode === 'camera' ? <button className="button button-primary journey-next" type="button" disabled={!captureSetupReady} onClick={setupControl?.startRecording}>Start guided recording</button> : null}
                 </>
               ) : journeyStep === 4 ? (
                 <>
@@ -506,6 +570,7 @@ export function App({
         <div><strong>FACES Research Capture</strong><span>Facial movement research interface</span></div>
         <p>No patient data is persisted by this browser prototype.</p>
       </footer>
+      {recordingGuard.dialog}
     </div>
   )
 }

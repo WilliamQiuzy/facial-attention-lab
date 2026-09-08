@@ -1,8 +1,10 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ResearchInferenceResult } from '../model/inference'
+import * as reportPdf from '../report/researchReportPdf'
+import { getSessionFilename } from '../report/sessionIdentity'
 import { frameHasVisibleContent, ResultsView } from './ResultsView'
 
 const ids = [
@@ -100,6 +102,111 @@ function result(includeOptional: boolean): ResearchInferenceResult {
 }
 
 describe('Research Movement Report', () => {
+  it('puts coverage and only the three strongest stable influences in the overview', () => {
+    const original = result(false)
+    const data = { ...original, reportEvidence: { ...original.reportEvidence, actions: original.reportEvidence.actions.map((action) => action.modelInfluence.status === 'stable' ? { ...action, modelInfluence: { ...action.modelInfluence, relativeMagnitude: action.id === 'relaxed_smile' ? 1 : action.id === 'eyebrow_raise' ? 0.8 : action.modelInfluence.relativeMagnitude } } : action) } }
+    render(<ResultsView result={data} recording={new File(['video'], 'capture.webm')} onReset={vi.fn()} />)
+    const overview = screen.getByRole('region', { name: 'Session overview' })
+    expect(within(overview).getByText('48 / 100')).toBeVisible()
+    expect(within(overview).getByRole('heading', { name: 'Recording coverage' })).toBeVisible()
+    const influences = within(overview).getByRole('list', { name: 'Strongest stable action influences' })
+    expect(within(influences).getAllByRole('listitem')).toHaveLength(3)
+    expect(within(influences).getAllByRole('listitem')[0]).toHaveTextContent('Relaxed smile')
+    expect(influences).toHaveTextContent('Eyebrow raise')
+    expect(influences).toHaveTextContent('Gentle eye closure')
+    expect(influences).not.toHaveTextContent('Show lower teeth')
+    expect(influences).not.toHaveTextContent('Tight eye squeeze')
+  })
+
+  it('keeps all three evidence layers behind an accessible action disclosure', async () => {
+    const user = userEvent.setup()
+    render(<ResultsView result={result(false)} recording={new File(['video'], 'capture.webm')} onReset={vi.fn()} />)
+    const disclosure = screen.getByRole('button', { name: 'All evidence for Eyebrow raise' })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    const panel = document.getElementById(disclosure.getAttribute('aria-controls')!)!
+    expect(panel).not.toBeVisible()
+    expect(within(panel).getByText('Brow-height change from rest')).toBeInTheDocument()
+    await user.click(disclosure)
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true')
+    expect(within(panel).getByRole('region', { name: 'Eyebrow raise measured movement' })).toBeVisible()
+    expect(within(panel).getByRole('region', { name: 'Eyebrow raise model influence' })).toBeVisible()
+    expect(within(panel).getByRole('region', { name: 'Eyebrow raise stability checks' })).toBeVisible()
+    await user.click(disclosure)
+    expect(panel).not.toBeVisible()
+  })
+
+  it('plays the registered action hold and releases the local video URL on unmount', async () => {
+    const user = userEvent.setup()
+    const recording = new File(['video'], 'capture.webm')
+    const create = vi.spyOn(URL, 'createObjectURL').mockClear().mockReturnValue('blob:movement-player')
+    const revoke = vi.spyOn(URL, 'revokeObjectURL')
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined)
+    const data = result(false)
+    const reorderedQuality = { ...data, quality: { ...data.quality, actions: [...data.quality.actions].reverse() } }
+    const { unmount } = render(<ResultsView result={reorderedQuality} recording={recording} onReset={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Play this movement: Gentle eye closure' }))
+    const video = screen.getByLabelText('Recorded movement playback') as HTMLVideoElement
+    expect(video).toHaveAttribute('src', 'blob:movement-player')
+    Object.defineProperty(video, 'duration', { configurable: true, value: 60 })
+    fireEvent.loadedMetadata(video)
+    expect(video.currentTime).toBe(8.5)
+    expect(play).toHaveBeenCalled()
+    expect(video).toHaveFocus()
+    video.currentTime = 11.6
+    fireEvent.timeUpdate(video)
+    expect(video.currentTime).toBe(11.5)
+    expect(pause).toHaveBeenCalled()
+    expect(create).toHaveBeenCalledWith(recording)
+    Object.defineProperty(video, 'readyState', { configurable: true, value: 1 })
+    await user.click(screen.getByRole('button', { name: 'Play this movement: Relaxed smile' }))
+    expect(video.currentTime).toBe(16.5)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('Registered hold: 16.5–19.5 s')).toBeVisible()
+    unmount()
+    expect(revoke).toHaveBeenCalledWith('blob:movement-player')
+  })
+
+  it('shows a truthful empty summary when no action has stable influence', () => {
+    const original = result(false)
+    const data = { ...original, reportEvidence: { ...original.reportEvidence, actions: original.reportEvidence.actions.map((action) => ({ ...action, modelInfluence: { status: 'unavailable' as const, reason: 'stability_gate_failed' as const } })) } }
+    render(<ResultsView result={data} recording={new File(['video'], 'capture.webm')} onReset={vi.fn()} />)
+    const overview = screen.getByRole('region', { name: 'Session overview' })
+    expect(within(overview).getByText('No stable action influences to summarize. Measured movement is available below.')).toBeVisible()
+    expect(within(overview).queryByRole('list')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'All evidence for Eyebrow raise' })).toBeEnabled()
+  })
+
+  it('leaves recording downloads available when local playback cannot be decoded', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined)
+    render(<ResultsView result={result(false)} recording={new File(['video'], 'capture.webm')} onReset={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Play this movement: Eyebrow raise' }))
+    fireEvent.error(screen.getByLabelText('Recorded movement playback'))
+    expect(screen.getByText('Video playback is unavailable. Download the recording to review this movement.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Download recorded video' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Save PDF' })).toBeEnabled()
+  })
+
+  it('keeps PDF retry available after failure and reports a download request honestly', async () => {
+    const user = userEvent.setup()
+    const download = vi.spyOn(reportPdf, 'downloadResearchReportPdf').mockRejectedValueOnce(new Error('PDF failed')).mockResolvedValueOnce(undefined)
+    render(<ResultsView result={result(false)} recording={new File(['video'], 'capture.webm')} onReset={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'Save PDF' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('PDF creation failed. Please try again.')
+    expect(screen.getByRole('button', { name: 'Save PDF' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Save PDF' }))
+    expect(await screen.findByText('Download started; check browser downloads.')).toBeVisible()
+    expect(download).toHaveBeenCalledTimes(2)
+    expect(download.mock.calls[1][0].actions).toHaveLength(6)
+    expect(download.mock.calls[1][0].actions[0].measurements).toHaveLength(2)
+    expect(download.mock.calls[1][0].actions.map((action) => action.measurements.length)).toEqual([2, 3, 3, 2, 2, 3])
+    expect(download.mock.calls[1][0].actions.every((action) => action.stability.length === 3)).toBe(true)
+    expect(download.mock.calls[1][0].actions[5].influence).toEqual({ status: 'unavailable', explanation: 'The direction is hidden because the consistency checks did not all agree.' })
+  })
+
   it('samples the full frame instead of treating dark corners as a black frame', () => {
     const getImageData = vi.fn((x: number, y: number, width: number, height: number) => ({
       data: new Uint8ClampedArray(width * height * 4).fill(
@@ -213,10 +320,11 @@ describe('Research Movement Report', () => {
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
       filenames.push(this.download)
     })
+    const recording = new File(['video'], 'capture.webm', { type: 'video/webm' })
     const { container } = render(
       <ResultsView
         result={result(false)}
-        recording={new File(['video'], 'capture.webm', { type: 'video/webm' })}
+        recording={recording}
         onBack={vi.fn()}
         onReset={vi.fn()}
       />,
@@ -227,7 +335,9 @@ describe('Research Movement Report', () => {
     expect(screen.getByRole('button', { name: 'Download recorded video' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save PDF' })).toBeEnabled())
     await user.click(screen.getByRole('button', { name: 'Save PDF' }))
-    await waitFor(() => expect(filenames).toContain('faces-research-movement-report.pdf'))
+    await waitFor(() => expect(filenames).toContain(getSessionFilename(recording, 'report')))
+    await user.click(screen.getByRole('button', { name: 'Download recorded video' }))
+    expect(filenames).toContain(getSessionFilename(recording, 'recording'))
     expect(print).not.toHaveBeenCalled()
     const pdf = objectUrls.find((blob) => blob.type === 'application/pdf')
     expect(pdf).toBeDefined()

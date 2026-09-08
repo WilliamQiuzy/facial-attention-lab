@@ -20,9 +20,10 @@ describe('RecordingDownloadButton', () => {
     expect(createObjectURL).toHaveBeenCalledWith(recording)
     expect(clicked).toEqual({
       href: 'blob:recording-download',
-      download: 'faces-research-recording.webm',
+      download: expect.stringMatching(/^faces-research-\d{8}T\d{9}Z-[a-z0-9]+-recording\.webm$/),
     })
     await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith('blob:recording-download'))
+    expect(screen.getByRole('status')).toHaveTextContent('Download started; check browser downloads.')
     expect(document.querySelector('a[download]')).not.toBeInTheDocument()
   })
 
@@ -35,7 +36,7 @@ describe('RecordingDownloadButton', () => {
 
     render(<RecordingDownloadButton recording={recording} compact />)
     fireEvent.click(screen.getByRole('button', { name: 'Download recorded video' }))
-    expect(download).toBe('faces-research-recording.mov')
+    expect(download).toMatch(/-recording\.mov$/)
     expect(document.body.textContent).not.toContain('MRN-12345')
   })
 
@@ -48,6 +49,20 @@ describe('RecordingDownloadButton', () => {
 
     render(<RecordingDownloadButton recording={recording} />)
     fireEvent.click(screen.getByRole('button', { name: 'Download recorded video' }))
-    expect(download).toBe('faces-research-recording.webm')
+    expect(download).toMatch(/-recording\.webm$/)
+  })
+
+  it('offers retry if the browser cannot request the download and cleans up its URL', async () => {
+    const create = vi.spyOn(URL, 'createObjectURL').mockClear().mockReturnValue('blob:failed-download')
+    const revoke = vi.spyOn(URL, 'revokeObjectURL')
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementationOnce(() => { throw new Error('download blocked') }).mockImplementation(() => undefined)
+    render(<RecordingDownloadButton recording={new File(['video'], 'capture.webm')} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Download recorded video' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Download could not start. Please try again.')
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith('blob:failed-download'))
+    expect(document.querySelector('a[download]')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Download recorded video' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Download started; check browser downloads.')
+    expect(create).toHaveBeenCalledTimes(2)
   })
 })

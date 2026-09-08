@@ -3,7 +3,7 @@ import { Check, Clock3, Volume2 } from 'lucide-react'
 import { FACES_PROTOCOL, type FacesProtocolStep } from '../protocol/facesProtocol'
 import { MovementAvatar } from './MovementAvatar'
 
-export type PatientGuidePhase = 'starting' | 'speaking' | 'holding' | 'finalizing'
+export type PatientGuidePhase = 'starting' | 'speaking' | 'holding' | 'releasing' | 'finalizing'
 
 interface PatientMovementGuideProps {
   readonly step: FacesProtocolStep
@@ -18,6 +18,7 @@ const PHASE_COPY: Record<PatientGuidePhase, string> = {
   starting: 'Get ready',
   speaking: 'Voice prompt playing',
   holding: 'Hold the pose',
+  releasing: 'Release the pose',
   finalizing: 'Sequence complete',
 }
 
@@ -34,12 +35,21 @@ export function PatientMovementGuide({
   )
   const timerIsActive = phase === 'holding' && countdown !== null
   const liveStatus = phase === 'speaking'
-    ? `Step ${stepIndex + 1} of ${visibleSteps.length}. ${step.title}. ${step.instruction}`
+    ? `Movement ${stepIndex + 1} of ${visibleSteps.length}. ${step.title}. ${step.actionCue}`
     : phase === 'holding'
       ? `Hold ${step.title}. ${countdown ?? step.holdSeconds} seconds remaining.`
+      : phase === 'releasing'
+        ? step.releaseCue
+        : phase === 'finalizing'
+          ? 'All movements are complete. Please relax while the video is saved.'
+          : `Get ready for movement ${stepIndex + 1}. ${step.title}.`
+  const writtenCue = phase === 'releasing'
+    ? step.releaseCue
+    : phase === 'holding'
+      ? 'Hold steady until you hear the release cue.'
       : phase === 'finalizing'
-        ? 'All movements are complete. Please relax while the video is saved.'
-        : `Get ready for step ${stepIndex + 1}. ${step.title}.`
+        ? 'All movements are complete. Please relax.'
+        : step.actionCue
 
   return (
     <section
@@ -55,22 +65,26 @@ export function PatientMovementGuide({
         <span className="patient-recording-chip"><i /> Recording in progress</span>
         <span className="patient-sequence-label">
           <span>Automatic sequence</span>
-          <strong>Step {stepIndex + 1} of {visibleSteps.length}</strong>
+          <strong>Movement {stepIndex + 1} of {visibleSteps.length}</strong>
         </span>
       </header>
 
       <div className="patient-guidance-body">
-        <MovementAvatar action={step.id} title={step.title} active={phase === 'speaking'} />
+        <MovementAvatar
+          action={phase === 'releasing' || phase === 'finalizing' ? 'repose' : step.id}
+          title={phase === 'releasing' || phase === 'finalizing' ? 'Relaxed face' : step.title}
+          active={phase === 'speaking'}
+        />
 
         <div className="patient-guidance-copy">
           <span className="patient-phase-label">
-            {phase === 'speaking' ? <Volume2 aria-hidden="true" size={19} /> : null}
+            {phase === 'speaking' || phase === 'releasing' ? <Volume2 aria-hidden="true" size={19} /> : null}
             {phase === 'holding' || phase === 'starting' ? <Clock3 aria-hidden="true" size={19} /> : null}
             {phase === 'finalizing' ? <Check aria-hidden="true" size={19} /> : null}
             {PHASE_COPY[phase]}
           </span>
           <h2>{step.title}</h2>
-          <p>{step.instruction}</p>
+          <p>{writtenCue}</p>
           <span className="patient-caption-note">Voice and written guidance stay synchronized.</span>
         </div>
 
@@ -80,12 +94,17 @@ export function PatientMovementGuide({
             ? `${countdown} seconds remaining`
             : phase === 'finalizing'
               ? 'Recording is being finalized'
-              : 'Hold timer starts after the voice prompt'}
+              : phase === 'releasing' ? step.releaseCue : 'Hold timer starts after Hold now'}
         >
           {timerIsActive ? (
             <>
               <strong>{countdown}</strong>
               <span>seconds<br />hold steady</span>
+            </>
+          ) : phase === 'releasing' ? (
+            <>
+              <Check aria-hidden="true" size={34} />
+              <span>Relax now<br />Listen for the next cue</span>
             </>
           ) : phase === 'finalizing' ? (
             <>
@@ -95,7 +114,7 @@ export function PatientMovementGuide({
           ) : (
             <>
               <Volume2 aria-hidden="true" size={31} />
-              <span>Read now<br />Timer follows</span>
+              <span>Follow the cue<br />Hold after “Hold now”</span>
             </>
           )}
         </div>

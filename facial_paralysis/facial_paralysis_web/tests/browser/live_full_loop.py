@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -268,7 +269,7 @@ def run(
             expect(page.get_by_role("tab", name="Use this device")).to_have_attribute(
                 "aria-selected", "true"
             )
-            page.get_by_role("button", name="Enable front camera").click()
+            page.get_by_role("button", name="Enable camera", exact=True).click()
             continue_to_recording = page.get_by_role(
                 "button", name="Continue to recording"
             )
@@ -316,6 +317,29 @@ def run(
                 expect(page.get_by_role("heading", name="Recorded action evidence")).to_be_visible()
                 expect(page.get_by_role("heading", name="Recording coverage")).to_be_visible()
                 expect(page.get_by_text(f"Neutral baseline + all {7 if steps == 8 else 6} active movements", exact=True)).to_be_visible()
+                overview = page.get_by_role("region", name="Session overview")
+                stable_influences = overview.get_by_role("list", name="Strongest stable action influences")
+                expect(stable_influences.get_by_role("listitem")).to_have_count(3)
+                expect(stable_influences).not_to_contain_text("Show lower teeth")
+                first_disclosure = page.get_by_role("button", name="All evidence for Eyebrow raise", exact=True)
+                expect(first_disclosure).to_have_attribute("aria-expanded", "false")
+                stable_influences.get_by_role("link", name="Eyebrow raise", exact=True).click()
+                expect(page).to_have_url(re.compile(r"#research-report$"))
+                expect(page.get_by_role("heading", name="Research Movement Report")).to_be_visible()
+                expect(first_disclosure).to_have_attribute("aria-expanded", "true")
+                expect(page.locator(f"#{first_disclosure.get_attribute('aria-controls')}")).to_be_visible()
+                first_disclosure.click()
+                page.get_by_text("How coverage is checked", exact=True).click()
+                page.get_by_text("How to read the evidence", exact=True).click()
+                disclosures = page.get_by_role("button", name=re.compile(r"^All evidence for "))
+                expect(disclosures).to_have_count(7 if steps == 8 else 6)
+                for disclosure in disclosures.all():
+                    expect(disclosure).to_have_attribute("aria-expanded", "false")
+                    panel = page.locator(f"#{disclosure.get_attribute('aria-controls')}")
+                    expect(panel).to_be_hidden()
+                    disclosure.click()
+                    expect(disclosure).to_have_attribute("aria-expanded", "true")
+                    expect(panel).to_be_visible()
                 expect(page.get_by_text(f"All {steps} recorded steps in this session were used", exact=False)).to_be_visible()
                 expect(page.get_by_text("Measurements are scaled to the same eye-to-eye reference width", exact=False)).to_be_visible()
                 expect(page.get_by_text("Side-to-side difference", exact=True).first).to_be_visible()
@@ -371,8 +395,10 @@ def run(
                 with page.expect_download() as pdf_download_info:
                     save_pdf.click()
                 report_pdf_download = pdf_download_info.value
-                if report_pdf_download.suggested_filename != "faces-research-movement-report.pdf":
-                    raise AssertionError("Save PDF did not directly download the fixed report filename")
+                report_filename = report_pdf_download.suggested_filename
+                if not re.fullmatch(r"faces-research-\d{8}T\d{9}Z-[a-z0-9]{7}-report\.pdf", report_filename):
+                    raise AssertionError("Save PDF did not directly download the anonymous session-linked report filename")
+                expect(page.get_by_text("Download started; check browser downloads.", exact=True)).to_be_visible()
                 if pdf is not None:
                     pdf.parent.mkdir(parents=True, exist_ok=True)
                     report_pdf_download.save_as(str(pdf))
@@ -387,8 +413,9 @@ def run(
                     )
                 with page.expect_download() as download_info:
                     page.get_by_role("button", name="Download recorded video").first.click()
-                if download_info.value.suggested_filename != "faces-research-recording.webm":
-                    raise AssertionError("recording download did not use the de-identified fixed filename")
+                expected_recording_filename = report_filename.removesuffix("-report.pdf") + "-recording.webm"
+                if download_info.value.suggested_filename != expected_recording_filename:
+                    raise AssertionError("report and recording download filenames do not share an anonymous session identity")
                 page.wait_for_function(
                     "minimum => window.__objectUrlAudit.revoked >= minimum",
                     arg=report_url_audit["revoked"] + 1,
@@ -400,7 +427,39 @@ def run(
                     "live": report_url_audit["live"],
                 }:
                     raise AssertionError(f"recording download URL was not released: before={report_url_audit} after={post_download_url_audit}")
-                report_url_audit = post_download_url_audit
+                page.get_by_role("button", name="Play this movement: Eyebrow raise", exact=True).click()
+                player = page.get_by_label("Recorded movement playback", exact=True)
+                expect(player).to_be_visible()
+                expect(player).to_be_focused()
+                expect(player).to_have_attribute("src", re.compile(r"^blob:"))
+                expect(page.get_by_text("Registered hold: 4.5–7.5 s", exact=True)).to_be_visible()
+                page.wait_for_function(
+                    "() => { const video = document.querySelector('video[aria-label=\"Recorded movement playback\"]'); return video && video.currentTime >= 4.5 && video.currentTime < 5.25 && !video.paused; }",
+                    timeout=8_000,
+                )
+                page.wait_for_function(
+                    "() => { const video = document.querySelector('video[aria-label=\"Recorded movement playback\"]'); return video?.paused && Math.abs(video.currentTime - 7.5) < 0.05; }",
+                    timeout=8_000,
+                )
+                player_source = player.get_attribute("src")
+                page.get_by_role("button", name="Play this movement: Gentle eye closure", exact=True).click()
+                expect(player).to_have_attribute("src", player_source)
+                expect(page.get_by_text("Registered hold: 8.5–11.5 s", exact=True)).to_be_visible()
+                page.wait_for_function(
+                    "() => { const video = document.querySelector('video[aria-label=\"Recorded movement playback\"]'); return video && video.currentTime >= 8.5 && video.currentTime < 9.25 && !video.paused; }",
+                    timeout=8_000,
+                )
+                page.wait_for_function(
+                    "() => { const video = document.querySelector('video[aria-label=\"Recorded movement playback\"]'); return video?.paused && Math.abs(video.currentTime - 11.5) < 0.05; }",
+                    timeout=8_000,
+                )
+                report_url_audit = page.evaluate("({ created: window.__objectUrlAudit.created, revoked: window.__objectUrlAudit.revoked, live: window.__objectUrlAudit.live.size })")
+                if report_url_audit != {
+                    "created": post_download_url_audit["created"] + 1,
+                    "revoked": post_download_url_audit["revoked"],
+                    "live": post_download_url_audit["live"] + 1,
+                }:
+                    raise AssertionError(f"switching movements did not reuse one local playback URL: before={post_download_url_audit} after={report_url_audit}")
                 page.emulate_media(media="print")
                 expect(page.locator(".evidence-frame").first).to_be_visible()
                 page.emulate_media(media="screen")
@@ -435,6 +494,15 @@ def run(
                 ).to_be_enabled()
 
             screenshot.parent.mkdir(parents=True, exist_ok=True)
+            if expected == "accepted":
+                page.screenshot(path=str(screenshot.with_name(f"{screenshot.stem}-expanded{screenshot.suffix}")), full_page=True)
+                for disclosure in page.get_by_role("button", name=re.compile(r"^All evidence for ")).all():
+                    if disclosure.get_attribute("aria-expanded") == "true":
+                        disclosure.click()
+                page.get_by_text("How coverage is checked", exact=True).click()
+                page.get_by_text("How to read the evidence", exact=True).click()
+                page.evaluate("window.scrollTo({ top: 0, left: 0, behavior: 'instant' })")
+                page.screenshot(path=str(screenshot.with_name(f"{screenshot.stem}-overview{screenshot.suffix}")), full_page=False)
             page.screenshot(path=str(screenshot), full_page=True)
             if pdf is not None and expected != "accepted":
                 raise AssertionError("PDF acceptance is valid only for an accepted report")
@@ -444,14 +512,17 @@ def run(
                 summary_url_audit = page.evaluate("({ created: window.__objectUrlAudit.created, revoked: window.__objectUrlAudit.revoked, live: window.__objectUrlAudit.live.size })")
                 if summary_url_audit != {
                     "created": report_url_audit["created"],
-                    "revoked": report_url_audit["revoked"] + 1,
-                    "live": report_url_audit["live"] - 1,
+                    "revoked": report_url_audit["revoked"] + 2,
+                    "live": report_url_audit["live"] - 2,
                 }:
                     raise AssertionError(
-                        f"closing the report did not revoke its Blob URL: report={report_url_audit} summary={summary_url_audit}"
+                        f"closing the report did not revoke its frame and playback Blob URLs: report={report_url_audit} summary={summary_url_audit}"
                     )
                 page.go_back()
                 expect(page.get_by_role("heading", name="Research Movement Report")).to_be_visible()
+                # This explicit reload deliberately leaves the session; accept
+                # the browser's beforeunload warning, not an in-app discard flow.
+                page.once("dialog", lambda dialog: dialog.accept())
                 page.reload(wait_until="networkidle")
                 expect(page.get_by_role("heading", name="Report not retained")).to_be_visible()
                 expect(page.get_by_role("button", name="Run research analysis")).to_have_count(0)
@@ -469,7 +540,8 @@ def run(
             unexpected_console = [
                 message
                 for message in console_errors
-                if not (
+                if message != "INFO: Created TensorFlow Lite XNNPACK delegate for CPU."
+                and not (
                     expected in {"tracking-rejected", "capture-rejected"}
                     and "server responded with a status of 422" in message
                 )

@@ -7,6 +7,7 @@ RUN corepack enable
 COPY facial_paralysis_web/package.json facial_paralysis_web/pnpm-lock.yaml facial_paralysis_web/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY facial_paralysis_web/ ./
+RUN cd public/preflight && sha256sum -c SHA256SUMS
 RUN pnpm test:run && pnpm build
 
 FROM ${NGINX_BASE}

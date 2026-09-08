@@ -2,9 +2,11 @@ import {
   AlertTriangle,
   ArrowLeft,
   BarChart3,
+  ChevronDown,
   Eye,
   FileDown,
   FileSearch,
+  Play,
   ScanFace,
   ShieldCheck,
 } from 'lucide-react'
@@ -18,6 +20,7 @@ import {
   type PdfMeasurement,
 } from '../report/researchReportPdf'
 import { RecordingDownloadButton } from './RecordingDownloadButton'
+import '../report/reportUx.css'
 
 export type DisplayResult = ResearchInferenceResult | DemonstrationResult
 
@@ -269,6 +272,76 @@ function DemonstrationResults({ result, onReset }: { result: DemonstrationResult
   )
 }
 
+type PlaybackSelection = {
+  id: string
+  holdStartMs: number
+  holdEndMs: number
+}
+
+function MovementPlayback({ recording, action }: { recording: File; action: PlaybackSelection }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [source, setSource] = useState<string>()
+  const [error, setError] = useState<string>()
+
+  useEffect(() => {
+    const video = videoRef.current
+    let objectUrl: string | undefined
+    try {
+      objectUrl = URL.createObjectURL(recording)
+      setSource(objectUrl)
+    } catch {
+      setError('Video playback is unavailable. Download the recording to review this movement.')
+    }
+    return () => {
+      if (video) {
+        video.pause()
+        video.removeAttribute('src')
+        video.load()
+      }
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [recording])
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video || !source) return
+    video.focus()
+    let cancelled = false
+    const startPlayback = () => {
+      setError(undefined)
+      try {
+        if (Number.isFinite(video.duration) && action.holdStartMs / 1_000 >= video.duration) throw new Error('Hold outside recording')
+        video.currentTime = action.holdStartMs / 1_000
+        void video.play().catch(() => {
+          if (!cancelled) setError('Playback did not start. Use the video controls to try again.')
+        })
+      } catch {
+        setError('Video playback is unavailable. Download the recording to review this movement.')
+      }
+    }
+    video.addEventListener('loadedmetadata', startPlayback)
+    if (video.readyState >= 1) startPlayback()
+    return () => {
+      cancelled = true
+      video.removeEventListener('loadedmetadata', startPlayback)
+    }
+  }, [source, action])
+
+  return (
+    <section className="movement-playback" aria-labelledby="movement-playback-title">
+      <div><span className="eyebrow">Source recording</span><h3 id="movement-playback-title">{ACTION_LABELS[action.id]}</h3><p>Registered hold: {(action.holdStartMs / 1_000).toFixed(1)}–{(action.holdEndMs / 1_000).toFixed(1)} s</p></div>
+      <video ref={videoRef} src={source} controls playsInline preload="metadata" tabIndex={0} aria-label="Recorded movement playback" onError={() => setError('Video playback is unavailable. Download the recording to review this movement.')} onTimeUpdate={(event) => {
+        const video = event.currentTarget
+        if (video.currentTime >= action.holdEndMs / 1_000) {
+          video.pause()
+          if (video.currentTime > action.holdEndMs / 1_000) video.currentTime = action.holdEndMs / 1_000
+        }
+      }} />
+      {error ? <p className="playback-error" role="status">{error}</p> : null}
+    </section>
+  )
+}
+
 function ResearchReport({ result, recording, onBack, onReset }: {
   result: ResearchInferenceResult
   recording: File
@@ -288,10 +361,25 @@ function ResearchReport({ result, recording, onBack, onReset }: {
   const minimumValidSamples = Math.min(...validSamples)
   const maximumValidSamples = Math.max(...validSamples)
   const framesReady = result.reportEvidence.actions.every((action) => action.id in frames)
-  const [pdfState, setPdfState] = useState<'idle' | 'saving' | 'error'>('idle')
+  const [pdfState, setPdfState] = useState<'idle' | 'saving' | 'requested' | 'error'>('idle')
+  const [expandedActions, setExpandedActions] = useState<readonly string[]>([])
+  const [playback, setPlayback] = useState<PlaybackSelection>()
+  const revealAction = (id: string) => {
+    setExpandedActions(current => current.includes(id) ? current : [...current, id])
+    window.requestAnimationFrame(() => {
+      const card = document.getElementById(`evidence-${id}`)
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+      card?.scrollIntoView?.({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' })
+      card?.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true })
+    })
+  }
+  const strongestInfluences = result.reportEvidence.actions
+    .filter((action) => action.modelInfluence.status === 'stable')
+    .sort((left, right) => (right.modelInfluence.status === 'stable' ? right.modelInfluence.relativeMagnitude : 0) - (left.modelInfluence.status === 'stable' ? left.modelInfluence.relativeMagnitude : 0))
+    .slice(0, 3)
 
-  const pdfActions: readonly PdfActionEvidence[] = result.reportEvidence.actions.map((action, index) => {
-    const valid = result.quality.actions[index].validSamples
+  const pdfActions: readonly PdfActionEvidence[] = result.reportEvidence.actions.map((action) => {
+    const valid = result.quality.actions.find((quality) => quality.id === action.id)?.validSamples ?? 0
     return {
       title: ACTION_LABELS[action.id],
       region: REGION_LABELS[action.region],
@@ -333,8 +421,8 @@ function ResearchReport({ result, recording, onBack, onReset }: {
         ],
         actions: pdfActions,
         clinicalReviewNote: 'Review the movement score together with the recorded action images and source video in the context of the clinical assessment.',
-      })
-      setPdfState('idle')
+      }, recording)
+      setPdfState('requested')
     } catch {
       setPdfState('error')
     }
@@ -354,7 +442,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
           <div className="report-action-control">
             <button className="button button-secondary" type="button" onClick={onReset}>Start a new session</button>
           </div>
-          <p className="report-actions-note" role={pdfState === 'error' ? 'alert' : undefined}>{pdfState === 'error' ? 'PDF creation failed. Please try again.' : framesReady ? 'PDF includes the recorded evidence images · Video download saves the identifiable source · New session clears the in-browser copy' : 'Preparing recorded context images for the PDF…'}</p>
+          <p className="report-actions-note" role={pdfState === 'error' ? 'alert' : 'status'}>{pdfState === 'error' ? 'PDF creation failed. Please try again.' : pdfState === 'requested' ? 'Download started; check browser downloads.' : framesReady ? 'PDF includes the recorded evidence images and all details · Video download contains the identifiable source' : 'Preparing recorded context images for the PDF…'}</p>
         </div>
       </nav>
 
@@ -362,6 +450,7 @@ function ResearchReport({ result, recording, onBack, onReset }: {
         <div><h1 id="research-report-title" ref={headingRef} tabIndex={-1}>Research Movement Report</h1><p>Facial movement classification and recorded action evidence.</p></div>
       </header>
 
+      <section className="report-overview" aria-label="Session overview">
       <section className="report-score-section" aria-labelledby="score-title">
         <div className="report-score-card"><span className="region-icon"><BarChart3 aria-hidden="true" size={25} /></span><div><span>MEEI facial-movement classification score</span><strong>{score(result.prediction.probability)}</strong><p>{pointsFromCutpoint} points {cutpointRelation} the fixed cutpoint of {cutpoint}.</p></div></div>
         <div className="score-explanation">
@@ -371,16 +460,45 @@ function ResearchReport({ result, recording, onBack, onReset }: {
         </div>
       </section>
 
+      <div className="report-overview-details">
+      <section className="report-section compact recording-coverage" aria-labelledby="quality-title">
+        <h2 id="quality-title">Recording coverage</h2>
+        <dl className="report-definition-list"><div><dt>Recorded steps included in this score</dt><dd>Neutral baseline + all {result.quality.actionsUsed} active movements</dd></div><div><dt>Face tracking coverage</dt><dd>{minimumValidSamples}–{maximumValidSamples} usable of 32 checkpoints per movement</dd></div><div><dt>Optional reanimation smile</dt><dd>{result.quality.optionalActionsUnavailable.length ? 'Not part of this session' : 'Included'}</dd></div></dl>
+        <details className="coverage-details"><summary>How coverage is checked</summary><div className="coverage-explanation"><p><ShieldCheck aria-hidden="true" size={19} />All {result.quality.actionsUsed + 1} recorded steps in this session were used: one neutral baseline and {result.quality.actionsUsed} active movements.</p><p>Each active movement is checked at 32 evenly spaced time points; the range above shows how many had usable face tracking. The neutral recording provides the resting baseline used for movement-change measurements.</p></div></details>
+      </section>
+      <section className="overview-influences" aria-labelledby="overview-influences-title">
+        <h2 id="overview-influences-title">Strongest stable influences</h2>
+        <p>Action signals with the largest relative influence on this score.</p>
+        {strongestInfluences.length ? <ol aria-label="Strongest stable action influences">{strongestInfluences.map((action) => action.modelInfluence.status === 'stable' ? <li key={action.id}><a href={`#evidence-${action.id}`} onClick={event => { event.preventDefault(); revealAction(action.id) }}>{ACTION_LABELS[action.id]}</a><span>{action.modelInfluence.direction === 'toward_class_1' ? 'Moved score upward' : 'Moved score downward'}</span><small>{Math.round(action.modelInfluence.relativeMagnitude * 100)}% of strongest action influence</small></li> : null)}</ol> : <p>No stable action influences to summarize. Measured movement is available below.</p>}
+      </section>
+      </div>
+      </section>
+
       <section className="report-section" aria-labelledby="evidence-title">
         <div className="section-heading"><span className="region-icon"><FileSearch aria-hidden="true" size={22} /></span><div><h2 id="evidence-title">Recorded action evidence</h2><p>Each context image is taken at the registered midpoint of its three-second hold. It is recorded context, not a frame selected by the model.</p></div></div>
+        <details className="evidence-reading-guide"><summary>How to read the evidence</summary>
         <p className="measurement-boundary"><ShieldCheck aria-hidden="true" size={20} /><strong>Three separate evidence layers: what was measured, how each action moved the model score, and whether that influence was stable.</strong></p>
         <p className="measurement-unit-note">These observations are calculated from MediaPipe 478-point facial landmarks sampled during each registered hold and compared with the neutral baseline. Measurements are scaled to the same eye-to-eye reference width: 1.0% corresponds to a normalized ratio of 0.010.</p>
         <div className="evidence-legend evidence-layer-legend" aria-label="Evidence layer guide"><div><strong><span>1</span> Measured movement</strong><span>Geometry observed during the registered hold.</span></div><div><strong><span>2</span> Model influence</strong><span>Direction and relative strength at the shared action-token layer.</span></div><div><strong><span>3</span> Stability checks</strong><span>Agreement across model members, mirrored input, and timing shifts.</span></div></div>
-        <div className="evidence-grid">{result.reportEvidence.actions.map((action, actionIndex) => (
-          <article className="evidence-card" key={action.id}>
+        </details>
+        {playback ? <MovementPlayback recording={recording} action={playback} /> : null}
+        <div className="evidence-grid">{result.reportEvidence.actions.map((action) => {
+          const quality = result.quality.actions.find((item) => item.id === action.id)
+          const valid = quality?.validSamples ?? 0
+          const brief = action.observations[0] ? measurementPresentation(action.observations[0].metric, action.observations[0].value) : null
+          const expanded = expandedActions.includes(action.id)
+          return (
+          <article className="evidence-card" id={`evidence-${action.id}`} key={action.id}>
             <div className="evidence-frame">{frames[action.id] ? <img src={frames[action.id] ?? undefined} alt={`${ACTION_LABELS[action.id]} recorded context at ${(action.contextFrameMs / 1_000).toFixed(1)} seconds`} width="640" height="480" loading="lazy" decoding="async" /> : <div className="frame-fallback" role="img" aria-label={`${ACTION_LABELS[action.id]} context frame unavailable`}><ScanFace aria-hidden="true" size={30} /><span>Recorded context frame unavailable</span></div>}<span>{(action.contextFrameMs / 1_000).toFixed(1)} s</span></div>
             <div className="evidence-copy">
-              <div className="evidence-action-heading"><div><h3>{ACTION_LABELS[action.id]}</h3><p>{REGION_LABELS[action.region]}</p></div><span>Action tracking</span><strong>{result.quality.actions[actionIndex].validSamples} of 32 points ({Math.round(result.quality.actions[actionIndex].validSamples / 32 * 100)}%)</strong></div>
+              <div className="evidence-action-heading"><div><h3 tabIndex={-1}>{ACTION_LABELS[action.id]}</h3><p>{REGION_LABELS[action.region]}</p></div><span>Action tracking</span><strong>{valid} of 32 points ({Math.round(valid / 32 * 100)}%)</strong></div>
+              <p className="evidence-brief">{brief ? <>{brief.label}: <strong>{brief.primaryValue}</strong>.</> : 'Measured movement unavailable.'}</p>
+              <p className={`evidence-direction ${action.modelInfluence.status === 'stable' ? 'is-stable' : ''}`}>{action.modelInfluence.status === 'stable' ? `Stable influence · Moved score ${action.modelInfluence.direction === 'toward_class_1' ? 'upward' : 'downward'}` : 'No stable influence direction available'}</p>
+              <div className="evidence-card-actions">
+                <button className="button button-secondary" type="button" aria-label={`Play this movement: ${ACTION_LABELS[action.id]}`} disabled={!quality} onClick={() => { if (quality) setPlayback({ id: action.id, holdStartMs: quality.holdStartMs, holdEndMs: quality.holdEndMs }) }}><Play aria-hidden="true" size={15} />Play this movement</button>
+                <button className="evidence-disclosure" type="button" aria-label={`All evidence for ${ACTION_LABELS[action.id]}`} aria-expanded={expanded} aria-controls={`evidence-details-${action.id}`} onClick={() => setExpandedActions((current) => expanded ? current.filter((id) => id !== action.id) : [...current, action.id])}>All evidence<ChevronDown aria-hidden="true" size={16} /></button>
+              </div>
+              <div id={`evidence-details-${action.id}`} hidden={!expanded} className="evidence-complete-details">
               <section className="evidence-layer evidence-layer-measurement" aria-label={`${ACTION_LABELS[action.id]} measured movement`}>
                 <h4><span>1</span> Measured movement</h4>
                 <dl>{action.observations.map((observation) => { const presentation = measurementPresentation(observation.metric, observation.value); return <div key={observation.metric}><dt><span>{presentation.kind}</span>{presentation.label}</dt><dd>{presentation.primaryValue}<span>{presentation.normalizedValue}</span><small>{presentation.explanation}</small></dd></div> })}</dl>
@@ -402,15 +520,10 @@ function ResearchReport({ result, recording, onBack, onReset }: {
                 <h4><span>3</span> Stability checks</h4>
                 <div className="stability-checks"><span className={action.stability.ensembleSignAgreement === 3 ? 'passed' : 'not-passed'}>{action.stability.ensembleSignAgreement} of 3 model members</span><span className={action.stability.mirrorConsistent ? 'passed' : 'not-passed'}>Mirror view {action.stability.mirrorConsistent ? 'passed' : 'did not agree'}</span><span className={action.stability.temporalChecksPassed === 2 ? 'passed' : 'not-passed'}>{action.stability.temporalChecksPassed} of 2 timing shifts</span></div>
               </section>
+              </div>
             </div>
           </article>
-        ))}</div>
-      </section>
-
-      <section className="report-section compact recording-coverage" aria-labelledby="quality-title">
-        <h2 id="quality-title">Recording coverage</h2>
-        <dl className="report-definition-list"><div><dt>Recorded steps included in this score</dt><dd>Neutral baseline + all {result.quality.actionsUsed} active movements</dd></div><div><dt>Face tracking coverage</dt><dd>{minimumValidSamples}–{maximumValidSamples} usable of 32 checkpoints per movement</dd></div><div><dt>Optional reanimation smile</dt><dd>{result.quality.optionalActionsUnavailable.length ? 'Not part of this session' : 'Included'}</dd></div></dl>
-        <div className="coverage-explanation"><p><ShieldCheck aria-hidden="true" size={19} />All {result.quality.actionsUsed + 1} recorded steps in this session were used: one neutral baseline and {result.quality.actionsUsed} active movements.</p><p>Each active movement is checked at 32 evenly spaced time points; the range above shows how many had usable face tracking. The neutral recording provides the resting baseline used for movement-change measurements.</p></div>
+        )})}</div>
       </section>
 
       <section className="report-clinical-note" aria-labelledby="clinical-review-title"><ShieldCheck aria-hidden="true" size={28} strokeWidth={1.8} /><div><h2 id="clinical-review-title">Clinical review note</h2><p>Review the movement score together with the recorded action images and source video in the context of the clinical assessment.</p></div></section>

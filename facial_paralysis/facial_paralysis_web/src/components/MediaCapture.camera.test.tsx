@@ -38,8 +38,10 @@ describe('MediaCapture camera session', () => {
     expect(screen.getByLabelText('Recorded camera preview')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Record again' }))
+    expect(resetRecording).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Discard and continue' }))
 
     expect(resetRecording).toHaveBeenCalledTimes(1)
-    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'browser-camera')
+    expect(onRecordingChange).toHaveBeenLastCalledWith(null, 'browser-camera', { preserveProtocolChoice: true })
   })
 })

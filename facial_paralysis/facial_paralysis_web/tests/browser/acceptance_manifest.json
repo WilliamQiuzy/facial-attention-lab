@@ -57,6 +57,12 @@
       "cases": ["X01", "X02", "X03", "X04", "S03"]
     },
     {
+      "id": "ux-improvements",
+      "level": "cross-browser",
+      "script": "ux_improvements_acceptance.py",
+      "cases": ["UX01", "UX02", "UX03", "UX04", "UX05", "UX06", "UX07", "UX08", "UX09", "UX10", "UX11", "UX12", "UX13", "UX14", "UX15", "UX16", "UX17", "UX18", "UX19", "UX20", "UX21"]
+    },
+    {
       "id": "live-seven-report",
       "level": "browser-live-mocked-model",
       "script": "live_full_loop.py",
