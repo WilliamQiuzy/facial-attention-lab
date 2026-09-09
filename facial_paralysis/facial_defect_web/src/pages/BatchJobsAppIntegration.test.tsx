@@ -42,7 +42,7 @@ afterEach(() => {
 })
 
 describe('production batch route integration', () => {
-  it('preserves the queued job across navigation and cancels before the 120ms launch', () => {
+  it('preserves the queued job across navigation and cancels before the 700ms launch', () => {
     vi.useFakeTimers()
     const runInference = vi.fn(async (binding) => runMockEngine(binding))
     const gateway: WorkbenchGateway = { mode: 'mock', runInference }
@@ -56,25 +56,35 @@ describe('production batch route integration', () => {
 
     expect(screen.getByText('queued')).toBeVisible()
     expect(runInference).not.toHaveBeenCalled()
-    const manifestHash = screen.getByLabelText('Manifest hash').textContent
-    expect(screen.getByRole('heading', { name: 'Batch progress' })).toBeVisible()
+    const progress = screen.getByRole('region', { name: 'Batch progress' })
+    const technicalDetails = within(progress).getByText('Technical details').closest('details')
+    expect(technicalDetails).not.toHaveAttribute('open')
+    fireEvent.click(within(progress).getByText('Technical details'))
+    const manifestHash = within(progress).getByLabelText('Manifest hash').textContent
+    expect(within(progress).getByRole('heading', { name: 'Batch progress' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'batch-job-1' })).not.toBeInTheDocument()
 
     clickResearchTool('Runs')
     expect(screen.getByRole('heading', { name: 'Recent simulations' })).toBeVisible()
     clickResearchTool('Jobs')
 
-    expect(screen.getByLabelText('Manifest hash')).toHaveTextContent(manifestHash!)
-    expect(screen.getByRole('heading', { name: 'Batch progress' })).toBeVisible()
+    const restoredProgress = screen.getByRole('region', { name: 'Batch progress' })
+    const restoredTechnicalDetails = within(restoredProgress)
+      .getByText('Technical details')
+      .closest('details')
+    fireEvent.click(within(restoredProgress).getByText('Technical details'))
+    expect(restoredTechnicalDetails).toHaveAttribute('open')
+    expect(within(restoredProgress).getByLabelText('Manifest hash')).toHaveTextContent(manifestHash!)
+    expect(within(restoredProgress).getByRole('heading', { name: 'Batch progress' })).toBeVisible()
     expect(screen.getByText('queued')).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel batch' }))
     expect(screen.getByText('cancelled')).toBeVisible()
 
-    act(() => vi.advanceTimersByTime(200))
+    act(() => vi.advanceTimersByTime(800))
     expect(runInference).not.toHaveBeenCalled()
   })
 
-  it('exposes the real queued window and launches only after 120ms', async () => {
+  it('exposes the real queued window and launches only after 700ms', async () => {
     vi.useFakeTimers()
     const runInference = vi.fn(async (binding) => runMockEngine(binding))
     const gateway: WorkbenchGateway = { mode: 'mock', runInference }
@@ -87,7 +97,7 @@ describe('production batch route integration', () => {
     configureSingleCaseBatch()
     expect(screen.getByText('queued')).toBeVisible()
 
-    act(() => vi.advanceTimersByTime(119))
+    act(() => vi.advanceTimersByTime(699))
     expect(runInference).not.toHaveBeenCalled()
     expect(screen.getByText('queued')).toBeVisible()
 
@@ -114,7 +124,7 @@ describe('production batch route integration', () => {
 
     configureSingleCaseBatch()
     await act(async () => {
-      vi.advanceTimersByTime(120)
+      vi.advanceTimersByTime(700)
       for (let index = 0; index < 8; index += 1) await Promise.resolve()
     })
     expect(screen.getByText('failed')).toBeVisible()

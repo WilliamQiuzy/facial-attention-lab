@@ -39,6 +39,8 @@ import type {
   CaptureAsset,
   CaptureQualityChecks,
   CaptureSource,
+  PatientFaceFeature,
+  PatientFaceRegistration,
   PatientId,
   PatientRecord,
   PatientResult,
@@ -98,7 +100,28 @@ export type SyntheticPatientMediaLoader = (
 
 export type PatientSimulationRunner = (
   binding: Readonly<PatientRunBinding>,
+  faceRegistration: Readonly<PatientFaceRegistration>,
 ) => PatientSimulationOutput | Promise<PatientSimulationOutput>
+
+export type PatientFaceRegistrationInput = Readonly<{
+  readonly media: Blob
+  readonly captureSha256: string
+  readonly sourceWidth: number
+  readonly sourceHeight: number
+  readonly captureProtocol: CaptureAsset['captureProtocol']
+}>
+
+export type PatientFaceRegistrationRunner = (
+  input: PatientFaceRegistrationInput,
+) => PatientFaceRegistration | Promise<PatientFaceRegistration>
+
+const runDefaultFaceRegistration: PatientFaceRegistrationRunner =
+  async (input) => {
+    const { detectPatientFaceRegistration } = await import(
+      './onDeviceFaceRegistration'
+    )
+    return detectPatientFaceRegistration(input)
+  }
 
 export type CreatePatientInput = PatientDraft & {
   readonly initialVisit: PatientVisitDraft
@@ -162,6 +185,7 @@ export type PatientWorkflowProviderProps = {
   readonly prepareCapture?: PatientCapturePreparer
   readonly loadSyntheticMedia?: SyntheticPatientMediaLoader
   readonly simulationRunner?: PatientSimulationRunner
+  readonly faceRegistrationRunner?: PatientFaceRegistrationRunner
   readonly queueDelayMs?: number
   readonly analysisDelayMs?: number
   readonly initialState?: PatientWorkflowState
@@ -555,6 +579,137 @@ function normalizeSimulationOutput(
   })
 }
 
+const REQUIRED_FACE_FEATURES = new Set<PatientFaceFeature>([
+  'face_oval',
+  'left_eye',
+  'right_eye',
+  'left_eyebrow',
+  'right_eyebrow',
+  'lips',
+])
+
+function normalizeFaceRegistration(
+  candidate: unknown,
+  input: PatientFaceRegistrationInput,
+): PatientFaceRegistration | undefined {
+  if (candidate === null || typeof candidate !== 'object') {
+    return undefined
+  }
+  const registration = candidate as PatientFaceRegistration
+  if (
+    Object.keys(registration).sort().join(',') !==
+      [
+        'captureProtocol',
+        'captureSha256',
+        'coordinateSpace',
+        'detectorId',
+        'detectorVersion',
+        'faceCount',
+        'paths',
+        'schemaVersion',
+        'source',
+        'sourceHeight',
+        'sourceWidth',
+      ]
+        .sort()
+        .join(',') ||
+    registration.schemaVersion !== 'patient-face-registration/1' ||
+    registration.source !== 'on_device_face_landmarks' ||
+    registration.coordinateSpace !==
+      'decoded_image_normalized_v1' ||
+    registration.captureSha256 !== input.captureSha256 ||
+    registration.sourceWidth !== input.sourceWidth ||
+    registration.sourceHeight !== input.sourceHeight ||
+    registration.captureProtocol !== input.captureProtocol ||
+    registration.detectorId !== 'mediapipe_face_landmarker' ||
+    registration.detectorVersion !==
+      'tasks-vision-1.0.0-model-float16-1' ||
+    registration.faceCount !== 1 ||
+    !Array.isArray(registration.paths)
+  ) {
+    return undefined
+  }
+
+  const features = new Set<PatientFaceFeature>()
+  const paths = []
+  for (const path of registration.paths) {
+    if (
+      path === null ||
+      typeof path !== 'object' ||
+      Object.keys(path).sort().join(',') !==
+        'closed,feature,points' ||
+      !REQUIRED_FACE_FEATURES.has(path.feature) ||
+      typeof path.closed !== 'boolean' ||
+      !Array.isArray(path.points) ||
+      path.points.length < 2 ||
+      path.points.length > 128
+    ) {
+      return undefined
+    }
+    const points = []
+    for (const point of path.points) {
+      if (
+        point === null ||
+        typeof point !== 'object' ||
+        Object.keys(point).sort().join(',') !== 'x,y' ||
+        !Number.isFinite(point.x) ||
+        point.x < 0 ||
+        point.x > 1 ||
+        !Number.isFinite(point.y) ||
+        point.y < 0 ||
+        point.y > 1
+      ) {
+        return undefined
+      }
+      points.push(Object.freeze({ x: point.x, y: point.y }))
+    }
+    features.add(path.feature)
+    paths.push(
+      Object.freeze({
+        feature: path.feature,
+        closed: path.closed,
+        points: Object.freeze(points),
+      }),
+    )
+  }
+  if (
+    registration.paths.length < REQUIRED_FACE_FEATURES.size ||
+    registration.paths.length > 16 ||
+    features.size !== REQUIRED_FACE_FEATURES.size ||
+    [...REQUIRED_FACE_FEATURES].some(
+      (feature) => !features.has(feature),
+    )
+  ) {
+    return undefined
+  }
+  const ovalPoints = paths
+    .filter((path) => path.feature === 'face_oval')
+    .flatMap((path) => path.points)
+  const ovalWidth =
+    Math.max(...ovalPoints.map((point) => point.x)) -
+    Math.min(...ovalPoints.map((point) => point.x))
+  const ovalHeight =
+    Math.max(...ovalPoints.map((point) => point.y)) -
+    Math.min(...ovalPoints.map((point) => point.y))
+  if (ovalWidth < 0.08 || ovalHeight < 0.08) {
+    return undefined
+  }
+
+  return Object.freeze({
+    schemaVersion: 'patient-face-registration/1',
+    source: 'on_device_face_landmarks',
+    coordinateSpace: 'decoded_image_normalized_v1',
+    captureSha256: registration.captureSha256,
+    sourceWidth: registration.sourceWidth,
+    sourceHeight: registration.sourceHeight,
+    captureProtocol: registration.captureProtocol,
+    detectorId: 'mediapipe_face_landmarker',
+    detectorVersion: 'tasks-vision-1.0.0-model-float16-1',
+    faceCount: 1,
+    paths: Object.freeze(paths),
+  })
+}
+
 export function PatientWorkflowProvider({
   children,
   runtime,
@@ -562,6 +717,7 @@ export function PatientWorkflowProvider({
   prepareCapture = validateCaptureFile,
   loadSyntheticMedia = loadSyntheticMediaWithFetch,
   simulationRunner = createDemoPatientResult,
+  faceRegistrationRunner = runDefaultFaceRegistration,
   queueDelayMs,
   analysisDelayMs,
   initialState,
@@ -653,6 +809,7 @@ export function PatientWorkflowProvider({
       runId: PatientRunId,
       binding: PatientRunBinding,
       output: PatientSimulationOutput,
+      faceRegistration: PatientFaceRegistration,
       lifecycle: number,
     ) => {
       if (
@@ -695,6 +852,7 @@ export function PatientWorkflowProvider({
             binding: copyBinding(binding),
             freshness: 'current',
             createdAt: activeRuntime.now(),
+            faceRegistration,
             output,
           },
         })
@@ -774,8 +932,36 @@ export function PatientWorkflowProvider({
       commitState(started)
 
       let candidate: unknown
+      const registrationInput: PatientFaceRegistrationInput = {
+        media: secondValidation.blob,
+        captureSha256: secondValidation.capture.sha256,
+        sourceWidth: secondValidation.capture.width,
+        sourceHeight: secondValidation.capture.height,
+        captureProtocol: secondValidation.capture.captureProtocol,
+      }
+      let registrationCandidate: unknown
       try {
-        candidate = await simulationRunner(binding)
+        registrationCandidate =
+          await faceRegistrationRunner(registrationInput)
+      } catch {
+        if (
+          mountedRef.current &&
+          lifecycleRef.current === lifecycle
+        ) {
+          failRun(runId, 'faceRegistration')
+        }
+        return
+      }
+      const faceRegistration = normalizeFaceRegistration(
+        registrationCandidate,
+        registrationInput,
+      )
+      if (!faceRegistration) {
+        failRun(runId, 'faceRegistration.binding')
+        return
+      }
+      try {
+        candidate = await simulationRunner(binding, faceRegistration)
       } catch {
         if (
           mountedRef.current &&
@@ -799,12 +985,24 @@ export function PatientWorkflowProvider({
 
       const delay = boundedDelay(analysisDelayMs)
       if (delay === 0) {
-        completeRun(runId, binding, output, lifecycle)
+        completeRun(
+          runId,
+          binding,
+          output,
+          faceRegistration,
+          lifecycle,
+        )
         return
       }
       const timer = setTimeout(() => {
         analysisTimersRef.current.delete(runId)
-        completeRun(runId, binding, output, lifecycle)
+        completeRun(
+          runId,
+          binding,
+          output,
+          faceRegistration,
+          lifecycle,
+        )
       }, delay)
       analysisTimersRef.current.set(runId, timer)
     },
@@ -814,6 +1012,7 @@ export function PatientWorkflowProvider({
       completeRun,
       failRun,
       prepareCapture,
+      faceRegistrationRunner,
       simulationRunner,
       vault,
     ],

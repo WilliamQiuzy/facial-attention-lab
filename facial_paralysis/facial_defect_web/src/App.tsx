@@ -1,4 +1,5 @@
 import {
+  Link,
   Navigate,
   Route,
   Routes,
@@ -66,15 +67,26 @@ export type AppProps = {
   readonly patientAnalysisDelayMs?: number
 }
 
-function PagePlaceholder({ eyebrow, title }: { eyebrow: string; title: string }) {
+function PageNotFound() {
   return (
     <section className="workspace-page workspace-placeholder page-shell">
-      <p className="workspace-kicker">{eyebrow}</p>
-      <h1>{title}</h1>
-      <p>
-        This session-only surface is reserved for synthetic, provenance-first research
-        operations. No patient data or clinical workflow is enabled.
-      </p>
+      <p className="workspace-kicker">404</p>
+      <h1>Page not found</h1>
+      <p>We could not find the page you requested.</p>
+      <div className="workspace-placeholder__actions">
+        <Link
+          className="workspace-button workspace-button--primary"
+          to="/patients"
+        >
+          Return to Patients
+        </Link>
+        <Link
+          className="workspace-button workspace-button--secondary"
+          to="/about"
+        >
+          Help
+        </Link>
+      </div>
     </section>
   )
 }
@@ -150,7 +162,7 @@ function RoutedWorkspace() {
           <Route path="/model" element={<Navigate to="/integration" replace />} />
           <Route
             path="*"
-            element={<PagePlaceholder eyebrow="Page not found" title="This route is not available" />}
+            element={<PageNotFound />}
           />
         </Routes>
       </main>
@@ -162,11 +174,13 @@ function RoutedWorkspace() {
 export function App({
   gateway = defaultWorkbenchGateway,
   initialState,
-  queueDelayMs = 120,
+  queueDelayMs,
   patientInitialState,
   patientQueueDelayMs = 500,
   patientAnalysisDelayMs = 900,
 }: AppProps) {
+  const effectiveQueueDelayMs =
+    queueDelayMs ?? (gateway.mode === 'mock' ? 700 : 0)
   const defaultPatientState =
     patientInitialState ??
     createInitialPatientWorkflowState(
@@ -178,7 +192,7 @@ export function App({
     <WorkspaceProvider
       gateway={gateway}
       initialState={initialState}
-      queueDelayMs={queueDelayMs}
+      queueDelayMs={effectiveQueueDelayMs}
     >
       <PatientWorkflowProvider
         initialState={defaultPatientState}

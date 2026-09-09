@@ -1,7 +1,19 @@
-import { Ban, CheckCircle2, FlaskConical, ListChecks, RotateCcw, XCircle } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import {
+  Ban,
+  CheckCircle2,
+  FlaskConical,
+  ListChecks,
+  LoaderCircle,
+  RotateCcw,
+  XCircle,
+} from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { JobProgressMatrix, type JobProgressRow } from '../components/JobProgressMatrix'
+import {
+  formatJobProgressSummary,
+  JobProgressMatrix,
+  type JobProgressRow,
+} from '../components/JobProgressMatrix'
 import { StatusBadge } from '../components/StatusBadge'
 import { listWorkbenchAssets } from '../workbench/catalog'
 import {
@@ -39,6 +51,8 @@ export function BatchJobsPage() {
   ).length
   const [exclusionsConfirmed, setExclusionsConfirmed] = useState(false)
   const [submissionError, setSubmissionError] = useState(false)
+  const progressHeadingRef = useRef<HTMLHeadingElement>(null)
+  const previousJobIdRef = useRef(session.job?.id)
   const draftConfirmationKey = [
     session.selectedCaseIds.join('|'),
     session.modelVersion,
@@ -51,6 +65,19 @@ export function BatchJobsPage() {
     setExclusionsConfirmed(false)
     setSubmissionError(false)
   }, [draftConfirmationKey])
+
+  useEffect(() => {
+    const jobId = session.job?.id
+    if (!previousJobIdRef.current && jobId) {
+      const heading = progressHeadingRef.current
+      heading?.focus({ preventScroll: true })
+      heading?.scrollIntoView?.({
+        behavior: 'auto',
+        block: 'start',
+      })
+    }
+    previousJobIdRef.current = jobId
+  }, [session.job?.id])
 
   const currentCaseReview = useMemo(
     () => createBatchManifest({
@@ -118,6 +145,12 @@ export function BatchJobsPage() {
   )
   const retryRows = progressRows.filter((row) => row.retryEligible && row.runId)
   const submittedCount = Object.keys(session.job?.runIdsByCase ?? {}).length
+  const succeededCount = progressRows.filter(
+    (row) => row.status === 'succeeded' && row.runId,
+  ).length
+  const allSubmittedSucceeded =
+    submittedCount > 0 && succeededCount === submittedCount
+  const progressAnnouncement = formatJobProgressSummary(progressRows)
 
   const selectReady = () => {
     setExclusionsConfirmed(false)
@@ -209,8 +242,35 @@ export function BatchJobsPage() {
       </header>
 
       <section className="task5-layout page-shell">
-        <aside className="task5-control-rail" aria-label="Batch configuration">
-          <div className="task5-section-heading">
+        <aside
+          className="task5-control-rail"
+          aria-label={
+            session.job
+              ? 'Batch submission summary'
+              : 'Batch configuration'
+          }
+        >
+          {session.job ? (
+            <div className="task5-batch-summary">
+              <p className="workspace-kicker">Selection complete</p>
+              <h2>
+                {submittedCount}{' '}
+                {plural(submittedCount, 'simulation')}{' '}
+                {allSubmittedSucceeded ? 'completed' : 'started'}
+              </h2>
+              <p>
+                {allSubmittedSucceeded
+                  ? submittedCount === 1
+                    ? 'The result is ready.'
+                    : `All ${submittedCount} results are ready.`
+                  : blockedCount > 0
+                  ? `${blockedCount} ${plural(blockedCount, 'case')} need source binding and were not submitted.`
+                  : 'All reviewed cases were submitted.'}
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="task5-section-heading">
             <div><p className="workspace-kicker">Step 1</p><h2>Select cases</h2></div>
             <output aria-label="Selected cases">{session.selectedCaseIds.length}</output>
           </div>
@@ -228,9 +288,9 @@ export function BatchJobsPage() {
               type="button"
               disabled={Boolean(session.job)}
               onClick={selectAll}
-              aria-label="Select all 10 cases"
+              aria-label={`Select all ${catalog.length} cases`}
             >
-              Select all 10
+              Select all {catalog.length}
             </button>
             <button
               className="workspace-button workspace-button--quiet"
@@ -249,6 +309,7 @@ export function BatchJobsPage() {
                   <label>
                     <input
                       type="checkbox"
+                      name="caseIds"
                       disabled={Boolean(session.job)}
                       checked={session.selectedCaseIds.includes(asset.id)}
                       onChange={() => {
@@ -329,25 +390,27 @@ export function BatchJobsPage() {
           >
             <ListChecks aria-hidden="true" /> Review selected cases
           </button>
+            </>
+          )}
         </aside>
 
         <div className="task5-main-column">
-          {session.manifest ? (
+          {session.manifest && !session.job ? (
             <ManifestPreview
               manifest={session.manifest}
               exclusionsConfirmed={exclusionsConfirmed}
               onConfirmExclusions={setExclusionsConfirmed}
               controlsDisabled={Boolean(session.job)}
             />
-          ) : (
+          ) : !session.manifest ? (
             <section className="task5-empty-panel">
               <ListChecks aria-hidden="true" />
               <h2>Choose cases to begin</h2>
               <p>Select ready cases or make your own selection, then review it before starting.</p>
             </section>
-          )}
+          ) : null}
 
-          {session.manifest && (!draftMatches || manifestAudit?.valid === false) ? (
+          {session.manifest && !session.job && (!draftMatches || manifestAudit?.valid === false) ? (
             <div className="task5-alert" role="alert">
               <XCircle aria-hidden="true" />
               <span>
@@ -367,7 +430,7 @@ export function BatchJobsPage() {
             </div>
           ) : null}
 
-          {session.manifest ? (
+          {session.manifest && !session.job ? (
             <div className="task5-command-bar">
               <div>
                 <span>Step 3</span>
@@ -392,41 +455,79 @@ export function BatchJobsPage() {
           ) : null}
 
           {session.job ? (
-            <section className="task5-progress" aria-label="Batch progress">
+            <>
+              <p
+                className="sr-only"
+                role="status"
+                aria-label="Batch progress announcement"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {progressAnnouncement}
+              </p>
+              <section
+                className="task5-progress"
+                aria-label="Batch progress"
+                aria-busy={activeRows.length > 0}
+              >
               <div className="task5-section-heading task5-progress__heading">
                 <div>
                   <p className="workspace-kicker">03 · Execute</p>
-                  <h2>Batch progress</h2>
+                  <h2 ref={progressHeadingRef} tabIndex={-1}>
+                    Batch progress
+                  </h2>
                   <span>{submittedCount} submitted · {blockedCount} blocked</span>
                 </div>
-                <div className="task5-control-row">
-                  <button
-                    className="workspace-button workspace-button--quiet"
-                    type="button"
-                    disabled={activeRows.length === 0}
-                    onClick={cancelBatch}
-                    aria-label="Cancel batch"
-                  >
-                    <Ban aria-hidden="true" /> Cancel batch
-                  </button>
-                  <button
-                    className="workspace-button workspace-button--secondary"
-                    type="button"
-                    disabled={retryRows.length === 0}
-                    onClick={retryEligible}
-                    aria-label={retryLabel}
-                  >
-                    <RotateCcw aria-hidden="true" /> {retryLabel}
-                  </button>
-                </div>
+                {activeRows.length > 0 || retryRows.length > 0 ? (
+                  <div className="task5-control-row">
+                    {activeRows.length > 0 ? (
+                      <button
+                        className="workspace-button workspace-button--quiet"
+                        type="button"
+                        onClick={cancelBatch}
+                        aria-label="Cancel batch"
+                      >
+                        <Ban aria-hidden="true" /> Cancel batch
+                      </button>
+                    ) : null}
+                    {retryRows.length > 0 ? (
+                      <button
+                        className="workspace-button workspace-button--secondary"
+                        type="button"
+                        onClick={retryEligible}
+                        aria-label={retryLabel}
+                      >
+                        <RotateCcw aria-hidden="true" /> {retryLabel}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
+              {activeRows.length > 0 ? (
+                <div className="workspace-loading-state task5-progress__active">
+                  <LoaderCircle
+                    className="workspace-loading-icon"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    <strong>
+                      Analyzing {activeRows.length}{' '}
+                      {plural(activeRows.length, 'case')}…
+                    </strong>
+                    <small>
+                      Completed cases will update below as results are
+                      prepared.
+                    </small>
+                  </span>
+                </div>
+              ) : null}
               <JobProgressMatrix rows={progressRows} onRetry={retryOne} />
               <details className="task5-technical-details task5-progress-technical">
                 <summary>Technical details</summary>
                 <div className="task5-technical-details__content">
                   <dl>
                     <div><dt>Batch job ID</dt><dd><code>{session.job.id}</code></dd></div>
-                    <div><dt>Manifest hash</dt><dd><code>{session.job.manifestHash}</code></dd></div>
+                    <div><dt>Manifest hash</dt><dd><code aria-label="Manifest hash">{session.job.manifestHash}</code></dd></div>
                   </dl>
                   <div className="task5-technical-case-list">
                     {progressRows.map((row) => (
@@ -442,7 +543,8 @@ export function BatchJobsPage() {
                   </div>
                 </div>
               </details>
-            </section>
+              </section>
+            </>
           ) : null}
         </div>
       </section>
@@ -492,11 +594,6 @@ function ManifestPreview({
               <StatusBadge tone={item.preflight === 'ready' ? 'success' : 'warning'}>
                 {item.preflight === 'ready' ? 'Ready' : 'Needs source binding'}
               </StatusBadge>
-              {item.preflight === 'blocked' ? (
-                <Link to={`/cases/${encodeURIComponent(item.caseId)}/roi`}>
-                  Restore source binding
-                </Link>
-              ) : null}
             </div>
           </article>
         ))}
@@ -521,6 +618,7 @@ function ManifestPreview({
           <label>
             <input
               type="checkbox"
+              name="confirmExclusions"
               checked={exclusionsConfirmed}
               disabled={controlsDisabled}
               onChange={(event) => onConfirmExclusions(event.currentTarget.checked)}

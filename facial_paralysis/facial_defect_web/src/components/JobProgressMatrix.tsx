@@ -1,4 +1,5 @@
 import { RotateCcw } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { StatusBadge } from './StatusBadge'
 
 export type JobProgressStatus =
@@ -31,13 +32,9 @@ function tone(status: JobProgressStatus) {
   return 'neutral' as const
 }
 
-export function JobProgressMatrix({
-  rows,
-  onRetry,
-}: {
-  readonly rows: readonly JobProgressRow[]
-  readonly onRetry: (runId: string) => void
-}) {
+export function formatJobProgressSummary(
+  rows: readonly JobProgressRow[],
+): string {
   const summaryOrder: readonly JobProgressStatus[] = [
     'running',
     'queued',
@@ -49,18 +46,25 @@ export function JobProgressMatrix({
     'validating',
     'draft',
   ]
-  const statusSummary = summaryOrder.flatMap((status) => {
+  return summaryOrder.flatMap((status) => {
     const count = rows.filter((row) => row.status === status).length
     return count > 0 ? [`${count} ${status}`] : []
   }).join(' · ')
+}
+
+export function JobProgressMatrix({
+  rows,
+  onRetry,
+}: {
+  readonly rows: readonly JobProgressRow[]
+  readonly onRetry: (runId: string) => void
+}) {
+  const statusSummary = formatJobProgressSummary(rows)
 
   return (
     <div className="task5-progress-matrix">
       <p
         className="task5-progress-summary"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
         aria-label="Batch status summary"
       >
         {statusSummary}
@@ -81,7 +85,14 @@ export function JobProgressMatrix({
             <small>{row.detail}</small>
           </div>
           <div>
-            {row.retryEligible && row.runId ? (
+            {row.status === 'succeeded' && row.runId ? (
+              <Link
+                className="workspace-button workspace-button--quiet"
+                to={`/runs/${encodeURIComponent(row.runId)}`}
+              >
+                View result
+              </Link>
+            ) : row.retryEligible && row.runId ? (
               <button
                 className="workspace-button workspace-button--quiet"
                 type="button"

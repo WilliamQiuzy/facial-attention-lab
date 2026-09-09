@@ -1,0 +1,20 @@
+{
+  "project_id": "SYN-GAZE-COMPARE-001",
+  "synthetic": true,
+  "seed": 20260813,
+  "participants_per_scenario": 3,
+  "free_view_duration_ms": 3000,
+  "scenarios": [
+    "near_equivalent",
+    "systematic_bias",
+    "temporal_lag",
+    "high_dropout"
+  ],
+  "map_grid_size": 48,
+  "illustrative_margins": {
+    "accuracy_difference_deg": 1.0,
+    "data_loss_difference": 0.12,
+    "map_disagreement": 0.35,
+    "absolute_lag_ms": 100.0
+  }
+}

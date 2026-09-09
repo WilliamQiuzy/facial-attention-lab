@@ -179,6 +179,39 @@ export type PatientAttentionPoint = {
   readonly radius: number
 }
 
+export type PatientNormalizedPoint = {
+  readonly x: number
+  readonly y: number
+}
+
+export type PatientFaceFeature =
+  | 'face_oval'
+  | 'left_eye'
+  | 'right_eye'
+  | 'left_eyebrow'
+  | 'right_eyebrow'
+  | 'lips'
+
+export type PatientFacePath = {
+  readonly feature: PatientFaceFeature
+  readonly closed: boolean
+  readonly points: readonly PatientNormalizedPoint[]
+}
+
+export type PatientFaceRegistration = {
+  readonly schemaVersion: 'patient-face-registration/1'
+  readonly source: 'on_device_face_landmarks'
+  readonly coordinateSpace: 'decoded_image_normalized_v1'
+  readonly captureSha256: string
+  readonly sourceWidth: number
+  readonly sourceHeight: number
+  readonly captureProtocol: CaptureProtocol
+  readonly detectorId: 'mediapipe_face_landmarker'
+  readonly detectorVersion: 'tasks-vision-1.0.0-model-float16-1'
+  readonly faceCount: 1
+  readonly paths: readonly PatientFacePath[]
+}
+
 export type PatientSimulationOutput = {
   readonly origin: 'workflow_simulation'
   readonly points: readonly PatientAttentionPoint[]
@@ -190,6 +223,7 @@ export type PatientResult = {
   readonly binding: Readonly<PatientRunBinding>
   readonly freshness: 'current' | 'stale'
   readonly createdAt: string
+  readonly faceRegistration: Readonly<PatientFaceRegistration>
   readonly output: Readonly<PatientSimulationOutput>
 }
 

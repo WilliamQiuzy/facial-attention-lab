@@ -1,6 +1,8 @@
 import type { CSSProperties } from 'react'
 import type { WorkbenchCatalogEntry } from '../workbench/catalog'
 import type { InferenceOutput, RoiAnnotation } from '../workbench/types'
+import { AttentionColorLegend } from './AttentionColorLegend'
+import { attentionColorRgb } from './attentionColorScale'
 
 type SharedAttentionMapProps = {
   showHeatmap: boolean
@@ -96,6 +98,7 @@ export function AttentionMap(props: AttentionMapProps) {
                     '--point-y': `${point.y}%`,
                     '--point-size': `${point.radius * 2}%`,
                     '--point-intensity': point.intensity,
+                    '--attention-color-rgb': attentionColorRgb(point.intensity),
                   } as CSSProperties
                 }
               />
@@ -134,6 +137,7 @@ export function AttentionMap(props: AttentionMapProps) {
           <small>Frontal, non-mirrored synthetic display.</small>
         ) : null}
       </div>
+      <AttentionColorLegend />
       <figcaption>{map.disclosure}</figcaption>
     </figure>
   )

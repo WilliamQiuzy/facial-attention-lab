@@ -131,6 +131,19 @@ describe('AttentionResultView clinical AOI story', () => {
     ).not.toBeInTheDocument()
     expect(container.querySelectorAll('.attention-summary__cell')).toHaveLength(0)
     expect(container).not.toHaveTextContent(/nine image-relative areas/i)
+    expect(
+      container.querySelector('.face-reference-outline'),
+    ).not.toBeInTheDocument()
+    expect(container).toHaveTextContent(
+      /face outline unavailable.*registered contour or landmarks were not supplied/i,
+    )
+    expect(
+      screen.getByRole('region', {
+        name: 'Simulated attention-density field',
+      }),
+    ).toHaveAccessibleDescription(
+      'Face outline unavailable: registered contour or landmarks were not supplied with this result.',
+    )
   })
 
   it('separates the non-additive mock AOI readouts and states the point-weight basis', () => {
@@ -191,14 +204,19 @@ describe('AttentionResultView clinical AOI story', () => {
     expect(aoi.getByText('Registration: Synthetic template v1')).toBeVisible()
     expect(
       aoi.getByText(
-        'AOIs summarize the completed field and do not change the simulation.',
+        'Fixed face-relative areas summarize this simulated field. They do not change the result.',
       ),
     ).toBeVisible()
+    const methodDetails = aoi
+      .getByText('How this summary is calculated')
+      .closest('details')
+    expect(methodDetails).not.toBeNull()
+    expect(methodDetails).not.toHaveAttribute('open')
     expect(
       aoi.getByText(
         /simulated point-center intensity weights assigned to the fixed template; display radius and boundary overlap are not integrated/i,
       ),
-    ).toBeVisible()
+    ).not.toBeVisible()
     expect(
       aoi.getByText('Fixed anatomical template — simulation; no landmarks detected.'),
     ).toBeVisible()
@@ -273,9 +291,12 @@ describe('AttentionResultView clinical AOI story', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('keeps a future surgical-site annotation explicitly absent and non-interactive', () => {
+  it('keeps a future surgical-site annotation explicitly absent and non-interactive', async () => {
+    const user = userEvent.setup()
     const { container } = renderResultView('clinician-stack')
 
+    expect(screen.getByText('Surgical-site mask: not set')).not.toBeVisible()
+    await user.click(screen.getByText('How this summary is calculated'))
     expect(screen.getByText('Surgical-site mask: not set')).toBeVisible()
     expect(
       screen.getByText(
@@ -345,6 +366,51 @@ describe('AttentionResultView clinical AOI story', () => {
       screen.queryByRole('group', { name: 'Patient orientation' }),
     ).not.toBeInTheDocument()
     expect(container).not.toHaveTextContent(/patient left|patient right/i)
+    expect(
+      container.querySelector('.face-reference-outline'),
+    ).not.toBeInTheDocument()
+    expect(container).toHaveTextContent(
+      /face outline unavailable.*registered contour or landmarks were not supplied/i,
+    )
+    expect(
+      screen.getByRole('region', {
+        name: 'Predicted observer-attention density field',
+      }),
+    ).toHaveAccessibleDescription(
+      'Face outline unavailable: registered contour or landmarks were not supplied with this result.',
+    )
+  })
+
+  it('maps connected model intensities to the shared high-contrast thermal scale', () => {
+    const { container } = renderResultView('clinician-stack', (output) => {
+      const connected = asConnected(output)
+      return {
+        ...connected,
+        heatmap: connected.heatmap.map((point, index) => ({
+          ...point,
+          intensity: index === 0 ? 1 : point.intensity,
+        })),
+      }
+    })
+
+    const densityPeak = container.querySelector(
+      '.attention-signal-field__point',
+    ) as HTMLElement | null
+    const overlayPeak = container.querySelector(
+      '.heatmap-point',
+    ) as HTMLElement | null
+
+    expect(densityPeak?.style.getPropertyValue('--attention-color-rgb')).toBe(
+      '207 16 32',
+    )
+    expect(overlayPeak?.style.getPropertyValue('--attention-color-rgb')).toBe(
+      '207 16 32',
+    )
+    expect(
+      screen.getAllByRole('group', {
+        name: 'Relative density color scale: blue low, cyan, yellow, orange, red peak',
+      }),
+    ).toHaveLength(2)
   })
 
   it('does not invent a dominant AOI for an all-zero field', () => {
@@ -433,6 +499,12 @@ describe('AttentionResultView clinical AOI story', () => {
       }),
     ).toBeVisible()
     expect(screen.queryByText('Display options')).not.toBeInTheDocument()
+    expect(
+      container.querySelector('.face-reference-outline'),
+    ).not.toBeInTheDocument()
+    expect(container).toHaveTextContent(
+      /face outline unavailable.*registered contour or landmarks were not supplied/i,
+    )
 
     await user.click(screen.getByRole('radio', { name: 'Overlay' }))
     expect(
@@ -440,6 +512,9 @@ describe('AttentionResultView clinical AOI story', () => {
     ).toBeVisible()
     const options = screen.getByText('Display options').closest('details')
     expect(options).not.toHaveAttribute('open')
+    expect(
+      screen.getByRole('slider', { name: 'Overlay opacity' }),
+    ).toHaveAttribute('name', 'overlayOpacity')
     expect(screen.getByRole('slider', { name: 'Overlay opacity' })).not.toBeVisible()
   })
 
@@ -471,6 +546,12 @@ describe('AttentionResultView clinical AOI story', () => {
     })
     expect(within(sourceOrientation).getByText('Viewer left')).toBeVisible()
     expect(within(sourceOrientation).getByText('Viewer right')).toBeVisible()
+    expect(
+      container.querySelector('.face-reference-outline'),
+    ).not.toBeInTheDocument()
+    expect(container).toHaveTextContent(
+      /face outline unavailable.*registered contour or landmarks were not supplied/i,
+    )
 
     await user.click(screen.getByRole('radio', { name: 'Overlay' }))
     const overlayOrientation = screen.getByRole('group', {

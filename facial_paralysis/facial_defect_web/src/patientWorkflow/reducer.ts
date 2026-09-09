@@ -12,6 +12,7 @@ import type {
   CaptureAsset,
   CaptureQualityChecks,
   PatientRecord,
+  PatientNormalizedPoint,
   PatientResult,
   PatientReview,
   PatientRun,
@@ -794,8 +795,92 @@ function setRunStatus(
   }
 }
 
-function validResultOutput(result: PatientResult): boolean {
+function validFaceRegistration(
+  state: PatientWorkflowState,
+  result: PatientResult,
+): boolean {
+  const capture = getOwnRecordValue(
+    state.capturesById,
+    result.binding.captureId,
+  )
+  const registration = result.faceRegistration
+  const requiredFeatures = new Set([
+    'face_oval',
+    'left_eye',
+    'right_eye',
+    'left_eyebrow',
+    'right_eyebrow',
+    'lips',
+  ])
+  const features = new Set<string>()
+  const ovalPoints =
+    registration?.paths
+      ?.filter((path) => path.feature === 'face_oval')
+      .flatMap((path) => path.points) ?? []
+  const ovalWidth =
+    ovalPoints.length > 0
+      ? Math.max(...ovalPoints.map((point) => point.x)) -
+        Math.min(...ovalPoints.map((point) => point.x))
+      : 0
+  const ovalHeight =
+    ovalPoints.length > 0
+      ? Math.max(...ovalPoints.map((point) => point.y)) -
+        Math.min(...ovalPoints.map((point) => point.y))
+      : 0
+
   return (
+    capture !== undefined &&
+    registration?.schemaVersion === 'patient-face-registration/1' &&
+    registration.source === 'on_device_face_landmarks' &&
+    registration.coordinateSpace ===
+      'decoded_image_normalized_v1' &&
+    registration.captureSha256 === result.binding.captureSha256 &&
+    registration.captureSha256 === capture.sha256 &&
+    registration.sourceWidth === capture.width &&
+    registration.sourceHeight === capture.height &&
+    registration.captureProtocol ===
+      result.binding.captureProtocol &&
+    registration.captureProtocol === capture.captureProtocol &&
+    registration.detectorId === 'mediapipe_face_landmarker' &&
+    registration.detectorVersion ===
+      'tasks-vision-1.0.0-model-float16-1' &&
+    registration.faceCount === 1 &&
+    Array.isArray(registration.paths) &&
+    registration.paths.length >= requiredFeatures.size &&
+    registration.paths.length <= 16 &&
+    ovalWidth >= 0.08 &&
+    ovalHeight >= 0.08 &&
+    registration.paths.every((path) => {
+      if (
+        !requiredFeatures.has(path.feature) ||
+        typeof path.closed !== 'boolean' ||
+        !Array.isArray(path.points) ||
+        path.points.length < 2 ||
+        path.points.length > 128
+      ) {
+        return false
+      }
+      features.add(path.feature)
+      return path.points.every(
+        (point: PatientNormalizedPoint) =>
+          Number.isFinite(point.x) &&
+          point.x >= 0 &&
+          point.x <= 1 &&
+          Number.isFinite(point.y) &&
+          point.y >= 0 &&
+          point.y <= 1,
+      )
+    }) &&
+    features.size === requiredFeatures.size
+  )
+}
+
+function validResultOutput(
+  state: PatientWorkflowState,
+  result: PatientResult,
+): boolean {
+  return (
+    validFaceRegistration(state, result) &&
     result.output?.origin === 'workflow_simulation' &&
     Array.isArray(result.output.points) &&
     result.output.points.every(
@@ -858,7 +943,7 @@ function recordResult(
     result.freshness !== 'current' ||
     !samePatientRunBinding(run.binding, result.binding) ||
     !bindingMatchesCurrentState(state, result.binding) ||
-    !validResultOutput(result)
+    !validResultOutput(state, result)
   ) {
     return failureState(
       state,
@@ -881,6 +966,17 @@ function recordResult(
     binding: copyBinding(result.binding),
     freshness: 'current',
     createdAt: result.createdAt,
+    faceRegistration: {
+      ...result.faceRegistration,
+      paths: result.faceRegistration.paths.map((path) => ({
+        feature: path.feature,
+        closed: path.closed,
+        points: path.points.map((point) => ({
+          x: point.x,
+          y: point.y,
+        })),
+      })),
+    },
     output: {
       origin: 'workflow_simulation',
       points,

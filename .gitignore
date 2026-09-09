@@ -2,6 +2,7 @@
 **/dist/
 **/coverage/
 **/.pnpm-store/
+.firecrawl/
 .DS_Store
 .env*
 !**/.env.example
@@ -24,3 +25,4 @@
 facial_paralysis/landmark_110d/data/
 facial_paralysis/landmark_110d/outputs/
 facial_paralysis/landmark_110d/artifacts/
+facial_paralysis/data/external/neuroface/

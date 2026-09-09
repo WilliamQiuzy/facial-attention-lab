@@ -1,6 +1,7 @@
 import { useId } from 'react'
 import type {
   PatientAttentionPoint,
+  PatientFaceRegistration,
 } from '../patientWorkflow/types'
 import {
   deriveClinicalAoiPresentation,
@@ -8,21 +9,30 @@ import {
 
 type PatientAoiSummaryProps = {
   readonly points: readonly PatientAttentionPoint[]
+  readonly faceRegistration: PatientFaceRegistration
 }
 
 function formatShare(share: number): string {
-  return `${Math.round(share * 100)}% of simulated density`
+  return `${Math.round(share * 100)}%`
 }
 
 export function PatientAoiSummary({
   points,
+  faceRegistration,
 }: PatientAoiSummaryProps) {
   const titleId = useId()
+  const ovalPoints = faceRegistration.paths
+    .filter((path) => path.feature === 'face_oval')
+    .flatMap((path) => path.points)
+  const minimumX = Math.min(...ovalPoints.map((point) => point.x))
+  const maximumX = Math.max(...ovalPoints.map((point) => point.x))
+  const minimumY = Math.min(...ovalPoints.map((point) => point.y))
+  const maximumY = Math.max(...ovalPoints.map((point) => point.y))
   const presentation = deriveClinicalAoiPresentation(points, {
-    x: 0,
-    y: 0,
-    width: 1,
-    height: 1,
+    x: minimumX,
+    y: minimumY,
+    width: maximumX - minimumX,
+    height: maximumY - minimumY,
   })
 
   return (
@@ -33,17 +43,8 @@ export function PatientAoiSummary({
       <header className="patient-aoi-summary__header">
         <h3 id={titleId}>Attention by facial area</h3>
         <p>
-          AOI is a post-inference summary only. It does not crop the
-          photograph or alter the simulation.
-        </p>
-        <p>
-          Percentages use a fixed illustrative face template, not detected
-          landmarks or patient-specific anatomical registration.
-        </p>
-        <p>
-          Four template facial bands plus outside-template density total
-          100%. Patient-right and patient-left shares form a separate 100%
-          partition.
+          Face-relative areas summarize this simulated density. They do
+          not change the analysis.
         </p>
       </header>
 
@@ -61,7 +62,7 @@ export function PatientAoiSummary({
               </li>
             ))}
             <li>
-              <span>Outside four template facial bands</span>
+              <span>Outside four face-relative bands</span>
               <strong>
                 {formatShare(presentation.outsideTemplateShare)}
               </strong>
@@ -90,6 +91,24 @@ export function PatientAoiSummary({
           </div>
         </>
       )}
+      {presentation.ok ? (
+        <details className="patient-aoi-summary__method">
+          <summary>How percentages are calculated</summary>
+          <div>
+            <p>
+              Percentages use face-relative areas positioned within the
+              face contour estimated from this photograph. The contour
+              is a spatial reference, not clinical anatomical
+              segmentation.
+            </p>
+            <p>
+              Four face-relative bands plus density outside those bands
+              total 100%. Patient-right and patient-left shares form a
+              separate 100% partition.
+            </p>
+          </div>
+        </details>
+      ) : null}
     </section>
   )
 }

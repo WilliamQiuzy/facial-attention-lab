@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { LoaderCircle } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { AttentionResultView } from '../components/AttentionResultView'
 import { FailClosedState } from '../components/FailClosedState'
@@ -254,6 +255,10 @@ export function RunDetailPage() {
       : evidenceResult
         ? 'Stored result integrity is unavailable.'
         : 'No succeeded active result is available.'
+  const displayedStatusTone =
+    run.status === 'succeeded' && !reviewEligible
+      ? 'warning'
+      : statusTone(run.status)
 
   const cancel = () => {
     setActionFailure(undefined)
@@ -288,6 +293,7 @@ export function RunDetailPage() {
       <section
         className={`run-primary page-shell${exactVisual ? ' run-primary--result' : ''}`}
         aria-label="Selected run"
+        aria-busy={canCancel}
       >
         {exactVisual ? (
           <div className="run-primary__result-story">
@@ -320,8 +326,14 @@ export function RunDetailPage() {
             aria-live="polite"
             aria-atomic="true"
           >
+            {canCancel ? (
+              <LoaderCircle
+                className="workspace-loading-icon"
+                aria-hidden="true"
+              />
+            ) : null}
             <span aria-label={`Run status ${formatState(run.status)}`}>
-              <StatusBadge tone={statusTone(run.status)}>{formatState(run.status)}</StatusBadge>
+              <StatusBadge tone={displayedStatusTone}>{formatState(run.status)}</StatusBadge>
             </span>
             <span className="run-primary__result-state">Result: {resultState}</span>
           </div>

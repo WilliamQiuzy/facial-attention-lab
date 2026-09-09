@@ -41,6 +41,17 @@
   letter-spacing: -0.035em;
 }
 
+.model-page h1,
+.model-page h2,
+.model-page h3,
+.methods-page h1,
+.methods-page h2,
+.methods-page h3 {
+  font-family: var(--research-font-sans);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
 .worklist-hero h1 {
   font-size: clamp(3.5rem, 6vw, 5.4rem);
   line-height: 1;
@@ -565,39 +576,40 @@
 }
 
 .model-hero {
-  padding-block: 96px;
-  color: #fff;
-  background: radial-gradient(circle at 85% 20%, rgb(0 87 184 / 55%), transparent 36%), var(--research-blue-deep);
+  padding-block: 36px;
+  border-bottom: 1px solid var(--research-border);
+  color: var(--research-ink);
+  background: #fff;
 }
 
 .model-hero__grid {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(310px, 0.55fr);
-  gap: 90px;
-  align-items: end;
+  gap: 36px;
+  align-items: center;
 }
 
 .model-hero .eyebrow {
-  color: #9ed2ff;
+  color: var(--research-blue);
 }
 
 .model-hero h1 {
   max-width: 900px;
-  font-size: clamp(3.6rem, 6vw, 5.5rem);
-  line-height: 1;
+  font-size: clamp(2rem, 3vw, 2.6rem);
+  line-height: 1.15;
 }
 
 .model-hero .lede {
-  color: #d1dfeb;
+  color: var(--research-ink-soft);
 }
 
 .connection-status {
   display: flex;
   gap: 16px;
-  padding: 26px;
-  border: 1px solid rgb(255 255 255 / 25%);
-  border-radius: var(--research-radius-card);
-  background: rgb(0 0 0 / 16%);
+  padding: 18px;
+  border: 1px solid #a9c6dc;
+  border-radius: 6px;
+  background: #eef6fc;
 }
 
 .connection-status__light {
@@ -606,8 +618,8 @@
   flex: 0 0 auto;
   margin-top: 4px;
   border-radius: 50%;
-  background: var(--research-warning);
-  box-shadow: 0 0 0 5px rgb(255 200 69 / 15%);
+  background: var(--research-blue);
+  box-shadow: 0 0 0 4px rgb(0 87 184 / 12%);
 }
 
 .connection-status p,
@@ -618,7 +630,7 @@
 }
 
 .connection-status p {
-  color: #9ebbd1;
+  color: var(--research-muted);
   font-size: 0.7rem;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -627,26 +639,26 @@
 
 .connection-status strong {
   margin: 8px 0;
-  font-family: var(--research-font-display);
-  font-size: 1.55rem;
-  font-weight: 400;
+  color: var(--research-blue-deep);
+  font-size: 1.05rem;
+  font-weight: 800;
 }
 
 .connection-status span {
-  color: #bdcfdd;
-  font-size: 0.8rem;
+  color: var(--research-ink-soft);
+  font-size: 0.875rem;
 }
 
 .model-section {
-  padding-block: 116px;
+  padding-block: 48px;
 }
 
 .model-section h2,
 .integration-heading h2,
 .endpoint-section h2,
 .requirements-grid h2 {
-  font-size: clamp(2.8rem, 4.8vw, 4.1rem);
-  line-height: 1.06;
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+  line-height: 1.15;
 }
 
 .source-grid {
@@ -659,18 +671,18 @@
 
 .source-grid article {
   position: relative;
-  min-height: 320px;
-  padding: 34px;
+  min-height: 0;
+  padding: 24px;
   background: #fff;
 }
 
 .source-grid__index {
   position: absolute;
-  top: 28px;
-  right: 28px;
+  top: 20px;
+  right: 20px;
   color: #c5d7e6;
   font-family: var(--research-font-display);
-  font-size: 2.2rem;
+  font-size: 1.5rem;
 }
 
 .source-grid code,
@@ -680,7 +692,7 @@
 
 .source-grid code {
   width: max-content;
-  margin-top: 80px;
+  margin-top: 38px;
   padding: 7px 10px;
   color: var(--research-blue);
   background: var(--research-surface-soft);
@@ -689,10 +701,9 @@
 }
 
 .source-grid strong {
-  margin-top: 26px;
-  font-family: var(--research-font-display);
-  font-size: 1.8rem;
-  font-weight: 400;
+  margin-top: 18px;
+  font-size: 1.15rem;
+  font-weight: 800;
 }
 
 .source-grid p {
@@ -701,16 +712,16 @@
 }
 
 .integration-band {
-  padding-block: 104px;
+  padding-block: 48px;
   background: var(--research-surface-muted);
 }
 
 .integration-heading {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 270px;
-  gap: 80px;
+  gap: 36px;
   align-items: end;
-  margin-bottom: 56px;
+  margin-bottom: 28px;
 }
 
 .model-version-card {
@@ -752,17 +763,17 @@
 }
 
 .integration-flow article {
-  min-height: 300px;
-  padding: 28px;
+  min-height: 0;
+  padding: 20px;
   border: 1px solid var(--research-border);
   border-radius: var(--research-radius-card);
   background: #fff;
 }
 
 .integration-flow article > svg {
-  width: 38px;
-  height: 38px;
-  margin-bottom: 50px;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 20px;
   color: var(--research-blue);
   stroke-width: 1.4;
 }
@@ -775,10 +786,9 @@
 }
 
 .integration-flow h3 {
-  margin: 10px 0;
-  font-family: var(--research-font-display);
-  font-size: 1.65rem;
-  font-weight: 400;
+  margin: 8px 0;
+  font-size: 1.08rem;
+  font-weight: 800;
 }
 
 .integration-flow p {
@@ -796,8 +806,8 @@
 .endpoint-section {
   display: grid;
   grid-template-columns: minmax(280px, 0.7fr) minmax(0, 1.3fr);
-  gap: 90px;
-  padding-block: 112px;
+  gap: 36px;
+  padding-block: 48px;
 }
 
 .endpoint-list {
@@ -835,23 +845,24 @@
 }
 
 .requirements-section {
-  padding-block: 104px;
-  color: #fff;
-  background: #101820;
+  padding-block: 48px;
+  border-block: 1px solid var(--research-border);
+  color: var(--research-ink);
+  background: #f7f9fb;
 }
 
 .requirements-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.7fr) minmax(0, 1.3fr);
-  gap: 90px;
+  gap: 36px;
 }
 
 .requirements-grid .eyebrow {
-  color: #8bc8ff;
+  color: var(--research-blue);
 }
 
 .requirements-list {
-  border-top: 1px solid rgb(255 255 255 / 28%);
+  border-top: 1px solid var(--research-control-border);
 }
 
 .requirements-list article {
@@ -859,7 +870,7 @@
   grid-template-columns: 38px minmax(0, 1fr);
   gap: 16px;
   padding: 23px 0;
-  border-bottom: 1px solid rgb(255 255 255 / 18%);
+  border-bottom: 1px solid var(--research-border);
 }
 
 .requirements-list > article > svg {
@@ -882,14 +893,15 @@
 
 .requirements-list p {
   margin-top: 7px;
-  color: #b7c7d4;
+  color: var(--research-ink-soft);
   font-size: 0.86rem;
   line-height: 1.5;
 }
 
 .methods-hero {
-  padding-block: 104px;
-  background: var(--research-surface-soft);
+  padding-block: 36px;
+  border-bottom: 1px solid var(--research-border);
+  background: #fff;
 }
 
 .methods-hero__inner {
@@ -897,16 +909,16 @@
 }
 
 .methods-hero h1 {
-  font-size: clamp(3.5rem, 6vw, 5.5rem);
-  line-height: 1;
+  font-size: clamp(2rem, 3vw, 2.6rem);
+  line-height: 1.15;
 }
 
 .methods-layout {
   display: grid;
   grid-template-columns: 220px minmax(0, var(--research-reading-max));
-  gap: 110px;
+  gap: 48px;
   justify-content: center;
-  padding-block: 96px 128px;
+  padding-block: 48px 64px;
 }
 
 .methods-nav {
@@ -931,12 +943,12 @@
 }
 
 .methods-content > section {
-  padding-block: 0 88px;
+  padding-block: 0 44px;
   scroll-margin-top: 140px;
 }
 
 .methods-content > section + section {
-  padding-top: 88px;
+  padding-top: 44px;
   border-top: 1px solid var(--research-border);
 }
 
@@ -944,12 +956,12 @@
   display: flex;
   gap: 20px;
   align-items: flex-start;
-  margin-bottom: 30px;
+  margin-bottom: 20px;
 }
 
 .methods-section-heading > svg {
-  width: 38px;
-  height: 38px;
+  width: 28px;
+  height: 28px;
   flex: 0 0 auto;
   color: var(--research-blue);
   stroke-width: 1.4;
@@ -960,14 +972,14 @@
 }
 
 .methods-content h2 {
-  font-size: clamp(2.4rem, 4vw, 3.45rem);
-  line-height: 1.08;
+  font-size: clamp(1.5rem, 2.5vw, 2rem);
+  line-height: 1.2;
 }
 
 .methods-content section > p {
   color: var(--research-ink-soft);
-  font-size: 1.08rem;
-  line-height: 1.72;
+  font-size: 1rem;
+  line-height: 1.62;
 }
 
 .methods-content code {
@@ -1116,17 +1128,23 @@
 
 @media (max-width: 599px) {
   .worklist-hero,
-  .patient-hero,
-  .model-hero,
-  .methods-hero {
+  .patient-hero {
     padding-block: 68px;
   }
 
   .worklist-hero h1,
-  .patient-hero h1,
+  .patient-hero h1 {
+    font-size: 3.25rem;
+  }
+
+  .model-hero,
+  .methods-hero {
+    padding-block: 28px;
+  }
+
   .model-hero h1,
   .methods-hero h1 {
-    font-size: 3.25rem;
+    font-size: 2.1rem;
   }
 
   .worklist-stats {
@@ -1177,11 +1195,14 @@
   }
 
   .patient-section,
-  .patient-questions,
+  .patient-questions {
+    padding-block: 82px;
+  }
+
   .model-section,
   .endpoint-section,
   .methods-layout {
-    padding-block: 82px;
+    padding-block: 48px;
   }
 
   .patient-map-grid {

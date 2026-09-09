@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Ban,
   FlaskConical,
+  LoaderCircle,
   RotateCcw,
   Square,
 } from 'lucide-react'
@@ -222,9 +223,12 @@ export function AnalysisPage() {
   )
   const run = runMatchesRoute ? selectedRun : undefined
   const attempt = run ? selectedAttempt : undefined
+  const attemptBusy =
+    attempt?.status === 'queued' || attempt?.status === 'running'
   const binding = attempt?.binding
   const [failure, setFailure] = useState<string>()
   const resultRef = useRef<HTMLDivElement>(null)
+  const resultHeadingRef = useRef<HTMLHeadingElement>(null)
   const previousSelectionRef = useRef<
     | {
         readonly attemptId: string
@@ -326,18 +330,18 @@ export function AnalysisPage() {
       !output ||
       !attempt ||
       focusedAttemptRef.current === attempt.id ||
-      !resultRef.current
+      !resultHeadingRef.current
     ) {
       return
     }
 
     focusedAttemptRef.current = attempt.id
-    resultRef.current.focus({ preventScroll: true })
+    resultHeadingRef.current.focus({ preventScroll: true })
     const reducedMotion =
       typeof window.matchMedia === 'function' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    if (typeof resultRef.current.scrollIntoView === 'function') {
-      resultRef.current.scrollIntoView({
+    if (typeof resultHeadingRef.current.scrollIntoView === 'function') {
+      resultHeadingRef.current.scrollIntoView({
         behavior: reducedMotion ? 'auto' : 'smooth',
         block: 'start',
       })
@@ -478,7 +482,12 @@ export function AnalysisPage() {
         <div className="inference-visual-column">
           <section className="workspace-panel inference-visual" aria-label="Selected synthetic image">
             <div className="workspace-panel__heading">
-              <h2>{output ? 'Result' : 'Source image'}</h2>
+              <h2
+                ref={output ? resultHeadingRef : undefined}
+                tabIndex={output ? -1 : undefined}
+              >
+                {output ? 'Result' : 'Source image'}
+              </h2>
             </div>
 
             {output ? (
@@ -537,7 +546,20 @@ export function AnalysisPage() {
         </div>
 
         <aside className="inference-command-column">
-          <section className="workspace-panel run-command-panel" aria-label="Run command">
+          <output
+            className="sr-only"
+            role="status"
+            aria-label="Analysis status announcement"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {attempt?.status ?? 'not started'}
+          </output>
+          <section
+            className="workspace-panel run-command-panel"
+            aria-label="Run command"
+            aria-busy={attemptBusy}
+          >
             <div className="workspace-panel__heading">
               <h2>
                 {output
@@ -551,12 +573,29 @@ export function AnalysisPage() {
               <span>Active attempt</span>
               <output
                 aria-label="Active attempt status"
-                aria-live="polite"
-                aria-atomic="true"
               >
                 {attempt?.status ?? 'not started'}
               </output>
             </div>
+            {attemptBusy ? (
+              <div className="workspace-loading-state">
+                <LoaderCircle
+                  className="workspace-loading-icon"
+                  aria-hidden="true"
+                />
+                <span>
+                  <strong>
+                    {attempt.status === 'queued'
+                      ? 'Starting analysis…'
+                      : 'Preparing result…'}
+                  </strong>
+                  <small>
+                    Keep this page open. You can cancel this research
+                    request if needed.
+                  </small>
+                </span>
+              </div>
+            ) : null}
             {attempt?.failure ? (
               <p className="run-command-panel__failure" role="alert">
                 {attempt.failure.reason}: {attempt.failure.message}

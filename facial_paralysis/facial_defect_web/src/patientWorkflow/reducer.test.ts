@@ -17,6 +17,7 @@ import type {
   CaptureAsset,
   CaptureQualityChecks,
   PatientRecord,
+  PatientFaceRegistration,
   PatientId,
   PatientResult,
   PatientRun,
@@ -222,12 +223,47 @@ function makeResult(
     readonly runId?: string
   } = {},
 ): PatientResult {
+  const facePoints = [
+    { x: 0.3, y: 0.2 },
+    { x: 0.5, y: 0.8 },
+    { x: 0.7, y: 0.2 },
+  ] as const
+  const faceRegistration: PatientFaceRegistration = {
+    schemaVersion: 'patient-face-registration/1',
+    source: 'on_device_face_landmarks',
+    coordinateSpace: 'decoded_image_normalized_v1',
+    captureSha256: run.binding.captureSha256,
+    sourceWidth: 1_024,
+    sourceHeight: 1_024,
+    captureProtocol: run.binding.captureProtocol,
+    detectorId: 'mediapipe_face_landmarker',
+    detectorVersion: 'tasks-vision-1.0.0-model-float16-1',
+    faceCount: 1,
+    paths: [
+      { feature: 'face_oval', closed: true, points: facePoints },
+      { feature: 'left_eye', closed: true, points: facePoints },
+      { feature: 'right_eye', closed: true, points: facePoints },
+      {
+        feature: 'left_eyebrow',
+        closed: false,
+        points: facePoints,
+      },
+      {
+        feature: 'right_eyebrow',
+        closed: false,
+        points: facePoints,
+      },
+      { feature: 'lips', closed: true, points: facePoints },
+    ],
+  }
+
   return {
     id: RESULT_ID,
     runId: run.id,
     binding: run.binding,
     freshness: 'current',
     createdAt: '2026-07-27T13:05:00.000Z',
+    faceRegistration,
     output: {
       origin: 'workflow_simulation',
       points: [],

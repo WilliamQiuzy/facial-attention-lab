@@ -139,6 +139,23 @@ describe('PatientsPage', () => {
     expect(screen.queryAllByRole('listitem')).toHaveLength(0)
   })
 
+  it('uses a named search field and offers record creation from a truly empty list', () => {
+    renderPage(createInitialPatientWorkflowState([], '2026-07-27'))
+
+    expect(
+      screen.getByRole('searchbox', { name: 'Search patients' }),
+    ).toHaveAttribute('name', 'patientSearch')
+    expect(
+      screen.getByRole('searchbox', { name: 'Search patients' }),
+    ).toHaveAttribute('placeholder', 'Name or record ID…')
+    const empty = screen.getByRole('region', {
+      name: 'No matching patients',
+    })
+    expect(
+      within(empty).getByRole('link', { name: 'New patient' }),
+    ).toHaveAttribute('href', '/patients/new')
+  })
+
   it('restores the in-memory search after opening a patient and using the patient back link', async () => {
     const user = userEvent.setup()
     renderPage()

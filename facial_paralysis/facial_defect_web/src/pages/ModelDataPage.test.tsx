@@ -29,18 +29,29 @@ describe('model and data readiness', () => {
     const compatibility = page.getByRole('note', { name: 'Current model compatibility' })
     expect(
       within(compatibility).getByText(
-        /functional-assessment research outputs are non-spatial severity or regional summaries/i,
+        /palsy probability plus eyes and mouth ordinal outputs/i,
       ),
     ).toBeVisible()
     expect(
       within(compatibility).getByText(
-        /not connected to this web workbench/i,
+        /label-free landmark asymmetry, eye-closure dynamics, and a Mayo FACES label-free research measurement summary/i,
       ),
     ).toBeVisible()
+    expect(
+      within(compatibility).getByText(
+        /No checked-in checkpoint includes an HB task; the architecture can support one, but Mayo HB calibration has not started/i,
+      ),
+    ).toBeVisible()
+    expect(
+      within(compatibility).getByText(
+        /not a validated eFACE, Sunnybrook, or HB composite or grade/i,
+      ),
+    ).toBeVisible()
+    expect(within(compatibility).getByText(/not connected to this web workbench/i)).toBeVisible()
     expect(within(compatibility).getByText(/does not emit a spatial heatmap/i)).toBeVisible()
     expect(
       within(compatibility).getByText(
-        /non-spatial severity or ordinal response cannot be converted into one/i,
+        /severity or ordinal response cannot be converted into one/i,
       ),
     ).toBeVisible()
     expect(
@@ -105,7 +116,7 @@ describe('model and data readiness', () => {
     const compatibility = page.getByRole('note', { name: 'Current model compatibility' })
     expect(
       within(compatibility).getByText(
-        /current functional-assessment research system is still not connected/i,
+        /current facial_paralysis model is still not connected/i,
       ),
     ).toBeVisible()
     expect(runInference).not.toHaveBeenCalled()

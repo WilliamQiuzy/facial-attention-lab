@@ -1,0 +1,6 @@
+covariate,label,webcam_mean_or_proportion,professional_mean_or_proportion,standardized_mean_difference,absolute_smd,balance_flag,role
+age_years,Age,43.393144506,45.864788432000005,-0.19193066332479816,0.19193066332479816,review,participant_characteristic
+wears_glasses,Wears glasses,0.366,0.4,-0.06991461083805367,0.06991461083805367,balanced,participant_characteristic
+prior_eye_tracking,Prior eye-tracking experience,0.088,0.132,-0.14083247141379265,0.14083247141379265,review,participant_characteristic
+display_width_cm,Display width,33.807808703999996,51.924575434,-3.494763158530085,3.494763158530085,review,acquisition_context
+low_light,Low-light environment,0.16,0.034,0.4352868431981103,0.4352868431981103,review,acquisition_context

@@ -783,7 +783,13 @@ describe('single-case simulated inference', () => {
       })
 
       const result = await screen.findByRole('region', { name: 'Simulation result' })
-      await waitFor(() => expect(result).toHaveFocus())
+      expect(result).toBeVisible()
+      const resultHeading = screen.getByRole('heading', {
+        name: 'Result',
+        level: 2,
+      })
+      expect(resultHeading).toHaveAttribute('tabindex', '-1')
+      await waitFor(() => expect(resultHeading).toHaveFocus())
       expect(scrollIntoView).toHaveBeenCalledOnce()
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior, block: 'start' })
     },
@@ -1345,16 +1351,31 @@ describe('single-case simulated inference', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Run simulation' }))
     expect(deferred.runInference).not.toHaveBeenCalled()
+    const commandRegion = screen.getByRole('region', {
+      name: 'Run command',
+    })
+    expect(commandRegion).toHaveAttribute('aria-busy', 'true')
+    expect(
+      within(commandRegion).getByText('Starting analysis…'),
+    ).toBeVisible()
     const liveStatus = screen.getByLabelText('Active attempt status')
-    expect(liveStatus).toHaveAttribute('aria-live', 'polite')
-    expect(liveStatus).toHaveAttribute('aria-atomic', 'true')
+    expect(liveStatus).not.toHaveAttribute('aria-live')
     expect(liveStatus).toHaveTextContent('queued')
+    const statusAnnouncement = screen.getByRole('status', {
+      name: 'Analysis status announcement',
+    })
+    expect(commandRegion).not.toContainElement(statusAnnouncement)
+    expect(statusAnnouncement).toHaveTextContent('queued')
     await act(async () => {
       vi.advanceTimersByTime(120)
       await Promise.resolve()
     })
     expect(deferred.runInference).toHaveBeenCalledOnce()
     expect(screen.getByLabelText('Active attempt status')).toHaveTextContent('running')
+    expect(statusAnnouncement).toHaveTextContent('running')
+    expect(
+      within(commandRegion).getByText('Preparing result…'),
+    ).toBeVisible()
     const parent = deferred.requests[0]
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel run' }))
@@ -1388,6 +1409,7 @@ describe('single-case simulated inference', () => {
       await Promise.resolve()
     })
     expect(screen.getByLabelText('Active attempt status')).toHaveTextContent('succeeded')
+    expect(commandRegion).toHaveAttribute('aria-busy', 'false')
     expect(screen.getByRole('region', { name: 'Simulation result' })).toBeVisible()
   })
 

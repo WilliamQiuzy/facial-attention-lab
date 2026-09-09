@@ -93,6 +93,7 @@ export function RoiEditor({ asset, geometry, disabled, onChange }: RoiEditorProp
               <input
                 aria-label={CONTROL_LABELS[coordinate]}
                 type="range"
+                name={`roi-${coordinate}`}
                 min={minimum}
                 max={controlMaximum(geometry, coordinate)}
                 step="0.01"

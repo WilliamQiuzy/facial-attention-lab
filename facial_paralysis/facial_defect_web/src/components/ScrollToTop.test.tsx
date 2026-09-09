@@ -1,6 +1,12 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Link, Route, Routes } from 'react-router-dom'
+import {
+  MemoryRouter,
+  Link,
+  Route,
+  Routes,
+  useSearchParams,
+} from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ScrollToTop } from './ScrollToTop'
@@ -11,6 +17,46 @@ afterEach(() => {
 })
 
 describe('ScrollToTop', () => {
+  it('does not steal input focus when only search parameters change', async () => {
+    function SearchCaseList() {
+      const [, setSearchParams] = useSearchParams()
+      return (
+        <>
+          <h1>Cases</h1>
+          <label>
+            Search cases
+            <input
+              aria-label="Search cases"
+              onChange={(event) =>
+                setSearchParams({ q: event.currentTarget.value }, {
+                  replace: true,
+                })
+              }
+            />
+          </label>
+        </>
+      )
+    }
+
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/cases']}>
+        <ScrollToTop />
+        <main id="main-content" tabIndex={-1}>
+          <Routes>
+            <Route path="/cases" element={<SearchCaseList />} />
+          </Routes>
+        </main>
+      </MemoryRouter>,
+    )
+
+    const search = screen.getByRole('textbox', { name: 'Search cases' })
+    await user.type(search, 'cheek')
+
+    expect(search).toHaveFocus()
+    expect(search).toHaveValue('cheek')
+  })
+
   it('returns the viewport to the top after in-app navigation', async () => {
     const scrollSpy = vi.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
     const user = userEvent.setup()

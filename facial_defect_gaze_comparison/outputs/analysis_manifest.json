@@ -1,0 +1,93 @@
+{
+  "project_id": "SYN-GAZE-COMPARE-001",
+  "synthetic": true,
+  "analysis_mode": "paired_mock_demo",
+  "seed": 20260813,
+  "artifacts": [
+    {
+      "path": "figures/01_data_quality.png",
+      "bytes": 209668,
+      "sha256": "5432db61a81c18517eafe36954364e31dbabc1b8d6e99a59d7dde1164ffba7db"
+    },
+    {
+      "path": "figures/02_accuracy_bland_altman.png",
+      "bytes": 98206,
+      "sha256": "b8d5991a9326c4e14a978106fba3b68a5b6abeaa3c81d8e5fe756fd018265234"
+    },
+    {
+      "path": "figures/03_map_similarity.png",
+      "bytes": 114761,
+      "sha256": "6382da6d681d83c2b6ef07319d8851e146465d91737154fb1d8198dd21d4a9d8"
+    },
+    {
+      "path": "figures/04_matched_heatmaps.png",
+      "bytes": 509198,
+      "sha256": "6960e69ff95ea1b6da0164ddca34ed3609873bcdc23d90b8aa95afb41d601676"
+    },
+    {
+      "path": "figures/05_aoi_dwell.png",
+      "bytes": 125161,
+      "sha256": "3037889256f10e680e6912a3c0a6250c0b16402d5410ba37795c75e733ed99ed"
+    },
+    {
+      "path": "figures/06_equivalence_intervals.png",
+      "bytes": 200276,
+      "sha256": "5a1bb92586b8e3c81def3d53c95cea944ed84afcb49ae86983830d646a695283"
+    },
+    {
+      "path": "figures/07_participant_qc_matrix.png",
+      "bytes": 106135,
+      "sha256": "81c16916871ab9de149cffc779375bde10d8ee359b62d6cb0635eac4d8ad85f6"
+    },
+    {
+      "path": "figures/08_temporal_alignment.png",
+      "bytes": 136938,
+      "sha256": "37864c07a54725d24eccfb72d8aeca8ecb401cf4faa89f251e25e89b296442cd"
+    },
+    {
+      "path": "mock_analysis_report.md",
+      "bytes": 3912,
+      "sha256": "c568915067e5255b74a23ea4501c7ba5a40e9ec6650fea2f958d1dce0a5533cc"
+    },
+    {
+      "path": "tables/analysis_gates.csv",
+      "bytes": 304,
+      "sha256": "028eb866400aa46929ba5673d225a0bb002776dee935c0c377189e385e4ff645"
+    },
+    {
+      "path": "tables/aoi_agreement.csv",
+      "bytes": 2969,
+      "sha256": "09812d97673b0dfd577f6115adb424db153880a10039479b9ae9cad1b6d4c77e"
+    },
+    {
+      "path": "tables/aoi_dwell.csv",
+      "bytes": 26551,
+      "sha256": "d7e62186999d572f6447c5895b3df3b8e1dcbc239cfa2e988fb7516d2a2bb1fe"
+    },
+    {
+      "path": "tables/data_quality.csv",
+      "bytes": 3833,
+      "sha256": "f29049992e8f31dce8c64ae7153ee91c0cce523680fe8f3f17a5ba2cca21188e"
+    },
+    {
+      "path": "tables/equivalence_summary.csv",
+      "bytes": 2163,
+      "sha256": "8f0a8ada3133f4802af6bc8023ef8716f2ad927378bd40e8e62f59a97c19ed72"
+    },
+    {
+      "path": "tables/map_agreement.csv",
+      "bytes": 6288,
+      "sha256": "1e5b20c59f81d97bd5d951750f4a19d390d4323a1ca8c4ff3174d7daebe55261"
+    },
+    {
+      "path": "tables/participant_endpoints.csv",
+      "bytes": 2655,
+      "sha256": "16fbdd1c02aabc30fd9febbbc4bb3e6734dc9a8d9ca4ea656e542084b7abf04e"
+    },
+    {
+      "path": "tables/temporal_alignment.csv",
+      "bytes": 3648,
+      "sha256": "3aa219020a74efe4b5013545ceb969eb8e436eeaaf01bebdce19736dc8bf9e7b"
+    }
+  ]
+}

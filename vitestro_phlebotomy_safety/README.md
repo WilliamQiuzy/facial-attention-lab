@@ -1,60 +1,26 @@
-# Vitestro Phlebotomy Safety — Wearable Device Evaluation
+# Vitestro Phlebotomy Safety
 
-This project supports the Mayo–Vitestro collaboration on detecting presyncope,
-syncope, and clinically meaningful discomfort during automated venipuncture.
+This project reviews live sensing devices for presyncope and discomfort monitoring during automated venipuncture.
 
-## Current decision
+## Artifacts
 
-Phase 1 is a measurement-system evaluation, not a production alerting system.
-The evaluation separates three questions:
+| Artifact | Purpose | Status |
+|---|---|---|
+| [`docs/device_evaluation.md`](docs/device_evaluation.md) | Seven categories with ranked candidates and other screened products. Live transmission, price, patient fit and interface conditions are listed separately. | Current |
+| [`data/device_feature_matrix.csv`](data/device_feature_matrix.csv) | Broader 18-device screen | Background |
+| [`data/modality_evidence_matrix.csv`](data/modality_evidence_matrix.csv) | Modality evidence and failure modes | Background |
+| [`sources/evidence_registry.csv`](sources/evidence_registry.csv) | Source registry for the broader screen | Background |
+| `outputs/019f8cc8-9802-7b01-8b3a-7fe5ef10eaa5/` | Legacy Excel scorecard | Background |
 
-1. Does the wearable contain the relevant sensor?
-2. Can a study application receive timestamped data with sufficiently low latency?
-3. Is that signal valid in the intended venipuncture setting across motion, low
-   perfusion, skin pigmentation, fit, and operating-system states?
+## Boundaries
 
-No reviewed device currently satisfies all three questions without a controlled
-Vitestro pilot.
-
-The current pool contains 18 devices, including 14 products from US or
-US-headquartered companies. The evaluation remains wearable-first, while facial
-RGB and thermal imaging are retained as optional auxiliary modalities because
-direct blood-donation studies have reported anticipatory signal.
-
-## Deliverables
-
-- [`docs/wearable_device_evaluation.md`](docs/wearable_device_evaluation.md) —
-  English executive report, literature synthesis, device findings, recommendation,
-  and evaluation protocol.
-- [`data/device_feature_matrix.csv`](data/device_feature_matrix.csv) —
-  machine-readable feature matrix using `1` (supported), `0.5` (conditional),
-  and `0` (not confirmed).
-- [`data/modality_evidence_matrix.csv`](data/modality_evidence_matrix.csv) —
-  evidence-ranked sensing modalities, intended roles, and failure modes.
-- [`sources/evidence_registry.csv`](sources/evidence_registry.csv) —
-  claim-level source registry with official product/developer sources, regulatory
-  material, and peer-reviewed papers.
-- `outputs/019f8cc8-9802-7b01-8b3a-7fe5ef10eaa5/` — Excel scorecard.
-
-## Interpretation boundary
-
-- `✓` means the capability is available in a relevant mode; it does not mean the
-  device is medically accurate for acute presyncope detection.
-- `△` means spot, sleep-only, intermittent, derived, region-limited, or gated by
-  a vendor or partner program.
-- `✗` means no supported capability was confirmed in public documentation as of
-  2026-07-23.
-- Hypertension notifications and daily cuff-calibrated estimates are not treated
-  as continuous blood-pressure measurements.
-
-## Data and privacy
-
-This folder contains public-source research and planning artifacts only. Do not
-commit participant identifiers, clinical recordings, API credentials, or raw
-study exports. Future study data require an approved protocol and the repository's
-private-data controls.
-
-## Status
-
-Research recommendation only. Not a medical device, diagnostic claim, or
-authorization for patient-facing alerts or autonomous Vitestro intervention.
+| Rule | Requirement |
+|---|---|
+| Device selection | Documented live sensor-to-host interfaces and Conditional interfaces remain in the comparison. Conditional entries state their access or integration requirements. |
+| Primary evaluation | Signal quality, continuity, latency, synchronization and workflow reliability. |
+| Patient fit | Sizing, skin contact, comfort, cleaning and handling across shared-patient use. No single contact device provides universal fit. |
+| Ranking | Proposed evaluation order balances acquisition quality, patient workflow, integration, price and availability. It does not rank measured clinical accuracy. Apple is a baseline. Finger EDA is a separate add-on. |
+| Camera comparison | Working distance, field of view, nominal facial pixels and synchronization are compared separately. Priced subtotals identify included hardware; reference lenses are not validated assemblies. |
+| Not scored | Historical downloads, wellness summaries and vendor-app-only displays do not qualify as live access. |
+| Data | Do not store patient identifiers, clinical recordings, credentials or raw study exports in this repository. |
+| Status | This is a research review. It does not authorize patient alerts or clinical use. |

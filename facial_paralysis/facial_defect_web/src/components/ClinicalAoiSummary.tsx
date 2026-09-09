@@ -119,9 +119,8 @@ export function ClinicalAoiSummary({
       <header className="clinical-aoi-summary__header">
         <h3 id={titleId}>Clinical AOI summary</h3>
         <p>
-          Shares use simulated point-center intensity weights assigned to the
-          fixed template; display radius and boundary overlap are not integrated.
-          Not an eye-tracking measurement, severity, or outcome.
+          Fixed face-relative areas summarize this simulated field. They
+          do not change the result.
         </p>
       </header>
 
@@ -219,16 +218,25 @@ export function ClinicalAoiSummary({
         </div>
       </div>
 
-      <p className="clinical-aoi-summary__status">
-        AOIs summarize the completed field and do not change the simulation.
-      </p>
-      <aside className="clinical-aoi-summary__mask-note">
-        <strong>Surgical-site mask: not set</strong>
-        <span>
-          This future, separately versioned contextual annotation is absent. It
-          is not the immutable image bound and does not alter the result.
-        </span>
-      </aside>
+      <details className="clinical-aoi-summary__method">
+        <summary>How this summary is calculated</summary>
+        <div>
+          <p>
+            Shares use simulated point-center intensity weights assigned
+            to the fixed template; display radius and boundary overlap
+            are not integrated. This is not an eye-tracking measurement,
+            severity score, or outcome.
+          </p>
+          <aside className="clinical-aoi-summary__mask-note">
+            <strong>Surgical-site mask: not set</strong>
+            <span>
+              This future, separately versioned contextual annotation is
+              absent. It is not the immutable image bound and does not
+              alter the result.
+            </span>
+          </aside>
+        </div>
+      </details>
     </section>
   )
 }

@@ -1,0 +1,6 @@
+requirement,plain_language,status,why_it_matters
+same_stimulus_versions,Same versioned face stimuli,pass,"Without this, cohort differences cannot be attributed to measurement workflow."
+same_task_instructions,Same viewing instructions,pass,"Without this, cohort differences cannot be attributed to measurement workflow."
+same_exposure_duration,Same stimulus exposure duration,pass,"Without this, cohort differences cannot be attributed to measurement workflow."
+same_coordinate_transform,Same stimulus coordinate system,pass,"Without this, cohort differences cannot be attributed to measurement workflow."
+same_exclusion_rules,Same exclusion and QC rules,pass,"Without this, cohort differences cannot be attributed to measurement workflow."

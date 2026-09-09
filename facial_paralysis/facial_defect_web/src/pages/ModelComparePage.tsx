@@ -273,10 +273,12 @@ function ModelRegistryLanding() {
           >
             Compare versions <ArrowRight aria-hidden="true" />
           </button>
-          <p className="task5-model-picker__note">
-            {needsReviewCount} {needsReviewCount === 1 ? 'case requires' : 'cases require'} source
-            binding restoration and {needsReviewCount === 1 ? 'is' : 'are'} not listed.
-          </p>
+          {needsReviewCount > 0 ? (
+            <p className="task5-model-picker__note">
+              {needsReviewCount} {needsReviewCount === 1 ? 'case requires' : 'cases require'} source
+              binding restoration and {needsReviewCount === 1 ? 'is' : 'are'} not listed.
+            </p>
+          ) : null}
         </form>
       </section>
     </div>
@@ -348,7 +350,11 @@ function ModelPanel({
   return (
     <article className="task5-model-panel" data-testid="model-comparison-panel">
       <div className="task5-model-panel__heading">
-        <div><span>Same-case simulated field</span><h2>{label}</h2></div>
+        <div>
+          <span>Same-case simulated field</span>
+          <h2>{label}</h2>
+          <code>{output.binding.modelVersion}</code>
+        </div>
         <GitCompareArrows aria-hidden="true" />
       </div>
       <AttentionMap

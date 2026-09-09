@@ -97,6 +97,7 @@ export function AttentionResultView({
             <input
               id={`${radioName}-opacity`}
               type="range"
+              name="overlayOpacity"
               min="20"
               max="100"
               step="5"

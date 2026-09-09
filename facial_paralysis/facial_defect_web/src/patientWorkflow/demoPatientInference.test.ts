@@ -24,6 +24,47 @@ function makeBinding(
   }
 }
 
+const leftShiftedFaceRegistration = {
+  schemaVersion: 'patient-face-registration/1',
+  source: 'on_device_face_landmarks',
+  coordinateSpace: 'decoded_image_normalized_v1',
+  captureSha256: 'a'.repeat(64),
+  sourceWidth: 1_024,
+  sourceHeight: 900,
+  captureProtocol: 'frontal_relaxed_non_mirrored_v1',
+  detectorId: 'mediapipe_face_landmarker',
+  detectorVersion: 'tasks-vision-1.0.0-model-float16-1',
+  faceCount: 1,
+  paths: [
+    {
+      feature: 'face_oval',
+      closed: true,
+      points: [
+        { x: 0.26, y: 0.16 },
+        { x: 0.08, y: 0.48 },
+        { x: 0.28, y: 0.84 },
+        { x: 0.48, y: 0.48 },
+      ],
+    },
+  ],
+} as const
+
+const rightShiftedFaceRegistration = {
+  ...leftShiftedFaceRegistration,
+  paths: [
+    {
+      feature: 'face_oval',
+      closed: true,
+      points: [
+        { x: 0.72, y: 0.16 },
+        { x: 0.52, y: 0.48 },
+        { x: 0.72, y: 0.84 },
+        { x: 0.92, y: 0.48 },
+      ],
+    },
+  ],
+} as const
+
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -131,6 +172,37 @@ describe('createDemoPatientResult', () => {
     )
 
     expect(second.points).not.toEqual(first.points)
+  })
+
+  it('registers every illustrative attention point to the detected face in the uploaded photograph', () => {
+    const left = createDemoPatientResult(
+      makeBinding(),
+      leftShiftedFaceRegistration,
+    )
+    const right = createDemoPatientResult(
+      makeBinding(),
+      rightShiftedFaceRegistration,
+    )
+
+    expect(
+      left.points.every(
+        (point) =>
+          point.x >= 0.08 &&
+          point.x <= 0.48 &&
+          point.y >= 0.16 &&
+          point.y <= 0.84,
+      ),
+    ).toBe(true)
+    expect(
+      right.points.every(
+        (point) =>
+          point.x >= 0.52 &&
+          point.x <= 0.92 &&
+          point.y >= 0.16 &&
+          point.y <= 0.84,
+      ),
+    ).toBe(true)
+    expect(right.points).not.toEqual(left.points)
   })
 
   it('derives points only from capture SHA when other binding fields change', () => {

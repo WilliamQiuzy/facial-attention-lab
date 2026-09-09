@@ -1,0 +1,28 @@
+{
+  "project_id": "SYN-GAZE-COMPARE-001",
+  "synthetic": true,
+  "seed": 20260813,
+  "scenarios": [
+    "near_equivalent",
+    "systematic_bias",
+    "temporal_lag",
+    "high_dropout"
+  ],
+  "files": [
+    {
+      "path": "gaze_samples.csv",
+      "rows": 21060,
+      "sha256": "9789bfa9a10ec0dc6db96e6db9149ce90d03ed910fbc4bf6519074601aff9e74"
+    },
+    {
+      "path": "stimuli.csv",
+      "rows": 4,
+      "sha256": "fea711bc5ce8e7015549cd11c9a5dc3a61fc3d3995afcf48594fa9c0c760eea3"
+    },
+    {
+      "path": "aoi_definitions.csv",
+      "rows": 12,
+      "sha256": "ca4e550e5f2ac1eeede5e37b4677dbe964b1fee6ef2fbcad1b2a57f5eede1a18"
+    }
+  ]
+}

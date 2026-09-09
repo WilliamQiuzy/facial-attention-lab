@@ -1,0 +1,5 @@
+analysis,status,reason
+paired_agreement,enabled,paired devices and harmonized coordinates are present
+equivalence,enabled,illustrative mock margins only
+event_endpoints,deferred,device-neutral event detector is not yet specified
+reliability_ceiling,deferred,independent repeated sessions are not present
