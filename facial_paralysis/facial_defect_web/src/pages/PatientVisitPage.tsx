@@ -5,13 +5,20 @@ import {
   type FormEvent,
 } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { approvedAssets } from '../data/approvedAssetManifest'
 import { CapturePanel } from '../components/CapturePanel'
 import { CaptureQualityChecklist } from '../components/CaptureQualityChecklist'
 import { PatientAoiSummary } from '../components/PatientAoiSummary'
-import { PatientAttentionImages } from '../components/PatientAttentionImages'
+import {
+  PatientAttentionDensity,
+  PatientAttentionImages,
+  PatientAttentionPrimaryImages,
+} from '../components/PatientAttentionImages'
 import { PatientIdentityHeader } from '../components/PatientIdentityHeader'
 import { PatientJobProgress } from '../components/PatientJobProgress'
+import {
+  findPatientSamplePhotoAsset,
+  patientSamplePhotoAssetForPatientTimepoint,
+} from '../data/patientSamplePhotoPair'
 import {
   PatientWorkflowProviderError,
   usePatientWorkflow,
@@ -19,6 +26,7 @@ import {
 import {
   getOwnRecordValue,
   selectCurrentCapture,
+  selectCurrentReview,
   selectCurrentResult,
   selectCurrentRun,
   selectVisitNextAction,
@@ -30,13 +38,22 @@ import type {
 } from '../patientWorkflow/types'
 
 const RESULT_DISCLAIMER =
-  'Simulated estimate of where observers may attend. Not eye-tracking, diagnosis, severity, treatment guidance, or evidence of surgical outcome.'
+  'Illustrative estimate of where observers may attend. Not measured eye-tracking, diagnosis, treatment guidance, or evidence of surgical outcome.'
 
-const SYNTHETIC_LONGITUDINAL_BOUNDARY =
-  'A standalone catalog demo is already used by another visit in this record. Upload a separate test image; catalog demos cannot establish longitudinal identity.'
+const INCOMPATIBLE_SAMPLE_BOUNDARY =
+  'This record already uses a different sample photo. Use Camera or Upload photo to keep the same patient across visits.'
 
 const CURRENT_SYNTHETIC_BOUNDARY =
-  'This visit already uses the standalone catalog demo. Take or upload a different test image to replace it.'
+  'This visit already uses a sample photo. Use Camera or Upload photo to replace it.'
+
+const FOLLOW_UP_SAMPLE_BOUNDARY =
+  'Sample photos are available for preoperative and postoperative visits. Use Camera or Upload photo for follow-up.'
+
+const REVIEW_DECISION_REQUIRED =
+  'Choose Accept photo for comparison or Request a new photo.'
+
+const NEW_PHOTO_REASON_REQUIRED =
+  'Enter a reason for requesting a new photo.'
 
 const TIMEPOINT_LABELS: Readonly<
   Record<PatientVisit['timepoint'], string>
@@ -53,6 +70,18 @@ function formatDate(date: string): string {
     year: 'numeric',
     timeZone: 'UTC',
   }).format(new Date(`${date}T00:00:00.000Z`))
+}
+
+function formatDateTime(date: string): string {
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone: 'UTC',
+    timeZoneName: 'short',
+  }).format(new Date(date))
 }
 
 function safeWorkflowError(error: unknown): string {
@@ -72,6 +101,8 @@ export function PatientVisitPage() {
     useState<PatientReviewDecision | ''>('')
   const [reviewNote, setReviewNote] = useState('')
   const [reviewError, setReviewError] = useState<string>()
+  const [decisionJustSaved, setDecisionJustSaved] =
+    useState(false)
   const reviewedDecisionRef = useRef<HTMLInputElement>(null)
   const reviewNoteRef = useRef<HTMLTextAreaElement>(null)
   const stateHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -115,27 +146,50 @@ export function PatientVisitPage() {
   const capture = selectCurrentCapture(state, visit.id)
   const run = selectCurrentRun(state, visit.id)
   const result = selectCurrentResult(state, visit.id)
+  const currentReview = selectCurrentReview(state, visit.id)
   const previewUrl = actions.getCapturePreviewUrl(visit.id)
-  const standaloneAsset = approvedAssets[0]
-  const syntheticDemoUsedByAnotherVisit = state.captureOrder.some(
+  const sampleAsset = patientSamplePhotoAssetForPatientTimepoint(
+    patient.id,
+    visit.timepoint,
+  )
+  const incompatibleSampleUsedByAnotherVisit = state.captureOrder.some(
     (captureId) => {
       const candidate = getOwnRecordValue(
         state.capturesById,
         captureId,
       )
+      if (
+        candidate?.patientId !== patient.id ||
+        candidate.visitId === visit.id ||
+        candidate.source !== 'synthetic_demo'
+      ) {
+        return false
+      }
+      const otherSample = candidate.syntheticSourceAssetId
+        ? findPatientSamplePhotoAsset(
+            candidate.syntheticSourceAssetId,
+          )
+        : undefined
       return (
-        candidate?.patientId === patient.id &&
-        candidate.visitId !== visit.id &&
-        candidate.source === 'synthetic_demo'
+        !sampleAsset ||
+        !otherSample ||
+        otherSample.pairId !== sampleAsset.pairId ||
+        otherSample.timepoint === sampleAsset.timepoint
       )
     },
   )
   const syntheticUnavailableReason =
-    syntheticDemoUsedByAnotherVisit
-      ? SYNTHETIC_LONGITUDINAL_BOUNDARY
-      : capture?.source === 'synthetic_demo'
-        ? CURRENT_SYNTHETIC_BOUNDARY
-        : undefined
+    capture?.source === 'synthetic_demo'
+      ? CURRENT_SYNTHETIC_BOUNDARY
+      : !sampleAsset
+        ? FOLLOW_UP_SAMPLE_BOUNDARY
+        : incompatibleSampleUsedByAnotherVisit
+          ? INCOMPATIBLE_SAMPLE_BOUNDARY
+          : undefined
+  const previewDisclosure =
+    capture?.source === 'synthetic_demo'
+      ? sampleAsset?.disclosure
+      : undefined
 
   const attachFile = (
     file: File,
@@ -143,14 +197,14 @@ export function PatientVisitPage() {
   ) => actions.attachSessionCapture(visit.id, file, source)
 
   const attachSynthetic = () => {
-    if (!standaloneAsset) {
+    if (!sampleAsset) {
       return Promise.reject(
-        new Error('No approved standalone synthetic image is available.'),
+        new Error('No approved sample photo is available.'),
       )
     }
     return actions.attachSyntheticCapture(
       visit.id,
-      standaloneAsset.id,
+      sampleAsset.id,
     )
   }
 
@@ -189,13 +243,13 @@ export function PatientVisitPage() {
     setReviewError(undefined)
 
     if (!reviewDecision) {
-      setReviewError('Choose Reviewed or Repeat photo.')
+      setReviewError(REVIEW_DECISION_REQUIRED)
       reviewedDecisionRef.current?.focus()
       return
     }
     const note = reviewNote.trim()
     if (reviewDecision === 'repeat_photo' && !note) {
-      setReviewError('Enter a reason for the repeat photo.')
+      setReviewError(NEW_PHOTO_REASON_REQUIRED)
       reviewNoteRef.current?.focus()
       return
     }
@@ -208,6 +262,8 @@ export function PatientVisitPage() {
       )
       if (reviewDecision === 'repeat_photo') {
         actions.requestRetake(visit.id)
+      } else {
+        setDecisionJustSaved(true)
       }
     } catch (error) {
       setReviewError(safeWorkflowError(error))
@@ -237,6 +293,7 @@ export function PatientVisitPage() {
           previewUrl={previewUrl}
           previewWidth={capture.width}
           previewHeight={capture.height}
+          previewDisclosure={previewDisclosure}
           onSelectFile={attachFile}
           onUseSynthetic={attachSynthetic}
           syntheticUnavailableReason={syntheticUnavailableReason}
@@ -298,7 +355,7 @@ export function PatientVisitPage() {
         ) : (
           <>
             <p>
-              The current exact-bound simulated run did not complete.
+              The current photo analysis did not complete.
             </p>
             <p>
               Retry uses this same photograph and confirmed quality
@@ -322,6 +379,7 @@ export function PatientVisitPage() {
           previewUrl={previewUrl}
           previewWidth={capture.width}
           previewHeight={capture.height}
+          previewDisclosure={previewDisclosure}
           onSelectFile={attachFile}
           onUseSynthetic={attachSynthetic}
           syntheticUnavailableReason={syntheticUnavailableReason}
@@ -359,34 +417,6 @@ export function PatientVisitPage() {
           points={result.output.points}
           faceRegistration={result.faceRegistration}
         />
-        <PatientAoiSummary
-          points={result.output.points}
-          faceRegistration={result.faceRegistration}
-        />
-
-        <details className="patient-result-review__technical">
-          <summary>Technical details</summary>
-          <p className="patient-result-review__engine-boundary">
-            Demo engine only: this illustrative field is seeded by the
-            capture hash and positioned using on-device face landmarks.
-            It does not detect this person’s scar and was not produced by
-            the checked-in facial-paralysis model.
-          </p>
-          <dl>
-            <div>
-              <dt>Capture version</dt>
-              <dd>{capture.version}</dd>
-            </div>
-            <div>
-              <dt>Capture protocol</dt>
-              <dd>Frontal, relaxed, non-mirrored</dd>
-            </div>
-            <div>
-              <dt>Result source</dt>
-              <dd>Local deterministic workflow simulation</dd>
-            </div>
-          </dl>
-        </details>
 
         <form
           className="patient-result-review__form"
@@ -403,10 +433,10 @@ export function PatientVisitPage() {
                 value="reviewed"
                 checked={reviewDecision === 'reviewed'}
                 aria-invalid={
-                  reviewError === 'Choose Reviewed or Repeat photo.'
+                  reviewError === REVIEW_DECISION_REQUIRED
                 }
                 aria-describedby={
-                  reviewError === 'Choose Reviewed or Repeat photo.'
+                  reviewError === REVIEW_DECISION_REQUIRED
                     ? 'patient-review-error'
                     : undefined
                 }
@@ -415,35 +445,41 @@ export function PatientVisitPage() {
                   setReviewError(undefined)
                 }}
               />
-              <span>Reviewed</span>
+              <span>Accept photo for comparison</span>
             </label>
             <label>
               <input
                 type="radio"
                 name="reviewDecision"
                 value="repeat_photo"
+                aria-label="Request a new photo"
                 checked={reviewDecision === 'repeat_photo'}
                 aria-invalid={
-                  reviewError === 'Choose Reviewed or Repeat photo.'
+                  reviewError === REVIEW_DECISION_REQUIRED
                 }
                 aria-describedby={
-                  reviewError === 'Choose Reviewed or Repeat photo.'
-                    ? 'patient-review-error'
-                    : undefined
+                  reviewError === REVIEW_DECISION_REQUIRED
+                    ? 'new-photo-help patient-review-error'
+                    : 'new-photo-help'
                 }
                 onChange={() => {
                   setReviewDecision('repeat_photo')
                   setReviewError(undefined)
                 }}
               />
-              <span>Repeat photo</span>
+              <span className="patient-result-review__decision-copy">
+                <strong>Request a new photo</strong>
+                <small id="new-photo-help">
+                  Use when this image should not be used for comparison.
+                </small>
+              </span>
             </label>
           </fieldset>
 
           <label className="patient-result-review__note">
             <span>
               {reviewDecision === 'repeat_photo'
-                ? 'Reason for repeat photo'
+                ? 'Reason for requesting a new photo'
                 : 'Review note (optional)'}
             </span>
             <textarea
@@ -453,18 +489,17 @@ export function PatientVisitPage() {
               value={reviewNote}
               required={reviewDecision === 'repeat_photo'}
               aria-invalid={
-                reviewError === 'Enter a reason for the repeat photo.'
+                reviewError === NEW_PHOTO_REASON_REQUIRED
               }
               aria-describedby={
-                reviewError === 'Enter a reason for the repeat photo.'
+                reviewError === NEW_PHOTO_REASON_REQUIRED
                   ? 'patient-review-error'
                   : undefined
               }
               onChange={(event) => {
                 setReviewNote(event.currentTarget.value)
                 if (
-                  reviewError ===
-                  'Enter a reason for the repeat photo.'
+                  reviewError === NEW_PHOTO_REASON_REQUIRED
                 ) {
                   setReviewError(undefined)
                 }
@@ -483,32 +518,182 @@ export function PatientVisitPage() {
           ) : null}
 
           <button className="patient-primary-action" type="submit">
-            Complete review
+            Save decision
           </button>
         </form>
+
+        <PatientAoiSummary
+          points={result.output.points}
+          faceRegistration={result.faceRegistration}
+        />
+
+        <details className="patient-result-review__technical">
+          <summary>Technical details</summary>
+          <p className="patient-result-review__engine-boundary">
+            Illustrative engine only: this field is seeded by the
+            capture hash and positioned using on-device face landmarks.
+            It does not detect this person’s scar and was not produced by
+            the checked-in facial-paralysis model.
+          </p>
+          <dl>
+            <div>
+              <dt>Capture version</dt>
+              <dd>{capture.version}</dd>
+            </div>
+            <div>
+              <dt>Capture protocol</dt>
+              <dd>Frontal, relaxed, non-mirrored</dd>
+            </div>
+            <div>
+              <dt>Result source</dt>
+              <dd>Local illustrative sample engine</dd>
+            </div>
+          </dl>
+        </details>
       </section>
     )
-  } else if (nextAction === 'visit_complete') {
+  } else if (
+    nextAction === 'visit_complete' &&
+    capture &&
+    result &&
+    currentReview
+  ) {
     workflowContent = (
-      <section className="patient-visit-complete">
-        <h2 ref={stateHeadingRef} tabIndex={-1}>
-          Review complete
-        </h2>
-        <p>
-          This photo visit is complete in the current session.
-        </p>
-        <div className="patient-visit-complete__actions">
+      <section
+        className="patient-visit-record"
+        aria-labelledby="patient-visit-record-title"
+      >
+        <header className="patient-visit-record__header">
+          <div>
+            <p className="patient-visit-record__eyebrow">
+              Single visit
+            </p>
+            <h2
+              ref={stateHeadingRef}
+              id="patient-visit-record-title"
+              tabIndex={-1}
+            >
+              {TIMEPOINT_LABELS[visit.timepoint]} visit record
+            </h2>
+          </div>
+          <span className="patient-visit-record__status">
+            Complete · Accepted for comparison
+          </span>
+        </header>
+
+        {decisionJustSaved ? (
+          <p className="patient-visit-record__saved" role="status">
+            <strong>Decision saved.</strong> This visit is now available
+            from the patient record.
+          </p>
+        ) : null}
+
+        {previewUrl ? (
+          <>
+            <section
+              className="patient-visit-record__result"
+              aria-labelledby="patient-visit-record-result-title"
+            >
+              <div className="patient-visit-record__section-heading">
+                <h3 id="patient-visit-record-result-title">
+                  Visit photo and result
+                </h3>
+                <p>{RESULT_DISCLAIMER}</p>
+              </div>
+              {previewDisclosure ? (
+                <p className="patient-visit-record__provenance">
+                  {previewDisclosure}
+                </p>
+              ) : null}
+              <div className="patient-attention-images">
+                <PatientAttentionPrimaryImages
+                  previewUrl={previewUrl}
+                  width={capture.width}
+                  height={capture.height}
+                  points={result.output.points}
+                />
+              </div>
+            </section>
+
+            <section
+              className="patient-visit-record__review"
+              aria-labelledby="patient-visit-record-review-title"
+            >
+              <h3 id="patient-visit-record-review-title">
+                Saved review
+              </h3>
+              <dl>
+                <div>
+                  <dt>Decision</dt>
+                  <dd>Accepted for comparison</dd>
+                </div>
+                <div>
+                  <dt>Completed</dt>
+                  <dd>{formatDateTime(currentReview.completedAt)}</dd>
+                </div>
+                {currentReview.note ? (
+                  <div>
+                    <dt>Review note</dt>
+                    <dd>{currentReview.note}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </section>
+
+            <details className="patient-visit-record__additional">
+              <summary>Additional details</summary>
+              <div className="patient-visit-record__additional-content">
+                <PatientAttentionDensity
+                  width={capture.width}
+                  height={capture.height}
+                  points={result.output.points}
+                  faceRegistration={result.faceRegistration}
+                />
+                <PatientAoiSummary
+                  points={result.output.points}
+                  faceRegistration={result.faceRegistration}
+                />
+                <section className="patient-visit-record__technical">
+                  <h3>Technical details</h3>
+                  <dl>
+                    <div>
+                      <dt>Capture version</dt>
+                      <dd>{capture.version}</dd>
+                    </div>
+                    <div>
+                      <dt>Capture protocol</dt>
+                      <dd>Frontal, relaxed, non-mirrored</dd>
+                    </div>
+                    <div>
+                      <dt>Result source</dt>
+                      <dd>Local illustrative sample engine</dd>
+                    </div>
+                    <div>
+                      <dt>Result created</dt>
+                      <dd>{formatDateTime(result.createdAt)}</dd>
+                    </div>
+                  </dl>
+                </section>
+              </div>
+            </details>
+          </>
+        ) : (
+          <div className="patient-visit-record__unavailable" role="status">
+            <h3>Historical photo unavailable</h3>
+            <p>
+              This session no longer contains the exact photograph
+              bound to this stored result. No other visit image has
+              been substituted.
+            </p>
+          </div>
+        )}
+
+        <div className="patient-visit-record__actions">
           <Link
             className="patient-primary-action"
             to={`/patients/${patient.id}`}
           >
             Return to patient record
-          </Link>
-          <Link
-            className="patient-secondary-action"
-            to="/reviews"
-          >
-            Back to reviews
           </Link>
         </div>
       </section>
@@ -516,10 +701,11 @@ export function PatientVisitPage() {
   } else if (nextAction === 'retake') {
     workflowContent = (
       <CapturePanel
-        title="Repeat photo"
+        title="Add replacement photo"
         previewUrl={previewUrl}
         previewWidth={capture?.width}
         previewHeight={capture?.height}
+        previewDisclosure={previewDisclosure}
         onSelectFile={attachFile}
         onUseSynthetic={attachSynthetic}
         syntheticUnavailableReason={syntheticUnavailableReason}

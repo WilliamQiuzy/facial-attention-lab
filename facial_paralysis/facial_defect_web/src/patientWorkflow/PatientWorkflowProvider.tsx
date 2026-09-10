@@ -12,7 +12,10 @@ import {
   approvedAssets,
   type ApprovedAsset,
 } from '../data/approvedAssetManifest'
-import type { WorkbenchAssetId } from '../data/workbenchAssetDefinitions'
+import {
+  findPatientSamplePhotoAsset,
+  type PatientSamplePhotoAsset,
+} from '../data/patientSamplePhotoPair'
 import { SessionMediaVault } from './SessionMediaVault'
 import {
   CaptureFileValidationError,
@@ -94,8 +97,12 @@ export type PatientCapturePreparer = (
   media: Blob,
 ) => Promise<CaptureFileValidationResult>
 
+export type SyntheticPatientAsset =
+  | ApprovedAsset
+  | PatientSamplePhotoAsset
+
 export type SyntheticPatientMediaLoader = (
-  asset: ApprovedAsset,
+  asset: SyntheticPatientAsset,
 ) => Promise<Blob>
 
 export type PatientSimulationRunner = (
@@ -281,7 +288,7 @@ function formatLocalTimestamp(date: Date): string {
 }
 
 async function loadSyntheticMediaWithFetch(
-  asset: ApprovedAsset,
+  asset: SyntheticPatientAsset,
 ): Promise<Blob> {
   const response = await fetch(asset.url)
   if (!response.ok) {
@@ -359,19 +366,57 @@ function mediaHandle(runtime: PatientWorkflowRuntime) {
   return createSessionMediaHandle(runtime.nextIdToken('media'))
 }
 
-function hasSyntheticCaptureOnAnotherVisit(
+function syntheticPatientAssetForId(
+  assetId: string,
+): SyntheticPatientAsset | undefined {
+  return (
+    findPatientSamplePhotoAsset(assetId) ??
+    approvedAssets.find((candidate) => candidate.id === assetId)
+  )
+}
+
+function syntheticVisitPolicyMessage(
   state: PatientWorkflowState,
-  patientId: PatientId,
-  visitId: PatientVisitId,
-): boolean {
-  return state.captureOrder.some((captureId) => {
-    const capture = getOwnRecordValue(state.capturesById, captureId)
-    return (
-      capture?.patientId === patientId &&
-      capture.visitId !== visitId &&
-      capture.source === 'synthetic_demo'
-    )
-  })
+  visit: PatientVisit,
+  asset: SyntheticPatientAsset,
+): string | undefined {
+  const sampleAsset = findPatientSamplePhotoAsset(asset.id)
+  if (sampleAsset && sampleAsset.timepoint !== visit.timepoint) {
+    return `The ${sampleAsset.timepoint} sample photo cannot be added to a ${visit.timepoint} visit.`
+  }
+
+  const otherSyntheticCaptures = state.captureOrder.flatMap(
+    (captureId) => {
+      const capture = getOwnRecordValue(
+        state.capturesById,
+        captureId,
+      )
+      return capture?.patientId === visit.patientId &&
+        capture.visitId !== visit.id &&
+        capture.source === 'synthetic_demo'
+        ? [capture]
+        : []
+    },
+  )
+  if (otherSyntheticCaptures.length === 0) return undefined
+
+  if (!sampleAsset) {
+    return 'A standalone catalog demo is already used by another visit in this record.'
+  }
+
+  for (const capture of otherSyntheticCaptures) {
+    const otherAsset = capture.syntheticSourceAssetId
+      ? findPatientSamplePhotoAsset(capture.syntheticSourceAssetId)
+      : undefined
+    if (
+      !otherAsset ||
+      otherAsset.pairId !== sampleAsset.pairId ||
+      otherAsset.timepoint === sampleAsset.timepoint
+    ) {
+      return 'This record already uses a different or incompatible sample photo.'
+    }
+  }
+  return undefined
 }
 
 function copyBinding(
@@ -1162,7 +1207,7 @@ export function PatientWorkflowProvider({
       visitId: string,
       media: Blob,
       source: CaptureSource,
-      syntheticSourceAssetId?: WorkbenchAssetId,
+      syntheticSourceAssetId?: CaptureAsset['syntheticSourceAssetId'],
       expectedSha256?: string,
     ) => {
       if (
@@ -1215,19 +1260,29 @@ export function PatientWorkflowProvider({
           'visitId',
         )
       }
-      if (
-        source === 'synthetic_demo' &&
-        hasSyntheticCaptureOnAnotherVisit(
+      if (source === 'synthetic_demo') {
+        const syntheticAsset = syntheticSourceAssetId
+          ? syntheticPatientAssetForId(syntheticSourceAssetId)
+          : undefined
+        if (!syntheticAsset) {
+          return throwProviderFailure(
+            'INVALID_CAPTURE',
+            'Choose an approved sample photo.',
+            'assetId',
+          )
+        }
+        const policyMessage = syntheticVisitPolicyMessage(
           currentState,
-          visit.patientId,
-          visit.id,
+          visit,
+          syntheticAsset,
         )
-      ) {
-        return throwProviderFailure(
-          'INVALID_CAPTURE',
-          'A standalone catalog demo is already used by another visit in this record.',
-          'assetId',
-        )
+        if (policyMessage) {
+          return throwProviderFailure(
+            'INVALID_CAPTURE',
+            policyMessage,
+            'assetId',
+          )
+        }
       }
       const previous = selectCurrentCapture(currentState, visit.id)
       if (
@@ -1351,26 +1406,23 @@ export function PatientWorkflowProvider({
           'visitId',
         )
       }
-      if (
-        hasSyntheticCaptureOnAnotherVisit(
-          stateRef.current,
-          visit.patientId,
-          visit.id,
-        )
-      ) {
-        return throwProviderFailure(
-          'INVALID_CAPTURE',
-          'A standalone catalog demo is already used by another visit in this record.',
-          'assetId',
-        )
-      }
-      const asset = approvedAssets.find(
-        (candidate) => candidate.id === assetId,
-      )
+      const asset = syntheticPatientAssetForId(assetId)
       if (!asset) {
         return throwProviderFailure(
           'INVALID_CAPTURE',
-          'Choose an approved standalone synthetic demo image.',
+          'Choose an approved sample photo.',
+          'assetId',
+        )
+      }
+      const policyMessage = syntheticVisitPolicyMessage(
+        stateRef.current,
+        visit,
+        asset,
+      )
+      if (policyMessage) {
+        return throwProviderFailure(
+          'INVALID_CAPTURE',
+          policyMessage,
           'assetId',
         )
       }
@@ -1675,7 +1727,7 @@ export function PatientWorkflowProvider({
       if (review?.decision !== 'repeat_photo' || !capture) {
         return throwProviderFailure(
           'INVALID_REVIEW',
-          'Complete a Repeat photo review before requesting a retake.',
+          'Save the Request a new photo decision before adding a replacement.',
           'decision',
         )
       }

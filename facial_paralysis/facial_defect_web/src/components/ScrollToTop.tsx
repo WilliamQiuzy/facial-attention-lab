@@ -15,7 +15,7 @@ export function ScrollToTop() {
       heading.tabIndex = -1
       const headingText = heading.textContent?.trim()
       if (headingText) {
-        document.title = `${headingText} | Facial Reconstruction Imaging`
+        document.title = `${headingText} | FaceAI`
       }
       heading.focus({ preventScroll: true })
       return true

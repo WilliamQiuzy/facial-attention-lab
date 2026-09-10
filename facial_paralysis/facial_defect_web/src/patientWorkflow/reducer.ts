@@ -1049,7 +1049,7 @@ function recordReview(
     return failureState(
       state,
       'REPEAT_REASON_REQUIRED',
-      'A reason is required when requesting a repeat photo.',
+      'A reason is required when requesting a new photo.',
       'note',
     )
   }

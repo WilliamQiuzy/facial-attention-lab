@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { patientSamplePhotoPairs } from '../data/patientSamplePhotoPair'
 import { createDemoPatientResult } from './demoPatientInference'
 import type { PatientRunBinding } from './types'
 import {
@@ -163,6 +164,51 @@ describe('createDemoPatientResult', () => {
         ...otherTemplatePoints.map((point) => point.intensity),
       ),
     )
+  })
+
+  it('binds every sample heat field to that photograph\'s declared visual target', () => {
+    for (const pair of Object.values(patientSamplePhotoPairs)) {
+      for (const asset of [pair.preoperative, pair.postoperative]) {
+        const output = createDemoPatientResult(
+          makeBinding({ captureSha256: asset.sha256 }),
+        )
+        const focusPoint = output.points.find(
+          (point) =>
+            point.x === asset.attentionProfile.focus.x &&
+            point.y === asset.attentionProfile.focus.y,
+        )
+
+        expect(focusPoint).toMatchObject({
+          intensity: asset.attentionProfile.focusIntensity,
+          radius: asset.attentionProfile.focusRadius,
+        })
+      }
+    }
+  })
+
+  it('keeps paired focus locations aligned and makes postoperative focus clearly less prominent', () => {
+    for (const pair of Object.values(patientSamplePhotoPairs)) {
+      const preoperative = createDemoPatientResult(
+        makeBinding({ captureSha256: pair.preoperative.sha256 }),
+      )
+      const postoperative = createDemoPatientResult(
+        makeBinding({ captureSha256: pair.postoperative.sha256 }),
+      )
+      const focus = pair.preoperative.attentionProfile.focus
+      const preFocus = preoperative.points.find(
+        (point) => point.x === focus.x && point.y === focus.y,
+      )
+      const postFocus = postoperative.points.find(
+        (point) => point.x === focus.x && point.y === focus.y,
+      )
+
+      expect(preFocus).toBeDefined()
+      expect(postFocus).toBeDefined()
+      expect(
+        (preFocus?.intensity ?? 0) - (postFocus?.intensity ?? 0),
+      ).toBeGreaterThanOrEqual(0.5)
+      expect(postFocus?.radius).toBeLessThan(preFocus?.radius ?? 0)
+    }
   })
 
   it('changes the spatial field when the exact capture SHA changes', () => {

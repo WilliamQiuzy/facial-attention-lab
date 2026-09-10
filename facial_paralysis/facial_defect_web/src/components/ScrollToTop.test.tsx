@@ -92,7 +92,7 @@ describe('ScrollToTop', () => {
     expect(heading).toHaveAttribute('tabindex', '-1')
     expect(heading).toHaveFocus()
     expect(document.title).toBe(
-      'Attention pattern demo | Facial Reconstruction Imaging',
+      'Attention pattern demo | FaceAI',
     )
   })
 
@@ -124,7 +124,7 @@ describe('ScrollToTop', () => {
 
     await waitFor(() => expect(heading).toHaveFocus())
     expect(document.title).toBe(
-      'Loaded analysis | Facial Reconstruction Imaging',
+      'Loaded analysis | FaceAI',
     )
   })
 })

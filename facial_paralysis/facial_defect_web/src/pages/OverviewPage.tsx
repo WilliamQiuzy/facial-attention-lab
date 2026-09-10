@@ -19,10 +19,10 @@ export function OverviewPage() {
           <ol>
             <li>
               Open <Link to="/patients">Patients</Link> and create or select a
-              synthetic/test record.
+              patient record.
             </li>
             <li>
-              Add a photo visit, confirm image quality, then run the simulated
+              Add a photo visit, confirm image quality, then run the
               analysis.
             </li>
             <li>
@@ -58,8 +58,8 @@ export function OverviewPage() {
         </section>
 
         <p className="help-page__boundary">
-          Research prototype for synthetic/test records only. Session data resets on
-          refresh. It is not clinical guidance and clinical use is blocked.
+          Research prototype for sample or de-identified records only. Session data
+          resets on refresh. It is not clinical guidance.
         </p>
       </div>
     </div>

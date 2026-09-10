@@ -39,7 +39,7 @@ describe('PatientAoiSummary', () => {
 
     expect(
       screen.getByText(
-        'A facial-area summary is unavailable for this simulated result.',
+        'A facial-area summary is unavailable for this result.',
       ),
     ).toBeVisible()
     expect(

@@ -4,6 +4,7 @@ import type {
   PatientRunBinding,
   PatientSimulationOutput,
 } from './types'
+import { findPatientSamplePhotoAssetBySha256 } from '../data/patientSamplePhotoPair'
 
 const POINT_COUNT = 24
 const UINT32_RANGE = 0x1_0000_0000
@@ -38,6 +39,12 @@ const FACE_TEMPLATE_ANCHORS = Object.freeze([
   Object.freeze({ x: 0.45, y: 0.75 }),
   Object.freeze({ x: 0.55, y: 0.75 }),
   Object.freeze({ x: 0.5, y: 0.8 }),
+] as const)
+const SAMPLE_FOCUS_OFFSETS = Object.freeze([
+  Object.freeze({ x: 0, y: 0, intensityScale: 1, radiusScale: 1 }),
+  Object.freeze({ x: -0.028, y: -0.018, intensityScale: 0.9, radiusScale: 0.82 }),
+  Object.freeze({ x: 0.027, y: -0.012, intensityScale: 0.86, radiusScale: 0.78 }),
+  Object.freeze({ x: 0.012, y: 0.03, intensityScale: 0.8, radiusScale: 0.74 }),
 ] as const)
 
 if (FACE_TEMPLATE_ANCHORS.length !== POINT_COUNT) {
@@ -133,7 +140,78 @@ export function createDemoPatientResult(
   const nextUnit = createDeterministicUnitGenerator(
     seedFromCaptureSha256(binding.captureSha256),
   )
+  const sampleAsset = findPatientSamplePhotoAssetBySha256(
+    binding.captureSha256,
+  )
   const points: PatientAttentionPoint[] = []
+
+  if (sampleAsset) {
+    for (const offset of SAMPLE_FOCUS_OFFSETS) {
+      const registered = registerPoint(
+        {
+          x: sampleAsset.attentionProfile.focus.x + offset.x,
+          y: sampleAsset.attentionProfile.focus.y + offset.y,
+          radius:
+            sampleAsset.attentionProfile.focusRadius *
+            offset.radiusScale,
+        },
+        faceRegistration,
+      )
+      points.push(
+        Object.freeze({
+          x: registered.x,
+          y: registered.y,
+          intensity:
+            sampleAsset.attentionProfile.focusIntensity *
+            offset.intensityScale,
+          radius: registered.radius,
+        }),
+      )
+    }
+
+    for (const anchor of FACE_TEMPLATE_ANCHORS.slice(
+      0,
+      POINT_COUNT - SAMPLE_FOCUS_OFFSETS.length,
+    )) {
+      const x = clamp(
+        anchor.x + (nextUnit() - 0.5) * 0.02,
+        0.26,
+        0.74,
+      )
+      const y = clamp(
+        anchor.y + (nextUnit() - 0.5) * 0.02,
+        0.18,
+        0.84,
+      )
+      const featureEmphasis =
+        y >= 0.34 && y <= 0.48
+          ? 0.36
+          : y > 0.64 && y <= 0.76
+            ? 0.3
+            : 0.2
+      const registered = registerPoint(
+        {
+          x,
+          y,
+          radius: 0.035 + nextUnit() * 0.026,
+        },
+        faceRegistration,
+      )
+      points.push(
+        Object.freeze({
+          x: registered.x,
+          y: registered.y,
+          intensity: featureEmphasis + nextUnit() * 0.16,
+          radius: registered.radius,
+        }),
+      )
+    }
+
+    return Object.freeze({
+      origin: 'workflow_simulation',
+      points: Object.freeze(points),
+    })
+  }
 
   for (const anchor of FACE_TEMPLATE_ANCHORS) {
     const x = clamp(

@@ -122,6 +122,8 @@ export function PatientJobProgress({
               >
                 <span
                   className="patient-job-progress__marker"
+                  data-step={index + 1}
+                  data-state={phaseStatus}
                   aria-hidden="true"
                 >
                   {phaseStatus === 'complete' ? (

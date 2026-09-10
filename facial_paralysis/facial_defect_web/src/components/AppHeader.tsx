@@ -4,7 +4,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 
 const navigation = [
   { to: '/patients', label: 'Patients' },
-  { to: '/reviews', label: 'Reviews' },
+  { to: '/reviews', label: 'Review' },
   { to: '/about', label: 'Help' },
 ] as const
 
@@ -23,15 +23,15 @@ export function AppHeader() {
         <NavLink
           className="brand"
           to="/patients"
-          aria-label="Facial Reconstruction Imaging"
+          aria-label="FaceAI"
           onClick={closeMenu}
         >
-          <span className="brand__mark" aria-hidden="true">FR</span>
+          <span className="brand__mark" aria-hidden="true">FA</span>
           <span className="brand__name brand__name--full" aria-hidden="true">
-            Facial Reconstruction Imaging
+            FaceAI
           </span>
           <span className="brand__name brand__name--compact" aria-hidden="true">
-            Facial Imaging
+            FaceAI
           </span>
         </NavLink>
 

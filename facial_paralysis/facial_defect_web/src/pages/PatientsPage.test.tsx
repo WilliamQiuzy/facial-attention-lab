@@ -87,11 +87,9 @@ describe('PatientsPage', () => {
     expect(view.container.querySelector('main')).toBeNull()
 
     const firstRow = screen.getByRole('listitem', {
-      name: /Synthetic Demo — Facial Paralysis/i,
+      name: /Facial Paralysis Sample/i,
     })
-    expect(
-      within(firstRow).getByText('DEMO-1001'),
-    ).toBeVisible()
+    expect(within(firstRow).getByText('SAMPLE-1001')).toBeVisible()
     expect(
       within(firstRow).getByText('Follow-up · Jun 18, 2026'),
     ).toBeVisible()
@@ -102,7 +100,8 @@ describe('PatientsPage', () => {
       'href',
       `/patients/${DEMO_PATIENT_RECORDS[0]!.id}`,
     )
-    expect(screen.getAllByText('Synthetic demo')).toHaveLength(3)
+    expect(screen.getAllByText('Sample record')).toHaveLength(3)
+    expect(screen.queryByText(/synthetic demo/i)).not.toBeInTheDocument()
   })
 
   it('searches by display name or normalized record number and gives a useful empty state', async () => {
@@ -115,13 +114,13 @@ describe('PatientsPage', () => {
     await user.type(search, 'reconstruction')
     expect(screen.getAllByRole('listitem')).toHaveLength(1)
     expect(
-      screen.getByText('Synthetic Demo — Facial Reconstruction'),
+      screen.getByText('Facial Reconstruction Sample'),
     ).toBeVisible()
 
     await user.clear(search)
-    await user.type(search, 'demo 1003')
+    await user.type(search, 'sample 1003')
     expect(screen.getAllByRole('listitem')).toHaveLength(1)
-    expect(screen.getByText('DEMO-1003')).toBeVisible()
+    expect(screen.getByText('SAMPLE-1003')).toBeVisible()
 
     await user.clear(search)
     await user.type(search, 'not in this session')
@@ -170,7 +169,7 @@ describe('PatientsPage', () => {
     expect(screen.getByTestId('location-state')).toHaveTextContent('null')
     expect(
       screen.getByRole('heading', {
-        name: 'Synthetic Demo — Facial Reconstruction',
+        name: 'Facial Reconstruction Sample',
         level: 1,
       }),
     ).toBeVisible()
@@ -185,7 +184,7 @@ describe('PatientsPage', () => {
     ).toHaveValue('reconstruction')
     expect(screen.getAllByRole('listitem')).toHaveLength(1)
     expect(
-      screen.getByText('Synthetic Demo — Facial Reconstruction'),
+      screen.getByText('Facial Reconstruction Sample'),
     ).toBeVisible()
   })
 })

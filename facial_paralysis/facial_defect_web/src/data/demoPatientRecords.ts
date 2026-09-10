@@ -8,8 +8,8 @@ import { createPatientId } from '../patientWorkflow/validation'
 export const DEMO_PATIENT_RECORDS: readonly PatientRecord[] = Object.freeze([
   Object.freeze({
     id: createPatientId('patient-demo-001'),
-    displayName: 'Synthetic Demo — Facial Paralysis',
-    recordNumber: 'DEMO-1001',
+    displayName: 'Facial Paralysis Sample',
+    recordNumber: 'SAMPLE-1001',
     dateOfBirth: '1962-03-14',
     carePathway: 'Facial paralysis',
     recordKind: 'synthetic_demo',
@@ -17,8 +17,8 @@ export const DEMO_PATIENT_RECORDS: readonly PatientRecord[] = Object.freeze([
   }),
   Object.freeze({
     id: createPatientId('patient-demo-002'),
-    displayName: 'Synthetic Demo — Facial Reconstruction',
-    recordNumber: 'DEMO-1002',
+    displayName: 'Facial Reconstruction Sample',
+    recordNumber: 'SAMPLE-1002',
     dateOfBirth: '1975-09-08',
     carePathway: 'Facial reconstruction',
     recordKind: 'synthetic_demo',
@@ -26,8 +26,8 @@ export const DEMO_PATIENT_RECORDS: readonly PatientRecord[] = Object.freeze([
   }),
   Object.freeze({
     id: createPatientId('patient-demo-003'),
-    displayName: 'Synthetic Demo — Follow-up Clinic',
-    recordNumber: 'DEMO-1003',
+    displayName: 'Follow-up Clinic Sample',
+    recordNumber: 'SAMPLE-1003',
     dateOfBirth: '1988-11-22',
     carePathway: 'Follow-up clinic',
     recordKind: 'synthetic_demo',

@@ -165,7 +165,7 @@ describe('production batch route integration', () => {
     configureSingleCaseBatch()
     fireEvent.click(
       screen.getByRole('link', {
-        name: /Facial Reconstruction Imaging/i,
+        name: /FaceAI/i,
       }),
     )
 

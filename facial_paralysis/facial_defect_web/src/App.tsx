@@ -8,7 +8,6 @@ import {
 } from 'react-router-dom'
 import { AppFooter } from './components/AppFooter'
 import { AppHeader } from './components/AppHeader'
-import { EnvironmentStrip } from './components/EnvironmentStrip'
 import { ScrollToTop } from './components/ScrollToTop'
 import { DEMO_PATIENT_RECORDS } from './data/demoPatientRecords'
 import { AnalysisPage } from './pages/AnalysisPage'
@@ -113,7 +112,6 @@ function RoutedWorkspace() {
     <div className="app-root">
       <ScrollToTop />
       <a className="skip-link" href="#main-content">Skip to main content</a>
-      <EnvironmentStrip />
       <AppHeader />
       <main id="main-content" tabIndex={-1}>
         <Routes>

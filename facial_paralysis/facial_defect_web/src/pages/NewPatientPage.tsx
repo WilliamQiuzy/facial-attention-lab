@@ -20,7 +20,7 @@ const CARE_PATHWAYS = [
   { value: 'facial_paralysis', label: 'Facial paralysis' },
   { value: 'facial_reconstruction', label: 'Facial reconstruction' },
   { value: 'follow_up_clinic', label: 'Follow-up clinic' },
-  { value: 'other_test', label: 'Other synthetic/test pathway' },
+  { value: 'other_test', label: 'Other pathway' },
 ] as const
 
 type NewPatientErrors = PatientDraftErrors &
@@ -188,7 +188,7 @@ export function NewPatientPage() {
             Back to patients
           </Link>
           <h1>New patient</h1>
-          <p>Create a session-only synthetic or test record.</p>
+          <p>Create a patient record and begin the first photo visit.</p>
         </div>
       </header>
 
@@ -206,8 +206,8 @@ export function NewPatientPage() {
           ) : null}
 
           <p className="patient-form-boundary">
-            Only synthetic or test information may be entered. Do not
-            enter real patient information.
+            Public prototype: use fictional sample data only. Do not
+            enter identifiable patient information.
           </p>
 
           <label className="patient-field">
@@ -369,8 +369,13 @@ export function NewPatientPage() {
             aria-labelledby="prototype-attestation-title"
           >
             <h2 id="prototype-attestation-title">
-              Synthetic/test information only
+              Prototype data restriction
             </h2>
+            <p id="prototype-data-restriction-description">
+              This acknowledgement is a prototype data-use
+              restriction. It is not patient consent, photography
+              authorization, or clinical approval.
+            </p>
             <label>
               <input
                 ref={attestationRef}
@@ -382,8 +387,8 @@ export function NewPatientPage() {
                 )}
                 aria-describedby={
                   errors.syntheticTestAttestation
-                    ? 'syntheticTestAttestation-error'
-                    : undefined
+                    ? 'prototype-data-restriction-description syntheticTestAttestation-error'
+                    : 'prototype-data-restriction-description'
                 }
                 onChange={(event) => {
                   setSyntheticTestAttestation(
@@ -393,8 +398,9 @@ export function NewPatientPage() {
                 }}
               />
               <span>
-                I confirm this record contains synthetic/test
-                information only.
+                I will use fictional sample data only and will not
+                enter a patient name, medical record number, date of
+                birth, or identifiable photograph.
               </span>
             </label>
             <FieldError

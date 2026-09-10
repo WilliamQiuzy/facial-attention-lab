@@ -23,8 +23,8 @@ export function PatientIdentityHeader({
   const Heading = `h${headingLevel}` as const
   const recordKind =
     patient.recordKind === 'synthetic_demo'
-      ? 'Synthetic demo'
-      : 'Session test'
+      ? 'Sample record'
+      : 'Session record'
 
   return (
     <section

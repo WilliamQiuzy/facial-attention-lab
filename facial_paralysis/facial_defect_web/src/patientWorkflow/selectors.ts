@@ -2,6 +2,10 @@ import type {
   AuthorizationSnapshot,
   CaptureAsset,
   CaptureQualityChecks,
+  MissingRequiredTimepoints,
+  PatientComparisonCaptureEntry,
+  PatientComparisonResultEntry,
+  PatientComparisonState,
   PatientNextAction,
   PatientResult,
   PatientReview,
@@ -63,11 +67,171 @@ export function selectPatientVisits(
         visit !== undefined && visit.patientId === patientId,
     )
     .sort(
-      (first, second) =>
-        first.visitDate.localeCompare(second.visitDate) ||
-        first.createdAt.localeCompare(second.createdAt) ||
-        first.id.localeCompare(second.id),
+      (first, second) => {
+        const visitDateOrder = first.visitDate.localeCompare(
+          second.visitDate,
+        )
+        if (visitDateOrder !== 0) return visitDateOrder
+
+        const firstCreatedAt = Date.parse(first.createdAt)
+        const secondCreatedAt = Date.parse(second.createdAt)
+        if (
+          Number.isFinite(firstCreatedAt) &&
+          Number.isFinite(secondCreatedAt)
+        ) {
+          const timestampOrder = firstCreatedAt - secondCreatedAt
+          return timestampOrder !== 0
+            ? timestampOrder
+            : first.id.localeCompare(second.id)
+        }
+
+        return (
+          first.createdAt.localeCompare(second.createdAt) ||
+          first.id.localeCompare(second.id)
+        )
+      },
     )
+}
+
+function missingRequiredTimepoints(
+  hasPreoperative: boolean,
+  hasPostoperative: boolean,
+): MissingRequiredTimepoints | undefined {
+  if (!hasPreoperative && !hasPostoperative) {
+    return ['preoperative', 'postoperative']
+  }
+  if (!hasPreoperative) return ['preoperative']
+  if (!hasPostoperative) return ['postoperative']
+  return undefined
+}
+
+export function selectPatientComparisonState(
+  state: PatientWorkflowState,
+  patientId: string,
+): PatientComparisonState {
+  const visits = selectPatientVisits(state, patientId)
+  if (visits.length === 0) return { phase: 'no_visits' }
+
+  const preoperative = visits
+    .filter((visit) => visit.timepoint === 'preoperative')
+    .at(-1)
+  const postoperative = visits
+    .filter((visit) => visit.timepoint === 'postoperative')
+    .at(-1)
+  const missing = missingRequiredTimepoints(
+    preoperative !== undefined,
+    postoperative !== undefined,
+  )
+  if (missing) return { phase: 'missing_timepoint', missing }
+
+  // The checks above prove both visits exist while keeping the public union
+  // free of optional fields and contradictory partial pairs.
+  const visitPair = {
+    preoperative: preoperative!,
+    postoperative: postoperative!,
+  }
+  const selectedPreoperativeCapture = selectCurrentCapture(
+    state,
+    visitPair.preoperative.id,
+  )
+  const selectedPostoperativeCapture = selectCurrentCapture(
+    state,
+    visitPair.postoperative.id,
+  )
+  const preoperativeCapture =
+    selectedPreoperativeCapture?.patientId === patientId &&
+    selectedPreoperativeCapture.visitId === visitPair.preoperative.id
+      ? selectedPreoperativeCapture
+      : undefined
+  const postoperativeCapture =
+    selectedPostoperativeCapture?.patientId === patientId &&
+    selectedPostoperativeCapture.visitId === visitPair.postoperative.id
+      ? selectedPostoperativeCapture
+      : undefined
+  const missingPhotos = missingRequiredTimepoints(
+    preoperativeCapture !== undefined,
+    postoperativeCapture !== undefined,
+  )
+  if (missingPhotos) {
+    return { phase: 'needs_photos', pair: visitPair, missingPhotos }
+  }
+
+  const capturePair = {
+    preoperative: {
+      visit: visitPair.preoperative,
+      capture: preoperativeCapture!,
+    } satisfies PatientComparisonCaptureEntry,
+    postoperative: {
+      visit: visitPair.postoperative,
+      capture: postoperativeCapture!,
+    } satisfies PatientComparisonCaptureEntry,
+  }
+  const preoperativeResult = selectComparisonResult(
+    state,
+    patientId,
+    capturePair.preoperative,
+  )
+  const postoperativeResult = selectComparisonResult(
+    state,
+    patientId,
+    capturePair.postoperative,
+  )
+  const missingResults = missingRequiredTimepoints(
+    preoperativeResult !== undefined,
+    postoperativeResult !== undefined,
+  )
+  if (missingResults) {
+    return { phase: 'needs_results', pair: capturePair, missingResults }
+  }
+
+  return {
+    phase: 'ready',
+    pair: {
+      preoperative: {
+        ...capturePair.preoperative,
+        result: preoperativeResult!,
+      } satisfies PatientComparisonResultEntry,
+      postoperative: {
+        ...capturePair.postoperative,
+        result: postoperativeResult!,
+      } satisfies PatientComparisonResultEntry,
+    },
+  }
+}
+
+function selectComparisonResult(
+  state: PatientWorkflowState,
+  patientId: string,
+  entry: PatientComparisonCaptureEntry,
+): PatientResult | undefined {
+  const { visit, capture } = entry
+  const authorization = selectCurrentAuthorization(state, visit.id)
+  if (
+    authorization?.patientId !== patientId ||
+    authorization.visitId !== visit.id ||
+    authorization.status !== 'documented'
+  ) {
+    return undefined
+  }
+
+  const run = selectCurrentRun(state, visit.id)
+  if (
+    run?.binding.patientId !== patientId ||
+    run.binding.visitId !== visit.id ||
+    run.binding.captureId !== capture.id
+  ) {
+    return undefined
+  }
+
+  const result = selectCurrentResult(state, visit.id)
+  if (
+    result?.binding.patientId !== patientId ||
+    result.binding.visitId !== visit.id ||
+    result.binding.captureId !== capture.id
+  ) {
+    return undefined
+  }
+  return result
 }
 
 export function selectCurrentCapture(

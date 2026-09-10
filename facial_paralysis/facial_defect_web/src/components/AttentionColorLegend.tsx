@@ -9,13 +9,13 @@ export function AttentionColorLegend({
 }: AttentionColorLegendProps) {
   return (
     <Element className="attention-signal-legend">
-      <span>Low</span>
+      <span>Less attention</span>
       <span
         aria-label={ATTENTION_COLOR_SCALE_LABEL}
         className="attention-signal-legend__scale"
         role="group"
       />
-      <span>Peak</span>
+      <span>More attention</span>
     </Element>
   )
 }
